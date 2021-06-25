@@ -1,0 +1,548 @@
+*          DATA SET DMSECHK    AT LEVEL 002 AS OF 05/22/12                      
+*CATALP DMSECHK                                                                 
+                                                                                
+***********************************************************************         
+*P1      XL1   X'40'=NO CONSOLE X'20'=CONSOLE BUT DONT ASK OPERATOR   *         
+*        AL3   C'DMSLCK' TO LOCK A SYSTEM OR C'DMSUNL' TO UNLOCK      *         
+*P2      AL1   N/D                                                    *         
+*        AL3   A(DDNAME) IF ZERO USE DDNAME IN DTF                    *         
+*P3      AL1   N/D                                                    *         
+*        AL3   A(DTF)                                                 *         
+*P4      AL1   MAINTID   RETURN RESULT                                *         
+*        AL3   N/D       RETURN A(MESSAGE)                            *         
+*P5      AL1   N/D       RETURN ORIGINAL ERROR ENCOUNTERED            *         
+*        AL3   N/D       RETURN A(FILE INFO TABLE)                    *         
+*                                                                     *         
+*MAINTID P4(1) 1=ERASE,2=LOAD,3=DUMP,4=STAMP                          *         
+***********************************************************************         
+                                                                                
+         TITLE 'DMSECHK - CHECK SYSTEM IS AVAILABLE FOR MAINT'                  
+         PRINT NOGEN                                                            
+DMSECHK  CSECT                                                                  
+         ENTRY DMSECHKS                                                         
+         NMOD1 WORKX-WORKD,**SECH**                                             
+         USING WORKD,RC                                                         
+         ST    R1,APARMS                                                        
+         MVC   PARMS,0(R1)         SAVE CALLERS PARM LIST                       
+         MVC   P,SPACES                                                         
+         LA    R2,PCTL                                                          
+         LA    R3,PCONTROL                                                      
+         MVC   PCONTROL,=C'BL01'                                                
+         STM   R2,R3,PPARMS        SET PARM LIST FOR V(PRINT)                   
+*                                                                               
+FIRST    CLI   CPUID,C' '          INITIALISE ON FIRST CALL                     
+         BNE   FIRSTX                                                           
+         L     R1,X'10'(,R0)       GET CPU ID                                   
+         L     R1,X'C4'(R1)        R1=A(SMCA) FROM CVT                          
+         MVC   CPUID,X'10'(R1)     CPU IS C'XXXX' FROM SMCASID                  
+FIRSTX   EQU   *                                                                
+*                                                                               
+INIT     MVI   RESULT,0            SET OK NOT GLOBAL FILE                       
+         MVI   RESERR,0                                                         
+         MVC   OPERMSG,SPACES                                                   
+         SR    RE,RE                                                            
+         ICM   RE,7,AACTN                                                       
+         CLC   0(4,RE),=C'DMSU'    TEST IF UNLOCK CALL                          
+         BE    SECHKU                                                           
+         XC    DMSECHKS,DMSECHKS   SET NO MAINTENANCE LOCK                      
+         MVC   CPUOUT,CPUOUTI                                                   
+*                                                                               
+         SR    R3,R3               R3=A(CALLERS PASSED DTF)                     
+         ICM   R3,7,ADTF                                                        
+         JZ    *+2                 DIE IF NO A(DTF)                             
+         USING DTFPHD,R3                                                        
+         XC    FILEDATA,FILEDATA   EXTRACT DDNAME FROM DTF                      
+         ST    R3,FILADTF                                                       
+         MVC   DDNAME,DTFDD                                                     
+         MVC   FILEDD,DDNAME                                                    
+         EJECT                                                                  
+***********************************************************************         
+*READ RECORD ZERO TO GET CPU AND DATASPACE IDS. CHECK SAME CPU ID     *         
+***********************************************************************         
+SECHK0   L     RF,=V(DADDS)        SET TO D/A FILE                              
+         MVC   P1,=A(DACPUID)                                                   
+         TM    DTFTYPE,DTFTIS                                                   
+         BZ    SECHK01                                                          
+         L     RF,=V(ISDDS)        SET TO I/S FILE                              
+         MVC   P1,=A(ISCPUID)                                                   
+*                                                                               
+SECHK01  GOTO1 (RF),P1,,DISKREC,0,(R3),DISKADR                                  
+         TM    P3,X'81'            TEST IRRECOVERABLE/OUTSIDE EXTENTS           
+         BNZ   *+12                                                             
+         TM    P3+1,X'0C'          TEST NOT FOUND/EOF                           
+         BZ    SECHK0A                                                          
+         MVI   RESULT,4            SET DISK ERR READING RECORD ZERO             
+         MVC   OPERMSG,SECHKE4                                                  
+         MVC   OPERMSG(8),FILEDD                                                
+         BAS   R9,SECHKO           OUTPUT CONSOLE MSG AND GET REPLY             
+         BH    SECHK0              RETRY                                        
+         BE    SECHKIGN            IGNORE                                       
+         BL    SECHKCAN            CANCEL                                       
+*                                                                               
+SECHK0A  MVC   FCPUID(2),P3+2      SAVE FILE CPUID/DSPID                        
+         MVC   CPUOUT+2(1),FCPUID                                               
+         OI    CPUOUT+2,C' '                                                    
+         MVC   CPUOUT+4(1),FDSPID                                               
+         OI    CPUOUT+4,C' '                                                    
+*                                                                               
+SECHK0B  CLI   FCPUID,C' '                                                      
+         BH    SECHK0C                                                          
+         MVI   RESULT,5            SET NO CPUID IN GLOBAL FILE                  
+         MVC   OPERMSG,SECHKE5                                                  
+         MVC   OPERMSG(8),FILEDD                                                
+         MVC   OPERMSG+9(8),CPUOUT                                              
+         B     SECHK0D                                                          
+*                                                                               
+SECHK0C  CLC   FCPUID,CPUID+2      CPUID OF FILE MUST MATCH MVS CPUID           
+         BE    SECHK0E                                                          
+         MVI   RESULT,6            WRONG CPUID IN IN GLOBAL FILE                
+         MVC   OPERMSG,SECHKE6                                                  
+         MVC   OPERMSG(8),FILEDD                                                
+         MVC   OPERMSG+9(8),CPUOUT                                              
+*                                                                               
+SECHK0D  BAS   R9,SECHKO           OUTPUT CONSOLE MSG AND GET REPLY             
+         BH    SECHK0              RETRY                                        
+         BE    SECHKIGN            IGNORE                                       
+         BL    SECHKCAN            CANCEL                                       
+         EJECT                                                                  
+***********************************************************************         
+*VALIDATE DATASPACE ID AND SET IN SSB                                 *         
+***********************************************************************         
+SECHK0E  CLI   FDSPID,C' '         TEST FOR DSPACE CHR IN RECZERO               
+         BH    SECHK0F                                                          
+         MVI   RESULT,7            SET NO DATASPACE ID IN GLOBAL FILE           
+         MVC   OPERMSG,SECHKE7                                                  
+         MVC   OPERMSG(8),FILEDD                                                
+         MVC   OPERMSG+9(8),CPUOUT                                              
+         B     SECHK0H                                                          
+*                                                                               
+SECHK0F  ICM   RF,15,=V(SSB)       SET DSPID IN SSB AND CHECK IF OK             
+         BZ    SECHKX                                                           
+         USING SSBOFFD,RF                                                       
+         OI    SSOFLAG1,SSOFXCPY   SET DO NOT COPY MY SSB                       
+         CLI   SSODSPAC,C' '       SET DSPID OF 1ST FILE IN SSB                 
+         BH    *+10                                                             
+         MVC   SSODSPAC,FDSPID                                                  
+         CLC   SSODSPAC,FDSPID                                                  
+         BE    SECHK1              OK CONTINUE                                  
+         DROP  RF                                                               
+*                                                                               
+SECHK0G  MVI   RESULT,8            SET WRONG DATASPACE ID MESSAGE               
+         MVC   OPERMSG,SECHKE8                                                  
+         MVC   OPERMSG(8),FILEDD                                                
+         MVC   OPERMSG+9(8),CPUOUT                                              
+*                                                                               
+SECHK0H  BAS   R9,SECHKO           OUTPUT CONSOLE MSG AND GET REPLY             
+         BH    SECHK0              RETRY                                        
+         BE    SECHKIGN            IGNORE                                       
+         BL    SECHKCAN            CANCEL                                       
+         EJECT                                                                  
+***********************************************************************         
+*USE FILEDD TO LOCATE SE AND CHECK IF GLOBAL/LOCAL FILE/SYSTEM        *         
+***********************************************************************         
+SECHK1   XC    FILEDD,FILEDD       EXTRACT CALLERS FILEDD                       
+         SR    RE,RE               TEST IF A DEFINED DDS SYSTEM FILE            
+         ICM   RE,7,AFILEDD                                                     
+         BNZ   SECHK1A                                                          
+         LTR   R3,R3               MUST HAVE A(DTF) IF NO FILEDD                
+         JZ    *+2                 DIE                                          
+         LA    RE,DTFDD            POINT TO DDNAME IN DTF                       
+         DROP  R3                                                               
+*                                                                               
+SECHK1A  MVC   FILEDD,0(RE)        SAVE CALLERS FILEDD                          
+         LA    RF,FILEDD           FIND DSN FROM DDNAME                         
+         BAS   RE,GETDSN                                                        
+         MVC   DSN,0(RF)           SAVE IT                                      
+         MVC   DDSDSN,DSN          MOVE IT FILE INFO TABLE                      
+*                                                                               
+         GOTO1 =V(LOCKSPC),DMCB,X'20000000',0                                   
+*                                                                               
+         L     RF,=V(SSB)          SET UP DSPACE ACCESS                         
+         USING SSBOFFD,RF                                                       
+         LAM   AR2,AR2,SSOALET                                                  
+         DROP  RF                                                               
+*                                                                               
+SECHK1B  SR    R2,R2               R2=START OF DSPACE                           
+         SAC   512                                                              
+         L     R2,DHADSN-DMDSHDR(,R2)                                           
+         ST    R2,FULL             R2=DSN NAME TABLE                            
+*                                                                               
+SECHK1C  OC    0(32,R2),0(R2)      NOT FOUND                                    
+         BZ    SECHK1F                                                          
+         CLC   DSN,0(R2)           MATCH ON DSN                                 
+         BE    SECHK1D                                                          
+         LA    R2,32(,R2)                                                       
+         B     SECHK1C                                                          
+*                                                                               
+SECHK1D  S     R2,FULL             R2=DSN NAME OFFSET                           
+         SRL   R2,5                                                             
+         AHI   R2,1                                                             
+         STH   R2,HALF             HALF=INDEX TO DSN NAME                       
+         SR    RE,RE                                                            
+*                                                                               
+SECHK1E  LA    RE,1(RE)            RE=SE NUMBER                                 
+         CHI   RE,256              CHECK UP TO 256 SE NUMBERS                   
+         BNL   SECHK1F                                                          
+         SR    R2,R2               INDEX INTO SE BLOCK                          
+         LR    R2,RE                                                            
+         SLL   R2,6                                                             
+         ICM   R2,7,61(R2)         R2=SYSTEM HEADER                             
+         BZ    SECHK1E                                                          
+         USING DMSYSHDR,R2                                                      
+         SR    RF,RF                                                            
+         ICM   RF,3,DSYFILES       RF=NUMBER OF FILES IN SYSTEM                 
+         BZ    SECHK1E                                                          
+         LA    R2,DSYDATA          R2=FIRST FILE FOR SYSTEM                     
+         USING DSFILHDR,R2                                                      
+         MVC   BYTE,DSFILNUM       ASSUME FIRST FILE IS NATIVE                  
+         NI    BYTE,X'F0'          SET BYTE TO NATIVE FILE FLAG                 
+         MVC   FRSTNUM,DSFILNUM                                                 
+*                                                                               
+SECHK1E1 MVC   BYTE1,DSFILNUM      SET BYTE1 TO NATIVE FILE FORMAT              
+         NI    BYTE1,X'F0'                                                      
+         CLC   BYTE,BYTE1          TEST IF NATIVE FILE                          
+         BNE   SECHK1E3                                                         
+*                                                                               
+SECHK1E2 CLC   HALF,DSDSNX         TEST IF DSN INDEX MATCHES                    
+         BNE   SECHK1E9                                                         
+         STC   RE,SENUM            SAVE BASIC SE AND FILE INFO                  
+         MVC   FILNUM,DSFILNUM                                                  
+         B     SECHK1F                                                          
+*                                                                               
+SECHK1E3 EQU   *                   NOT A NATIVE FILE                            
+*&&US                                                                           
+         CLI   FRSTNUM,X'23'       SPTDIR IS FIRST FOR SPOT AND NET             
+         BNE   SECHK1E9                                                         
+         CLI   DSFILNUM,X'36'      XSPDIR NEEDS TO BE CHECKED                   
+         BE    SECHK1E2                                                         
+         CLI   DSFILNUM,X'37'      XSPFIL NEEDS TO BE CHECKED                   
+         BE    SECHK1E2                                                         
+*&&                                                                             
+SECHK1E9 LA    R2,32(,R2)          NEXT FILE                                    
+         BCT   RF,SECHK1E1                                                      
+         B     SECHK1E             NEXT SYSTEM                                  
+*                                                                               
+SECHK1F  ICM   RF,15,=V(HEXOUT)    MOVE SE NUM TO CPU OUT MESSAGE               
+         BZ    SECHK1G                                                          
+         GOTO1 (RF),DMCB,SENUM,CPUOUT+6,1,=C'TOG'                               
+*                                                                               
+SECHK1G  SAC   0                                                                
+         LTR   R3,R3               POINT TO DDNAME DTF IF NOT PASSED            
+         BNZ   *+8                                                              
+         L     R3,FILADTF                                                       
+         USING DTFPHD,R3                                                        
+         TM    SEFLAG1,X'20'       TEST IF DATASPACE PROTECTED SYSTEM           
+         BO    SECHK1K                                                          
+         TM    DTFFLAG,DTFGLOB                                                  
+         BZ    SECHKX              IGNORE IF NOT GLOBAL                         
+*                                                                               
+SECHK1K  OI    DTFFLAG,DTFGLOB     SET GLOBAL FILE IN MY DTF                    
+         MVC   DTFSNUM,SENUM       SET SENUM IN MY DTF                          
+         MVC   DTFXNUM,FILNUM      SET EXTERNAL FILE NUM IN MY DTF              
+         MVI   RESULT,1            SET OK GLOBAL FILE                           
+         DROP  R3                                                               
+         EJECT                                                                  
+***********************************************************************         
+*CALL V(LOCKSPC) TO LOCK SYSTEM                                       *         
+***********************************************************************         
+SECHK4   CLI   SENUM,0             DON'T LOCK IF WE CANT FIND SE                
+         BE    SECHKX                                                           
+         XC    DMCB(12),DMCB       SET PARAM LIST FOR V(LOCKSPC)                
+         MVC   DMCB+3(1),SENUM     SET SENUM                                    
+         MVI   DMCB+1,6            SET OPEN FOR MAINTENANCE                     
+         MVC   DMCB+10(1),FILNUM   SET FILE NUMBER                              
+         MVC   DMCB+11(1),FLAG4    SET MAINT FUNCTION                           
+*                                                                               
+         B     *+12                *NOP* DONT DO THIS                           
+         MVI   DMCB+0,X'08'        SET ALWAYS RETURN                            
+         MVI   DMCB+4,X'A0'        SET DO NOT ASK OPERATOR                      
+*                                                                               
+         GOTO1 =V(LOCKSPC),DMCB                                                 
+         CLI   DMCB+4,0                                                         
+         BNE   SECHK5                                                           
+         MVC   DMSECHKS+1(1),SENUM SET MAINTENANCE LOCK APPLIED                 
+         MVI   RESULT,1            SET OK TO LOAD/DUMP GLOBAL FILE              
+         B     SECHKX                                                           
+*                                                                               
+SECHK5   MVI   RESULT,9            SET SENUM IS USE BY ANOTHER JOB              
+         MVC   OPERMSG,SECHKE9     XXXXX IN USE BY JOB XXXXXXXX                 
+         MVC   OPERMSG(5),SENAME                                                
+         LA    RF,OPERMSG+20                                                    
+         L     RE,DMCB+4           RE=A(RETURNED COPY OF JOB TABLE)             
+         LA    R0,32               R0=MAX ENTRIES IN JOB TABLE                  
+         SR    R1,R1               R1=NUMBER OF JOBS                            
+SECHK5A  CLC   0(8,RE),SPACES      TEST IF JOB NAME IN JOB TABLE                
+         BNH   SECHK5D                                                          
+         LTR   R1,R1               TEST FIRST JOB                               
+         BNZ   SECHK5B                                                          
+         MVC   0(8,RF),0(RE)       MOVE IN FIRST JOB NAME                       
+         LA    RF,8(RF)                                                         
+         B     SECHK5C                                                          
+*                                                                               
+SECHK5B  MVC   0(17,RF),=C' AND N OTHER JOBS'                                   
+         STC   R1,5(RF)                                                         
+         OI    5(RF),C'0'                                                       
+SECHK5C  LA    R1,1(R1)            BUMP NUMBER OR JOBS                          
+SECHK5D  LA    RE,16(RE)           BUMP TO NEXT JOB TABLE ENTRY                 
+         BCT   R0,SECHK5A                                                       
+         CH    R1,=H'2'            CHANGE OPERMSG FOR ONE OTHER JOB             
+         BNE   *+8                                                              
+         MVI   16(RF),C' '                                                      
+         BAS   R9,SECHKO           OUTPUT CONSOLE MSG AND GET REPLY             
+         BH    SECHK0              RETRY                                        
+         BE    SECHKIGN            IGNORE                                       
+         BL    SECHKCAN            CANCEL                                       
+*                                                                               
+SECHKCAN MVC   RESERR,RESULT       OPERATOR TYPED CANCEL/EOJ                    
+         MVI   RESULT,3                                                         
+         MVC   OPERMSG,SECHKE3     SET MSG TO BE RETURNED TO CALLER             
+         B     SECHKX                                                           
+*                                                                               
+SECHKIGN MVC   RESERR,RESULT       OPERATOR TYPED IGNORE                        
+         MVI   RESULT,2                                                         
+         TM    FLAG1,X'40'         NO CONSOLE SO PASS BACK ERRPR TEXT           
+         BO    SECHKX                                                           
+         MVC   OPERMSG,SECHKE2B    SET OPERATOR IGNORED                         
+         TM    FLAG1,X'20'                                                      
+         BZ    SECHKX                                                           
+         MVC   OPERMSG,SECHKE2A    SET AUTO IGNORE                              
+         B     SECHKX                                                           
+         EJECT                                                                  
+***********************************************************************         
+*CALL V(LOCKSPC) TO UNLOCK SE AFTER MAINTENANCE ACTION                *         
+***********************************************************************         
+SECHKU   OC    DMSECHKS,DMSECHKS   TEST IF MAINT LOCK WAS APPLIED               
+         BZ    SECHKX                                                           
+         XC    DMCB(12),DMCB       SET PARAM LIST FOR V(LOCKSPC)                
+         MVC   DMCB+3(1),DMSECHKS+1                                             
+         MVI   DMCB+1,7            SET CLOSE FOR MAINTENANCE                    
+         GOTO1 =V(LOCKSPC),DMCB                                                 
+         XC    DMSECHKS,DMSECHKS   SET NO MAINT LOCK                            
+         MVI   RESULT,1            SET MAINT LOCK REMOVED FROM GLOBAL           
+         B     SECHKX                                                           
+         EJECT                                                                  
+***********************************************************************         
+*SET RETURN VALUES AND EXIT                                           *         
+***********************************************************************         
+SECHKX   L     R1,APARMS           POINT TO PARM LIST                           
+         LA    RE,OPERMSG                                                       
+         ST    RE,12(R1)           RETURN A(ERROR MESSAGE)                      
+         MVC   12(1,R1),RESULT     RETURN RESULT                                
+         LA    RE,FILEDATA                                                      
+         ST    RE,16(R1)           RETURN A(FILE INFO)                          
+         MVC   16(1,R1),RESERR     RETURN ORIGINAL ERROR                        
+SECHKXX  XMOD1 1                                                                
+         EJECT                                                                  
+***********************************************************************         
+*SUBROUTINE TO OUTPUT ERROR MESSAGE AND GET OPERATOR REPLY            *         
+*P1(1)=X'40' NO CONSOLE INTERACTION - JUST RETURN ERROR INFO          *         
+*P1(1)=X'20' OUTPUT ERROR ON CONSOLE AND ASSUME IGNORE AS REPLY       *         
+***********************************************************************         
+SECHKO   TM    FLAG1,X'40'         TEST IF NO CONSOLE OUTPUT                    
+         BZ    SECHKO1                                                          
+         MVI   RESOPR,2            TREAT SAME AS IGNORE                         
+         B     SECHKO4                                                          
+*                                                                               
+SECHKO1  LA    R0,L'OPERMSG        OUTPUT FILE ERROR MESSAGE                    
+         GOTO1 =V(LOGIO),DMCB,X'FF000001',((R0),OPERMSG)                        
+         MVC   P+1(L'OPERMSG),OPERMSG                                           
+         ICM   RF,15,=V(PRINT)                                                  
+         BZ    SECHKO1A                                                         
+         GOTO1 (RF),PPARMS                                                      
+         MVC   P,SPACES                                                         
+*                                                                               
+SECHKO1A TM    FLAG1,X'20'         TEST IF NO OPERATOR REPLY WANTED             
+         BZ    SECHKO1B                                                         
+         MVI   RESOPR,2            TREAT SAME AS IGNORE                         
+         B     SECHKO4                                                          
+*                                                                               
+SECHKO1B LA    R0,JOBWHATL         OUTPUT RETRY/IGNORE/CANCEL MESSAGE           
+         GOTO1 =V(LOGIO),DMCB,1,((R0),JOBWHAT)                                  
+*                                                                               
+SECHKO2  MVC   OPERANS,SPACES                                                   
+         GOTO1 =V(LOGIO),DMCB,0,(8,OPERANS)                                     
+         MVC   P+1(JOBWHATL),JOBWHAT                                            
+         LA    RE,P+1+JOBWHATL                                                  
+         MVC   1(5,RE),=C'>>>>>'                                                
+         MVC   7(8,RE),OPERANS                                                  
+         ICM   RF,15,=V(PRINT)                                                  
+         BZ    SECHKO2A                                                         
+         GOTO1 (RF),PPARMS                                                      
+         MVC   P,SPACES                                                         
+*                                                                               
+SECHKO2A MVI   RESOPR,1            1=CANCEL/EOJ                                 
+         CLC   OPERANS(1),=C'CANCEL'                                            
+         BE    SECHKO4                                                          
+         CLC   OPERANS(1),=C'EOJ'                                               
+         BE    SECHKO4                                                          
+         CLC   OPERANS(1),=C'END'                                               
+         BE    SECHKO4                                                          
+         MVI   RESOPR,2            2=IGNORE                                     
+         CLC   OPERANS(1),=C'IGNORE'                                            
+         BE    SECHKO4                                                          
+         MVI   RESOPR,3            3=RETRY                                      
+         CLC   OPERANS(1),=C'RETRY'                                             
+         BE    SECHKO4                                                          
+         LA    R0,ERRANSWL                                                      
+         GOTO1 =V(LOGIO),DMCB,1,((R0),ERRANSW)                                  
+         B     SECHKO2                                                          
+*                                                                               
+SECHKO4  CLI   RESOPR,2           EXIT WITH CC SET                              
+         BR    R9                 LOW=CANCEL,EQL=IGNORE,HIGH=RETRY              
+         EJECT                                                                  
+***********************************************************************         
+*CALL DYNALLOC FOR DSN RF=A(DDNAME)                                   *         
+***********************************************************************         
+GETDSN   ST    RE,SAVERE                                                        
+         ST    R0,SAVER0                                                        
+         LA    R1,DYNBLK2          SET UP DYNALLOC PARMS                        
+         ST    R1,DYNBLK1                                                       
+         OI    DYNBLK1,X'80'                                                    
+         LA    R1,DYNBLK4                                                       
+         ST    R1,DYNBLK3                                                       
+         LA    R1,DYNBLK5                                                       
+         ST    R1,DYNBLK3+4                                                     
+         OI    DYNBLK3+4,X'80'                                                  
+         MVC   DYNBLK2,=X'1407000000000000000000000000000018000000'             
+         LA    R1,DYNBLK3                                                       
+         ST    R1,DYNBLK2+8                                                     
+         MVC   DYNBLK4(6),=X'000100010008'                                      
+         MVC   DYNBLK4+6(8),0(RF)                                               
+         MVC   DYNBLK5,SPACES                                                   
+         MVC   DYNBLK5(6),=X'000500010020'                                      
+         LA    R1,DYNBLK1                                                       
+         DYNALLOC                                                               
+         LA    RF,DYNBLK5+6                                                     
+         L     RE,SAVERE                                                        
+         L     R0,SAVER0                                                        
+         BR    RE                                                               
+         EJECT                                                                  
+***********************************************************************         
+*LITERALS AND CONSTANTS AND CONSOLE MESSAGE TEXT                      *         
+***********************************************************************         
+         LTORG                                                                  
+         DS    0D                                                               
+         DC    C'*SECHKS*'                                                      
+DMSECHKS DC    XL2'00'             NONZERO IF MAINT LOCK APPLIED                
+CPUID    DC    CL4' '              MVS CPU ID - SET ON FIRST CALL               
+CPUOUTI  DC    CL8'SY?/?/??'       CPU/DATASPACE/SENUM                          
+DISKADR  DC    X'00010000'                                                      
+*                                                                               
+ERRANSW  DC    C'INVALID REPLY - REINPUT REPLY'                                 
+ERRANSWL EQU   *-ERRANSW                                                        
+JOBWHAT  DC    C'ENTER RETRY,CANCEL,IGNORE  '                                   
+JOBWHATL EQU   *-JOBWHAT                                                        
+*                                                                               
+SECHKE2A DC    CL60'AUTO IGNORE OF ERROR CONDITION'                             
+SECHKE2B DC    CL60'OPERATOR IGNORED ERROR CONDITION'                           
+SECHKE3  DC    CL60'OPERATOR CANCELLED ON ERROR CONDITION'                      
+SECHKE4  DC    CL60'XXXXXXXX DISK ERROR READING RECORD ZERO'                    
+SECHKE5  DC    CL60'XXXXXXXX XXXXXXXX NO CPUID IN GLOBAL FILE'                  
+SECHKE6  DC    CL60'XXXXXXXX XXXXXXXX WRONG CPUID IN GLOBAL FILE'               
+SECHKE7  DC    CL60'XXXXXXXX XXXXXXXX NO DSPID IN GLOBAL FILE'                  
+SECHKE8  DC    CL60'XXXXXXXX XXXXXXXX WRONG DSPID IN GLOBAL FILE'               
+SECHKE9  DC    CL60'XXXXX IN USE BY JOB XXXXXXXX'                               
+*                                                                               
+SPACES   DC    CL132' '                                                         
+         EJECT                                                                  
+WORKD    DSECT                                                                  
+DUB      DS    D                                                                
+DMCB     DS    6F                                                               
+FULL     DS    F                                                                
+HALF     DS    H                                                                
+BYTE     DS    C                                                                
+BYTE1    DS    C                                                                
+SAVERE   DS    F                                                                
+SAVER0   DS    F                                                                
+*                                                                               
+P1       DS    F                                                                
+P2       DS    F                                                                
+P3       DS    F                                                                
+P4       DS    F                                                                
+P5       DS    F                                                                
+P6       DS    F                                                                
+*                                                                               
+APARMS   DS    A                                                                
+PARMS    DS    0XL20                                                            
+FLAG1    DS    X                                                                
+AACTN    DS    AL3                                                              
+FLAG2    DS    X                                                                
+AFILEDD  DS    AL3                                                              
+FLAG3    DS    X                                                                
+ADTF     DS    AL3                                                              
+FLAG4    DS    X                                                                
+AERRMSG  DS    AL3                                                              
+FLAG5    DS    X                                                                
+AFILEINF DS    AL3                                                              
+*                                                                               
+FILEDD   DS    CL8                 FILE DD NAME                                 
+CPUOUT   DS    CL8                 CPU/D/FI                                     
+FCPUID   DS    C                   CPU ID FROM FILE RECORD ZERO                 
+FDSPID   DS    C                   DSP ID FROM FILE RECORD ZERO                 
+RESULT   DS    X                   RESULT OF SECHK ROUTINE                      
+RESERR   DS    X                   ERROR CODE FROM RESULT                       
+RESOPR   DS    X                   OPERATOR REPLY                               
+FRSTNUM  DS    X                   FIRST FILE NUMBER IN SYSTEM                  
+         DS    XL2                 N/D                                          
+*                                                                               
+OPERMSG  DS    CL60                                                             
+OPERANS  DS    CL12                                                             
+DISKREC  DS    CL20                                                             
+*                                                                               
+FILEDATA DS    0XL60               RETURNED FILE DATA FROM V(DMDDNAME)          
+FILEINFO DS    0XL16               BASIC FILE INFO                              
+         DS    X                   RESERVED                                     
+SENUM    DS    X                   SE NUMBER                                    
+SENAME   DS    CL5                 SE SHORT NAME                                
+SEFLAG1  DS    X                   SE FLAGS                                     
+FILNUM   DS    X                   FILE NUMBER                                  
+FILFLAG1 DS    X                   FILE FLAGS                                   
+FILFLAG2 DS    X                   FILE FLAGS                                   
+         DS    X                   N/D                                          
+FILADTF  DS    AL4                 FILE A(DTF)                                  
+*                                                                               
+DSNINFO  DS    0XL4                                                             
+DDNDSP   DS    X                   DISP TO DDNAME SIGNIFICANT CHR(S)            
+DSNDSP   DS    X                   DISP TO DSN SIGNIFICANT CHR(S)               
+         DS    XL2                 N/D                                          
+*                                                                               
+DDNAME   DS    CL8                 FILE DD NAME                                 
+DDSDSN   DS    CL20                DATA SET NAME FROM DDS DYNDD TABLE           
+*                                                                               
+         DS    CL12                REST OF DMDDNAMED DATA                       
+*                                                                               
+DSN      DS    CL20                DSN FROM DYNALLOC                            
+*                                                                               
+DYNBLK1  DS    F                   DYNALLOC BLOCK                               
+DYNBLK2  DS    XL20                                                             
+DYNBLK3  DS    XL8                                                              
+DYNBLK4  DS    XL14                                                             
+DYNBLK5  DS    XL38                                                             
+*                                                                               
+PPARMS   DS    2F                  V(PRINT) PARAM LIST                          
+PCONTROL DS    CL4                                                              
+PCTL     DS    CL1                                                              
+P        DS    CL132                                                            
+*                                                                               
+WORKX    EQU   *                                                                
+         EJECT                                                                  
+*DMDSYSHDR                                                                      
+       ++INCLUDE DMDSYSHDR                                                      
+*DMDSHDR                                                                        
+       ++INCLUDE DMDSHDR                                                        
+*DMDTFPH                                                                        
+       ++INCLUDE DMDTFPH                                                        
+         EJECT                                                                  
+*DMDTFIS                                                                        
+       ++INCLUDE DMDTFIS                                                        
+         EJECT                                                                  
+*FASSBOFF                                                                       
+SSBOFFD  DSECT                                                                  
+       ++INCLUDE FASSBOFF                                                       
+         EJECT                                                                  
+*DMGREQUS                                                                       
+       ++INCLUDE DMGREQUS                                                       
+*                                                                               
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'002DMSECHK   05/22/12'                                      
+         END                                                                    

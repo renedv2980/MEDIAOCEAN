@@ -1,0 +1,1698 @@
+*          DATA SET NENETDATES AT LEVEL 018 AS OF 03/14/18                      
+*CATALP NETDATES                                                                
+         TITLE 'NETDATES - NETWORK DATE HANDLING UTILITY ROUTINES'              
+***********************************************************************         
+* USER    JIRA       DATE                  CHANGE LOG                 *         
+* ---- ----------  -------- ----------------------------------------- *         
+* AKAT SPEC-18928  03/14/18 B3 BILLING OPTION FOR CLIENT L'OREAL      *         
+***********************************************************************         
+         PRINT NOGEN                                                            
+NETDATES CSECT                                                                  
+         NMOD1 WORKX-WORKD,**DATES*,R9,RR=R2                                    
+         USING WORKD,RC                                                         
+         ST    R2,RELO                                                          
+*                                                                               
+******** ROUTINE NUMBERS MUST CORRESPOND TO THOSE IN NENDEQUS *****             
+*                                                                               
+         SRL   RF,24               GET ROUTINE NUMBER                           
+         SLL   RF,2                MULTIPLY BY 4                                
+         B     VBRANCH(RF)                                                      
+*                                                                               
+VBRANCH  B     VERROR              0                                            
+         B     GETLIST             1                                            
+         B     NEGETMON            2                                            
+         B     NEADDAY             3                                            
+         B     NEFSTDAY            4                                            
+         B     NELSTDAY            5                                            
+         B     NEFSTMON            6                                            
+         B     NELSTMON            7                                            
+*                                                                               
+VCOUNT   EQU   (*-VBRANCH)/4                                                    
+VERROR   DS    0H                                                               
+*                                                                               
+*                                                                               
+***********************************************************                     
+* GETLIST ROUTINES -  USER CALLABLE - ARGLIST IN R1                             
+*                                                                               
+*  PARAM1 - 'W'- WEEK, 'MC' CAL MON, 'MB' BROD MON 'QC' CAL QUARTER             
+*                        'QB' BROD QUARTER  'D'-DAYS                            
+*                        'MS' SPECIAL PER MONTH  'QS' SPECIAL PER QUART         
+*  PARAM2 -  BEGINNING DATE OF LIST  (R1)                                       
+*  PARAM3 -  ENDDATE OF LIST                                                    
+*  PARAM4 -  IN: MAX NUMBER OF ENTRIES IN LIST                                  
+*            OUT: NUMBER OF ENTRIES IN LIST                                     
+*  PARAM5 -  ADDRESS OF LIST TO BE RETURNED.                                    
+*  PARAM6 - STARTDOW - THE BEGINNING DAY-OF-WEEK FOR THE PERIOD                 
+*           SPERTYP  - SPECIAL PERIOD TYPE (SPEC PERS ONLY)                     
+*           BASMON   - BASE MONTH (SPEC PERS ONLY)                              
+*           BASDAY   - BASE DAY (SPEC PERS ONLY)                                
+*                                                                               
+*  LOCAL : R7 - POINTS TO PARAM4 TO RETURN NUMBER OF ENTRIES                    
+***************                                                                 
+GETLIST  DS    0H                                                               
+         L     R2,4(R1)            SET UP COMMON                                
+         LH    R8,0(R2)            PARAM2                                       
+         BAS   RE,UNCOMPRS           CONVERT TO INTERNAL FORMAT                 
+         MVC   STRTDAT,CURDATE                                                  
+         L     R2,8(R1)            PARAM3                                       
+         LH    R8,0(R2)               CONVERT TO INTERNAL FORMAT                
+         BAS   RE,UNCOMPRS                                                      
+         MVC   ENDDAT,CURDATE                                                   
+         L     R7,12(R1)           PARAM4                                       
+         MVC   MAXNTRYS,0(R7)                                                   
+         MVC   OUTLIST,16(R1)      PARAM5                                       
+         L     R2,20(R1)           PARAM6                                       
+         CLI   0(R2),0             ADJUST DOW FROM 0-1                          
+         BNE   *+8                                                              
+         MVI   0(R2),1                                                          
+         MVC   ACOMFACS,4(R2)      ADDR OF COMFACS                              
+*                                                                               
+         L     R3,0(R1)            PARAM1                                       
+         CLC   0(1,R3),=C'W'       CHAR DESCRIBES LIST TYPE                     
+         BE    WKLIST                                                           
+         CLC   0(2,R3),=C'MC'                                                   
+         BE    MONLIST                                                          
+         CLC   0(2,R3),=C'MB'                                                   
+         BE    BMONLIST                                                         
+         CLC   0(2,R3),=C'MS'                                                   
+         BNE   GETLIST2                                                         
+         L     R2,20(R1)           PARAM6                                       
+         CLI   1(R2),19            SPECIAL P&G MONTH OF 19?                     
+         BNE   SMONLIST            NO                                           
+         BAS   RE,BMONLST          GET BROADCAST MOS                            
+         B     SMONPG              PROCESS SPECIAL MONTH FOR P&G                
+*                                                                               
+GETLIST2 CLC   0(2,R3),=C'MN'      NTI MONTHS                                   
+         BE    NTIMONS                                                          
+         CLI   0(R3),C'M'                                                       
+         BE    MONLIST                                                          
+         CLC   0(2,R3),=C'QS'                                                   
+         BE    SQRTLIST                                                         
+         CLC   0(2,R3),=C'QC'                                                   
+         BE    QRTLIST                                                          
+         CLC   0(2,R3),=C'QB'                                                   
+         BE    BQRTLIST                                                         
+         CLC   0(2,R3),=C'QN'      NTI QUARTERS                                 
+         BE    NTIQRTS                                                          
+         CLI   0(R3),C'Q'                                                       
+         BE    QRTLIST                                                          
+         CLC   0(1,R3),=C'D'                                                    
+         BE    DAYLIST                                                          
+         DC    H'0'                                                             
+         EJECT                                                                  
+***                                                                             
+* EDIT BROADCAST MOS HERE SO END OF JUNE BROADCAST MONNTH IS 6/31               
+* AND START OF JULY BROADCAST MONTH IS 7/1. WE HAVE THE SAME CODE               
+* IN DDMOBILE AT XIT10                                                          
+***                                                                             
+SMONPG   L     R3,OUTLIST          R5 = A(OUTPUT AREA)                          
+         L     R6,MAXNTRYS         R6 = NUMBER OF ENTRYS                        
+         LTR   R6,R6               HAVE ANY DATES TO PROCESS?                   
+         BZ    SMPGXIT             NO - EXIT                                    
+*                                                                               
+SMPG10   CLC   =X'D0DB',2(R3)      COMPARE WITH JUN27/04 (WHEN STARTED)         
+         BH    SMPG30              IF BEFORE, GET NEXT ONE                      
+         SR    RE,RE               CLEAR RE                                     
+         ICM   RF,12,2(R3)         GET THE END PERIOD IN HIGH NIBBLE            
+         SLDL  RE,7                PUT YEAR IN RE                               
+         SR    RE,RE               CLEAR IT                                     
+         SLDL  RE,4                NOW GET MONTH                                
+         CHI   RE,3                IS IT MAR MOS?                               
+         BE    SMPG20              YES                                          
+         CHI   RE,7                IS IT JUL MOS?                               
+         BE    SMPG15              YES                                          
+         CHI   RE,6                IS IT JUN MOS?                               
+         BNE   SMPG30              NO, NEXT                                     
+*                                                                               
+         GOTO1 =V(DATCON),DMCB,(2,2(R3)),(3,WORK),RR=RELO TAKE END DATE         
+         MVC   WORK+1(2),=X'061E'                 PUT IN JUN30                  
+         GOTO1 =V(DATCON),DMCB,(3,WORK),(2,2(R3)),RR=RELO                       
+         B     SMPG30                             PROCESS NEXT DATE             
+*                                                                               
+SMPG15   GOTO1 =V(DATCON),DMCB,(2,0(R3)),(3,WORK),RR=RELO START JUL MOS         
+         MVC   WORK+1(2),=X'0701'                 PUT IN JUL01                  
+         GOTO1 =V(DATCON),DMCB,(3,WORK),(2,0(R3)),RR=RELO                       
+*                                                                               
+SMPG20   CLC   =X'EC79',2(R3)      MAR 2018 MOS (END DATE OF 3/25/18)?          
+         BNE   SMPG30              NO                                           
+         MVC   2(2,R3),=X'EC81'    YES - SET END OF PERIOD TO 4/1/18            
+         CLI   4(R3),X'FF'         NEXT ENTRY IS EOT?                           
+         BE    SMPG30              YES - DONE                                   
+         CLC   =X'EC7A',4(R3)      IS NEXT START 3/26/18?                       
+         BNE   SMPG30              NO                                           
+         MVC   4(2,R3),=X'EC82'    YES - CHANGE TO 4/2/18                       
+         CLC   4(2,R3),6(R3)       IS END OF 4/18 AFTER START OF 4/18?          
+         BL    SMPG30              YES                                          
+         MVC   6(2,R3),=X'EC82'    NO - START & END OF 4/18 IS 4/2/18           
+*                                                                               
+SMPG30   LA    R3,4(R3)            NEXT PERIOD                                  
+         BCT   R6,SMPG10           PROCESS NEXT PERIOD                          
+*                                                                               
+SMPGXIT  XIT1                      EXIT                                         
+*                                                                               
+NTIMONS  DS    0H                  SPECIAL NTI MONTHS                           
+         LA    RE,OUTLIST          CLEAR OUTLIST AREA                           
+         ZIC   RF,MAXNTRYS                                                      
+         SLL   RF,2                EACH ENTRY 4 BYTES                           
+         XCEF                                                                   
+         L     R5,OUTLIST                                                       
+         L     R6,MAXNTRYS                                                      
+***      L     R2,=A(NADMON)                                                    
+***      A     R2,RELO                                                          
+         L     R2,ACOMFACS                                                      
+         USING COMFACSD,R2                                                      
+         GOTO1 CDEMTABS,DMCB,MTHDATES                                           
+         ICM   R2,15,0(R1)   R2->MONTH/DATES TABLE                              
+         USING MTHDATD,R2                                                       
+         BNZ   *+6                                                              
+         DC    H'0'                                                             
+         L     R4,4(R1)            LENGTH OF TABLE ENTRY                        
+*                                                                               
+         GOTO1 =V(DATCON),DMCB,(3,STRTDAT),(2,0(R5)),RR=RELO                    
+         MVC   2(2,R5),0(R5)       SET START AS END                             
+NTIMON5  CLC   STRTDAT,3(R2)                                                    
+         BNH   NTIMON10                                                         
+**       LA    R2,8(R2)            BUMP TO NEXT MONTH                           
+         AR    R2,R4                                                            
+         CLI   MDNLSMN,12          DOES THIS WORK ???                           
+         BH    NTIMONSX                                                         
+         B     NTIMON5                                                          
+NTIMON10 GOTO1 =V(DATCON),DMCB,(3,3(R2)),(2,2(R5)),RR=RELO                      
+         B     NTIMON20            NOW GO FILL REST OF TABLE                    
+NTIMON15 GOTO1 =V(DATCON),DMCB,(3,0(R2)),(2,0(R5)),RR=RELO                      
+         GOTO1 =V(DATCON),DMCB,(3,3(R2)),(2,2(R5)),RR=RELO                      
+NTIMON20 LA    R5,4(R5)            BUMP OUTLIST                                 
+***      LA    R2,8(R2)            BUMP TABLE                                   
+         AR    R2,R4                                                            
+         CLI   MDNLSMN,12          DOES THIS WORK ???                           
+         BH    NTIMONSX                                                         
+***      CLI   0(R2),X'FF'         END OF TABLE?                                
+***      BE    NTIMONSX                                                         
+         BCT   R6,NTIMON15                                                      
+NTIMONSX XIT1                                                                   
+         DROP  R2                                                               
+                                                                                
+NTIQRTS  DS    0H                  SPECIAL NTI QUARTERS                         
+         LA    RE,OUTLIST          CLEAR OUTLIST AREA                           
+         ZIC   RF,MAXNTRYS                                                      
+         SLL   RF,2                EACH ENTRY 4 BYTES                           
+         XCEF                                                                   
+         L     R5,OUTLIST                                                       
+         L     R6,MAXNTRYS                                                      
+*                                                                               
+         L     R2,ACOMFACS                                                      
+         USING COMFACSD,R2                                                      
+         GOTO1 CDEMTABS,DMCB,NENTIQRT                                           
+         ICM   R2,15,0(R1)   R2->NIELSEN QUARTER TABLE                          
+         BNZ   *+6                                                              
+         DC    H'0'                                                             
+         L     R4,4(R1)            LENGTH OF TABLE ENTRY                        
+*                                                                               
+         GOTO1 =V(DATCON),DMCB,(3,STRTDAT),(2,0(R5)),RR=RELO                    
+         MVC   2(2,R5),0(R5)       SET START AS END                             
+*                                                                               
+*                                                                               
+         GOTO1 =V(DATCON),DMCB,(3,STRTDAT),(0,WORK),RR=RELO                     
+NTIQRT5  CLC   WORK(6),4(R2)                                                    
+         BNH   NTIQRT10                                                         
+         CLC   WORK(6),10(R2)                                                   
+         BNH   NTIQRT10                                                         
+         LA    R2,16(R2)           BUMP TABLE                                   
+         CLI   0(R2),X'FF'         END OF TABLE                                 
+         BNE   NTIQRT5                                                          
+         BE    NTIQRTSX            THAT'S ALL                                   
+NTIQRT10 GOTO1 =V(DATCON),DMCB,(0,4(R2)),(2,0(R5)),RR=RELO                      
+         GOTO1 =V(DATCON),DMCB,(0,10(R2)),(2,2(R5)),RR=RELO                     
+         LA    R5,4(R5)            BUMP OUTLIST                                 
+         AR    R2,R4               BUMP TABLE                                   
+         CLI   0(R2),X'FF'         END OF TABLE?                                
+         BE    NTIQRTSX                                                         
+         BCT   R6,NTIQRT10                                                      
+NTIQRTSX XIT1                                                                   
+*                                                                               
+WKLIST   L     R2,20(R1)           PARAM6                                       
+         MVC   STRTDOW,0(R2)                                                    
+         LA    R2,WKLSTHK1                                                      
+         ST    R2,FIL1HOOK         ROUTINE TO GET FIRST OF WEEK                 
+         LA    R2,WKLSTHK2         ROUTINE TO GET PREV WEEK                     
+         ST    R2,FIL2HOOK                                                      
+         BAS   RE,FILLIST          FILL THE LIST                                
+         B     GLXIT                                                            
+WKLSTHK1 NTR1                                                                   
+         ZIC   R8,STRTDOW                                                       
+         BAS   RE,UTPRVDOW         GET LAST DOW = START DOW                     
+         XIT1                                                                   
+WKLSTHK2 NTR1                      HAVE END-OF-WK, GET STRT-OF-WK               
+         L     R8,=F'-6'           SO SUBTRACT SIX DAYS                         
+         BAS   RE,UTADDAY                                                       
+         XIT1                                                                   
+*                                                                               
+DAYLIST  LA    R2,DAYHK1                                                        
+         ST    R2,FIL1HOOK                                                      
+         ST    R2,FIL2HOOK                                                      
+         BAS   RE,FILLIST                                                       
+         B     GLXIT                                                            
+*                                                                               
+DAYHK1   NTR1                                                                   
+*                                  START=END SO DO NOTHING                      
+         XIT1                                                                   
+*                                                                               
+MONLIST  LA    R2,UTFRSTDY         ROUTINE TO GET FIRST OF MONTH                
+         ST    R2,FIL1HOOK         USE IT AS A HOOK                             
+         ST    R2,FIL2HOOK         SERVES DOUBLE DUTY                           
+         BAS   RE,FILLIST                                                       
+         B     GLXIT                                                            
+*                          ******* DATES ARE MONTH/YEAR ONLY                    
+BMONLST  NTR1                                                                   
+*                                                                               
+BMONLIST L     R2,20(R1)           PARAM6                                       
+         MVC   STRTDOW,0(R2)                                                    
+         LA    R2,BMFSTDY                                                       
+         ST    R2,FIL1HOOK         ROUTINE TO GET FIRST BMON START              
+         LA    R2,BMLSTHK2         ROUTINE TO GET PREV BMON                     
+         ST    R2,FIL2HOOK                                                      
+         BAS   RE,FILLIST          FILL THE LIST                                
+         B     GLXIT                                                            
+BMFSTDY  NTR1                      FIND BEG OF BMON FOR CURRENT DATE            
+         MVC   SAVDATE,CURDATE         SAVE CURRENT                             
+*                                                                               
+         BAS   RE,UTNXTMN                                                       
+         BAS   RE,UTFRSTDY         GET FIRST DAY OF NEXT CAL MONTH              
+         ZIC   R8,STRTDOW                                                       
+         BAS   RE,UTPRVDOW         GET BEG OF NEXT CAL MONTHS BMONTH            
+*                                                                               
+         CLC   SAVDATE,CURDATE     IF THE DATE IS BEFORE BEG OF BMONTH          
+         BNL   XITBMFST                                                         
+         MVC   CURDATE,SAVDATE                                                  
+         BAS   RE,UTFRSTDY         THEN GET BEG OF THIS CALMNTHS BMNTH          
+         ZIC   R8,STRTDOW                                                       
+         BAS   RE,UTPRVDOW                                                      
+*                                                                               
+XITBMFST XIT1                                                                   
+*                                                                               
+BMLSTHK2 NTR1                      KNOW CUR DATE IS IS LAST DAY OF BMON         
+         BAS   RE,UTFRSTDY         GET FIRST DAY OF THIS MONTH                  
+         ZIC   R8,STRTDOW          GET PREV DAY MONTH CAN START ON              
+         BAS   RE,UTPRVDOW                                                      
+         XIT1                                                                   
+*                                                                               
+QRTLIST  LA    R2,CQLAST           ROUTINE TO GET FIRST OF QUARTER              
+         ST    R2,FIL1HOOK         USE IT AS A HOOK                             
+         ST    R2,FIL2HOOK         SERVES DOUBLE DUTY                           
+         BAS   RE,FILLIST                                                       
+*                                                                               
+         CLI   STRTMON,9           IF START MONTH IS SEPTEMBER                  
+         BNE   GLXIT                 THEN MAKE FIRST QUARTER BE SEPT            
+*                                      TO DEC                                   
+         L     R3,OUTLIST                                                       
+         MVC   4(2,R3),0(R3)       MOVE 1ST START TO 2ND                        
+         L     R2,MAXNTRYS         NUM OF ENTRIES IN LIST                       
+         BCTR  R2,0                ONE LESS CAUSE WE DELETE FIRST               
+         LTR   R2,R2                                                            
+         BZ    GLXIT                                                            
+         ST    R2,MAXNTRYS         RETURN IT                                    
+         SLL   R2,2                SIZE OF LIST TO MOVE                         
+         MOVE ((R3),(R2)),4(R3)                                                 
+         LA    R2,0(R2,R3)         NOW CLEAR LEFTOVER END OF LIST               
+         XC    0(4,R2),0(R2)                                                    
+         B     GLXIT                                                            
+*                                                                               
+CQLAST   NTR1                                                                   
+         BAS   RE,UTFRSTQR         GET FIRST MONTH OF QUARTER                   
+         BAS   RE,UTFRSTDY         GET FIRST DAY OF THIS MONTH                  
+         XIT1                                                                   
+*                                                                               
+BQRTLIST L     R2,20(R1)           PARAM6                                       
+         MVC   STRTDOW,0(R2)                                                    
+         LA    R2,BQLAST                                                        
+         ST    R2,FIL1HOOK         ROUTINE TO GET PREV BQRT START               
+         ST    R2,FIL2HOOK                                                      
+         BAS   RE,FILLIST          FILL THE LIST                                
+         CLI   STRTMON,9           IF START MONTH IS SEPTEMBER                  
+         BNE   GLXIT                 THEN MAKE FIRST QUARTER BE SEPT            
+*                                      TO DEC                                   
+         L     R3,OUTLIST                                                       
+         MVC   4(2,R3),0(R3)       MOVE 1ST START TO 2ND                        
+         L     R2,MAXNTRYS         NUM OF ENTRIES IN LIST                       
+         BCTR  R2,0                ONE LESS CAUSE WE DELETE FIRST               
+         LTR   R2,R2                                                            
+         BZ    GLXIT                                                            
+         ST    R2,MAXNTRYS         RETURN IT                                    
+         SLL   R2,2                SIZE OF LIST TO MOVE                         
+         MOVE ((R3),(R2)),4(R3)                                                 
+         LA    R2,0(R2,R3)         NOW CLEAR LEFTOVER END OF LIST               
+         XC    0(4,R2),0(R2)                                                    
+         B     GLXIT                                                            
+*                                                                               
+BQLAST   NTR1                                                                   
+         BAS   RE,UTFRSTQR         GET FIRST MONTH OF QUARTER                   
+         BAS   RE,UTFRSTDY         GET FIRST DAY OF THIS MONTH                  
+         ZIC   R8,STRTDOW                                                       
+         BAS   RE,UTPRVDOW         GET BEG OF BMONTH                            
+         XIT1                                                                   
+*                                                                               
+GLXIT    MVC   0(4,R7),MAXNTRYS                                                 
+         XIT1                                                                   
+****************************************************************                
+         EJECT                                                                  
+****************************************************************                
+* SMONLIST - BUILDS A MONTH LIST OF SPECIAL PERIODS                             
+****************************************************************                
+SMONLIST L     R2,20(R1)           PARAM6                                       
+         MVC   STRTDOW,0(R2)                                                    
+         MVC   SPERTYP,1(R2)                                                    
+         MVC   BASMON,2(R2)                                                     
+         MVC   BASDAY,3(R2)                                                     
+         CLI   SPERTYP,6           TIDY UP BAD PROFILES                         
+         BNL   *+8                                                              
+         MVI   SPERTYP,6           ASSUME TYPE OF 6                             
+         CLI   BASMON,0                                                         
+         BNE   *+8                                                              
+         MVI   BASMON,1                   MONTH OF JAN                          
+         CLI   BASDAY,0                                                         
+         BNE   *+8                                                              
+         MVI   BASDAY,1                   AND FIRST OF MONTH                    
+         LA    R2,SMFSTDY                                                       
+         ST    R2,FIL1HOOK         ROUTINE TO GET FIRST OF SPER                 
+         ST    R2,FIL2HOOK                                                      
+         BAS   RE,FILLIST          FILL THE LIST                                
+         B     GLXIT                                                            
+****************************************************************                
+SMFSTDY  NTR1                      FIND BEG OF SMON FOR CURRENT DATE            
+         MVC   SAVDATE,CURDATE         SAVE CURRENT                             
+*                                                                               
+         MVC   CURMONTH,BASMON      SET UP BASE                                 
+         MVC   CURDAY,BASDAY                                                    
+         BAS   RE,UTINIT                                                        
+         ZIC   R8,STRTDOW           GET PREVIOUS START WEEK                     
+         BAS   RE,UTPRVDOW                                                      
+*                                                                               
+         CLC   CURDATE(3),SAVDATE   MAKE SURE BASE IS BEFORE SAVED DATE         
+         BNH   SMF2                                                             
+         MVC   CURMONTH,BASMON      SET UP BASE                                 
+         MVC   CURDAY,BASDAY                                                    
+         BAS   RE,UTPRVYR                                                       
+         BAS   RE,UTINIT                                                        
+         ZIC   R8,STRTDOW           GET PREVIOUS START WEEK                     
+         BAS   RE,UTPRVDOW                                                      
+SMF2     BAS   RE,UTDIFF            FIND DAYS BETWEEN SAVDAT,CURDATE            
+         ZIC   R3,SPERTYP           PERS ARE 6-11, GET OFFSET FROM 6            
+         LA    R1,6                                                             
+         SR    R3,R1                                                            
+         LA    R1,SMLSTLN                                                       
+         STH   R1,HALF                                                          
+         MH    R3,HALF              GET A(CORRECT LIST)                         
+         LA    R3,SMLIST(R3)                                                    
+         CLC   DIFF,=F'375'                                                     
+         BL    SMF4                                                             
+         DC    H'0'                 TABLE ONLY SUPPORTS TO 375                  
+SMF4     MVC   HALF,DIFF+2          USE DIFF AS HALFWORD                        
+SMFLOP   CLC   HALF,2(R3)           COMPARE VS. HIGH RANGE OF TABLE             
+         BNH   SMGOTIT                                                          
+         LA    R3,4(R3)                                                         
+         B     SMFLOP                                                           
+SMGOTIT  LH    R8,0(R3)             GET FIRST DAY OF RANGE IN R8                
+         BAS   RE,UTADDAY           AND ADD IT TO CURDAY                        
+         XIT1                       THIS IS THE START OF THE SPEC PER           
+*                                                                               
+         EJECT                                                                  
+****************************************************************                
+* SQRTLIST - BUILDS A QUARTER LIST OF SPECIAL PERIODS                           
+****************************************************************                
+SQRTLIST L     R2,20(R1)           PARAM6                                       
+         MVC   STRTDOW,0(R2)                                                    
+         MVC   SPERTYP,1(R2)                                                    
+         MVC   BASMON,2(R2)                                                     
+         MVC   BASDAY,3(R2)                                                     
+         CLI   SPERTYP,6           TIDY UP BAD PROFILES                         
+         BNL   *+8                                                              
+         MVI   SPERTYP,6           ASSUME TYPE OF 6                             
+         CLI   BASMON,0                                                         
+         BNE   *+8                                                              
+         MVI   BASMON,1                   MONTH OF JAN                          
+         CLI   BASDAY,0                                                         
+         BNE   *+8                                                              
+         MVI   BASDAY,1                   AND FIRST OF MONTH                    
+         LA    R2,SQFSTDY                                                       
+         ST    R2,FIL1HOOK         ROUTINE TO GET FIRST OF SPER                 
+         ST    R2,FIL2HOOK                                                      
+         BAS   RE,FILLIST          FILL THE LIST                                
+         B     GLXIT                                                            
+****************************************************************                
+SQFSTDY  NTR1                      FIND BEG OF SQRT FOR CURRENT DATE            
+         MVC   SAVDATE,CURDATE         SAVE CURRENT                             
+*                                                                               
+         MVC   CURMONTH,BASMON      SET UP BASE                                 
+         MVC   CURDAY,BASDAY                                                    
+         BAS   RE,UTINIT                                                        
+         ZIC   R8,STRTDOW           GET PREVIOUS START WEEK                     
+         BAS   RE,UTPRVDOW                                                      
+*                                                                               
+         CLC   CURDATE(3),SAVDATE   MAKE SURE BASE IS BEFORE SAVED DATE         
+         BNH   SQF2                                                             
+         MVC   CURMONTH,BASMON      SET UP BASE                                 
+         MVC   CURDAY,BASDAY                                                    
+         BAS   RE,UTINIT                                                        
+         BAS   RE,UTPRVYR                                                       
+         ZIC   R8,STRTDOW           GET PREVIOUS START WEEK                     
+         BAS   RE,UTPRVDOW                                                      
+SQF2     BAS   RE,UTDIFF            FIND DAYS BETWEEN SAVDAT,CURDATE            
+         ZIC   R3,SPERTYP           PERS ARE 6-11, GET OFFSET FROM 6            
+         LA    R1,6                                                             
+         SR    R3,R1                                                            
+         LA    R1,SQLSTLN                                                       
+         STH   R1,HALF                                                          
+         MH    R3,HALF              GET A(CORRECT LIST)                         
+         LA    R3,SQLIST(R3)                                                    
+         CLC   DIFF,=F'375'                                                     
+         BL    SQF4                                                             
+         DC    H'0'                 TABLE ONLY SUPPORTS TO 375                  
+SQF4     MVC   HALF,DIFF+2          USE DIFF AS HALFWORD                        
+SQFLOP   CLC   HALF,2(R3)           COMPARE VS. HIGH RANGE OF TABLE             
+         BNH   SQGOTIT                                                          
+         LA    R3,4(R3)                                                         
+         B     SQFLOP                                                           
+SQGOTIT  LH    R8,0(R3)             GET FIRST DAY OF RANGE IN R8                
+         BAS   RE,UTADDAY           AND ADD IT TO CURDAY                        
+         XIT1                       THIS IS THE START OF THE SPEC PER           
+*                                                                               
+         EJECT                                                                  
+****************************************************************                
+*                                                                               
+* FILLIST -  MODULE TO FILL IN A PERIOD LIST.                                   
+*   INPUTS: STRTDAT, ENDDAT -  START AND END DATES                              
+*           MAXNTRYS - MAXIMUM ENTRIES TO PUT IN LIST. MINIMUM 3.               
+*           OUTLIST  - ADDRESS OF LIST TO BUILD                                 
+*           FIL1HOOK - THE ROUTINE TO GET BEGINNING OF LAST PERIOD              
+*           FIL2HOOK - THE ROUTINE TO GET BEGINNING OF ALL OTHER PERS           
+*                COMDAT - COMPRESSED CURRENT DATE FILLED BY FILADDR             
+*                                                                               
+*    OUTPUTS: OUTLIST - FILLED IN. FIRST SET IS MINDAT TO STRTDAT-1             
+*                            LAST IS ENDDAT+1 TO MAX DATE.                      
+*             MAXNTRYS - NUMBER OF ENTRIES IN LIST                              
+*                                                                               
+*   LOCALS : R3 - CURRENT ADDRESS IN LIST                                       
+*            R4 - CURRENT NUMBER OF ENTRIES LEFT IN LIST                        
+*            R5 - A(OUTLIST)                                                    
+*            R6 - INPUT MAX NUMBER ENTRIES                                      
+*************************************************************                   
+FILLIST  NTR1                                                                   
+*                                                                               
+         L     R5,OUTLIST                                                       
+         L     R6,MAXNTRYS                                                      
+         LR    R3,R6                                                            
+         BCTR  R3,0                                                             
+         SLL   R3,2                  EACH ENTRY IS 4 BYTES                      
+         LA    R3,0(R3,R5)         POINT R3 TO LAST ENTRY IN LIST               
+         LTR   R4,R6                                                            
+         BZ    XITFILL             IF NO ENTRIES REQUESTED                      
+         BCTR  R4,0                R4 IS NUMBER OF ENTRIES LEFT IN LIST         
+*                                                                               
+*                                                                               
+STRTFIL  MVC   CURDATE,ENDDAT                                                   
+         BAS   RE,COMPRESS                                                      
+         MVC   2(2,R3),COMDAT                                                   
+         BAS   RE,COMPRESS                                                      
+         L     RF,FIL1HOOK                                                      
+         BASR  RE,RF               GET THE BEGINNING OF THIS PERIOD             
+         BAS   RE,COMPRESS         COMPRESS THIS DATE INTO COMDAT               
+FILLOOP  CLC   CURDATE,STRTDAT     IF NEW DATE BEFORE (OR =) START              
+         BH    FL2                                                              
+         MVC   CURDATE,STRTDAT                                                  
+         BAS   RE,COMPRESS                                                      
+         MVC   0(2,R3),COMDAT      ..START DATE IS BEGINNING OF PERIOD          
+         B     FILLED              ..LIST DONE                                  
+*                                                                               
+FL2      MVC   0(2,R3),COMDAT      NEW DATE IS BEGINNING OF PERIOD              
+         LTR   R4,R4               CHECK FOR END OF LIST                        
+         BNH   LISTFULL                                                         
+         L     R8,=F'-1'                                                        
+         BAS   RE,UTADDAY          GET DAY BEFORE                               
+         BAS   RE,COMPRESS         COMPRESS THIS DATE                           
+         SH    R3,=H'4'            PREVIOUS ENTRY IN LIST                       
+         MVC   2(2,R3),COMDAT      STORE NEXT ENDDATE                           
+         BCTR  R4,0                                                             
+*                                                                               
+*                                                                               
+SOMELEFT L     RF,FIL2HOOK                                                      
+         BASR  RE,RF               GET BEGINNING OF THIS PERIOD                 
+         BAS   RE,COMPRESS         COMPRESS THIS NEW DATE (SET COMDAT)          
+         B     FILLOOP                                                          
+*                                                                               
+LISTFULL B     XITFILL                                                          
+*                                                                               
+FILLED   DS    0H                  NOW ALIGN LIST SO STARTS AT OUTLIST          
+         LR    R2,R6                                                            
+         SR    R2,R4               NUMBER OF ENTRIES USED                       
+         ST    R2,MAXNTRYS         RETURN NUMBER USED                           
+         SLL   R2,2                NUMBER OF BYTES USED                         
+         MOVE  ((R5),(R2)),(R3)                                                 
+*                                                                               
+         LA    R5,0(R5,R2)         END OF CURRENT LIST                          
+         SLL   R6,2                NUM OF BYTES IN USER SUPPLIED LIST           
+         SR    R6,R2               NUMBER OF BYTES TO CLEAR                     
+         XCEF  (R5),(R6)           CLEAR OUT REST OF LIST                       
+*                                                                               
+XITFILL  XIT1                                                                   
+***********************************************************                     
+         EJECT                                                                  
+***********************************************************                     
+* NEGETMON - RETURNS THE ALPANUMERIC MONTH FOR THE COMPRESSED DATE.             
+*            USER CALLABLE                                                      
+*  PARAMETER 1: A(COMPRESSED DATE)                                              
+*                                                                               
+*  PARAMETER 2: BYTE 0: LENGTH OF ALPHA REQUIRED (9 MAX)                        
+*               BYTE 1-3: A(OUTPUT FIELD FOR ALPHA)                             
+***********************************************************                     
+NEGETMON DS    0H                                                               
+         L     R2,0(R1)            COMPRESSED DATE                              
+         LH    R8,0(R2)                                                         
+         ZIC   R3,4(R1)            NUMBER OF BYTES TO MOVE                      
+         BCTR  R3,0                ONE LESS MORE EXMVC                          
+         L     R4,4(R1)            OUTPUT AREA ADDRESS                          
+         BAS   RE,UNCOMPRS         GET IN NORMAL FORM                           
+         ZIC   R2,CURMONTH         MONTH NUMBER                                 
+         MH    R2,=H'9'            OFFSET INTO LOOKUP TABLE                     
+         LA    R2,MONLKUP(R2)                                                   
+         EXMVC R3,0(R4),0(R2)                                                   
+         XIT1                                                                   
+******************************************************                          
+         EJECT                                                                  
+***********************************************************                     
+* NEADDAY - USER CALLABLE ADDAY ROUTINE.                                        
+*                                                                               
+*  PARAMETER 1: A(COMPRESSED DATE)                                              
+* PARAMETER 2: A(RETURNED DATE)                                                 
+*  PARAMETER 3: A(FULLWORD TO ADD IN)                                           
+***********************************************************                     
+NEADDAY  DS    0H                                                               
+         L     R2,0(R1)                                                         
+         LH    R8,0(R2)            COMPRESSED DATE                              
+         L     R3,4(R1)            ADDRESS OF RETURN DATE                       
+         L     R4,8(R1)            ADRESS OF FULLWORD TO ADD                    
+         BAS   RE,UNCOMPRS         GET IN NORMAL FORM                           
+         L     R8,0(R4)            FULLWORD TO ADD                              
+         BAS   RE,UTADDAY          ADD IT                                       
+         BAS   RE,COMPRESS         RECOMPRESS IT                                
+         MVC   0(2,R3),COMDAT      MOVE IT TO OUTPUT AREA                       
+         XIT1                                                                   
+******************************************************                          
+         EJECT                                                                  
+***********************************************************                     
+* NEFSTDAY- USER CALLABLE ROUTINE FOR FIRST OF MONTH.                           
+*                                                                               
+*  PARAMETER 1: A(COMPRESSED DATE)                                              
+* PARAMETER 2:  A(RETURNED DATE)                                                
+***********************************************************                     
+NEFSTDAY DS    0H                                                               
+         L     R2,0(R1)                                                         
+         LH    R8,0(R2)            COMPRESSED DATE                              
+         L     R3,4(R1)            ADDRESS OF RETURN DATE                       
+         BAS   RE,UNCOMPRS         GET IN NORMAL FORM                           
+         BAS   RE,UTFRSTDY         GET FIRST OF MONTH                           
+         BAS   RE,COMPRESS         RECOMPRESS IT                                
+         MVC   0(2,R3),COMDAT      MOVE IT TO OUTPUT AREA                       
+         XIT1                                                                   
+******************************************************                          
+         EJECT                                                                  
+***********************************************************                     
+* NELSTDAY- USER CALLABLE ROUTINE FOR LAST OF MONTH.                            
+*                                                                               
+*  PARAMETER 1: A(COMPRESSED DATE)                                              
+* PARAMETER 2:  A(RETURNED DATE)                                                
+***********************************************************                     
+NELSTDAY DS    0H                                                               
+         L     R2,0(R1)                                                         
+         LH    R8,0(R2)            COMPRESSED DATE                              
+         L     R3,4(R1)            ADDRESS OF RETURN DATE                       
+         BAS   RE,UNCOMPRS         GET IN NORMAL FORM                           
+         BAS   RE,UTLSTDY          GET LAST MONTH                               
+         BAS   RE,COMPRESS         RECOMPRESS IT                                
+         MVC   0(2,R3),COMDAT      MOVE IT TO OUTPUT AREA                       
+         XIT1                                                                   
+******************************************************                          
+         EJECT                                                                  
+***********************************************************                     
+* NEFSTMON- USER CALLABLE ROUTINE FOR FIRST MONTH,DAY OF YEAR                   
+*                                                                               
+*  PARAMETER 1: A(COMPRESSED DATE)                                              
+* PARAMETER 2:  A(RETURNED DATE)                                                
+***********************************************************                     
+NEFSTMON DS    0H                                                               
+         L     R2,0(R1)                                                         
+         LH    R8,0(R2)            COMPRESSED DATE                              
+         L     R3,4(R1)            ADDRESS OF RETURN DATE                       
+         BAS   RE,UNCOMPRS         GET IN NORMAL FORM                           
+         MVI   CURDAY,1            JAN 1                                        
+         MVI   CURMONTH,1                                                       
+         BAS   RE,UTINIT                                                        
+         BAS   RE,COMPRESS         RECOMPRESS IT                                
+         MVC   0(2,R3),COMDAT      MOVE IT TO OUTPUT AREA                       
+         XIT1                                                                   
+******************************************************                          
+         EJECT                                                                  
+***********************************************************                     
+* NELSTMON- USER CALLABLE ROUTINE FOR LAST MONTH,DAY OF YEAR                    
+*                                                                               
+*  PARAMETER 1: A(COMPRESSED DATE)                                              
+* PARAMETER 2:  A(RETURNED DATE)                                                
+***********************************************************                     
+NELSTMON DS    0H                                                               
+         L     R2,0(R1)                                                         
+         LH    R8,0(R2)            COMPRESSED DATE                              
+         L     R3,4(R1)            ADDRESS OF RETURN DATE                       
+         BAS   RE,UNCOMPRS         GET IN NORMAL FORM                           
+         MVI   CURDAY,31           DEC 31                                       
+         MVI   CURMONTH,12                                                      
+         BAS   RE,UTINIT                                                        
+         BAS   RE,COMPRESS         RECOMPRESS IT                                
+         MVC   0(2,R3),COMDAT      MOVE IT TO OUTPUT AREA                       
+         XIT1                                                                   
+******************************************************                          
+         EJECT                                                                  
+***********************************************************                     
+*  UNCOMPRS - UTILITY TO CONVERT A COMPRESSED DATE TO CURDATE FORMAT.           
+*   ARG: R8 - THE COMPRESSED DATE TO CONVERT (2 BYTES)                          
+UNCOMPRS NTR1                                                                   
+         STH   R8,COMDAT                                                        
+         GOTO1 =V(DATCON),DMCB,(2,COMDAT),(3,CURYEAR),RR=RELO                   
+**       ZIC   R2,COMDAT           GET YEAR                                     
+**       SRL   R2,1                                                             
+**       STC   R2,CURYEAR                                                       
+**       ZIC   R2,COMDAT+1         GET DAY                                      
+**       N     R2,=XL4'0000001F'                                                
+**       STC   R2,CURDAY                                                        
+**       LH    R2,COMDAT                                                        
+**       N     R2,=XL4'000001FF'                                                
+**       SRL   R2,5                                                             
+**       STC   R2,CURMONTH                                                      
+         BAS   RE,UTINIT           SET MONADDR, YRADDR, CURDOW                  
+         XIT1                                                                   
+***********************************************************                     
+*  UTINIT - UTILITY TO SET CURDOW, YRADDR, MONADDR FROM CURDATE.                
+UTINIT   NTR1                                                                   
+         BAS   RE,UTSETYR          SET YRADDR                                   
+         ZIC   R2,CURMONTH                                                      
+         BCTR  R2,0                SUBTRACT ONE FROM MONTH                      
+         SLL   R2,2                MULT BY 4 FOR OFFSET OF THIS MONTH           
+         L     R3,YRADDR                                                        
+         AR    R2,R3               ADDR OF MONTH IN TABLE                       
+         ST    R2,MONADDR                                                       
+*                                                                               
+         ZIC   R3,MNBEGDOW(R2)     BEGINNING DOW OF MONTH                       
+         ZIC   R4,CURDAY           GET DOW                                      
+         LA    R4,0(R3,R4)         ADD DOWS FOR LOOKUP                          
+         LA    R5,TBLDYLKP         DAY LOOKUP TABLE                             
+         LA    R5,0(R4,R5)         LOOKUP NEW DOW                               
+         MVC   CURDOW(1),0(R5)                                                  
+         XIT1                                                                   
+***********************************************************                     
+* COMPRESS - PUTS THE CURRENT LOW LEVEL COMMON DATE IN COMPRESSED FORM          
+*    OUTPUT - COMDAT - COMPRESSED DATE                                          
+*                                                                               
+COMPRESS NTR1                                                                   
+         IC    R6,CURDAY                                                        
+         SRDL  R6,5                                                             
+         IC    R6,CURMONTH                                                      
+         SRDL  R6,4                                                             
+         IC    R6,CURYEAR                                                       
+         SRDL  R6,23               R7 NOW HAS COMPRRESSED DATE                  
+         STH   R7,COMDAT                                                        
+         XIT1                                                                   
+***********************************************************                     
+***********************************************************                     
+***** LOW LEVEL UTILITIES TO DEAL WITH MONTHS                                   
+*    SET CURMONTH, MONADDR.                                                     
+*    POSSIBLY CURYEAR, YRADDR.                                                  
+*                                                                               
+UTNXTMN  NTR1                      INCREMENT THE MONTH                          
+         ZIC   R2,CURMONTH                                                      
+         LA    R2,1(R2)            NEXT MONTH                                   
+         L     R3,MONADDR                                                       
+         LA    R3,MNNTRYLN(R3)     NEXT MONTH IN TABLE                          
+         ST    R3,MONADDR                                                       
+*                                                                               
+         CH    R2,=H'12'           NEXT YEAR?                                   
+         BNH   NMXIT                                                            
+         BAS   RE,UTNXTYR          INCREMENT YEAR                               
+*                                                                               
+         MVC   MONADDR,YRADDR      SET MONTH TO FIRST OF NEW YR                 
+         LA    R2,JAN                                                           
+*                                                                               
+NMXIT    STC   R2,CURMONTH                                                      
+         XIT1                                                                   
+***                                                                             
+UTPRVMN  NTR1                      DECREMENT THE MONTH                          
+         L     R3,MONADDR                                                       
+         LA    R4,MNNTRYLN                                                      
+         SR    R3,R4               PREVIOUS MONTH IN TABLE                      
+         ST    R3,MONADDR                                                       
+*                                                                               
+         ZIC   R2,CURMONTH                                                      
+         SH    R2,=H'1'            PREV MONTH                                   
+         BH    PMXIT                                                            
+         BAS   RE,UTPRVYR          PREVIOUS YEAR                                
+*                                                                               
+         L     R4,YRADDR                                                        
+         LA    R3,MNNTRYLN*11(R4)    POINT TO DECEMBER OF NEW YR                
+         ST    R3,MONADDR                                                       
+         LA    R2,DEC                                                           
+*                                                                               
+PMXIT    STC   R2,CURMONTH                                                      
+         XIT1                                                                   
+*                                                                               
+         EJECT                                                                  
+**************************************************************                  
+* LOW LEVEL UTILITIES TO DEAL WITH DAYS.                                        
+*                                                                               
+* UTFRSTDY - GET THE FIRST DAY OF THE CURRENT MONTH.                            
+*                                                                               
+UTFRSTDY DS    0H                                                               
+         MVI   CURDAY,X'01'                                                     
+         L     R1,MONADDR                                                       
+         MVC   CURDOW(1),MNBEGDOW(R1)                                           
+         BR    RE                                                               
+*                                                                               
+****                                                                            
+* UTLSTTDY - GET THE LAST DAY OF THE CURRENT MONTH.                             
+*                                                                               
+UTLSTDY  NTR1                                                                   
+         L     R1,MONADDR                                                       
+         ZIC   R2,MNLEN(R1)                                                     
+         STC   R2,CURDAY                                                        
+         MVC   CURDOW(1),MNBEGDOW(R1)                                           
+         XIT1                                                                   
+*                                                                               
+*******                                                                         
+         EJECT                                                                  
+**************************************************************                  
+* LOW LEVEL UTILITIES TO DEAL WITH YEARS                                        
+*                                                                               
+* UTFRSTMN - GET THE FIRST DAY OF THE CURRENT YEAR.                             
+*                                                                               
+UTFRSTMN DS    0H                                                               
+         MVI   CURDAY,X'01'                                                     
+         MVI   CURMONTH,X'01'                                                   
+         L     R1,YRADDR                                                        
+         MVC   CURDOW(1),MNBEGDOW(R1)                                           
+         BR    RE                                                               
+*                                                                               
+****                                                                            
+* UTLSTMN  - GET THE LAST DAY OF THE CURRENT MONTH.                             
+*                                                                               
+UTLSTMN  NTR1                                                                   
+         L     R1,MONADDR                                                       
+         ZIC   R2,MNLEN(R1)                                                     
+         STC   R2,CURDAY                                                        
+         MVC   CURDOW(1),MNBEGDOW(R1)                                           
+         XIT1                                                                   
+*                                                                               
+*******                                                                         
+         EJECT                                                                  
+* UTADDAY - TO ADD DAYS.                                                        
+*       ARGS:  R8 - NUMBER OF DAYS TO ADD                                       
+*                                                                               
+* SETS  CURDAY, CURDOW                                                          
+* POSSIBLY SETS CURMON, MONADDR.   (IF SPANS MONTHS)                            
+* POSSIBLY SETS CURYR, YRADDR.     (IF SPANS YEARS)                             
+*   R2 - SUM OF CURDAY + NUMBER TO ADD LEFT TO PROCESS                          
+*   R3 - MONADDR                                                                
+*   R4 - NUMBER OF DAYS IN MONTH                                                
+****************************************************                            
+UTADDAY  NTR1                                                                   
+         ZIC   R2,CURDAY                                                        
+         AR    R2,R8               ADD NUMBER OF DAYS                           
+         BH    ADCKHI                                                           
+*                                  FOR NEGATIVE OR ZERO SUM                     
+ADLOOP1  BAS   RE,UTPRVMN          PREVIOUS MONTH (UPDATE MONADDR)              
+         L     R3,MONADDR                                                       
+         ZIC   R4,MNLEN(R3)        NUMBER OF DAYS IN PREVIOUS MONTH             
+         AR    R2,R4                                                            
+         BH    ADXIT               ANOTHER MONTH BEFORE?                        
+         B     ADLOOP1                                                          
+*                                                                               
+ADCKHI   DS    0H                  SUM GREATER THAN ZERO                        
+ADLOOP2  L     R3,MONADDR          MONTH ADDRESS                                
+         ZIC   R4,MNLEN(R3)        NUMBER OF DAYS IN MONTH                      
+         CR    R2,R4                                                            
+         BNH   ADXIT               CK IF IN NEXT MONTH                          
+         BAS   RE,UTNXTMN          INCREMENT MONTH (MONADDR UPDATED)            
+         SR    R2,R4               DAYS PAST BEGINNING OF NEXT MONTH            
+         B     ADLOOP2                                                          
+*                                                                               
+ADXIT    STC   R2,CURDAY           R2 HAS NEW DAY                               
+         ZIC   R4,MNBEGDOW(R3)     FIRST DOW OF CUR MONTH                       
+         LA    R4,0(R2,R4)         ADD DOW TO CURDAY                            
+         LA    R5,TBLDYLKP         DAY LOOKUP TABLE                             
+         LA    R5,0(R4,R5)         LOOKUP NEW DOW                               
+         MVC   CURDOW(1),0(R5)                                                  
+         XIT1                                                                   
+*                                                                               
+         EJECT                                                                  
+****************************************************                            
+* UTDIFF - TO CALCULATE NUMBER OF DAYS BETWEEN CURDATE AND SAVDATE              
+*       OUTPUT: DIFF - NUMBER OF DAYS                                           
+*                                                                               
+*   R3 - CURENT COUNT OF NUMBER OF DAYS                                         
+****************************************************                            
+UTDIFF   NTR1                                                                   
+         MVC   HOLDDATE,CURDATE     SAVE OFF CURRENT DATE                       
+         SR    R3,R3                START TOTAL AT 0                            
+         CLC   CURDATE(2),SAVDATE   FIND WHICH MONTH,YEAR IS EARLIER            
+         BE    UTDIFFEQ             IF IN SAME MON, USE DIFFRENT LOGIC          
+         BH    UTDIFF40                                                         
+*                                                                               
+UTDIFF10 ZIC   R1,CURDAY            CURDATE IS BEFORE SAVE DATE                 
+         SR    R3,R1                PARTIAL DAYS IN MONTH 1                     
+         MVI   CURDAY,1             NOW SET DAY TO 1, NEVER USE IT              
+UTDIFF20 CLC   CURDATE(2),SAVDATE   LOOP UNTILL MONTHS ARE SAME                 
+         BE    UTDIFF30                                                         
+         L     R2,MONADDR                                                       
+         ZIC   R1,MNLEN(R2)                                                     
+         AR    R3,R1                                                            
+         BAS   RE,UTNXTMN           NEXT MON                                    
+         B     UTDIFF20                                                         
+UTDIFF30 ZIC   R1,SAVDAY            ADD PARTIAL DAYS IN LAST MON                
+         AR    R3,R1                                                            
+         B     UTDIFFX                                                          
+*                                                                               
+UTDIFFEQ ZIC   R3,CURDAY            SAME MONTH,YEAR.                            
+         ZIC   R1,SAVDAY            JUST SUBTRACT DAYS                          
+         CR    R3,R1                                                            
+         BL    UTDIFF35             SUBTRACT SMALLER FROM LARGER                
+         SR    R3,R1                                                            
+         B     UTDIFFX                                                          
+UTDIFF35 SR    R1,R3                                                            
+         LR    R3,R1                                                            
+         B     UTDIFFX                                                          
+*                                                                               
+UTDIFF40 ZIC   R1,CURDAY            CURDATE IS AFTER SAVE DATE                  
+         AR    R3,R1                PARTIAL DAYS IN LAST MON                    
+         MVI   CURDAY,1             NOW SET DAY TO 1, NEVER USE IT              
+UTDIFF50 BAS   RE,UTPRVMN           GET PREVIOUS MONTH                          
+         L     R2,MONADDR                                                       
+         ZIC   R1,MNLEN(R2)                                                     
+         AR    R3,R1                                                            
+         CLC   CURDATE(2),SAVDATE   LOOP UNTILL MONTHS ARE SAME                 
+         BE    UTDIFF60                                                         
+         B     UTDIFF50                                                         
+UTDIFF60 ZIC   R1,SAVDAY            ADD PARTIAL DAYS IN FIRST MON               
+         SR    R3,R1                                                            
+         B     UTDIFFX                                                          
+*                                                                               
+UTDIFFX  ST    R3,DIFF                                                          
+         MVC   CURDATE,HOLDDATE     RESTORE DATE                                
+         XIT1                                                                   
+         EJECT                                                                  
+**********************************************                                  
+* ROUTINES TO HANDLE QUARTERS                                                   
+*                                                                               
+UTFRSTQR NTR1                       GETS FIRST MONTH OF THIS QUARTER            
+BEGFQ    DS    0H                                                               
+         CLI   CURMONTH,1          QRTERS START ON MONS 1,4,7,10                
+         BE    XITFQ                                                            
+         CLI   CURMONTH,4                                                       
+         BE    XITFQ                                                            
+         CLI   CURMONTH,7                                                       
+         BE    XITFQ                                                            
+         CLI   CURMONTH,10                                                      
+         BE    XITFQ                                                            
+*                                                                               
+         BAS   RE,UTPRVMN          DECREMENT MON IF NOT 1,4,7,10                
+*                                                                               
+         B     BEGFQ               NOW TRY AGAIN                                
+*                                                                               
+XITFQ    XIT1                                                                   
+**********************************************                                  
+**** UTILITIES TO  INCREMENT,DECREMENT THE YEAR. SETS CURYEAR.                  
+****  NEED ADDITIONS TO HANDLE OTHER THAN 1900'S.                               
+*                                                                               
+UTNXTYR  NTR1                                                                   
+         ZIC   R1,CURYEAR                                                       
+         LA    R1,1(R1)            INCREMENT YEAR                               
+         STC   R1,CURYEAR                                                       
+         BAS   RE,UTSETYR                                                       
+         XIT1                                                                   
+*                                                                               
+UTPRVYR  NTR1                                                                   
+         ZIC   R1,CURYEAR                                                       
+         SH    R1,=H'1'            DECREMENT A YEAR                             
+         STC   R1,CURYEAR                                                       
+         BAS   RE,UTSETYR                                                       
+         XIT1                                                                   
+*                                                                               
+UTSETYR  NTR1                                                                   
+         LA    R2,YEARTBL                                                       
+         ZIC   R3,CURYEAR                                                       
+         LA    R4,BEGYEAR          FIRST YEAR IN TABLE                          
+         SR    R3,R4               OFFSET FROM BEGINNING                        
+         SLL   R3,2                MULTIPLY BY 4                                
+         L     R2,0(R3,R2)         ADDRESS OF YEAR TABLE                        
+         A     R2,RELO             RELOCATE THIS ADDR                           
+         ST    R2,YRADDR                                                        
+         XIT1                                                                   
+***************************************************                             
+*  UTPRVDOW - ROUTINE TO GET THE PREVIOUS DAY = DOW                             
+*  ARGS: R8 - THE DOW TO MATCH                                                  
+*                                                                               
+UTPRVDOW NTR1                                                                   
+         ZIC   R2,CURDOW           THE CURRENT DAY OF WEEK                      
+         CR    R8,R2                                                            
+         BNH   GP2                                                              
+         AH    R2,=H'7'            IF PREVIOUS > CURRENT                        
+GP2      SR    R8,R2               NUMBER OF DAYS BEFORE IS IN R8               
+         BAS   RE,UTADDAY          SUBTRACT THIS MANY DAYS                      
+         XIT1                                                                   
+***************************************************                             
+*  UTNXTDOW - ROUTINE TO GET THE NEXT  DAY = DOW                                
+*  ARGS: R8 - THE DOW TO MATCH                                                  
+*                                                                               
+UTNXTDOW NTR1                                                                   
+         ZIC   R2,CURDOW           THE CURRENT DAY OF WEEK                      
+         CR    R8,R2                                                            
+         BNL   GN2                                                              
+         AH    R8,=H'7'            IF PREVIOUS > CURRENT                        
+GN2      SR    R8,R2               NUMBER OF DAYS AFTER IS IN R1                
+         BAS   RE,UTADDAY          ADD THIS MANY DAYS                           
+         XIT1                                                                   
+         EJECT                                                                  
+***************************************************                             
+********* CONSTANTS **************                                              
+*                                                                               
+MON      EQU   X'01'                                                            
+TUE      EQU   X'02'                                                            
+WED      EQU   X'03'                                                            
+THU      EQU   X'04'                                                            
+FRI      EQU   X'05'                                                            
+SAT      EQU   X'06'                                                            
+SUN      EQU   X'07'                                                            
+MAXDAY   EQU   X'08'                                                            
+*                                                                               
+JAN      EQU   X'01'                                                            
+FEB      EQU   X'02'                                                            
+MAR      EQU   X'03'                                                            
+APR      EQU   X'04'                                                            
+MAY      EQU   X'05'                                                            
+JUN      EQU   X'06'                                                            
+JUL      EQU   X'07'                                                            
+AUG      EQU   X'08'                                                            
+SEP      EQU   X'09'                                                            
+OCT      EQU   X'0A'                                                            
+NOV      EQU   X'0B'                                                            
+DEC      EQU   X'0C'                                                            
+MAXMON   EQU   X'0D'                                                            
+*                                                                               
+LENJAN   EQU   31                                                               
+LENFEB   EQU   28                                                               
+LENFEBLP EQU   29                                                               
+LENMAR   EQU   31                                                               
+LENAPR   EQU   30                                                               
+LENMAY   EQU   31                                                               
+LENJUN   EQU   30                                                               
+LENJUL   EQU   31                                                               
+LENAUG   EQU   31                                                               
+LENSEP   EQU   30                                                               
+LENOCT   EQU   31                                                               
+LENNOV   EQU   30                                                               
+LENDEC   EQU   31                                                               
+*                                                                               
+******************* CUMULATIVE DAYS                                             
+BEGJAN   EQU   1                                                                
+ENDJAN   EQU   LENJAN                                                           
+BEGFEB   EQU   LENJAN+1                                                         
+ENDFEB   EQU   ENDJAN+LENFEB                                                    
+BEGMAR   EQU   ENDFEB+1                                                         
+ENDMAR   EQU   ENDFEB+LENMAR                                                    
+BEGAPR   EQU   ENDMAR+1                                                         
+ENDAPR   EQU   ENDMAR+LENAPR                                                    
+BEGMAY   EQU   ENDAPR+1                                                         
+ENDMAY   EQU   ENDAPR+LENMAY                                                    
+BEGJUN   EQU   ENDMAY+1                                                         
+ENDJUN   EQU   ENDMAY+LENJUN                                                    
+BEGJUL   EQU   ENDJUN+1                                                         
+ENDJUL   EQU   ENDJUN+LENJUL                                                    
+BEGAUG   EQU   ENDJUL+1                                                         
+ENDAUG   EQU   ENDJUL+LENAUG                                                    
+BEGSEP   EQU   ENDAUG+1                                                         
+ENDSEP   EQU   ENDAUG+LENSEP                                                    
+BEGOCT   EQU   ENDSEP+1                                                         
+ENDOCT   EQU   ENDSEP+LENOCT                                                    
+BEGNOV   EQU   ENDOCT+1                                                         
+ENDNOV   EQU   ENDOCT+LENNOV                                                    
+BEGDEC   EQU   ENDNOV+1                                                         
+ENDDEC   EQU   ENDNOV+LENDEC                                                    
+*                                                                               
+         EJECT                                                                  
+********* YEAR TABLE *****************                                          
+*                                                                               
+BEGYEAR  EQU   0                   FOR 1900S ONLY                               
+YEARTBL  DS    0D                                                               
+         DC    A(LPSUNYR)          1900                                         
+         DC    A(TUEYR)            1901                                         
+         DC    A(WEDYR)            1902                                         
+         DC    A(THUYR)            1903                                         
+         DC    A(LPFRIYR)          1904                                         
+         DC    A(SUNYR)            1905                                         
+         DC    A(MONYR)            1906                                         
+         DC    A(TUEYR)            1907                                         
+         DC    A(LPWEDYR)          1908                                         
+         DC    A(FRIYR)            1909                                         
+         DC    A(SATYR)            1910                                         
+         DC    A(SUNYR)            1911                                         
+         DC    A(LPMONYR)          1912                                         
+         DC    A(WEDYR)            1913                                         
+         DC    A(THUYR)            1914                                         
+         DC    A(FRIYR)            1915                                         
+         DC    A(LPSATYR)          1916                                         
+         DC    A(MONYR)            1917                                         
+         DC    A(TUEYR)            1918                                         
+         DC    A(WEDYR)            1919                                         
+         DC    A(LPTHUYR)          1920                                         
+         DC    A(SATYR)            1921                                         
+         DC    A(SUNYR)            1922                                         
+         DC    A(MONYR)            1923                                         
+         DC    A(LPTUEYR)          1924                                         
+         DC    A(THUYR)            1925                                         
+         DC    A(FRIYR)            1926                                         
+         DC    A(SATYR)            1927                                         
+         DC    A(LPSUNYR)          1928                                         
+         DC    A(TUEYR)            1929                                         
+         DC    A(WEDYR)            1930                                         
+         DC    A(THUYR)            1931                                         
+         DC    A(LPFRIYR)          1932                                         
+         DC    A(SUNYR)            1933                                         
+         DC    A(MONYR)            1934                                         
+         DC    A(TUEYR)            1935                                         
+         DC    A(LPWEDYR)          1936                                         
+         DC    A(FRIYR)            1937                                         
+         DC    A(SATYR)            1938                                         
+         DC    A(SUNYR)            1939                                         
+         DC    A(LPMONYR)          1940                                         
+         DC    A(WEDYR)            1941                                         
+         DC    A(THUYR)            1942                                         
+         DC    A(FRIYR)            1943                                         
+         DC    A(LPSATYR)          1944                                         
+         DC    A(MONYR)            1945                                         
+         DC    A(TUEYR)            1946                                         
+         DC    A(WEDYR)            1947                                         
+         DC    A(LPTHUYR)          1948                                         
+         DC    A(SATYR)            1949                                         
+         DC    A(SUNYR)            1950                                         
+         DC    A(MONYR)            1951                                         
+         DC    A(LPTUEYR)          1952                                         
+         DC    A(THUYR)            1953                                         
+         DC    A(FRIYR)            1954                                         
+         DC    A(SATYR)            1955                                         
+         DC    A(LPSUNYR)          1956                                         
+         DC    A(TUEYR)            1957                                         
+         DC    A(WEDYR)            1958                                         
+         DC    A(THUYR)            1959                                         
+         DC    A(LPFRIYR)          1960                                         
+         DC    A(SUNYR)            1961                                         
+         DC    A(MONYR)            1962                                         
+         DC    A(TUEYR)            1963                                         
+         DC    A(LPWEDYR)          1964                                         
+         DC    A(FRIYR)            1965                                         
+         DC    A(SATYR)            1966                                         
+         DC    A(SUNYR)            1967                                         
+         DC    A(LPMONYR)          1968                                         
+         DC    A(WEDYR)            1969                                         
+         DC    A(THUYR)            1970                                         
+         DC    A(FRIYR)            1971                                         
+         DC    A(LPSATYR)          1972                                         
+         DC    A(MONYR)            1973                                         
+         DC    A(TUEYR)            1974                                         
+         DC    A(WEDYR)            1975                                         
+         DC    A(LPTHUYR)          1976                                         
+         DC    A(SATYR)            1977                                         
+         DC    A(SUNYR)            1978                                         
+         DC    A(MONYR)            1979                                         
+         DC    A(LPTUEYR)          1980                                         
+         DC    A(THUYR)            1981                                         
+         DC    A(FRIYR)            1982                                         
+         DC    A(SATYR)            1983                                         
+         DC    A(LPSUNYR)          1984                                         
+         DC    A(TUEYR)            1985                                         
+         DC    A(WEDYR)            1986                                         
+         DC    A(THUYR)            1987                                         
+         DC    A(LPFRIYR)          1988                                         
+         DC    A(SUNYR)            1989                                         
+         DC    A(MONYR)            1990                                         
+         DC    A(TUEYR)            1991                                         
+         DC    A(LPWEDYR)          1992                                         
+         DC    A(FRIYR)            1993                                         
+         DC    A(SATYR)            1994                                         
+         DC    A(SUNYR)            1995                                         
+         DC    A(LPMONYR)          1996                                         
+         DC    A(WEDYR)            1997                                         
+         DC    A(THUYR)            1998                                         
+         DC    A(FRIYR)            1999                                         
+*                                                                               
+         DC    A(LPSATYR)          2000                                         
+         DC    A(MONYR)            2001                                         
+         DC    A(TUEYR)            2002                                         
+         DC    A(WEDYR)            2003                                         
+         DC    A(LPTHUYR)          2004                                         
+         DC    A(SATYR)            2005                                         
+         DC    A(SUNYR)            2006                                         
+         DC    A(MONYR)            2007                                         
+         DC    A(LPTUEYR)          2008                                         
+         DC    A(THUYR)            2009                                         
+         DC    A(FRIYR)            2010                                         
+         DC    A(SATYR)            2011                                         
+         DC    A(LPSUNYR)          2012                                         
+         DC    A(TUEYR)            2013                                         
+         DC    A(WEDYR)            2014                                         
+         DC    A(THUYR)            2015                                         
+         DC    A(LPFRIYR)          2016                                         
+         DC    A(SUNYR)            2017                                         
+         DC    A(MONYR)            2018                                         
+         DC    A(TUEYR)            2019                                         
+         DC    A(LPWEDYR)          2020                                         
+         DC    A(FRIYR)            2021                                         
+         DC    A(SATYR)            2022                                         
+         DC    A(SUNYR)            2023                                         
+         DC    A(LPMONYR)          2024                                         
+         DC    A(WEDYR)            2025                                         
+         DC    A(THUYR)            2026                                         
+         DC    A(FRIYR)            2027                                         
+ENDYEAR  EQU   2027                                                             
+*                                                                               
+*                                                                               
+         EJECT                                                                  
+**************** MONTH TABLE ************************8                          
+*                                                                               
+MNNTRYLN EQU   4                   LENGTH OF MONTH TABLE ENTRY                  
+MNNUM    EQU   0                   OFFSET TO MONTH NUMBER                       
+MNLEN    EQU   1                   OFFSET TO LENGTH OF MONTH                    
+MNBEGDOW EQU   2                   OFFSET TO MONTH BEGINNING DAY OF WK          
+MNENDDOW EQU   3                   OFFSET TO MONTH END DAY OF WEEK              
+*  MONTH TABLES: BY BEGINDAY FOR NON-LEAPYEARS                                  
+MONTBL   DS    0D                                                               
+*START ON MONDAY                                                                
+MONYR    DC    AL1(JAN),AL1(LENJAN),AL1(MON),AL1(WED)                           
+         DC    AL1(FEB),AL1(LENFEB),AL1(THU),AL1(WED)                           
+         DC    AL1(MAR),AL1(LENMAR),AL1(THU),AL1(SAT)                           
+         DC    AL1(APR),AL1(LENAPR),AL1(SUN),AL1(MON)                           
+         DC    AL1(MAY),AL1(LENMAY),AL1(TUE),AL1(THU)                           
+         DC    AL1(JUN),AL1(LENJUN),AL1(FRI),AL1(SAT)                           
+         DC    AL1(JUL),AL1(LENJUL),AL1(SUN),AL1(TUE)                           
+         DC    AL1(AUG),AL1(LENAUG),AL1(WED),AL1(FRI)                           
+         DC    AL1(SEP),AL1(LENSEP),AL1(SAT),AL1(SUN)                           
+         DC    AL1(OCT),AL1(LENOCT),AL1(MON),AL1(WED)                           
+         DC    AL1(NOV),AL1(LENNOV),AL1(THU),AL1(FRI)                           
+         DC    AL1(DEC),AL1(LENDEC),AL1(SAT),AL1(MON)                           
+*START ON TUESDAY                                                               
+TUEYR    DC    AL1(JAN),AL1(LENJAN),AL1(TUE),AL1(THU)                           
+         DC    AL1(FEB),AL1(LENFEB),AL1(FRI),AL1(THU)                           
+         DC    AL1(MAR),AL1(LENMAR),AL1(FRI),AL1(SUN)                           
+         DC    AL1(APR),AL1(LENAPR),AL1(MON),AL1(TUE)                           
+         DC    AL1(MAY),AL1(LENMAY),AL1(WED),AL1(FRI)                           
+         DC    AL1(JUN),AL1(LENJUN),AL1(SAT),AL1(SUN)                           
+         DC    AL1(JUL),AL1(LENJUL),AL1(MON),AL1(WED)                           
+         DC    AL1(AUG),AL1(LENAUG),AL1(THU),AL1(SAT)                           
+         DC    AL1(SEP),AL1(LENSEP),AL1(SUN),AL1(MON)                           
+         DC    AL1(OCT),AL1(LENOCT),AL1(TUE),AL1(THU)                           
+         DC    AL1(NOV),AL1(LENNOV),AL1(FRI),AL1(SAT)                           
+         DC    AL1(DEC),AL1(LENDEC),AL1(SUN),AL1(TUE)                           
+*START ON WEDNESDAY                                                             
+WEDYR    DC    AL1(JAN),AL1(LENJAN),AL1(WED),AL1(FRI)                           
+         DC    AL1(FEB),AL1(LENFEB),AL1(SAT),AL1(FRI)                           
+         DC    AL1(MAR),AL1(LENMAR),AL1(SAT),AL1(MON)                           
+         DC    AL1(APR),AL1(LENAPR),AL1(TUE),AL1(WED)                           
+         DC    AL1(MAY),AL1(LENMAY),AL1(THU),AL1(SAT)                           
+         DC    AL1(JUN),AL1(LENJUN),AL1(SUN),AL1(MON)                           
+         DC    AL1(JUL),AL1(LENJUL),AL1(TUE),AL1(THU)                           
+         DC    AL1(AUG),AL1(LENAUG),AL1(FRI),AL1(SUN)                           
+         DC    AL1(SEP),AL1(LENSEP),AL1(MON),AL1(TUE)                           
+         DC    AL1(OCT),AL1(LENOCT),AL1(WED),AL1(FRI)                           
+         DC    AL1(NOV),AL1(LENNOV),AL1(SAT),AL1(SUN)                           
+         DC    AL1(DEC),AL1(LENDEC),AL1(MON),AL1(WED)                           
+*START ON THURSDAY                                                              
+THUYR    DC    AL1(JAN),AL1(LENJAN),AL1(THU),AL1(SAT)                           
+         DC    AL1(FEB),AL1(LENFEB),AL1(SUN),AL1(SAT)                           
+         DC    AL1(MAR),AL1(LENMAR),AL1(SUN),AL1(TUE)                           
+         DC    AL1(APR),AL1(LENAPR),AL1(WED),AL1(THU)                           
+         DC    AL1(MAY),AL1(LENMAY),AL1(FRI),AL1(SUN)                           
+         DC    AL1(JUN),AL1(LENJUN),AL1(MON),AL1(TUE)                           
+         DC    AL1(JUL),AL1(LENJUL),AL1(WED),AL1(FRI)                           
+         DC    AL1(AUG),AL1(LENAUG),AL1(SAT),AL1(MON)                           
+         DC    AL1(SEP),AL1(LENSEP),AL1(TUE),AL1(WED)                           
+         DC    AL1(OCT),AL1(LENOCT),AL1(THU),AL1(SAT)                           
+         DC    AL1(NOV),AL1(LENNOV),AL1(SUN),AL1(MON)                           
+         DC    AL1(DEC),AL1(LENDEC),AL1(TUE),AL1(THU)                           
+*START ON FRIDAY                                                                
+FRIYR    DC    AL1(JAN),AL1(LENJAN),AL1(FRI),AL1(SUN)                           
+         DC    AL1(FEB),AL1(LENFEB),AL1(MON),AL1(SUN)                           
+         DC    AL1(MAR),AL1(LENMAR),AL1(MON),AL1(WED)                           
+         DC    AL1(APR),AL1(LENAPR),AL1(THU),AL1(FRI)                           
+         DC    AL1(MAY),AL1(LENMAY),AL1(SAT),AL1(MON)                           
+         DC    AL1(JUN),AL1(LENJUN),AL1(TUE),AL1(WED)                           
+         DC    AL1(JUL),AL1(LENJUL),AL1(THU),AL1(SAT)                           
+         DC    AL1(AUG),AL1(LENAUG),AL1(SUN),AL1(TUE)                           
+         DC    AL1(SEP),AL1(LENSEP),AL1(WED),AL1(THU)                           
+         DC    AL1(OCT),AL1(LENOCT),AL1(FRI),AL1(SUN)                           
+         DC    AL1(NOV),AL1(LENNOV),AL1(MON),AL1(TUE)                           
+         DC    AL1(DEC),AL1(LENDEC),AL1(WED),AL1(FRI)                           
+*START ON SATURDAY                                                              
+SATYR    DC    AL1(JAN),AL1(LENJAN),AL1(SAT),AL1(MON)                           
+         DC    AL1(FEB),AL1(LENFEB),AL1(TUE),AL1(MON)                           
+         DC    AL1(MAR),AL1(LENMAR),AL1(TUE),AL1(THU)                           
+         DC    AL1(APR),AL1(LENAPR),AL1(FRI),AL1(SAT)                           
+         DC    AL1(MAY),AL1(LENMAY),AL1(SUN),AL1(TUE)                           
+         DC    AL1(JUN),AL1(LENJUN),AL1(WED),AL1(THU)                           
+         DC    AL1(JUL),AL1(LENJUL),AL1(FRI),AL1(SUN)                           
+         DC    AL1(AUG),AL1(LENAUG),AL1(MON),AL1(WED)                           
+         DC    AL1(SEP),AL1(LENSEP),AL1(THU),AL1(FRI)                           
+         DC    AL1(OCT),AL1(LENOCT),AL1(SAT),AL1(MON)                           
+         DC    AL1(NOV),AL1(LENNOV),AL1(TUE),AL1(WED)                           
+         DC    AL1(DEC),AL1(LENDEC),AL1(THU),AL1(SAT)                           
+*START ON SUNDAY                                                                
+SUNYR    DC    AL1(JAN),AL1(LENJAN),AL1(SUN),AL1(TUE)                           
+         DC    AL1(FEB),AL1(LENFEB),AL1(WED),AL1(TUE)                           
+         DC    AL1(MAR),AL1(LENMAR),AL1(WED),AL1(FRI)                           
+         DC    AL1(APR),AL1(LENAPR),AL1(SAT),AL1(SUN)                           
+         DC    AL1(MAY),AL1(LENMAY),AL1(MON),AL1(WED)                           
+         DC    AL1(JUN),AL1(LENJUN),AL1(THU),AL1(FRI)                           
+         DC    AL1(JUL),AL1(LENJUL),AL1(SAT),AL1(MON)                           
+         DC    AL1(AUG),AL1(LENAUG),AL1(TUE),AL1(THU)                           
+         DC    AL1(SEP),AL1(LENSEP),AL1(FRI),AL1(SAT)                           
+         DC    AL1(OCT),AL1(LENOCT),AL1(SUN),AL1(TUE)                           
+         DC    AL1(NOV),AL1(LENNOV),AL1(WED),AL1(THU)                           
+         DC    AL1(DEC),AL1(LENDEC),AL1(FRI),AL1(SUN)                           
+******                                                                          
+*  MONTH TABLES: BY BEGIN DAY FOR LEAPYEARS                                     
+*                                                                               
+LPMONTBL DS    0D                                                               
+*START ON MONDAY (LEAP)                                                         
+LPMONYR  DC    AL1(JAN),AL1(LENJAN),AL1(MON),AL1(WED)                           
+         DC    AL1(FEB),AL1(LENFEBLP),AL1(THU),AL1(THU)                         
+         DC    AL1(MAR),AL1(LENMAR),AL1(FRI),AL1(SUN)                           
+         DC    AL1(APR),AL1(LENAPR),AL1(MON),AL1(TUE)                           
+         DC    AL1(MAY),AL1(LENMAY),AL1(WED),AL1(FRI)                           
+         DC    AL1(JUN),AL1(LENJUN),AL1(SAT),AL1(SUN)                           
+         DC    AL1(JUL),AL1(LENJUL),AL1(MON),AL1(WED)                           
+         DC    AL1(AUG),AL1(LENAUG),AL1(THU),AL1(SAT)                           
+         DC    AL1(SEP),AL1(LENSEP),AL1(SUN),AL1(MON)                           
+         DC    AL1(OCT),AL1(LENOCT),AL1(TUE),AL1(THU)                           
+         DC    AL1(NOV),AL1(LENNOV),AL1(FRI),AL1(SAT)                           
+         DC    AL1(DEC),AL1(LENDEC),AL1(SUN),AL1(TUE)                           
+*START ON TUESDAY (LEAP)                                                        
+LPTUEYR  DC    AL1(JAN),AL1(LENJAN),AL1(TUE),AL1(THU)                           
+         DC    AL1(FEB),AL1(LENFEBLP),AL1(FRI),AL1(FRI)                         
+         DC    AL1(MAR),AL1(LENMAR),AL1(SAT),AL1(MON)                           
+         DC    AL1(APR),AL1(LENAPR),AL1(TUE),AL1(WED)                           
+         DC    AL1(MAY),AL1(LENMAY),AL1(THU),AL1(SAT)                           
+         DC    AL1(JUN),AL1(LENJUN),AL1(SUN),AL1(MON)                           
+         DC    AL1(JUL),AL1(LENJUL),AL1(TUE),AL1(THU)                           
+         DC    AL1(AUG),AL1(LENAUG),AL1(FRI),AL1(SUN)                           
+         DC    AL1(SEP),AL1(LENSEP),AL1(MON),AL1(TUE)                           
+         DC    AL1(OCT),AL1(LENOCT),AL1(WED),AL1(FRI)                           
+         DC    AL1(NOV),AL1(LENNOV),AL1(SAT),AL1(SUN)                           
+         DC    AL1(DEC),AL1(LENDEC),AL1(MON),AL1(WED)                           
+*START ON WEDNESDAY (LEAP)                                                      
+LPWEDYR  DC    AL1(JAN),AL1(LENJAN),AL1(WED),AL1(FRI)                           
+         DC    AL1(FEB),AL1(LENFEBLP),AL1(SAT),AL1(SAT)                         
+         DC    AL1(MAR),AL1(LENMAR),AL1(SUN),AL1(TUE)                           
+         DC    AL1(APR),AL1(LENAPR),AL1(WED),AL1(THU)                           
+         DC    AL1(MAY),AL1(LENMAY),AL1(FRI),AL1(SUN)                           
+         DC    AL1(JUN),AL1(LENJUN),AL1(MON),AL1(TUE)                           
+         DC    AL1(JUL),AL1(LENJUL),AL1(WED),AL1(FRI)                           
+         DC    AL1(AUG),AL1(LENAUG),AL1(SAT),AL1(MON)                           
+         DC    AL1(SEP),AL1(LENSEP),AL1(TUE),AL1(WED)                           
+         DC    AL1(OCT),AL1(LENOCT),AL1(THU),AL1(SAT)                           
+         DC    AL1(NOV),AL1(LENNOV),AL1(SUN),AL1(MON)                           
+         DC    AL1(DEC),AL1(LENDEC),AL1(TUE),AL1(THU)                           
+*START ON THURSDAY (LEAP)                                                       
+LPTHUYR  DC    AL1(JAN),AL1(LENJAN),AL1(THU),AL1(SAT)                           
+         DC    AL1(FEB),AL1(LENFEBLP),AL1(SUN),AL1(SUN)                         
+         DC    AL1(MAR),AL1(LENMAR),AL1(MON),AL1(WED)                           
+         DC    AL1(APR),AL1(LENAPR),AL1(THU),AL1(FRI)                           
+         DC    AL1(MAY),AL1(LENMAY),AL1(SAT),AL1(MON)                           
+         DC    AL1(JUN),AL1(LENJUN),AL1(TUE),AL1(WED)                           
+         DC    AL1(JUL),AL1(LENJUL),AL1(THU),AL1(SAT)                           
+         DC    AL1(AUG),AL1(LENAUG),AL1(SUN),AL1(TUE)                           
+         DC    AL1(SEP),AL1(LENSEP),AL1(WED),AL1(THU)                           
+         DC    AL1(OCT),AL1(LENOCT),AL1(FRI),AL1(SUN)                           
+         DC    AL1(NOV),AL1(LENNOV),AL1(MON),AL1(TUE)                           
+         DC    AL1(DEC),AL1(LENDEC),AL1(WED),AL1(FRI)                           
+*START ON FRIDAY (LEAP)                                                         
+LPFRIYR  DC    AL1(JAN),AL1(LENJAN),AL1(FRI),AL1(SUN)                           
+         DC    AL1(FEB),AL1(LENFEBLP),AL1(MON),AL1(MON)                         
+         DC    AL1(MAR),AL1(LENMAR),AL1(TUE),AL1(THU)                           
+         DC    AL1(APR),AL1(LENAPR),AL1(FRI),AL1(SAT)                           
+         DC    AL1(MAY),AL1(LENMAY),AL1(SUN),AL1(TUE)                           
+         DC    AL1(JUN),AL1(LENJUN),AL1(WED),AL1(THU)                           
+         DC    AL1(JUL),AL1(LENJUL),AL1(FRI),AL1(SUN)                           
+         DC    AL1(AUG),AL1(LENAUG),AL1(MON),AL1(WED)                           
+         DC    AL1(SEP),AL1(LENSEP),AL1(THU),AL1(FRI)                           
+         DC    AL1(OCT),AL1(LENOCT),AL1(SAT),AL1(MON)                           
+         DC    AL1(NOV),AL1(LENNOV),AL1(TUE),AL1(WED)                           
+         DC    AL1(DEC),AL1(LENDEC),AL1(THU),AL1(SAT)                           
+*                                                                               
+*START ON SATURDAY (LEAP)                                                       
+LPSATYR  DC    AL1(JAN),AL1(LENJAN),AL1(SAT),AL1(MON)                           
+         DC    AL1(FEB),AL1(LENFEBLP),AL1(TUE),AL1(TUE)                         
+         DC    AL1(MAR),AL1(LENMAR),AL1(WED),AL1(FRI)                           
+         DC    AL1(APR),AL1(LENAPR),AL1(SAT),AL1(SUN)                           
+         DC    AL1(MAY),AL1(LENMAY),AL1(MON),AL1(WED)                           
+         DC    AL1(JUN),AL1(LENJUN),AL1(THU),AL1(FRI)                           
+         DC    AL1(JUL),AL1(LENJUL),AL1(SAT),AL1(MON)                           
+         DC    AL1(AUG),AL1(LENAUG),AL1(TUE),AL1(THU)                           
+         DC    AL1(SEP),AL1(LENSEP),AL1(FRI),AL1(SAT)                           
+         DC    AL1(OCT),AL1(LENOCT),AL1(SUN),AL1(TUE)                           
+         DC    AL1(NOV),AL1(LENNOV),AL1(WED),AL1(THU)                           
+         DC    AL1(DEC),AL1(LENDEC),AL1(FRI),AL1(SUN)                           
+*                                                                               
+*START ON SUNDAY                                                                
+LPSUNYR  DC    AL1(JAN),AL1(LENJAN),AL1(SUN),AL1(TUE)                           
+         DC    AL1(FEB),AL1(LENFEBLP),AL1(WED),AL1(WED)                         
+         DC    AL1(MAR),AL1(LENMAR),AL1(THU),AL1(SAT)                           
+         DC    AL1(APR),AL1(LENAPR),AL1(SUN),AL1(MON)                           
+         DC    AL1(MAY),AL1(LENMAY),AL1(TUE),AL1(THU)                           
+         DC    AL1(JUN),AL1(LENJUN),AL1(FRI),AL1(SAT)                           
+         DC    AL1(JUL),AL1(LENJUL),AL1(SUN),AL1(TUE)                           
+         DC    AL1(AUG),AL1(LENAUG),AL1(WED),AL1(FRI)                           
+         DC    AL1(SEP),AL1(LENSEP),AL1(SAT),AL1(SUN)                           
+         DC    AL1(OCT),AL1(LENOCT),AL1(MON),AL1(WED)                           
+         DC    AL1(NOV),AL1(LENNOV),AL1(THU),AL1(FRI)                           
+         DC    AL1(DEC),AL1(LENDEC),AL1(SAT),AL1(MON)                           
+*                                                                               
+         EJECT                                                                  
+**************** LOOKUP TABLES *******************8                             
+*                                                                               
+MINDAT   DC    XL2'0000'           COMPRESSED MINIMUM DATE                      
+MAXDAT   DC    XL2'FFFF'           COMPRESSED MAXIMUM DATE                      
+*                                                                               
+*  DAY LOOKUP TABLE - TRANSLATE  (1 TO 38 -1 ) MODULO 7                         
+TBLDYLKP DC    X'00000102030405060701020304050607' -1-14                        
+         DC    X'0102030405060701020304050607'     15-28                        
+         DC    X'0102030405060701020308080808'     29-42                        
+*                                                                               
+DAYLKUP  DC    C'000MONTUEWEDTHUFRISATSUNMAX'                                   
+*                                                                               
+LENMONLK EQU   9                   LENGTH OF MONTH LOOKUP ENTRIES               
+MONLKUP  DC    C'MINIMUM  '                                                     
+         DC    C'JANUARY  '                                                     
+         DC    C'FEBRUARY '                                                     
+         DC    C'MARCH    '                                                     
+         DC    C'APRIL    '                                                     
+         DC    C'MAY      '                                                     
+         DC    C'JUNE     '                                                     
+         DC    C'JULY     '                                                     
+         DC    C'AUGUST   '                                                     
+         DC    C'SEPTEMBER'                                                     
+         DC    C'OCTOBER  '                                                     
+         DC    C'NOVEMBER '                                                     
+         DC    C'DECEMBER '                                                     
+         DC    C'MAXIMUM  '                                                     
+*                                                                               
+         EJECT                                                                  
+**************** SPECIAL PERIOD TABLES  *****************                       
+* TABLE OF OFFSET # DAYS FROM BEGINNING OF YEAR FOR EACH SPECIAL                
+*  PERIOD.                                                                      
+**************                                                                  
+SMLSTLN  EQU   13*4                 EACH LIST HAS 13 PERIODS                    
+SMLIST   DS    0D                                                               
+SMLST6   DC    H'0',H'34'           SPEC PER TYPE 6                             
+         DC    H'35',H'62'          5/4/4                                       
+         DC    H'63',H'90'                                                      
+         DC    H'91',H'125'                                                     
+         DC    H'126',H'153'                                                    
+         DC    H'154',H'181'                                                    
+         DC    H'182',H'216'                                                    
+         DC    H'217',H'244'                                                    
+         DC    H'245',H'272'                                                    
+         DC    H'273',H'307'                                                    
+         DC    H'308',H'335'                                                    
+         DC    H'336',H'375'                                                    
+         DC    H'375',H'375'        PER 13 UNUSED                               
+         SPACE 1                                                                
+SMLST7   DC    H'0',H'27'           SPEC PER TYPE 7                             
+         DC    H'28',H'62'          4/5/4                                       
+         DC    H'63',H'90'                                                      
+         DC    H'91',H'118'                                                     
+         DC    H'119',H'153'                                                    
+         DC    H'154',H'181'                                                    
+         DC    H'182',H'209'                                                    
+         DC    H'210',H'244'                                                    
+         DC    H'245',H'272'                                                    
+         DC    H'273',H'300'                                                    
+         DC    H'301',H'335'                                                    
+         DC    H'336',H'375'                                                    
+         DC    H'375',H'375'        PER 13 UNUSED                               
+         SPACE 1                                                                
+SMLST8   DC    H'0',H'27'           SPEC PER TYPE 8                             
+         DC    H'28',H'55'          4/4/5                                       
+         DC    H'56',H'90'                                                      
+         DC    H'91',H'118'                                                     
+         DC    H'119',H'146'                                                    
+         DC    H'147',H'181'                                                    
+         DC    H'182',H'209'                                                    
+         DC    H'210',H'237'                                                    
+         DC    H'238',H'272'                                                    
+         DC    H'273',H'300'                                                    
+         DC    H'301',H'328'                                                    
+         DC    H'329',H'375'                                                    
+         DC    H'375',H'375'        PER 13 UNUSED                               
+         SPACE 1                                                                
+SMLST9   DS    (SMLSTLN)CL1         FILLER. NO TYPE 9 EXISTS                    
+         SPACE 1                                                                
+SMLST10  DC    H'0',H'27'           SPEC PER TYPE 10                            
+         DC    H'28',H'55'          4/4/4                                       
+         DC    H'56',H'83'                                                      
+         DC    H'84',H'111'                                                     
+         DC    H'112',H'139'                                                    
+         DC    H'140',H'167'                                                    
+         DC    H'168',H'195'                                                    
+         DC    H'196',H'223'                                                    
+         DC    H'224',H'251'                                                    
+         DC    H'252',H'279'                                                    
+         DC    H'280',H'307'                                                    
+         DC    H'308',H'335'                                                    
+         DC    H'336',H'375'        PER 13 USED HERE                            
+         SPACE 1                                                                
+SMLST11  DC    H'0',H'27'           SPEC PER TYPE 11                            
+         DC    H'28',H'55'          4/4/5/4/5/4/4/4/5/4/4/5                     
+         DC    H'56',H'90'                                                      
+         DC    H'91',H'118'                                                     
+         DC    H'119',H'153'                                                    
+         DC    H'154',H'181'                                                    
+         DC    H'182',H'209'                                                    
+         DC    H'210',H'237'                                                    
+         DC    H'238',H'272'                                                    
+         DC    H'273',H'300'                                                    
+         DC    H'301',H'328'                                                    
+         DC    H'329',H'375'                                                    
+         DC    H'375',H'375'        PER 13 IS UNUSED                            
+         SPACE 1                                                                
+SMLST12  DC    H'0',H'20'           SPEC PER TYPE 12                            
+         DC    H'21',H'55'          3/5/5                                       
+         DC    H'56',H'90'                                                      
+         DC    H'91',H'111'                                                     
+         DC    H'112',H'146'                                                    
+         DC    H'147',H'181'                                                    
+         DC    H'182',H'202'                                                    
+         DC    H'203',H'237'                                                    
+         DC    H'238',H'272'                                                    
+         DC    H'273',H'293'                                                    
+         DC    H'300',H'328'                                                    
+         DC    H'329',H'375'                                                    
+         DC    H'375',H'375'        PER 13 UNUSED                               
+         SPACE 1                                                                
+SMLST13  DC    H'0',H'27'           SPEC PER TYPE 13                            
+         DC    H'28',H'62'          4/5/4/4/4/5/4/4/5/4/4/5                     
+         DC    H'63',H'90'                                                      
+         DC    H'91',H'118'                                                     
+         DC    H'119',H'146'                                                    
+         DC    H'147',H'181'                                                    
+         DC    H'182',H'209'                                                    
+         DC    H'210',H'237'                                                    
+         DC    H'238',H'272'                                                    
+         DC    H'273',H'300'                                                    
+         DC    H'301',H'328'                                                    
+         DC    H'329',H'375'                                                    
+         DC    H'375',H'375'        PER 13 IS UNUSED                            
+         SPACE 1                                                                
+SMLST14  DS    (SMLSTLN)CL1         FILLER - NO TYPE 14 EXISTS                  
+*                                                                               
+SMLST15  DS    (SMLSTLN)CL1         FILLER - NO TYPE 15 EXISTS                  
+*                                                                               
+SMLST16  DS    (SMLSTLN)CL1         FILLER - NO TYPE 16 EXISTS                  
+*                                                                               
+SMLST17  DS    (SMLSTLN)CL1         FILLER - NO TYPE 17 EXISTS                  
+*                                                                               
+SMLST18  DS    (SMLSTLN)CL1         TYPE 18 EXISTS BUT NOT SUPPORTED            
+*                                                                               
+SMLST19  DS    (SMLSTLN)CL1         TYPE 19 EXISTS HANDLED ELSEWHERE            
+*                                                                               
+SMLST20  DC    H'0',H'27'           SPEC PER TYPE 20                            
+         DC    H'28',H'55'          4/4/5/4/5/4/4/5/4/4/5/4                     
+         DC    H'56',H'90'                                                      
+         DC    H'91',H'118'                                                     
+         DC    H'119',H'153'                                                    
+         DC    H'154',H'181'                                                    
+         DC    H'182',H'209'                                                    
+         DC    H'210',H'244'                                                    
+         DC    H'245',H'272'                                                    
+         DC    H'273',H'300'                                                    
+         DC    H'301',H'335'                                                    
+         DC    H'336',H'375'                                                    
+         DC    H'375',H'375'        PER 13 IS UNUSED                            
+*                                                                               
+* SPECIAL PERIOD QUARTERS                                                       
+**************                                                                  
+         SPACE 1                                                                
+SQLSTLN  EQU   5*4                 EACH LIST HAS 5 PERIODS                      
+SQLIST   DS    0D                                                               
+SQLST6   DC    H'0',H'90'           SPEC PER TYPE 6  (5/4/4)                    
+         DC    H'91',H'181'                                                     
+         DC    H'182',H'272'                                                    
+         DC    H'273',H'375'                                                    
+         DC    H'375',H'375'        QUART 5 UNUSED                              
+SQLST7   DC    H'0',H'90'           SPEC PER TYPE 7  (4/5/4)                    
+         DC    H'91',H'181'                                                     
+         DC    H'182',H'272'                                                    
+         DC    H'273',H'375'                                                    
+         DC    H'375',H'375'        QUART 5 UNUSED                              
+SQLST8   DC    H'0',H'90'           SPEC PER TYPE 8  (4/4/5)                    
+         DC    H'91',H'181'                                                     
+         DC    H'182',H'272'                                                    
+         DC    H'273',H'375'                                                    
+         DC    H'375',H'375'        QUART 5 UNUSED                              
+SQLST9   DS    (SQLSTLN)CL1         FILLER. NO TYPE 9 EXISTS                    
+SQLST10  DC    H'0',H'83'           SPEC PER TYPE 10 (4/4/4)                    
+         DC    H'84',H'167'                                                     
+         DC    H'168',H'251'                                                    
+         DC    H'252',H'335'                                                    
+         DC    H'336',H'375'                                                    
+SQLST11  DC    H'0',H'90'           SPEC PER TYPE 11                            
+         DC    H'91',H'181'                                                     
+         DC    H'182',H'272'                                                    
+         DC    H'273',H'375'                                                    
+         DC    H'375',H'375'                                                    
+SQLST12  DC    H'0',H'90'           SPEC PER TYPE 12 (3/5/5)                    
+         DC    H'91',H'181'                                                     
+         DC    H'182',H'272'                                                    
+         DC    H'273',H'375'                                                    
+         DC    H'375',H'375'        QUART 5 UNUSED                              
+SQLST13  DC    H'0',H'90'           SPEC PER TYPE 13                            
+         DC    H'91',H'181'                                                     
+         DC    H'182',H'272'                                                    
+         DC    H'273',H'375'                                                    
+         DC    H'375',H'375'        QUART 5 UNUSED                              
+*                                                                               
+SQLST14  DS    (SQLSTLN)CL1         FILLER. NO TYPE 14 EXISTS                   
+SQLST15  DS    (SQLSTLN)CL1         FILLER. NO TYPE 15 EXISTS                   
+SQLST16  DS    (SQLSTLN)CL1         FILLER. NO TYPE 16 EXISTS                   
+SQLST17  DS    (SQLSTLN)CL1         FILLER. NO TYPE 17 EXISTS                   
+SQLST18  DS    (SQLSTLN)CL1         TYPE 18 EXISTS BUT NOT SUPPORTED            
+SQLST19  DS    (SQLSTLN)CL1         TYPE 19 EXISTS HANDLED ELSEWHERE            
+*                                                                               
+SQLST20  DC    H'0',H'90'           SPEC PER TYPE 20                            
+         DC    H'91',H'181'         TYPE 20 Q2                                  
+         DC    H'182',H'272'        TYPE 20 Q3                                  
+         DC    H'273',H'375'        TYPE 20 Q4                                  
+         DC    H'375',H'375'        TYPE 20 Q5 UNUSED                           
+*                                                                               
+         EJECT                                                                  
+         LTORG                                                                  
+*                                                                               
+       ++INCLUDE DDCOMFACS                                                      
+*                                                                               
+* DSECT FOR TABLE OF NIELSEN MONTH/DATE DEFINITIONS                             
+*                                                                               
+MTHDATD  DSECT                                                                  
+MDSDATE  DS    0XL3                START DATE                                   
+MDSDYR   DS    HL1                 -START DATE YEAR                             
+MDSDMN   DS    HL1                 -START DATE MONTH                            
+MDSDDY   DS    HL1                 -START DATE DAY                              
+MDEDATE  DS    0XL3                END DATE                                     
+MDEDYR   DS    HL1                 -END DATE YEAR                               
+MDEDMN   DS    HL1                 -END DATE MONTH                              
+MDEDDY   DS    HL1                 -END DATE DAY                                
+MDNLBOOK DS    0XL2                NIELSEN BOOK                                 
+MDNLSYR  DS    HL1                 -NIELSEN YEAR                                
+MDNLSMN  DS    HL1                 -NIELSEN MONTH                               
+MTHDATLQ EQU   *-MTHDATD                                                        
+*                                                                               
+         EJECT                                                                  
+**  WORKING STORAGE                                                             
+WORKD    DSECT                                                                  
+*** COMMON FOR LOW LEVEL DATE UTILITIES                                         
+         DS    0F                                                               
+RELO     DS    F                                                                
+CURDATE  DS    0CL12                                                            
+CURYEAR  DS    CL1                                                              
+CURMONTH DS    CL1                                                              
+CURDAY   DS    CL1                                                              
+CURDOW   DS    CL1                                                              
+MONADDR  DS    A                                                                
+YRADDR   DS    A                                                                
+COMDAT   DS    CL2                 COMPRESSED DATE (NOT ALWAYS FILLED)          
+*                                                                               
+*** SAVE OF COMMON FOR LOW LEVEL DATE UTILITIES                                 
+         DS    0F                                                               
+SAVDATE  DS    0CL12                                                            
+SAVYEAR1 DS    CL1                                                              
+SAVMON1  DS    CL1                                                              
+SAVDAY   DS    CL1                                                              
+SAVDOW   DS    CL1                                                              
+SAVMNADR DS    A                                                                
+SAVYRADR DS    A                                                                
+*                                                                               
+SAVCMDAT DS    CL2                                                              
+*                                                                               
+*** PLACE TO HOLD DATES                                                         
+         DS    0F                                                               
+HOLDDATE DS    0CL12                                                            
+HOLYEAR1 DS    CL1                                                              
+HOLMON1  DS    CL1                                                              
+HOLDAY   DS    CL1                                                              
+HOLDOW   DS    CL1                                                              
+HOLMNADR DS    A                                                                
+HOLYRADR DS    A                                                                
+*                                                                               
+**** COMMON FOR USER CALLABLE DATE LIST UTILITIES                               
+         DS    0F                                                               
+STRTDAT  DS    0CL12               START DATE                                   
+STRTYR   DS    CL1                                                              
+STRTMON  DS    CL1                                                              
+STRTDAY  DS    CL1                                                              
+STRTDW   DS    CL1                                                              
+STRTMADR DS    A                                                                
+STRTYADR DS    A                                                                
+*                                                                               
+         DS    0F                                                               
+ENDDAT   DS    CL12                END DATE                                     
+MAXNTRYS DS    F                   THE MAXIMUM NUMBER OF LIST ENTRIES           
+OUTLIST  DS    A                   ADDRESS OF LIST TO BUILD                     
+STRTDOW  DS    CL1                 DOW FOR START OF PERIOD                      
+SPERTYP  DS    CL1                  SPECIAL PERIOD TYPE                         
+BASMON   DS    CL1                  SPEC PER BASE MONTH                         
+BASDAY   DS    CL1                  SPEC PER BASE DAY                           
+*                                                                               
+*  ARGUMENT LIST FOR ROUTINE FILLIST                                            
+FIL1HOOK DS    A                   ADDR OF MODULE TO GET STRT OF PERIOD         
+FIL2HOOK DS    A                   ADDR OF MODULE TO GET PREV PERIOD            
+*                                                                               
+DIFF     DS    F                                                                
+*                                                                               
+DAT1     DS    CL6                                                              
+DAT2     DS    CL6                                                              
+         DS    0H                                                               
+DMCB     DS    CL32                                                             
+WORK     DS    CL32                                                             
+DUB      DS    D                                                                
+HALF     DS    H                                                                
+*                                                                               
+         DS    0F                                                               
+ACOMFACS DS    F                                                                
+MTHDATES EQU   18                  NIELSEN MONTH/DATE DEFINITIONS               
+NENTIQRT EQU   36                  NIELSEN QUARTER DEFINITIONS                  
+*                                                                               
+WORKX    EQU   *                                                                
+*                                                                               
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'018NENETDATES03/14/18'                                      
+         END                                                                    

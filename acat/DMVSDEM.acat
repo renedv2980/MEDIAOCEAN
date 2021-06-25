@@ -1,0 +1,1293 @@
+*          DATA SET DMVSDEM    AT LEVEL 009 AS OF 03/25/19                      
+*PROCESS USING(WARN(15))                                                        
+*CATALP DMVSDEM                                                                 
+         PRINT NOGEN                                                            
+         TITLE 'DMVSDEM - DMGR EMULATION FOR VSAM DEMO FILES'                   
+***********************************************************************         
+*PARAMETER LIST AS FOR DMGR (MORE OR LESS). SEE INPARMS               *         
+*P1 A(ACTION) IGNORED, SEE P7                                         *         
+*P2 A(FILE)   IGNORED, SEE P7                                         *         
+*P3 A(KEY) FOR DIRECTORY READ, A(DA) FRO FILE READ.                   *         
+*P4 A(TO RETURN RECORD), A(KEY) FOR FILE READ                         *         
+*P7 DEMO FILE SET NUMBER, TYPE, AND DMGR ACTION CODE (SET BY DMDMGR)  *         
+*ON EXIT:                                                             *         
+*P3/0 X'80'= END OF MAJOR KEY (XXXFIL), X'40' = UNRECOVERABLE ERROR,  *         
+*     X'10'= RECORD NOT FOUND (DMREAD), X'02' = (DIR) RECORD DELETED  *         
+***********************************************************************         
+* SOME OF THE FOLLOWING HAS NOT BEEN KEPT UP TO DATE AS THE PROGRAM   *         
+* HAS BEEN DEVELOPED, SO PLEASE TREAT WITH CAUTION.                   *         
+*                                                                     *         
+* THIS MODULE EMULATES EXISTING DMGR CALLS FROM DEMO PROGRAMS USING   *         
+* VSAM/IAM KSDS VERSIONS OF THE EXISTING DANDX DEMO FILES             *         
+*                                                                     *         
+*   *** THIS MODULE IS NOT INTENDED TO HANDLE UPDATIVE ACTIONS ***    *         
+*                                                                     *         
+* ACTIONS: DMREAD, DMRDHI, DMRSEQ.                                    *         
+* FILES:   XXXDIR = DEMDIRA, DEMDIRN, DEMDIRR, PAVDIR, NTIDIR.        *         
+*          XXXFIL = DEMFIL*, PAVFIL, NTIFIL.                          *         
+*                                                                     *         
+* DMGR KEY IS 20 BYTES: 18 BYTES MAJOR KEY, 2 BYTES MINOR KEY         *         
+*                       MINOR KEY IS NOT PRESENT IN XXXDIR RECORDS              
+*                                                                     *         
+* VSAM KEY IS 21 BYTES: 18 BYTES MAJOR KEY, 2 BYTES MINOR KEY AND     *         
+*                       1 BYTE SEQUENCE NUMBER (0-250)                *         
+*                                                                     *         
+* IF THE SEQUENCE NUMBER IS X'FF' THE RECORD IS THE VSAM VERSION OF A *         
+* PASSIVE OTHERWISE IT WILL BE NON-ZERO IF THE 20 BYTE KEY DUPLICATES *         
+* THE PRECEDING KEY - ZERO FOR THE FIRST OR ONLY OCCURRENCE OF A KEY, *         
+* THEN A SIMPLE BINARY SEQUENCE NUMBER FOR DUPLICATES.                *         
+*                                                                     *         
+* WE USE A SEPARATE VSAM RPL FOR XXXDIR AND XXXFIL ACTIONS TO ENSURE  *         
+* THEY DON'T AFFECT EACH OTHER'S POSITIONING.                         *         
+*                                                                     *         
+* XXXDIR REQUESTS                                                     *         
+* ---------------                                                     *         
+* DMREAD AND DMRDHI ON XXXDIR WILL USE ONLY THE 18 BYTE MAJOR KEY.    *         
+*                                                                     *         
+* IF THE VSAM RECORD IS A PASSIVE (SEQNO=X'FF'), WE REFORMAT IT AND   *         
+* RETURN IT IN THE CORRECT DMGR XXXDIR PASSIVE FORMAT.                *         
+*                                                                     *         
+* IF THE VSAM RECORD IS NOT A PASSIVE WE REFORMAT IT AS A DMGR XXXDIR *         
+* POINTER BUT AS THERE IS NO DISK ADDRESS WITH VSAM, WE GENERATE ONE  *         
+* WITH A SEQUENCE NUMBER INCREMENTED (WITHIN AN XXXDIR FILE) EACH TIME*         
+* WE RETURN A POINTER RECORD.                                         *         
+*                                                                     *         
+* FOR A DMREAD, WE ALSO CHECK IF THE FIRST 18 BYTES OF THE RETURNED   *         
+* VSAM KEY IS EQUAL TO THE GIVEN 18 BYTE KEY. IF IT IS NOT, WE WILL   *         
+* RETURN RECORD NOT FOUND (P3/0=X'10').                               *         
+*                                                                     *         
+* DMRSEQ IS A POTENTIAL NIGHTMARE. FOR DANDX IT WOULD RETURN THE NEXT *         
+* MAJOR KEY BUT FOR VSAM IT WILL NORMALLY RETURN THE NEXT MINOR KEY   *         
+* FOR THE MAJOR KEY SO IT'S CONVERTED TO A READ HI TO SKIP TO THE     *         
+* NEXT MAJOR.                                                         *         
+*                                                                     *         
+* FOR XXXDIR READS, IF THE STATUS BYTE HAS THE X'80' BIT SET (DELETED)*         
+* THE BEHAVIOUR DEPENDS ON WHETHER IT IS A PASSIVE OR NOT.            *         
+* IF IT IS A PASSIVE IT IS ONLY RETURNED IF P1/0 HAS THE X'08' BIT    *         
+* SET (RETURN DELETED RECORDS), OTHERWISE THE NEXT RECORD IS READ AND *         
+* TESTED.                                                             *         
+* IF IT IS NOT A PASSIVE, WE IGNORE THE RECORD AND KEEP READING UNTIL *         
+* WE FIND A RECORD THAT IS NOT DELETED. WE NEVER RETURN A DELETED     *         
+* POINTER RECORD. DELETED RECORDS CANNOT EXIST ON DANDX DA FILES BUT  *         
+* THEY CAN IN VSAM SO TO TELL IF A MAJOR GROUP IS DELETED OR NOT WE   *         
+* HAVE TO READ THROUGH THE MINOR KEYS UNTIL EITHER WE FIND ONE THAT   *         
+* IS NOT DELETED, IN WHICH CASE THE MAJOR GROUP IS NOT DELETED, OR WE *         
+* REACH THE NEXT MAJOR KEY IN WHICH CASE THE WHOLE MAJOR KEY GROUP IS *         
+* DELETED AND SO WE IGNORE IT AND PROCESS THE NEXT ONE.               *         
+*                                                                     *         
+* XXXFIL REQUESTS                                                     *         
+* ---------------                                                     *         
+* DMREAD FOR A XXXFIL IS NOT SUPPORTED BY DMGR SO IS NOT ALLOWED HERE.*         
+*                                                                     *         
+* ANY DMRXXX COMMAND ON XXXFIL USES A 20 BYTE KEY. THE VSAM RECORD    *         
+* RETURNED WILL BE REFORMATTED TO THE SAME FORMAT AND CONTENT AS THE  *         
+* DMGR XXXFIL RECORD.                                                 *         
+*                                                                     *         
+* DANDX REQUIRES THE CALLER TO PASS THE ADDRESS OF THE DISK ADDRESS   *         
+* OF THE MAJOR KEY GROUP IN P3 RATHER THAN A KEY. THAT WILL BE THE    *         
+* ONE GENERATED IN THE PRECEDING XXXDIR CALL THAT RETURNED THE MAJOR  *         
+* KEY POINTER RECORD.                                                 *         
+*                                                                     *         
+* FOR AN XXXFIL DMRDHI, AS WELL AS THE DISK ADDRESS IN P3, DANDX      *         
+* REQUIRES THE MAJOR AND MINOR KEY OF THE REQUIRED DA RECORD TO BE    *         
+* PASSED IN THE I/O AREA IN P4. IT ALSO EXPECTS THE STATUS BYTE TO BE *         
+* SET FROM THE DIRECTORY RECORD.                                      *         
+* THE MAJOR KEY IS NEEDED SO THAT DATA MANAGER CAN WORK OUT WHICH     *         
+* XXXDIR DIRECTORY THE DIRECTORY RECORD CAME FROM.                    *         
+* THE STATUS BYTE TELLS WHICH LINKED DA FILE CONTAINS THE MAJOR KEY.  *         
+*                                                                     *         
+* FOR VSAM, A FULL MAJOR AND MINOR KEY IS ALSO REQUIRED, BUT NOT THE  *         
+* STATUS BYTE, BUT THE CALLER MUST STILL PASS A STATUS BYTE WITH A    *         
+* VALUE OF 1 OTHERWISE THERE MAY BE AN ABEND IN THE LEGACY DATA       *         
+* MANAGER CODE WHICH STILL RELIES ON IT.                              *         
+* THE DISK ADDRESS IS MEANINGLESS FOR VSAM, BUT TO ENSURE THE CALLER  *         
+* ISN'T PASSING A SAVED DISK ADDRESS WE ENSURE IT MATCHES THE LAST    *         
+* ONE WE WE RETURNED FROM A DIRECTORY CALL.                           *         
+*                                                                     *         
+* IF THE CALLER IS VSAM AWARE, THEY MAY CALL DATA MANAGER WITH A      *         
+* DMRDHI OR DMRSEQ PASSING A DISK ADDRESS OF X'FFFFFFFF'. THAT WILL   *         
+* TELL DMVSDEM TO JUST RETURN THE REQUESTED RECORD WITH NO INTEGRITY  *         
+* CHECKS                                                              *         
+*                                                                     *         
+* FOR AN XXXFIL DMRSEQ, LIFE GETS A LITTLE COMPLEX. DANDX ALLOWS A    *         
+* XXXFIL DMRSEQ WITHOUT A PRECEDING XXXFIL DMRDHI. IF THE PASSED DISK *         
+* ADDRESS HAS CHANGED, IT ASSUMES THE CALLER WANTS THE FIRST RECORD   *         
+* FROM THE MAJOR KEY WITH THAT DISK ADDRESS SO IT TREATS IT LIKE A    *         
+* DMRDHI WITH A NULL MINOR KEY. DMVSDEM MUST EMULATE THAT BEHAVIOUR.  *         
+*                                                                     *         
+* IF THE MAJOR KEY READ IS DIFFERENT FROM THE ONE REQUESTED FOR A     *         
+* DMRDHI OR PREVIOUSLY RETURNED FOR A DMRSEQ (IF NOT THE FIRST DMRSEQ)*         
+* DANDX RETURNS THE X'80' BIT (EOF) IN P3/0. DMVSDEM DOES THE SAME    *         
+* TO MATCH THE DANDX BEHAVIOUR AND ALSO SETS THE KEY OF THE RETURNED  *         
+* RECORD TO X'FF'S. THE SAME ACTION IS PERFORMED IF THE VSAM READ     *         
+* RETURNS A PASSIVE POINTER, SINCE THEY WOULD NOT EXIST ON XXXFIL.    *         
+*                                                                     *         
+***********************************************************************         
+* ACBS RESIDE WITHIN DMFILES AS A VARIANT OF THE EXISTING DTFS. THAT  *         
+* ALLOWS CONVENTIONAL FUNCTIONALITY SUCH AS 'GLOBALNESS', DYNAMIC     *         
+* ALLOCATION AND EVENTUALLY CROSS REGION LOCKING.                     *         
+*                                                                     *         
+* RPLS RESIDE WITHIN AN RPL TABLE IN STORAGE ACQUIRED ABOVE THE LINE  *         
+* I ALLOCATE FOUR RPLS PER TASK PER DA/IS PAIR. THAT ALLOWS FOR XXXFIL*         
+* AND XXDIR READS TO BE INDEPENDANT. ONE RPL IS USED FOR XXXDIR AND   *         
+* ONE FOR XXXFIL. A SECOND PAIR IS USED IF WE ARE DYNAMIUCALLY MERGING*         
+* A TEST FILE WITH A PRODUCTION FILE AS DESCRIBED BELOW.              *         
+*                                                                     *         
+***********************************************************************         
+* DYNAMIC MERGE                                                       *         
+* DMVSDEM SUPPORTS A VSAM DTF HAVING TWO ACBS. THE FIRST IS THE USUAL *         
+* NORMAL FILE AND THE ONLY ONE USED IN PRODUCTION. THE SECOND IS USED *         
+* WHEN MERGING A TEST VSAM FILE WITH A PRODUCTION FILE - ONLY ON SY7. *         
+* TWO PAIRS OF RPLS ARE USED, A PAIR FOR EACH FILE.                             
+* WHEN MERGING TWO FILES, THE TEST FILE TAKES PRECEDENCE. FOR XXXDIR  *         
+* READS, WE READ BOTH FILES AND USE THE FILE WITH THE LOWER MAJOR KEY *         
+* IF THE KEYS ARE THE SAME WE USE THE TEST FILE. THE DISK ADDRESS WE  *         
+* RETURN IN A POINTER INDICATES WHICH FILE THE POINTER CAME FROM AND  *         
+* ALL THE XXXFIL RECORDS FOR THAT MAJOR KEY MUST COME FROM THE SAME   *         
+* FILE.                                                               *         
+* WHEN THE SECOND FILE IS NOT ACTIVE, ALL THE FILE MERGING CODE IS    *         
+* BYPASSED.                                                           *         
+*                                                                     *         
+***********************************************************************         
+* NOTE ON TRPLIACQ AND TRPLIPUQ FLAGS:                                *         
+* IT'S POSSIBLE THAT A CALL TO ADWAIT OR VSWAIT MAY NEVER RETURN. THE *         
+* ONLY KNOWN EXAMPLE IS IN RUNNER WHERE THE ADWAIT ROUTINE CAN CALL A *         
+* ROUTINE NAMED TSTCAN WHICH CHECKS IF THE CURRENT RUNNER REQUEST IS  *         
+* TO BE CANCELLED. IF SO, IT RESETS RD BACK TO ITS BASE AND ENDS THE  *         
+* CURRENT REQUEST. IT THEN LOOKS FOR ANOTHER REQUEST TO RUN SO NEVER  *         
+* RETURNS TO DMVSDEM FROM ADWAIT. IT IS POSSIBLE THAT OTHER PROGRAMS, *         
+* INCLUDING FACPAK COULD DO SOMETHING SIMILAR.                        *         
+* IF WE DON'T RETURN FROM ADWAIT, THE CURRENT GET OPERATION WILL NOT  *         
+* BE PROPERLY COMPLETED AT THE CHECK MACRO. THE NEXT GET ON THE SAME  *         
+* RPL WILL THEN FAIL WITH RF=4.                                       *         
+* THE SOLUTION IS TO LOG THAT A GET IS IN PROGRESS IN THE RPL TABLE   *         
+* ENTRY (TRPLIACQ) AND IF THAT IS STILL SET WHEN WE START THE NEXT    *         
+* GET, WE KNOW THE LAST ONE HAS TO BE COMPLETED FIRST. TRPLIPUQ SHOWS *         
+* THAT THIS IS BEING DONE AND WHEN COMPLETE, WE CAN START THE NEW ONE.*         
+* WE CANNOT USE THE ENDREQ MACRO BECUASE IT IMPLIES A WAIT WHICH IS   *         
+* NOT ALLOWED ONLINE.                                                 *         
+***********************************************************************         
+         EJECT                                                                  
+         ENTRY DMVSCTRS                                                         
+         WXTRN VSWAIT                                                           
+         WXTRN ADWAIT                                                           
+         WXTRN SSB                                                              
+         WXTRN SYSFAC                                                           
+         WXTRN DEMVSMA                                                          
+         WXTRN DEMVSMN                                                          
+         WXTRN DEMVSMR                                                          
+         WXTRN NTIVSM                                                           
+         WXTRN PAVVSM                                                           
+*                                                                               
+DMVSDEM  CSECT                                                                  
+         NMOD1 WORKL,**VSDE**                                                   
+         USING WORKD,RC                                                         
+         SAM31                                                                  
+         ST    R1,SAVER1           SAVE A(CALLER PLIST)                         
+         MVC   INPARMS,0(R1)       COPY PARAMS                                  
+*                                                                               
+         CLI   DONEINIT,C'Y'                                                    
+         JE    *+8                                                              
+         BRAS  RE,INITFRST         DO FIRST TIME INITIALISATION                 
+*                                                                               
+         BRAS  RE,GETFILE          SET ACB ADDR                                 
+*                                                                               
+         BRAS  RE,GETACTN          SET ACTION                                   
+*                                                                               
+         BRAS  RE,GETRPL           SET RPL ADDR                                 
+*                                                                               
+         BRAS  RE,DOACTN           PERFORM ACTION AND SET RETURN FLAGS          
+*                                                                               
+EXITMOD  L     R1,SAVER1                                                        
+         MVC   0(L'INPARMS,R1),INPARMS RETURN PARMS                             
+         CLI   8(R1),0             CC EQL IF ALL OK                             
+         XMOD1 1                                                                
+         EJECT                                                                  
+***********************************************************************         
+* EXIT POINTS                                                         *         
+***********************************************************************         
+EXITH    CLI   *,0                                                              
+         J     EXIT                                                             
+*                                                                               
+EXITL    CLI   *,255                                                            
+         J     EXIT                                                             
+*                                                                               
+EXITOK   CR    RB,RB                                                            
+*                                                                               
+EXIT     XIT1  ,                                                                
+         EJECT                                                                  
+***********************************************************************         
+* FIRST TIME INITIALISATION                                           *         
+***********************************************************************         
+INITFRST NTR1  ,                                                                
+*                                                                               
+         ICM   RF,15,VSSBS         SET ONLINE/OFFLINE STATUS                    
+         JZ    INITFOFF                                                         
+         OC    0(2,RF),0(RF)                                                    
+         JZ    INITFOFF                                                         
+*                                                                               
+         MVI   ONLINE,C'Y'                                                      
+         LLC   R2,SSBTASKS-SSBD(,RF) ONLINE NUMBER OF RPL SETS                  
+         CHI   R2,MAXTASKS           (ONE SET PER ACTIVE TASK)                  
+         JNH   INITF10                                                          
+         DC    H'0'                CAN'T HAVE MORE THAN MAX                     
+*                                                                               
+INITFOFF MVI   ONLINE,C'N'                                                      
+         LA    R2,1                OFFLINE NUMBER OF RPL SETS                   
+*                                                                               
+INITF10  STC   R2,NRPLSETS                                                      
+*                                                                               
+         MHI   R2,RPLSETLQ         AMOUNT OF STORAGE TO OBTAIN                  
+         STORAGE OBTAIN,LENGTH=(2),LOC=ANY,BNDRY=PAGE,                 X        
+               COND=YES,CHECKZERO=YES                                           
+         ST    R1,ARPLTAB          STORE ADDRESS OF OBTAINED STORAGE            
+         CHI   RF,X'14'            TEST OBTAINED AND ZEROED                     
+         JE    INITFX              YES, ALL DONE                                
+         LTR   RF,RF               TEST OBTAINED AND NOT ZEROED                 
+         JNZ   *+2                 NO, CAN'T ACQUIRE RPL STORAGE                
+         LR    R0,R1               A(STORAGE OBTAINED)                          
+         LR    R1,R2               LENGTH                                       
+         LR    RE,R0                                                            
+         XR    RF,RF                                                            
+         MVCL  RE,R0               CLEAR STORAGE                                
+*                                                                               
+INITFX   BRAS  RE,TRCINIT          *??* INIT TRACE (OFFLINE ONLY)               
+         MVI   DONEINIT,C'Y'                                                    
+         J     EXITOK                                                           
+         EJECT                                                                  
+***********************************************************************         
+* GET ACB ENTRY INTO AACB1 AND AACB2                                  *         
+***********************************************************************         
+GETFILE  CLI   INFILSET,0                                                       
+         JE    *+2                                                              
+         CLI   INFILSET,NFILESQ                                                 
+         JH    *+2                                                              
+         LLC   RF,INFILSET         GET FILESET NUMBER 'N'                       
+         SLL   RF,3                TIMES L'FILTAB ENTRY (8)                     
+         LA    RF,FILTAB-8(RF)     PICK UP A('N'TH FILTAB ENTRY)                
+         ST    RF,AFILTAB          SAVE FILTAB ADDRESS                          
+         ICM   RF,15,TFILADTF-TFILD(RF) PICK UP A('N'TH DTF)                    
+         JZ    *+2                 MUST BE RESOLVED                             
+         ST    RF,ADTF             SAVE DTF ADDRESS                             
+         MVC   AACB1,ISFADCB-ISDTF(RF) COPY ACB1 ADDRESS                        
+         MVI   AACB1,0             CLEAR ISFOPEN FROM FRONT OF ADDRESS          
+         MVC   AACB2,ISACB2-ISDTF(RF) COPY ACB2 STATUS AND ADDRESS              
+         BR    RE                                                               
+         EJECT                                                                  
+***********************************************************************         
+* VALIDATE ACTION, SET ACTNIND                                        *         
+***********************************************************************         
+GETACTN  MVI   ACTNIND,0                                                        
+         CLI   INACTION,3          DMRSEQ (MOST COMMON?)                        
+         BER   RE                                                               
+         MVI   ACTNIND,ACTNIKYQ+ACTNIHIQ                                        
+         CLI   INACTION,4          DMRDHI (2ND MOST COMMON?)                    
+         BER   RE                                                               
+         MVI   ACTNIND,ACTNIKYQ                                                 
+         CLI   INACTION,2          DMREAD (3RD MOST COMMON?)                    
+         BER   RE                                                               
+         DC    H'0'                                                             
+         EJECT                                                                  
+***********************************************************************         
+* GET RPL TABLE ENTRY AND ECB ADDRESS FOR THIS FILE AND TASK          *         
+***********************************************************************         
+GETRPL   NTR1  ,                                                                
+         L     R4,ARPLTAB          R4=A(FIRST/ONLY RPL SET)                     
+         XR    R5,R5               R5=FIRST ECB SET                             
+         CLI   ONLINE,C'Y'                                                      
+         JNE   GETR10              OFFLINE ONLY 1 SET OF RPLS                   
+*                                                                               
+         L     RF,VSSBS            ONLINE LOCATE SET FOR THIS TCB               
+         ICM   RF,15,SSBTKADR-SSBD(RF)                                          
+         JZ    *+2                 MUST HAVE A TCB ONLINE                       
+         L     RE,VSYSFAC                                                       
+         L     RE,VTCB-SYSFACD(,RE) FIND TCB TABLE START                        
+         LH    R0,0(,RE)           R0=WIDTH OF EACH TCB ENTRY                   
+         SR    RF,RE               RF=DISP TO OUR TCB (+6)                      
+         SR    RE,RE                                                            
+         DR    RE,R0               RF=TCB NUMBER 0 BASED                        
+         LR    R5,RF               SAVE TCB NUMBER AS ECB SET                   
+         MHI   RF,RPLSETLQ         TIMES LENGTH OF AN RPL SET                   
+         AR    R4,RF               R4=A(RPL SET FOR THIS TASK)                  
+*                                                                               
+GETR10   LLC   RF,INFILSET         NOW FIND WHICH RPL TABLE ENTRY               
+         BCTR  RF,0                RELATIVE ZERO                                
+         MHI   RF,TRPLLNQ          TIMES RPL TAB ENTRY LENGTH                   
+         AR    R4,RF                                                            
+         USING TRPLD,R4                                                         
+*                                                                               
+         OC    TRPLADTF,TRPLADTF   ALREADY INITIALISED?                         
+         JNZ   GETR20              YES, SKIP                                    
+         MVC   TRPLADTF,ADTF       A(DMFILES DTF)                               
+         MVC   TRPLRPDP,BASERPL    COPY SKELETON RPL TO PROD DIR RPL            
+RPLDP    USING IFGRPL,TRPLRPDP     PROD DIR RPL                                 
+         MVC   RPLDP.RPLDACB,AACB1 A(ACB)                                       
+         LA    R1,TRPLARDP                                                      
+         ST    R1,RPLDP.RPLAREA    AREA TO RETURN A(RECORD)                     
+         LA    R1,L'DVKEY                                                       
+         STH   R1,RPLDP.RPLKEYL    ARGUMENT L'KEY                               
+         MHI   R5,ECBSETLQ         TCB NUM TIMES LENGTH OF AN ECB SET           
+         LLC   RF,INFILSET         NOW FIND WHICH ECB TAB ENTRY IN SET          
+         BCTR  RF,0                RELATIVE ZERO                                
+         MHI   RF,L'ECBTAB         TIMES ECB TAB ENTRY LENGTH                   
+         AR    R5,RF                                                            
+         LARL  RF,ECBTAB                                                        
+         AR    R5,RF                                                            
+         ST    R5,RPLDP.RPLECB     SET ECB ADDRESS                              
+         DROP  RPLDP                                                            
+         MVC   TRPLRPFP,TRPLRPDP   COPY PROD DIR RPL TO PROD FIL RPL            
+RPLFP    USING IFGRPL,TRPLRPFP     PROD FIL RPL                                 
+         LA    R1,TRPLARFP                                                      
+         ST    R1,RPLFP.RPLAREA    AREA TO RETURN A(RECORD)                     
+         DROP  RPLFP                                                            
+*                                                                               
+         TM    AACB2,ISACB2OP      TEST 2ND FILE ACTIVE                         
+         JZ    GETR20              NO                                           
+         OI    TRPLIND,TRPLMRGQ    SET MERGE CODE ACTIVE                        
+         MVC   TRPLRPDT,TRPLRPDP   COPY PROD DIR RPL TO TEST DIR RPL            
+RPLDT    USING IFGRPL,TRPLRPDT     TEST DIR RPL                                 
+         MVC   RPLDT.RPLDACB,AACB2 A(ACB)                                       
+         MVI   RPLDT.RPLDACB,0      CLEAR STATUS                                
+         LA    R1,TRPLARDT                                                      
+         ST    R1,RPLDT.RPLAREA     AREA TO RETURN A(RECORD)                    
+         DROP  RPLDT                                                            
+         MVC   TRPLRPFT,TRPLRPDT   COPY TEST DIR RPL TO TEST FIL RPL            
+RPLFT    USING IFGRPL,TRPLRPFT     TEST FIL RPL                                 
+         LA    R1,TRPLARFT                                                      
+         ST    R1,RPLFT.RPLAREA     AREA TO RETURN A(RECORD)                    
+         DROP  RPLFT                                                            
+*                                                                               
+GETR20   CLI   ONLINE,C'Y'         DETERMINE IF NEW TASK (WHERE POS)            
+         JNE   GETR22                                                           
+         L     RF,VSSBS            SAVE SIN IF ONLINE                           
+         USING SSBD,RF                                                          
+         L     RF,SSBTKADR                                                      
+         USING TCBD,RF                                                          
+         ICM   RF,15,TCBSIN                                                     
+         J     GETR28                                                           
+*                                                                               
+GETR22   ICM   RF,15,VSSBS         GET MASTC FROM SSB                           
+         JZ    GETR30                                                           
+         USING SSBD,RF                                                          
+         ICM   RE,15,SSOMASTC                                                   
+         JZ    GETR30              AMASTC (DDSIO) NOT AVAILABLE                 
+         USING MASTD,RE                                                         
+         TM    SSOFLAG3,SSO3RUNR   RUNNER USES BINARY!                          
+         JO    GETR24                                                           
+         CP    MCREQNO,=P'0'       MCREQNO IS PACKED. IGNORE ZERO               
+         JE    GETR30                                                           
+         ICM   RF,14,MCREQNO                                                    
+         SRL   RF,12                REMOVE SIGN AND CLEAR HOB                   
+         J     GETR28                                                           
+*                                                                               
+GETR24   ICM   RF,14,MCREQNO                                                    
+         SRL   RF,8                 CLEAR HOB                                   
+         DROP  RE,RF                                                            
+*                                                                               
+GETR28   NI    TRPLIND,255-TRPLINSQ POSIT NOT NEW SIN / TASK                    
+         CLM   RF,15,TRPLSIN                                                    
+         JE    GETR30                                                           
+         STCM  RF,15,TRPLSIN                                                    
+         OI    TRPLIND,TRPLINSQ    INDICATE NEW SIN / TASK                      
+         XC    TRPLWTCT,TRPLWTCT   RESET WAIT COUNTER                           
+GETR30   ST    R4,ATRPLENT                                                      
+         DROP  R4                                                               
+         J     EXITOK                                                           
+         EJECT                                                                  
+***********************************************************************         
+* PERFORM REQUESTED ACTION                                            *         
+***********************************************************************         
+DOACTN   NTR1  ,                                                                
+*                                                                               
+         USING DMVSDEMD,DMVSCTRS                                                
+*                                                                               
+         L     R4,ATRPLENT                                                      
+         USING TRPLD,R4            RPLTAB ENTRY                                 
+*                                                                               
+KEY      USING DEMOREC,R5          DEMO KEY PASSED BY CALLER                    
+IOA      USING DEMOREC,R6          CALLER'S IO AREA                             
+VSKEY    USING DVREC,VSAMKEY       KEY WORK AREA (TO BUILD VSAM KEY)            
+VSIOA    USING DVREC,R7            VSAM RECORD (LOCATE MODE)                    
+*                                                                               
+         L     R6,INAIO            R6=A(IOAREA)                                 
+         TM    INFLAGS,INFI31Q     TEST 31 BIT ADDRESS                          
+         JNZ   *+8                                                              
+         NILH  GR6,X'00FF'         NO, CLEAR HOB                                
+*                                                                               
+         BRAS  RE,TRCIN            *??* TRACE INPUT DETAILS                     
+*                                                                               
+         CLI   INFILTYP,C'D'       IS THIS A XXXDIR CALL                        
+         JNE   DOAC50              NO, GO PROCESS XXXFIL CALL                   
+*                                                                               
+* DEAL WITH XXXDIR READS                                                        
+*                                                                               
+DOAC10   TM    ACTNIND,ACTNIKYQ    ARE WE USING A KEY                           
+         JZ    DOAC20              NO, SO ITS A READ SEQ                        
+*                                                                               
+*        DMREAD OR DMRDHI.                                                      
+*        ALWAYS READ THE PROD FILE BY KEY FIRST.                                
+*        IF THE TEST FILE IS NOT ACTIVE, WE CAN ONLY USE THE PROD FILE.         
+*        IF THE TEST FILE IS ACTIVE, READ THAT TOO AND THEN GO AND              
+*        COMPARE IT WITH THE PROD FILE RECORD WE JUST READ.                     
+*                                                                               
+         LA    RF,CTRDREAD         *??* COUNT DMREAD/XXXDIR                     
+         TM    ACTNIND,ACTNIHIQ    *??*                                         
+         JZ    *+8                 *??*                                         
+         LA    RF,CTRDRDHI         *??* COUNT DMRDHI/XXXDIR                     
+         AP    0(CTRVLNQ,RF),=P'1' *??*                                         
+*                                                                               
+         XR    R5,R5               BUILD THE VSAM KEY FROM THAT GIVEN           
+         ICM   R5,B'0111',INAKEY   R5=A(KEY) FOR XXXDIR (KEY.)                  
+         MVC   VSKEY.DVKEYMAJ,KEY.DEMAJKEY COPY GIVEN MAJOR KEY                 
+         XC    VSKEY.DVKEYMIN(3),VSKEY.DVKEYMIN CLEAR MINOR KEY AND SEQ         
+*                                                                               
+         BRAS  RE,VSGETHIP         READ HI THE PRODUCTION DIR RPL               
+         JNE   DOACERR                                                          
+         L     R7,TRPLARDP         R7=A(LATEST PROD RECORD)                     
+*                                                                               
+         TM    TRPLIND,TRPLMRGQ    TEST MERGE CODE ACTIVE                       
+         JZ    DOAC30              NO, IGNORE THE TEST FILE                     
+*                                                                               
+         BRAS  RE,VSGETHIT         READ HI TEST DIR RPL                         
+         JNE   DOACERR                                                          
+         J     DOAC24              GO AND COMPARE THE KEYS RETURNED             
+*                                                                               
+*        DMRSEQ                                                                 
+*        THE SOURCE OF THE LAST DIRECTORY RECORD RETURNED WAS SAVED             
+*        IN TRPLDRPL. ALWAYS PERFORM A VSAM READ SEQ ON THAT FILE (IF           
+*        THE TEST FILE IS NOT ACTIVE THAT MUST HAVE BEEN THE PROD FILE)         
+*        NEXT, CHECK IF THE PROD FILE RECORD HAS THE SAME MAJOR KEY AS          
+*        THE LAST ONE RETURNED. IF SO READ HIGH TO GET THE NEXT MAJOR.          
+*        IF THE TEST FILE IS NOT ACTIVE, WE NOW HAVE OUR NEXT RECORD.           
+*        IF THE TEST FILE IS ACTIVE, CHECK IF THAT HAS THE SAME MAJOR           
+*        KEY AS THE LAST ONE RETURNED. IF SO READ HIGH TO GET ITS NEXT          
+*        MAJOR THEN GO AND COMPARE IT WITH THE PROD FILE RECORD.                
+*                                                                               
+DOAC20   AP    CTRDRSEQ,=P'1'      *??* COUNT DMRSEQ/XXXDIR                     
+         MVC   WHICHRPL,TRPLDRPL   SET LAST DIRECTORY RPL USED                  
+         BRAS  RE,VSGETSEQ         VSAM READ SEQ ON THAT RPL                    
+         JNE   DOACERR             (WHICHRPL ALREADY SET)                       
+*                                                                               
+         MVC   VSAMKEY,TRPLDIRK    SET UP KEY IN CASE NEED TO READ NEXT         
+         MVC   VSKEY.DVKEYMIN(3),=X'FFFFFF' MAJOR USING MINOR+SEQ=FFS           
+*                                                                               
+         L     R7,TRPLARDP         R7=A(LATEST PROD RECORD)                     
+         CLC   VSIOA.DVKEYMAJ,TRPLDIRK IS IT SAME MAJOR AS LAST?                
+         JNE   DOAC22              NO, OK (ONLY MAJOR KEYS ON DIR)              
+         AP    CTRDRSHI,=P'1'      *??* COUNT DMRDHI FOR NEXT MAJOR             
+         BRAS  RE,VSGETSKP         VSAM READ SKIP PROD DIR FOR NEXT MAJ         
+         JNE   DOACERR                                                          
+*                                                                               
+DOAC22   TM    TRPLIND,TRPLMRGQ    TEST MERGE CODE ACTIVE                       
+         JZ    DOAC30              NO, IGNORE THE TEST FILE                     
+*                                                                               
+         L     R7,TRPLARDT         R7=A(LATEST TEST RECORD)                     
+         CLC   VSIOA.DVKEYMAJ,TRPLDIRK IS IT IN SAME MAJOR AS LAST?             
+         JNE   DOAC24              NO, OK (ONLY MAJOR KEYS ON DIR)              
+         AP    CTRDRSHI,=P'1'      *??* COUNT DMRDHI FOR NEXT MAJOR             
+         BRAS  RE,VSGETSKT         VSAM READ SKIP TEST DIR FOR NEXT MAJ         
+         JNE   DOACERR             (SETS WHICHRPL)                              
+*                                                                               
+*        COME HERE IF THE TEST FILE IS ACTIVE TO DECIDE WHICH FILE TO           
+*        USE BY COMPARING THE PROD FILE MAJOR KEY WITH THE TEST FILE.           
+*        - IF THE TEST FILE KEY IS LOWER OR EQUAL, USE THE TEST FILE.           
+*        - ONLY USE THE PROD FILE RECORD IF ITS KEY IS THE LOWER.               
+*                                                                               
+DOAC24   L     R7,TRPLARDP         R7=A(LATEST PROD RECORD) (VSIOA)             
+         MVI   WHICHRPL,RPLDPQ     AND SET WHICHRPL TO PROD                     
+         L     R1,TRPLARDT         R1=A(LATEST TEST RECORD)                     
+         CLC   VSIOA.DVKEYMAJ,0(R1) COMPARE PROD MAJOR KEY WITH TEST            
+         JL    DOAC30              IF PROD KEY LOW, USE PROD FILE               
+         LR    R7,R1               ELSE USE TEST FILE                           
+         MVI   WHICHRPL,RPLDTQ     AND RESET WHICHRPL TO TEST                   
+*                                                                               
+*        CHECK IF THE RECORD WE HAVE IS SUITABLE.                               
+*        - IF THE RECORD IS MARKED DELETED, AND IT'S A PASSIVE, AND             
+*          THE CALLER WANTS DELETED RECORDS, THEN RETURN IT.                    
+*          OTHERWISE WE MUST IGNORE IT AND READ THE NEXT FROM THE               
+*          SAME FILE.                                                           
+*          IF WE HAVE TO READ THE NEXT RECORD, AND THE TEST FILE IS             
+*          ACTIVE, WE MUST REPEAT THE COMPARE AS ABOVE                          
+*        - FOR A DMREAD, THE MAJOR KEY MUST MATCH THAT REQUESTED                
+*          IF IT DOESN'T, THEN SET AND RETURN 'NO RECORD FOUND'.                
+*                                                                               
+DOAC30   TM    VSIOA.DVSTAT,DVSDEL IS THIS RECORD DELETED                       
+         JZ    DOAC36              NO, SEE IF MATCHES                           
+         CLI   VSIOA.DVKEYSEQ,X'FF' IS IT A PASSIVE?                            
+         JNE   DOAC32              NO, SKIP                                     
+         TM    INFLAGS,INFDELQ     RETURN DELETES?                              
+         JNZ   DOAC36              YES, RETURN IT WITH DELETE FLAG              
+*                                                                               
+DOAC32   AP    CTRDDSK,=P'1'       *??* COUNT DELETED RECORDS SKIPPED           
+         BRAS  RE,VSGETSEQ         READ SEQ NEXT RECORD ON SAME FILE            
+         JNE   DOACERR                                                          
+         TM    TRPLIND,TRPLMRGQ    TEST MERGE CODE ACTIVE                       
+         JZ    DOAC30              NO, SEE IF THIS ONE WILL DO                  
+         J     DOAC24              YES, REPEAT THE PROD/TEST COMPARE            
+*                                                                               
+DOAC36   TM    ACTNIND,ACTNIKYQ    ARE WE USING A KEY                           
+         JZ    DOAC38              NO, DON'T CHECK KEY FOR READ SEQ             
+         TM    ACTNIND,ACTNIHIQ    IS IT A READ HI?                             
+         JO    DOAC38              YES, DON'T CHECK KEY                         
+         CLC   VSKEY.DVKEYMAJ,VSIOA.DVKEYMAJ COMPARE MAJOR KEY                  
+         JE    DOAC38              IS IT WHAT WE WANTED?                        
+         OI    INSTAT,INSNRFQ      NO, INDICATE RECORD NOT FOUND                
+         AP    CTRDNRF,=P'1'       *??* COUNT NO RECORD FOUND                   
+*                                                                               
+DOAC38   TM    VSIOA.DVSTAT,DVSDEL IS THIS RECORD DELETED                       
+         JZ    DOAC40              NO, SKIP                                     
+         OI    INSTAT,INSDELQ      FLAG DELETED RECORD RETURNED                 
+         AP    CTRDDEL,=P'1'       *??* COUNT DELETED DIR REC RETURNED          
+*                                                                               
+*                                                                               
+*        REFORMAT RECORD AS A DANDX DIRECTORY REC AND RETURN TO CALLER          
+*        ALWAYS COPY THE MAJOR KEY AND STATUS                                   
+*        IF IT'S A PASSIVE, WE EITHER ZERO THE DISK ADDRESS OR COPY THE         
+*        EXTENDED DATA INTO IT.                                                 
+*        IF IT'S NOT A PASSIVE, WE MUST FAKE UP A POINTER RECORD BUT AS         
+*        WE HAVE NO DISK ADDRESS. WE GENERATE ONE WITH A SEQUENCE               
+*        NUMBER SO WE CAN ENSURE ANY SUBSEQUENT XXXFIL READ PASSES US           
+*        WHAT WE LAST RETURNED. THAT'S DANDX BEHAVIOUR AND WITHOUT IT,          
+*        IT ALL GOES PEAR-SHAPED. THE FIRST BYTE OF THE GENERATED DISK          
+*        ADDRESS INDICATES WHICH FILE THE RECORD CAME FROM AND SO TELLS         
+*        THE XXXFIL ROUTINES WHICH FILE TO READ FROM.                           
+*        WE ALSO SET UP TRPLFILK READY FOR THE FIRST XXXFIL READ.               
+*                                                                               
+DOAC40   MVI   TRPLLFIL,C'D'       LAST FILE READ WAS A XXXDIR                  
+         MVC   TRPLDRPL,WHICHRPL   LAST DIRECTORY RPL USED                      
+         MVC   TRPLDIRK,VSIOA.DVKEY SAVE KEY BEING RETURNED                     
+*                                                                               
+         MVC   IOA.DEMAJKEY,VSIOA.DVKEYMAJ COPY MAJOR KEY FOR DIR REC           
+         MVC   IOA.DEDSTAT,VSIOA.DVSTAT COPY STATUS                             
+         CLI   VSIOA.DVKEYSEQ,X'FF' TEST WE GOT A PASSIVE                       
+         JNE   DOAC44              NO, GO FAKE A DISK ADDRESS                   
+*                                                                               
+         XC    IOA.DEDDATA,IOA.DEDDATA ZERO DATA                                
+         LA    RF,CTRDPAOP         *??* COUNT ORDINARY PASSIVES RETURND         
+         TM    VSIOA.DVSTAT,DVSEXTP TEST EXTENDED PASSIVE                       
+         JZ    DOAC48              NO, ALL DONE                                 
+         MVC   IOA.DEDDATA,VSIOA.DVPDATA COPY EXTENDED DATA                     
+         LA    RF,CTRDPAEP         *??* COUNT EXTENDED PASSIVES RETURND         
+         J     DOAC48                                                           
+*                                  NOT A PASSIVE SO FAKE UP A DISK ADDR         
+DOAC44   MVI   TRPLLDAF,TRPLLDPQ   SET PRODUCTION FILE IN BYTE 0 OF DA          
+         CLI   TRPLDRPL,RPLDPQ                                                  
+         JE    *+8                                                              
+         MVI   TRPLLDAF,TRPLLDTQ   ELSE TEST FILE IN BYTE 0                     
+         XR    RE,RE               THEN A RUNNING SEQUENCE NUMBER               
+         ICM   RE,B'0111',TRPLLDAS IN BYTES 1 TO 3                              
+         LA    RE,1(,RE)                                                        
+         STCM  RE,B'0111',TRPLLDAS                                              
+         MVC   IOA.DEDDATA,TRPLLDA                                              
+         OI    IOA.DEDSTAT,DESFILNO SET NONZERO FILE IX ELSE DMGR DIES          
+*                                                                               
+         MVC   TRPLFILK,VSIOA.DVKEYMAJ SET NEW MAJOR KEY FOR FILE READS         
+         XC    TRPLFILK+DVKEYMIN-DVKEY(3),TRPLFILK+DVKEYMIN-DVKEY               
+*                                                                               
+         LA    RF,CTRDPTRP         *??* COUNT POINTERS RETURNED                 
+*                                                                               
+DOAC48   NI    IOA.DEDSTAT,255-DESNPROD ENSURE NON PROD STATUS CLEARED          
+         CLI   WHICHRPL,RPLDTQ     TEST READ FROM TEST RPL                      
+         JNE   DOACTNX             NO, ALL DONE                                 
+         OI    IOA.DEDSTAT,DESNPROD YES, SET NON PROD STATUS                    
+         LA    RF,CTRVLNQ(,RF)     *??* CHANGE PROD COUNTER TO TEST             
+         J     DOACTNX                                                          
+*                                                                               
+* DEAL WITH XXXFIL READS                                                        
+* DANDX REQUIRES THE REQUESTED MINOR KEY TO BE IN THE IO AREA AND               
+* THE DISK ADDRESS OF THE MAJOR KEY'S DA INDEX IN THE KEY AREA                  
+*                                                                               
+DOAC50   LR    R5,R6               R5=A(KEY) FOR XXXFIL FROM IOAREA             
+         MVC   VSKEY.DVKEY,KEY.DEFKEY COPY WHOLE DEMO KEY FROM CALLER           
+         MVI   VSKEY.DVKEYSEQ,0    AND ZERO SEQUENCE                            
+*                                                                               
+*        DETERMINE WHICH VSAM FILE TO READ BASED ON BYTE 1 OF DISK              
+*        ADDRESS PASSED TO CALLER IN LAST DIRECTORY POINTER CALL                
+*        NO NEED TO TEST WHETHER SECOND FILE IS ACTIVE. THE DIRECTORY           
+*        READ WILL HAVE INDICATED WHICH FILE IN THE DISK ADDRESS AND            
+*        WILL NOT HAVE SPECIFIED THE TEST FILE UNLESS IT WAS ACTIVE.            
+*                                                                               
+         MVI   WHICHRPL,RPLFPQ     PRESET XXXFIL READS FROM PROD RPL            
+         MVC   GETLAREC,TRPLARFP          A(LAST RECORD)                        
+         MVC   GETLRLEN,TRPLLNFP          AND LAST RECLEN                       
+         XR    RF,RF               PICK UP A(CALLERS KEY AREA) WHICH            
+         ICM   RF,B'0111',INAKEY   MUST CONTAIN A DISK ADDRESS.                 
+         CLC   =X'FFFFFFFF',0(RF)  DISK ADDRESS OF ALL FFS MEANS CALLER         
+         JE    DOAC51              IS VSAM AWARE AND READING FILE 1             
+         CLC   TRPLLDA,0(RF)       ELSE CALLERS DISK ADDR MUST BE SAME          
+         JNE   *+2                 AS LAST RETURNED (DANDX BEHAVIOUR)           
+         CLI   TRPLLDAF,TRPLLDPQ   TEST DISK ADDRESS IS THE PROD FILE           
+         JE    DOAC51              SKIP IF IT IS                                
+         MVI   WHICHRPL,RPLFTQ     SET XXXFIL READS FROM TEST RPL               
+         MVC   GETLAREC,TRPLARFT       A(LAST RECORD)                           
+         MVC   GETLRLEN,TRPLLNFT       AND LAST RECLEN                          
+*                                                                               
+*        DO DMRDHI OR DMRSEQ. DMREAD NOT VALID FOR XXXFIL.                      
+*        NOTE DMRSEQ HAS TO BE A READ HI IF THE PREVIOUS CALL WAS A             
+*        XXXDIR READ BECUASE THAT WILL HAVE LOST THE POSITIONING                
+*                                                                               
+DOAC51   L     R7,GETLAREC         GET A(LAST RECORD READ) FOR VSIOA            
+         TM    ACTNIND,ACTNIKYQ    ARE WE USING A KEY                           
+         JNZ   DOAC54              YES, SKIP                                    
+*        DMRSEQ                                                                 
+         AP    CTRFRSEQ,=P'1'      *??* COUNT DMRSEQ/XXXFIL                     
+         BRAS  RE,VSGETSEQ         GO TO VSAM READ SEQ I/O ROUTINE              
+         JE    DOAC60              (WHICHRPL ALREADY SET)                       
+         J     DOACERR                                                          
+*        DMRDHI                                                                 
+DOAC54   TM    ACTNIND,ACTNIHIQ    KEY READ, ENSURE DMRDHI                      
+         JZ    *+2                 DMREAD/XXFIL NOT SUPPORTED FOR DANDX         
+         AP    CTRFRDHI,=P'1'      *??* COUNT DMRDHI/XXXFIL                     
+         CLC   VSKEY.DVKEYMAJ,VSIOA.DVKEYMAJ SAME MAJOR AS LAST READ?           
+         JNE   DOAC56              NO, MUST DO A READ HIGH                      
+         CLC   VSKEY.DVKEYMIN,VSIOA.DVKEYMIN YES, COMPARE MINOR KEYS            
+         JH    DOAC58              IF LAST LOW, CAN USE SKIP SEQ                
+         JL    DOAC56              IF LAST HIGH, MUST USE READ HIGH             
+         CLI   VSIOA.DVKEYSEQ,0    MUST BE FIRST OCCURRENCE OF MINOR            
+         JNE   DOAC56              IF NOT, MUST USE READ HIGH TO GET IT         
+         AP    CTRFALRD,=P'1'      *??* COUNT RECORD ALREADY THERE              
+         J     DOAC60              ELSE, IT'S ALREADY THERE                     
+*                                                                               
+DOAC56   BRAS  RE,VSGETHI          READ HI (WHICHRPL ALREADY SET)               
+         JNE   DOACERR                                                          
+         J     DOAC60                                                           
+*                                                                               
+DOAC58   BRAS  RE,VSGETSK          READ SKIP (WHICHRPL ALREADY SET)             
+         JNE   DOACERR                                                          
+*                                                                               
+DOAC60   L     R7,GETLAREC         VSGET RESETS GETLAREC                        
+*                                                                               
+*        DANDX RETURNS EOF IF THE CALLER TRIES TO READ PAST THE LAST            
+*        MINOR KEY RECORD FOR THE REQUESTED MAJOR KEY.                          
+*        IF WE SEE THE MAJOR KEY HAS CHANGED OR IS DIFFERENT FROM THAT          
+*        IN THE LAST POINTER RECORD WE RETURNED, WE LIKEWISE SET EOF.           
+*        WE ALSO RETURN A DUMMY RECORD WITH A KEY OF XFFS. FOR SAFETY           
+*        WE SET THE MINOR KEY AND SEQUENCE NUMBER IN TRPLFILK TO XFFS.          
+*                                                                               
+         CLC   VSIOA.DVKEYMAJ,TRPLFILK SAME MAJOR AS LAST?                      
+         JE    DOAC70              YES, RETURN IT                               
+         CLI   VSIOA.DVKEYSEQ,X'FF' *??*PASSIVE? (DONT EXIST ON XXXFIL)         
+         JNE   *+10                *??* NO, SKIP                                
+         AP    CTRFPAS,=P'1'       *??* COUNT PASSIVES ENCOUNTERED              
+         MVI   IOA.DEFKEY,X'FF'    CHANGE OF MAJOR KEY GIVES EOF                
+         MVC   IOA.DEFKEY+1(L'DEFKEY-1),IOA.DEFKEY BUILD DUMMY FFS REC          
+         MVC   IOA.DEFLEN,=AL2(DEFLENQ)                                         
+         XC    IOA.DEFSTAT(L'DEFSTAT+L'DEFFRST),IOA.DEFSTAT                     
+         OI    INSTAT,INSEOFQ      SET MAJOR KEY CHANGE (EOF)                   
+         MVC   TRPLFILK+DVKEYMIN-DVKEY(3),IOA.DEFKEY MINOR+SEQ TO FFS           
+         AP    CTRFEOF,=P'1'       *??* COUNT EOF SET                           
+         J     DOAC90              ALL DONE                                     
+*                                                                               
+*        IF THE VSAM RECORD IS CURRENTLY DELETED, IGNORE IT AND GET             
+*        THE NEXT ONE. DANDX DOESN'T SUPPORT DELETION OF XXXFIL RECS            
+*                                                                               
+DOAC70   TM    VSIOA.DVSTAT,DVSDEL CHECK IF VSAM RECORD IS DELETED              
+         JZ    DOAC80              NO                                           
+         AP    CTRFDSK,=P'1'       *??* COUNT DELETES SKIPPED                   
+         BRAS  RE,VSGETSEQ         NEXT RECORD (WHICHRPL ALREADY SET)           
+         JE    DOAC60              AND SEE IF THAT ONE IS OK                    
+         J     DOACERR                                                          
+*                                                                               
+*        REFORMAT THE VSAM RECORD TO DANDX FORMAT FOR RETURN TO CALLER          
+*        ESSENTIALLY THAT JUST MEANS DROPPING THE ONE BYTE SEQUENCE             
+*        NUMBER FROM THE END OF THE VSAM KEY.                                   
+*                                                                               
+DOAC80   MVC   IOA.DEFKEY,VSIOA.DVKEY COPY MAJOR AND MINOR KEY                  
+         XR    R1,R1                                                            
+         ICM   R1,B'0011',VSIOA.DVLENDDS GET DDS RECORD LENGTH                  
+         BCTR  R1,0                LESS ONE AS WE ARE SHORTENING RECORD         
+         STCM  R1,B'0011',IOA.DEFLEN STORE NEW DDS LENGTH                       
+         LH    R1,GETLRLEN         GET ACTUAL LENGTH FROM VSAM                  
+         AHI   R1,-(L'DEFKEY+2+1)  LESS LEN SET UP + 1 AS SHORTENING            
+         LA    R0,VSIOA.DVSTAT     R0=A(REMAINING DATA IN VSAM RECORD)          
+         LA    RE,IOA.DEFSTAT      RE=A(REMAINING AREA IN FILE RECORD)          
+         LR    RF,R1                                                            
+         MVCL  RE,R0               MOVE REMAINDER OF RECORD                     
+         XC    0(2,RE),0(RE)       MAKE SURE THERE'S A GOOD TERMINATOR          
+*                                                                               
+         NI    IOA.DEFSTAT,255-DESNPROD ENSURE NON PROD STATUS CLEARED          
+         CLI   WHICHRPL,RPLFTQ     TEST READ FROM TEST RPL                      
+         JNE   *+8                 NO, SKIP                                     
+         OI    IOA.DEFSTAT,DESNPROD YES, SET NON PROD STATUS                    
+*                                                                               
+         MVC   TRPLFILK,VSIOA.DVKEY SAVE KEY OF RECORD BEING RETURNED           
+*                                                                               
+*        FINISH UP THE XXXFIL READ OPERATION                                    
+*                                                                               
+DOAC90   MVI   TRPLLFIL,C'F'       LAST FILE READ WAS A XXXFIL                  
+         LA    RF,CTRFOUTP         *??* COUNT PROD FILE RECS RETURNED           
+         CLI   WHICHRPL,RPLFTQ     *??*                                         
+         JNE   *+8                 *??*                                         
+         LA    RF,CTRFOUTT         *??* COUNT TEST FILE RECS RETURNED           
+*                                                                               
+* FINISH UP THE WHOLE ACTION                                                    
+*                                                                               
+         DROP  KEY,VSKEY,IOA,VSIOA                                              
+DOACTNX  AP    0(CTRVLNQ,RF),=P'1' *??* COUNT WHAT WE RETURNED                  
+         BRAS  RE,TRCOUT           *??* TRACE OUTPUT                            
+         J     EXITOK                                                           
+*                                                                               
+* HANDLE AN ERROR FROM A VSGET ROUTINE                                          
+*                                                                               
+DOACERR  OI    INSTAT,INSNRDEQ     SET UNRECOVERABLE DISK ERROR                 
+         AP    CTRVERR,=P'1'       *??* COUNT VSAM ERRORS                       
+         MVC   VSERRLST(4),INP7    SAVE P7 FROM CURRENT CALL                    
+         MVC   VSERRLST+4(4),GETFDBWD SAVE CURRENT ERROR FEEDBACK               
+         OC    VSERR1ST,VSERR1ST                                                
+         JNZ   *+10                                                             
+         MVC   VSERR1ST,VSERRLST   SAVE DETAILS OF FIRST ERROR                  
+         DC    H'0'                ABEND ON ERROR, CALLERS NOT CHECKING         
+         J     EXITL                                                            
+         DROP  R4                                                               
+         EJECT                                                                  
+***********************************************************************         
+* VSAM IO ROUTINES: R4=A(TRPLD ENTRY). XXXFIL CALLS PRESET WHICHRPL   *         
+***********************************************************************         
+         USING TRPLD,R4            RPLTAB ENTRY                                 
+*                                                                               
+VSGETHIP MVI   WHICHRPL,RPLDPQ     PROD DIR GETHI                               
+         J     VSGETHI                                                          
+VSGETHIT MVI   WHICHRPL,RPLDTQ     TEST DIR GETHI                               
+VSGETHI  NTR1   ,                                                               
+         AP    CTRVSHI,=P'1'       *??* COUNT VSAM READ HI GETS                 
+         MVI   VSOPT1,RPLDIR+RPLKGE SET OPTCD=DIR AND KEY >=                    
+         J     VSGETIN                                                          
+*                                                                               
+VSGETSKP MVI   WHICHRPL,RPLDPQ     PROD DIR GETSK                               
+         J     VSGETSK                                                          
+VSGETSKT MVI   WHICHRPL,RPLDTQ     TEST DIR GETSK                               
+VSGETSK  NTR1  ,                   READ SKIP                                    
+         AP    CTRVSSK,=P'1'       *??* COUNT VSAM READ SKP GETS                
+         MVI   VSOPT1,RPLSKP+RPLKGE SET OPTCD=SKP AND KEY >=                    
+         J     VSGETIN                                                          
+*                                                                               
+VSGETSQP MVI   WHICHRPL,RPLDPQ     PROD DIR GETSQ                               
+         J     VSGETSEQ                                                         
+VSGETSQT MVI   WHICHRPL,RPLDTQ     TEST DIR GETSQ                               
+VSGETSEQ NTR1  ,                                                                
+         AP    CTRVSSQ,=P'1'       *??* COUNT VSAM READ SEQ GETS                
+         MVI   VSOPT1,RPLSEQ        SET OPTCD=SEQ                               
+*                                                                               
+VSGETIN  TM    TRPLIND,TRPLIACQ    IS AN RPL STILL ACTIVE?                      
+         BZ    VSGETIN1            NO, THAT'S GOOD. IT SHOULDN'T BE             
+         AP    CTRVRAC,=P'1'       *??* COUNT RPL STILL ACTIVE.                 
+         OI    TRPLIND,TRPLIPUQ    MUST COMPLETE ACTIVE REQUEST FIRST           
+         LLC   R2,TRPLARPL         HAPPENS IF LAST ADWAIT DIDN'T RETURN         
+         MH    R2,=H'80'           SEE NOTES ON TRPLIACQ AT TOP OF PROG         
+         LA    R2,TRPLRPLS(R2)     INDEX TO LAST ACTIVE RPL                     
+         J     VSWAITER            WAIT FOR IT TO COMPLETE                      
+*                                                                               
+VSGETIN1 MVC   TRPLARPL,WHICHRPL   REMEMBER NEW ACTIVE RPL                      
+*                                                                               
+         LLC   R2,TRPLARPL                                                      
+         MH    R2,=H'80'                                                        
+         LA    R2,TRPLRPLS(R2)     INDEX TO RPL                                 
+         USING IFGRPL,R2                                                        
+*                                                                               
+         NI    RPLOPT1,255-(RPLDIR+RPLKGE+RPLSKP+RPLSEQ)                        
+         OC    RPLOPT1,VSOPT1      SET OPT1                                     
+         OI    RPLOPT2,RPLNSP      SET OPTCD=NSP (NOTE STRING POSN)             
+         NI    RPLOPT2,255-RPLUPD  ENSURE UPDATE CLEARED                        
+         LA    R1,VSAMKEY          POINT TO VSAM KEY WORK AREA                  
+         ST    R1,RPLARG           SET AS ARGUMENT                              
+*                                                                               
+         LA    R8,TRTDUMMY         *??* ONLINE USE DUMMY TRACE ENTRY            
+         CLI   ONLINE,C'Y'         *??*                                         
+         JE    VSGETIN2            *??*                                         
+         LH    R8,TTRTAB           *??* OFFLINE SET CURRENT TRACE ENTRY         
+         BCTR  R8,0                *??*                                         
+         MHI   R8,TRTABLQ          *??* TIMES LENGTH                            
+         A     R8,ATRTAB           *??* POINT TO NEW CURRENT                    
+         USING TRTABD,R8           *??*                                         
+VSGETIN2 L     RE,RPLARG           *??*                                         
+         MVC   TRTVKEY,0(RE)       *??* TRACE KEY USED                          
+         MVC   TRTVOPT1,RPLOPT1    *??*                                         
+         MVC   TRTVOPT2,RPLOPT2    *??*                                         
+         ST    R2,TRTVARPL         *??*                                         
+         LH    RE,TRTVCNT          *??* COUNT GETS FOR THIS CALL                
+         LA    RE,1(,RE)           *??*                                         
+         STH   RE,TRTVCNT          *??*                                         
+*                                                                               
+         L     R1,RPLDACB                                                       
+         USING IFGACB,R1                                                        
+         TM    ACBOFLGS,ACBOPEN    SEE IF ACB IS OPEN                           
+         JZ    *+2                 NO, ABEND                                    
+         DROP  R1                                                               
+*                                                                               
+         L     R1,RPLECB                                                        
+         XC    0(4,R1),0(R1)       CLEAR ECB                                    
+         OI    RPLOPT1,RPLECBSW    INDICATE EXTERNAL ECB                        
+         MVI   TRTVWAIT,C'N'       *??* TRACE PRESET TO NO WAIT                 
+         GET   RPL=(R2)                                                         
+         OI    TRPLIND,TRPLIACQ    RPL ACTIVE (CHECK PENDING)                   
+         ST    RF,TRTVRF           *??* TRACE RF FROM GET                       
+         LTR   RF,RF                                                            
+         JNZ   VSGETXX             ERROR ON GET BEFORE WAIT                     
+*                                                                               
+VSWAITER CLI   ONLINE,C'Y'         HANDLE WAIT IF REQUIRED                      
+         JE    VSWTONL             SKIP IF ONLINE                               
+*                                                                               
+*        OFFLINE WAIT CHECKS                                                    
+*                                                                               
+VSWTOFFL L     R1,RPLECB                                                        
+         TM    0(R1),X'40'         OFFLINE DO WE NEED TO WAIT?                  
+         JNZ   *+14                NO, SKIP, ECB POSTED                         
+         AP    CTRVSWT,=P'1'       *??* COUNT VSAM READS NOT POSTED             
+         MVI   TRTVWAIT,C'Y'       *??* TRACE HAD TO WAIT                       
+         LLH   R1,TRPLWTCT         COUNT OFFLINE GETS                           
+         LA    R1,1(,R1)                                                        
+         STCM  RF,3,TRPLWTCT                                                    
+         CHI   R1,20               MOST OFFLINE GETS DO AN INLINE WAIT          
+         JL    VSWTCHEK            IF REQUIRED                                  
+         XC    TRPLWTCT,TRPLWTCT   EVERY 20TH GOES TO WAIT ROUTINE,             
+         J     VSWTRTN             TO GIVE IT A CHANCE TO DO ITS STUFF          
+*                                                                               
+*        ONLINE WAIT CHECKS                                                     
+*                                                                               
+VSWTONL  L     R1,RPLECB                                                        
+         TM    0(R1),X'40'         ONLINE DO WE NEED TO WAIT?                   
+         JNZ   VSWTONNW            NO, NO WAIT REQUIRED                         
+         XC    TRPLWTCT,TRPLWTCT   WAIT NEEDED. RESET WAIT COUNTER              
+         AP    CTRVSWT,=P'1'       *??* COUNT VSAM READS NOT POSTED             
+         MVI   TRTVWAIT,C'Y'       *??* TRACE HAD TO WAIT                       
+         J     VSWTRTN             GO TO WAIT ROUTINE                           
+*                                                                               
+VSWTONNW LLH   RF,TRPLWTCT         RF=CONSECUTIVE IOS WITH NO WAIT              
+         XC    TRPLWTCT,TRPLWTCT   CLEAR IT                                     
+         CHI   RF,100              MAXIMUM CONSECUTVE IOS WITH NO WAIT?         
+         JNL   VSWTRTN             YES, CALL WAIT ROUTINE ANYWAY                
+         LA    RF,1(,RF)           ELSE JUST INCREMENT COUNT                    
+         STCM  RF,3,TRPLWTCT                                                    
+         J     VSWTCHEK            AND GO DO CHECK (NO WAIT WAS NEEDED)         
+*                                                                               
+VSWTRTN  ICM   RF,15,=V(VSWAIT)                                                 
+         JNZ   *+8                                                              
+         ICM   RF,15,=V(ADWAIT)                                                 
+         JZ    VSWTCHEK                                                         
+         L     R1,RPLECB                                                        
+         SAM24                                                                  
+         BASR  RE,RF               LET VSWAIT/ADWAIT WAIT IF WE HAVE IT         
+         SAM31                                                                  
+*                                                                               
+VSWTCHEK CHECK RPL=(R2)            CLEAN UP AND WAIT INLINE IF REQUIRED         
+         NI    TRPLIND,255-TRPLIACQ RPL NOW NO LONGER ACTIVE                    
+         TM    TRPLIND,TRPLIPUQ    WERE WE COMPLETING PRIOR GET                 
+         JZ    VSWTCHE2                                                         
+         NI    TRPLIND,255-TRPLIPUQ YES, PRIOR GET NOW COMPLETE                 
+         J     VSGETIN             IGNORE ANY ERROR AND START THIS GET          
+VSWTCHE2 ST    RF,TRTVRF           *??* TRACE RF FROM CHECK                     
+         LTR   RF,RF                                                            
+         JNZ   VSGETXX             ERROR AFTER CHECK                            
+*                                                                               
+         LLC   R1,TRPLARPL                                                      
+         SLL   R1,1                                                             
+         LA    R1,TRPLLNDP(R1)     INDEX TO RPL RETURNED LENGTH                 
+         MVC   0(2,R1),RPLRLEN+2   RETURNED RECORD LENGTH                       
+         MVC   TRTVRLEN,RPLRLEN+2  *??* TRACE RECORD LENGTH                     
+         L     RE,RPLAREA          *??* TRACE 28 BYTES RETURNED RECORD          
+         L     RE,0(,RE)           *??*                                         
+         LA    R1,L'TRTVDATA       *??*                                         
+         CLM   R1,3,RPLRLEN+2      *??*                                         
+         JNH   *+8                 *??*                                         
+         ICM   R1,3,RPLRLEN+2      *??* ADJUST LENGTH IF <28                    
+         BCTR  R1,0                *??*                                         
+         EXRL  R1,VSEXMVC          *??*                                         
+*                                                                               
+VSGETX   L     R1,RPLAREA                                                       
+         MVC   GETLAREC,0(R1)      SAVE A(LAST RETURNED RECORD)                 
+         MVC   GETLRLEN,RPLRLEN+2  SAVE LAST RETURNED RECORD LENGTH             
+         OC    RPLFDBK,RPLFDBK     EXIT WITH CC EQL IF ALL OK                   
+*                                                                               
+VSGETXX  MVC   GETFDBWD,RPLFDBWD   SAVE FEEDBACK WORD                           
+         MVC   TRTVFDBK,RPLFDBWD   *??* TRACE FEEDBACK WORD                     
+         J     EXIT                                                             
+*                                                                               
+VSEXMVC  MVC   TRTVDATA(0),0(RE)   *??*                                         
+         DROP  R2,R4,R8                                                         
+         EJECT                                                                  
+***********************************************************************         
+* ROUTINE TO INITIALISE TRACE TABLE IF OFFLINE                        *         
+***********************************************************************         
+TRCINIT  CLI   ONLINE,C'Y'                                                      
+         BER   RE                  ONLY IF OFFLINE                              
+*                                                                               
+         ST    RE,SAVERE                                                        
+         LHI   R2,TRTABLQ                                                       
+         MH    R2,NTRTAB                                                        
+         STORAGE OBTAIN,LENGTH=(2),LOC=ANY,BNDRY=PAGE,                 X        
+               COND=YES,CHECKZERO=YES                                           
+         ST    R1,ATRTAB           STORE ADDRESS OF OBTAINED STORAGE            
+         CHI   RF,X'14'            TEST OBTAINED AND ZEROED                     
+         JE    TRCINITX            YES, ALL DONE                                
+         LTR   RF,RF               TEST OBTAINED AND NOT ZEROED                 
+         JNZ   *+2                 NO, CAN'T ACQUIRE RPL STORAGE                
+         LR    R0,R1               A(STORAGE OBTAINED)                          
+         LR    R1,R2               LENGTH                                       
+         LR    RE,R0                                                            
+         XR    RF,RF                                                            
+         MVCL  RE,R0               CLEAR STORAGE                                
+*                                                                               
+TRCINITX L     RE,SAVERE                                                        
+         BR    RE                                                               
+         EJECT                                                                  
+***********************************************************************         
+* ROUTINE TO CREATE NEW TRACE TABLE ENTRY                             *         
+***********************************************************************         
+TRCIN    CLI   ONLINE,C'Y'                                                      
+         BER   RE                  ONLY IF OFFLINE                              
+*                                                                               
+         ST    RE,SAVERE                                                        
+         LH    RE,TTRTAB           CURRENT ENTRY                                
+         CH    RE,NTRTAB           REACHED END                                  
+         JL    *+6                                                              
+         XR    RE,RE               BACK TO START                                
+         LA    RF,1(,RE)                                                        
+         STH   RF,TTRTAB           NEW CURRENT ENTRY                            
+         MHI   RE,TRTABLQ          TIMES LENGTH                                 
+         A     RE,ATRTAB           POINT TO NEW CURRENT                         
+         USING TRTABD,RE                                                        
+         L     RF,STRTAB           SEQUENCE NUMBER                              
+         LA    RF,1(,RF)                                                        
+         ST    RF,STRTAB                                                        
+         ST    RF,TRTSEQ                                                        
+         TM    TRPLIND-TRPLD(R4),TRPLINSQ                                       
+         JZ    *+8                                                              
+         OI    TRTSEQ,X'80'        INDICATE NEW TASK                            
+         MVC   TRTARPLT,ATRPLENT   RPLTAB ENTRY                                 
+         MVC   TRTP1FLG,INFLAGS    P1 FLAGS                                     
+         MVC   TRTP7,INP7                                                       
+         MVC   TRTSIN,TRPLSIN-TRPLD(R4) SIN/TASK                                
+         XR    RF,RF                                                            
+         ICM   RF,B'0111',INAKEY   A(KEY)                                       
+         MVC   TRTKEY,0(RF)        CONTENTS OF KEY FIELD                        
+         MVC   TRTIOIN,0(R6)       CONTENTS OF FIRST 20 BYTES IO AREA           
+         MVC   TRTLDIRK,TRPLDIRK-TRPLD(R4) RPLTAB DATA BEFORE.                  
+         MVC   TRTLLFIL,TRPLLFIL-TRPLD(R4)                                      
+         MVC   TRTLARPL,TRPLARPL-TRPLD(R4)                                      
+         MVC   TRTLDRPL,TRPLDRPL-TRPLD(R4)                                      
+         MVC   TRTLFILK,TRPLFILK-TRPLD(R4)                                      
+         MVC   TRTLIND,TRPLIND-TRPLD(R4)                                        
+         XC    TRTREST,TRTREST     CLEAR REST                                   
+         DROP  RE                                                               
+*                                                                               
+         L     RE,SAVERE                                                        
+         BR    RE                                                               
+         EJECT                                                                  
+***********************************************************************         
+* ROUTINE TO COMPLETE RETURN DETAILS                                  *         
+***********************************************************************         
+TRCOUT   CLI   ONLINE,C'Y'                                                      
+         BER   RE                  ONLY IF OFFLINE                              
+*                                                                               
+         ST    RE,SAVERE                                                        
+         LH    RE,TTRTAB           CURRENT ENTRY                                
+         BCTR  RE,0                                                             
+         MHI   RE,TRTABLQ          TIMES LENGTH                                 
+         A     RE,ATRTAB           POINT TO NEW CURRENT                         
+         USING TRTABD,RE                                                        
+         MVC   TRTIOOUT,0(R6)      CONTENTS OF START OF IO AREA                 
+         MVC   TRTARPL,WHICHRPL    SOURCE FILE                                  
+         MVC   TRTP3STA,INSTAT     P3 STATUS                                    
+         MVC   TRTVLDA,TRPLLDA-TRPLD(R4) LAST RETURNED DISK ADDRESS             
+         DROP  RE                                                               
+*                                                                               
+         L     RE,SAVERE                                                        
+         BR    RE                                                               
+         EJECT                                                                  
+***********************************************************************         
+* EQUATED VALUES                                                      *         
+***********************************************************************         
+EOT      EQU   X'FF'                                                            
+FF       EQU   X'FF'                                                            
+         EJECT                                                                  
+***********************************************************************         
+* LITERALS                                                            *         
+***********************************************************************         
+         LTORG                                                                  
+         EJECT                                                                  
+***********************************************************************         
+* CONSTANTS                                                           *         
+***********************************************************************         
+VSSBS    DC    V(SSB)              (NOT VSSB AS THAT'S IN FASYSFAC)             
+VSYSFAC  DC    V(SYSFAC)                                                        
+*                                                                               
+***********************************************************************         
+* TEMPORARY DEBUGGING COUNTERS                                        *         
+*  TO LOCATE DEBUG CODE, LOOK FOR '*??*' IN COLUMN 36                 *         
+***********************************************************************         
+         DS    0L                                                               
+         DC    2C'*VSCTRS*'                                                     
+DMVSCTRS DC    (CTRVNUMQ)PL(CTRVLNQ)'0'                                         
+         DC    2XL8'00'                                                         
+*                                                                               
+*        SET AT FIRST TIME INITIALISATION                                       
+*                                                                               
+         DS    0L                                                               
+         DC    CL9'DONEINIT='                                                   
+DONEINIT DC    C'N',XL6'00'                                                     
+         DC    CL9'AMONLINE='                                                   
+ONLINE   DC    C'N',XL6'00'                                                     
+         DC    CL9'NRPLSETS='                                                   
+NRPLSETS DC    AL1(0),XL6'00'      NUMBER OF RPLSETS FOR ACBS                   
+*                                                                               
+*        TRACE TABLE                                                            
+*                                                                               
+         DS    0L                                                               
+         DC    CL8'TRACETAB'                                                    
+ATRTAB   DC    F'0'                                                             
+NTRTAB   DC    H'2000'             NUMBER OF ENTRIES                            
+TTRTAB   DC    H'0'                CURRENT (THIS) ENTRY NUMBER                  
+STRTAB   DC    F'0'                SEQUENCE NUMBER                              
+         EJECT                                                                  
+***********************************************************************         
+* FILE TABLE. MUST BE IN SEQ RELATIVE TO INFILSET                     *         
+***********************************************************************         
+FILTAB   DS    0L                                                               
+*                                                                               
+         DC    V(DEMVSMA),XL4'0'                                                
+         DC    V(DEMVSMN),XL4'0'                                                
+         DC    V(DEMVSMR),XL4'0'                                                
+         DC    V(NTIVSM),XL4'0'                                                 
+         DC    V(PAVVSM),XL4'0'                                                 
+*                                                                               
+NFILESQ  EQU   (*-FILTAB)/8                                                     
+*                                                                               
+TFILD    DSECT ,                   DEFINE ONE FILTAB ENTRY                      
+TFILADTF DS    A              +0   A(DMFILES DTF)                               
+TFILIND  DS    XL1            +4   INDICATOR                                    
+         DS    XL3            +4   SPARE                                        
+TFILLNQ  EQU   *-TFILD         8   LENGTH OF ONE ENTRY (2F)                     
+*                                                                               
+DMVSDEM  CSECT                                                                  
+***********************************************************************         
+* TABLE OF RPL ENTRIES (ACQUIRED ABOVE LINE)                          *         
+*                                                                     *         
+* ONLINE -  ONE SET OF ENTRIES PER FACPAK TASK - MAX 35               *         
+* OFFLINE - ONE SET OF RPLS ONLY                                      *         
+*                                                                     *         
+* A SET CONTAINS ONE ENTRY FOR EACH FILE IN SAME SEQUENCE AS FILETAB  *         
+* AN ENTRY CONTAINS SEPARATE DIRECTORY AND FILE KEYS                  *         
+*                                                                     *         
+* SEE TRPLD FOR LAYOUT OF AN ENTRY                                    *         
+***********************************************************************         
+         DS    0L                                                               
+ARPLTAB  DC    A(0)                                                             
+*                                                                               
+TRPLD    DSECT ,                   DEFINE ONE RPLTAB ENTRY                      
+TRPLADTF DS    A              +0   A(DMFILES DTF)                               
+TRPLSIN  DS    XL4            +4   SIN (ONLINE), MCREQNO (OFFLINE)              
+TRPLIND  DS    XL1            +8   INDICATOR                                    
+TRPLINSQ EQU   X'80'               TRPLSIN IS A NEW SIN                         
+TRPLIACQ EQU   X'08'               ACTIVE (GET ISSUED, CHECK PENDING)           
+TRPLIPUQ EQU   X'04'               PURGING CANCELLED GET                        
+TRPLMRGQ EQU   X'01'               MERGE (ACB2) IS ACTIVE                       
+TRPLLFIL DS    CL1            +9   D=DIR, F=FIL IN LAST CALL                    
+TRPLARPL DS    XL1            +10  LAST ACTIVE RPL (COPY WHICHRPL)              
+TRPLDRPL DS    XL1            +11  LAST RPL USED FOR DIRECTORY READ             
+TRPLLDA  DS    0XL4           +12  LAST DISK ADDR RETURNED                      
+TRPLLDAF DS    XL1            +12  LAST D/A - FILE IDENTIFIER                   
+TRPLLDPQ EQU   X'FE'               FE=PROD RPL                                  
+TRPLLDTQ EQU   X'FD'               FD=TEST RPL                                  
+TRPLLDAS DS    XL3            +13  LAST D/A - SEQUENCE NUMBER                   
+TRPLDIRK DS    XL18           +16  VSAM LAST DIR MAJOR KEY                      
+TRPLFILK DS    XL21           +34  VSAM LAST FIL KEY - EITHER ACB1 OR 2         
+         DS    XL15           +55  SPARE                                        
+TRPLWTCT DS    XL2            +70  WAIT COUNTER                                 
+TRPLLNDP DS    AL2            +72  RECORD LENGTH RETURNED BY VSAM RPL1          
+TRPLLNDT DS    AL2            +74  RECORD LENGTH RETURNED BY VSAM RPL2          
+TRPLLNFP DS    AL2            +76  RECORD LENGTH RETURNED BY VSAM RPL3          
+TRPLLNFT DS    AL2            +78  RECORD LENGTH RETURNED BY VSAM RPL4          
+TRPLRPLS DS    0D                !!THIS SHOULD ALREADY BE DWRD ALIGNED          
+TRPLRPDP DS    XL76           +80  PROD DIR (DP) RPL1 (DWORD ALIGNED)           
+TRPLARDP DS    A              +156 AREA TO RETURN A(RECORD)                     
+TRPLRPDT DS    XL76           +160 TEST DIR (DT) RPL2 (DWORD ALIGNED)           
+TRPLARDT DS    A              +236 AREA TO RETURN A(RECORD)                     
+TRPLRPFP DS    XL76           +240 PROD FIL (FP) RPL3 (DWORD ALIGNED)           
+TRPLARFP DS    A              +316 AREA TO RETURN A(RECORD)                     
+TRPLRPFT DS    XL76           +320 TEST FIL (FT) RPL4 (DWORD ALIGNED)           
+TRPLARFT DS    A              +396 AREA TO RETURN A(RECORD)                     
+TRPLLNQ  EQU   *-TRPLD         400 LENGTH OF ONE ENTRY (50D)                    
+*                                                                               
+RPLSETLQ EQU   TRPLLNQ*NFILESQ     LENGTH OF ONE SET (# OF FILES)               
+*                                                                               
+* SKELETON RPL TO INITIALISE TRPLRPL                                            
+*                                                                               
+DMVSDEM  CSECT                                                                  
+         PRINT GEN                                                              
+BASERPL  RPL   ACB=,               SET ACB ADDR AFTER COPY             X        
+               AM=VSAM,RECLEN=2048,                                    X        
+               ECB=,               SET ECB ADDR AFTER COPY             X        
+               AREA=*,AREALEN=4,   SET AREA ADDR AFTER COPY            X        
+               OPTCD=(KEY,FWD,ASY,NSP,KGE,FKS,LOC)                              
+         PRINT NOGEN                                                            
+*                                                                               
+* TABLE OF ECBS, ONE PER RPL                                                    
+*                                                                               
+         DS    0L                                                               
+         DC    2C'*ECBTAB*'                                                     
+ECBTAB   DS    (MAXTASKS*NFILESQ)XL4                                            
+MAXTASKS EQU   32                                                               
+ECBSETLQ EQU   L'ECBTAB*NFILESQ    LENGTH OF ONE SET (# OF FILES)               
+         EJECT                                                                  
+***********************************************************************         
+*LOCAL WORKING STORAGE                                                *         
+***********************************************************************         
+WORKD    DSECT                                                                  
+DUB      DS    D                                                                
+FULL     DS    F                                                                
+HALF     DS    H                                                                
+BYTE     DS    X                                                                
+FLAG     DS    X                                                                
+SAVERE   DS    F                                                                
+*                                                                               
+PARMS    DS    8F                                                               
+*                                                                               
+AFILTAB  DS    A                   A(FILTAB ENTRY)                              
+ADTF     DS    A                   A(DTF)                                       
+AACB1    DS    A                   A(ACB1)                                      
+AACB2    DS    A                   A(ACB2)                                      
+ATRPLENT DS    A                   A(RPL TABLE ENTRY)                           
+*                                                                               
+GETFDBWD DS    XL4                 COPY LAST RPLDDBWD (FEEDBACK WORD)           
+GETLAREC DS    XL4                 COPY A(LAST RETURNED RECORD)                 
+GETLRLEN DS    XL2                 COPY LAST RPLRLEN                            
+*                                                                               
+ACTNIND  DS    X                   ACTION INDICATOR                             
+ACTNIKYQ EQU   X'80'               USES A KEY (ELSE SEQ)                        
+ACTNIHIQ EQU   X'40'               KEY IS READ HIGH (WITH ACTNIKYQ)             
+*                                                                               
+WHICHRPL DS    X                   RPL INDEX                                    
+RPLDPQ   EQU   0                   RPL FOR PRODUCTION DIRECTORY READS           
+RPLDTQ   EQU   1                   RPL FOR TEST DIRECTORY READS                 
+RPLFPQ   EQU   2                   RPL FOR PRODUCTION FILE READS                
+RPLFTQ   EQU   3                   RPL FOR TEST FILE READS                      
+*                                                                               
+VSOPT1   DS    X                                                                
+*                                                                               
+* INPUT PARAMETERS                                                              
+*                                                                               
+SAVER1   DS    A                   A(PARMS ON ENTRY)                            
+INPARMS  DS    0CL28               COPY OF PARMS 1 TO 7 ON ENTRY                
+INP1     DS    0XL4                                                             
+INFLAGS  DS    X                   P1/0                                         
+*              X'80' READ FOR UPDATE (INVALID)                                  
+INFI31Q  EQU   X'40' I/O AREA IN PARAM 4 IS 31 BIT ADDRESS                      
+*              X'20' CONTROL FLAG USED FOR SPECIAL COMMANDS (INVALID)           
+*              X'10' FULL TRACK READ (OBSOLETE)                                 
+INFDELQ  EQU   X'08' PASS BACK DELETED RECORDS AS WELL (DIRECTORY ONLY)         
+*              X'04' SPECIAL COMMAND FLAG USED WITH X'20'FLAG (INVALID)         
+*              X'02' SPECIAL COMMAND FLAG USED WITH X'20'FLAG (INVALID)         
+*              X'01' PASS BACK RECORD LENGTH IN DMCB+22 (DMCBW6+2)              
+INFBADQ  EQU   X'B7' SUM OF ABOVE 'INVALID' FLAGS                               
+INAACTN  DS    AL3                 P1/1-3 A(ACTION) (IGNORED SEE P7)            
+INP2     DS    0XL4                                                             
+         DS    X                   P2/0   UNUSED                                
+INAFILE  DS    AL3                 P2/1-3 A(FILENAME) (IGNORED SEE P7)          
+INP3     DS    0XL4                                                             
+INSTAT   DS    X                   P3/0   RETURNED STATUS                       
+INSEOFQ  EQU   X'80' END OF FILE (USED AT END OF MAJOR KEY)                     
+INSNRDEQ EQU   X'40' NON RECOVERABLE DISK ERROR                                 
+*              X'20' DUPLICATE KEY ON ADD (NOT USED)                            
+INSNRFQ  EQU   X'10' RECORD NOT FOUND                                           
+INSDELQ  EQU   X'02' RECORD IS DELETED                                          
+INAKEY   DS    AL3                 P3/1-3 A(KEY)                                
+INP4     DS    0XL4                                                             
+INAIO    DS    AL4                 P4/0-3 A(REC AREA) 31 BIT IF INFI31Q         
+INP56    DS    2AL4                P5 AND P6 IGNORED                            
+INP7     DS    0XL4                                                             
+INFILSET DS    AL1                 P7/1 FILE SET NUMBER (1 TO 5)                
+INFILTYP DS    CL1                 P7/2 FILE TYPE (D=DIR, F=FILE)               
+INACTION DS    XL1                 P7/3 DMGR ACTION CODE                        
+         DS    XL1                 P7/4 IGNORED                                 
+*                                                                               
+* OTHER WORK FIELDS                                                             
+*                                                                               
+VSAMKEY  DS    XL21                                                             
+*                                                                               
+TRTDUMMY DS    XL(TRTABLQ)                                                      
+WORKL    EQU   *-WORKD                                                          
+         EJECT                                                                  
+       ++INCLUDE DEVSMFILE                                                      
+         EJECT                                                                  
+***********************************************************************         
+* DEMO RECORD (AS RETURNED TO LEGACY CALLERS)                         *         
+***********************************************************************         
+DEMOREC  DSECT                                                                  
+DEFKEY   DS    0XL20               DEM DATA KEY (MINOR+MAJOR)                   
+DEMAJKEY DS    XL18                MAJOR KEY                                    
+DEMINKEY DS    XL2                 MINOR KEY                                    
+DEFLEN   DS    XL2                 FILE RECORD LENGTH                           
+DEFSTAT  DS    X                   FILE RECORD STATUS                           
+DEFFRST  DS    X                   FILE RECORD FIRST ELEMENT                    
+DEFLENQ  EQU   *-DEMOREC           FILE RECORD MINIMUM LENGTH                   
+         ORG   DEMINKEY                                                         
+DEDSTAT  DS    XL1                 DIRECTORY STATUS                             
+DEDDATA  DS    XL4                 DIRECTORY DATA                               
+DESNPROD EQU   DVSNPROD            EMULATOR ONLY: NON-PRODUCTION RECORD         
+DESFILNO EQU   DVSFILNO            EMULATOR ONLY: "FAKE" LOGICAL FILE #         
+         EJECT                                                                  
+         IFGACB AM=VSAM                                                         
+         EJECT                                                                  
+         IFGRPL AM=VSAM                                                         
+         EJECT                                                                  
+DMVSDEMD DSECT                                                                  
+       ++INCLUDE DMVSDEMCTD                                                     
+         EJECT                                                                  
+***********************************************************************         
+* TRACE TABLE ENTRY                                                   *         
+***********************************************************************         
+TRTABD   DSECT                                                                  
+TRTSEQ   DS    A            +0  00 SEQUENCE NUMBER                              
+TRTARPLT DS    A            +4  04 A(RPLTAB)                                    
+*                                  INPUT DATA (FROM R1 PARMS ON ENTRY)          
+TRTP1FLG DS    XL1          +8  08 P1 FLAGS                                     
+TRTP7    DS    XL3          +9  09 P7(3)                                        
+TRTSIN   DS    XL4          +12 0C SIN / TASK                                   
+TRTKEY   DS    XL18         +16 10 CONTENTS OF CALLER'S KEY FIELD               
+TRTIOIN  DS    XL20         +34 22 CONTENTS OF FIRST 20 BYTES IO AREA           
+         DS    XL2          +54 36 SPARE                                        
+*                                  RPLTAB DATA ON ENTRY                         
+TRTLDIRK DS    XL18         +56 38 TRPLDIRK                                     
+TRTLLFIL DS    XL1          +74 4A TRPLLFIL                                     
+TRTLARPL DS    XL1          +75 4B TRPLARPL                                     
+TRTLDRPL DS    XL1          +76 4C TRPLDRPL                                     
+TRTLIND  DS    XL1          +77 4D TRPLIND                                      
+         DS    CL2          +78 4E SPARE                                        
+TRTLFILK DS    XL21         +80 50 TRPLFILK                                     
+         DS    XL3         +101 65 SPARE                                        
+*                                                                               
+TRTREST  DS    0XL96       +104 68                                              
+*                                  VSAM/IAM I/O DATA                            
+TRTVKEY  DS    XL21        +104 68 KEY USED                                     
+TRTVOPT1 DS    XL1         +125 7D RPLOPT1                                      
+TRTVOPT2 DS    XL1         +126 7E RPLOPT2                                      
+TRTVWAIT DS    XL1         +127 7F Y=HAD TO WAIT                                
+TRTVRF   DS    XL4         +128 80 RF VALUE AFTER GET                           
+TRTVFDBK DS    XL4         +132 84 RPLFDBWD                                     
+TRTVARPL DS    XL4         +136 88 A(RPL USED)                                  
+TRTVCNT  DS    XL2         +140 8C NUMBER OF GETS ISSUED FOR THIS CALL          
+TRTVRLEN DS    XL2         +142 8E LENGTH OF RECORD IN I/O AREA                 
+TRTVDATA DS    XL28        +144 90 FIRST 28 BYTES DATA IN I/O AREA              
+*                                  OUTPUT DATA                                  
+TRTVLDA  DS    XL4         +172 AC TRPLLDA                                      
+TRTIOOUT DS    XL30        +176 B0 FIRST 30 BYTES DATA RETURNED                 
+TRTARPL  DS    XL1         +206 CE SOURCE RPL (WHICHRPL)                        
+TRTP3STA DS    XL1         +207 CF P3 STATUS                                    
+TRTABLQ  EQU   *-TRTABD     208 D0                                              
+         EJECT                                                                  
+***********************************************************************         
+* OTHER INCLUDED DSECTS                                               *         
+***********************************************************************         
+*FASYSFAC/FASSB/FATCB/DMDTFIS/DDMASTD                                           
+         PRINT OFF                                                              
+       ++INCLUDE FASYSFAC                                                       
+       ++INCLUDE FASSB                                                          
+         ORG   SSBD                                                             
+       ++INCLUDE FASSBOFF                                                       
+       ++INCLUDE FATCB                                                          
+       ++INCLUDE DMDTFIS                                                        
+       ++INCLUDE DDMASTD                                                        
+         PRINT ON                                                               
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'009DMVSDEM   03/25/19'                                      
+         END                                                                    

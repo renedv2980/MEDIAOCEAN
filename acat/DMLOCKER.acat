@@ -1,0 +1,1514 @@
+*          DATA SET DMLOCKER   AT LEVEL 006 AS OF 10/16/14                      
+*CATALP DMLOCKER                                                                
+*&&NOP   SET   N                                                                
+***********************************************************************         
+* R2 MUST POINT TO CALLERS DMCB ON A LOCK CALL                        *         
+*                                                                     *         
+* PARAM1 0     DATAMGR EXT FILE NUM   - OR X'00' FOR UNLOCK ALL RECS  *         
+*        1-3   DSKADR OR A(DSKADR)    - OR ZEROS FOR UNLOCK           *         
+* PARAM2 4     SEE BELOW FOR P2(1)                                    *         
+*        5-7   RECORD ADDRESS         - OR C'UNL' FOR UNLOCK P1 REC   *         
+* PARAM3 8     RETURN FLAGS           - X'08' WAIT OCCURRED           *         
+*        9-11  COMMAND IN DMCNTL        X'04' LOCKTAB ENTRY ADDED     *         
+* PARAM4 12    N/D                      X'02' OWNED BY SOMEONE ELSE   *         
+*        13-15 N/D                      X'01' OWNED BY ME ALREADY     *         
+* PARAM5 16    N/D                                                    *         
+*        17-19 A(DTF)                                                 *         
+*                                                                     *         
+* NOTE THAT TO UNLOCK A SPECIFIC RECORD IN THE FILE SPECIFIED IN P1(1)*         
+* SET P2(1)=X'10' AND P2+1(3) TO C'UNL'                               *         
+*                                                                     *         
+* SET P2(1)=X'80' TO CALL LOCKER TO SEE IF A LOCK IS REQUIRED BY      *         
+* THE CALL TO DATAMGR. SETS P3(1)=X'04' IF LOCK IS REQUIRED           *         
+* SET P2(1)=X'40' TO CALL LOCKER TO SEE IF CONVERTED PROGRAM          *         
+* SET P2(1)=X'20' TO PASS A(4-BYTE DSKADR TTTTBBRR) IN P1+1(3)        *         
+* SET P2(1)=X'10' TO VERIFY THAT C'UNL' IS REQUESTED                  *         
+*                                                                     *         
+* C'TST' IN P2+1(3) CAN BE USED TO TEST LOCK WITH P3(1) RETURN FLAGS  *         
+* AND IF OWNED BY SDOMEONE ELSE P2(2) SET TO CALLER                   *         
+***********************************************************************         
+         TITLE 'DMLOCKER - DATAMGR MULTI-TASKING LOCKOUTS'                      
+         PRINT NOGEN                                                            
+LOCKER   CSECT                                                                  
+         NMOD1 WORKX-WORKD,**LOCKER,RA                                          
+         USING WORKD,RC                                                         
+         ST    R2,ADMCB            R2=A(CALLERS DMCB)                           
+         LR    R6,R1               R6=A(PARAMETER LIST)                         
+         USING PARAMS,R6                                                        
+*                                                                               
+LKINIT   CLI   ONLINE,C' '         TEST FIRST CALL                              
+         BNE   LKINIT3                                                          
+         ICM   RE,15,=V(SSB)       RE=A(SSB)                                    
+         JZ    *+2                 DIE IF NO SSB                                
+         USING SSBD,RE                                                          
+         OC    SSBCNTL,SSBCNTL     TEST IF ONLINE OR OFFLINE                    
+         BZ    LKINIT2                                                          
+*                                                                               
+LKINIT1  LT    RF,=V(PROTOFF)      ONLINE - DISABLE STORAGE PROTECTION          
+         BZ    *+6                                                              
+         BASR  RE,RF                                                            
+         MVI   ONLINE,C'Y'                                                      
+         L     RF,=V(UPDID)        GET UPDID FOR ENQ                            
+         MVC   MYUPDID(8),0(RF)                                                 
+         LT    RF,=V(PROTON)       ENABLE CALLERS STORAGE PROTECTION            
+         BZ    *+6                                                              
+         BASR  RE,RF                                                            
+         B     LKINIT3                                                          
+*                                                                               
+LKINIT2  MVI   ONLINE,C'N'         OFFLINE - TEST TO CALL LOCKER                
+         L     RF,=V(UPDID)        GET UPDID FOR ENQ                            
+         MVC   MYUPDID(8),0(RF)                                                 
+         TM    SSBSTAT2,SSOSLOCK                                                
+         BO    LKINIT3                                                          
+         MVC   0(2,RB),=X'07FE'    NO-OP LOCKER IF NO OFFLINE LOCKS             
+         B     EXITX                                                            
+         DROP  RE                                                               
+*                                                                               
+LKINIT3  MVI   ABFLAGS,0           CLEAR ABEND FLAGS                            
+         MVI   TRCFLAG,0           SET NO TRACING                               
+         MVC   SAVEP2,P2           SAVE P2(1) INPUT VALUE                       
+         SAC   0                                                                
+         TIME  TU                                                               
+         ST    R0,STRTUS           SAVE START TIME IN TUS                       
+         LAM   ARE,AR1,ARZEROS                                                  
+         XC    LKRDATA,LKRDATA     CLEAR LOCKER STATISTICS DATA                 
+*                                                                               
+LOCKER0  XC    LOCKADR,LOCKADR                                                  
+         SR    RE,RE               RE=A(DSKADR) OR DSKADR TO LOCK               
+         ICM   RE,7,P1+1                                                        
+         BZ    LOCKER4             ZERO DSKADR MEANS UNLOCK                     
+*                                                                               
+LOCKER1  TM    SAVEP2,X'20'        A(DSKADR) PASSED IN P1+1(3)                  
+         BZ    LOCKER2                                                          
+         MVC   LOCKADR(4),0(RE)    FORMAT IS TTTTBBRR OR TTTTTBRR               
+         ICM   RE,7,LOCKADR                                                     
+         SR    RF,RF                                                            
+         SR    R1,R1                                                            
+         ICM   R1,7,P5+1                                                        
+         BZ    LOCKER1D            ASSUME 16-BIT IF NO DTF                      
+LOCKER1A TM    DTFTYPE-DTF(R1),DTFTBIGF+DTFTBIG                                 
+         BZ    LOCKER1D                                                         
+         BO    LOCKER1C                                                         
+         TM    DTFTYPE-DTF(R1),DTFTBIGF                                         
+         BO    LOCKER1B                                                         
+         SRDL  RE,6                GET BLOCK FOR 18-BIT                         
+         SRL   RF,26                                                            
+         B     LOCKER3                                                          
+LOCKER1B TM    LOCKADR+2,X'0F'     TEST TTTTT0RR FOR UNBLOCKED 20-BIT           
+         BZ    *+16                                                             
+         SRDL  RE,4                GET BLOCK FOR BLOCKED 20-BIT                 
+         SRL   RF,28                                                            
+         B     LOCKER3                                                          
+         SRL   RE,4                UNBLOCKED 20-BIT DSKADR                      
+         IC    RF,LOCKADR+3                                                     
+         B     LOCKER3                                                          
+LOCKER1C TM    LOCKADR+2,X'03'     TEST TTTTTXRR FOR UNBLOCKED 22-BIT           
+         BZ    *+16                                                             
+         SRDL  RE,2                GET BLOCK FOR BLOCKED 22-BIT                 
+         SRL   RF,30                                                            
+         B     LOCKER3                                                          
+         SRL   RE,2                UNBLOCKED 22-BIT DSKADR                      
+         IC    RF,LOCKADR+3                                                     
+         B     LOCKER3                                                          
+LOCKER1D SRDL  RE,8                GET BLOCK FOR 16-BIT                         
+         SRL   RF,24                                                            
+         B     LOCKER3                                                          
+*                                                                               
+LOCKER2  SR    RF,RF               DSKADR TTTTBB PASSED IN P1+1(3)              
+         SR    R1,R1                                                            
+         ICM   R1,7,P5+1                                                        
+         BZ    LOCKER2D            ASSUME 16-BIT IF NO DTF                      
+LOCKER2A TM    DTFTYPE-DTF(R1),DTFTBIGF+DTFTBIG                                 
+         BZ    LOCKER2D                                                         
+         BO    LOCKER2C                                                         
+         TM    DTFTYPE-DTF(R1),DTFTBIGF                                         
+         BO    LOCKER2B                                                         
+         SRDL  RE,6                GET BLOCK FOR 18-BIT                         
+         SRL   RF,26                                                            
+         B     LOCKER3                                                          
+LOCKER2B SRDL  RE,4                GET BLOCK FOR 20-BIT                         
+         SRL   RF,28                                                            
+         B     LOCKER3                                                          
+LOCKER2C SRDL  RE,2                GET BLOCK FOR 22-BIT                         
+         SRL   RF,30                                                            
+         B     LOCKER3                                                          
+LOCKER2D SRDL  RE,8                GET BLOCK FOR 16-BIT                         
+         SRL   RF,24                                                            
+*                                                                               
+LOCKER3  STCM  RE,7,LOCKADR        RE=TRACK                                     
+         STC   RF,LOCKADR+3        RF=BLOCK                                     
+*                                                                               
+LOCKER4  L     RE,=V(SSB)          RE=A(SSB)                                    
+         USING SSBD,RE                                                          
+         CLI   ONLINE,C'Y'         TEST IF ONLINE                               
+         BE    LKONLINE                                                         
+         EJECT                                                                  
+***********************************************************************         
+* OFFLINE LOCKING                                                     *         
+***********************************************************************         
+LKOFF    XC    ATCB,ATCB           RE=A(SSB)                                    
+         L     RF,=V(UTL)                                                       
+         MVC   LOCKSYS,4(RF)       OFFLINE USE UTL SYS                          
+*                                                                               
+         OC    SSOALET,SSOALET     IF YOU DON'T HAVE AN ALET                    
+         BZ    EXIT                BY NOW FORGET IT                             
+*                                                                               
+         XC    DUB,DUB             VALIDATE MY JOBTAB ENTRY                     
+         MVC   DUB+3(1),LOCKSYS                                                 
+         MVI   DUB+1,11            TO BE SURE THAT I'M A GLOBAL SYS             
+         GOTO1 =V(LOCKSPC),DUB                                                  
+         ICM   RF,7,DUB+5                                                       
+         OC    0(16,RF),0(RF)      IF NO JOBTAB ENTRY THEN I'M NOT              
+         BZ    EXIT                                                             
+*                                                                               
+LKOFF1   L     RE,=V(SSB)          GET DSPACE VALUES                            
+         MVC   ALET,SSOALET                                                     
+         XC    OFFS,OFFS                                                        
+         CLI   P1,0                IS THIS AN UNLOCK CALL                       
+         BE    LKOFF2                                                           
+*                                                                               
+         LLC   RF,P1               TEST IF A SERVICE SYSTEM FILE                
+         SLL   RF,5                INDEX INTO 32-BYTE FILE TABLE                
+         A     RF,=V(FILTABL)                                                   
+         TM    DMFLSTYP-FILTABD(RF),DMFLSRV                                     
+         BZ    LKOFF2                                                           
+         MVI   LOCKSYS,1           SET SERVICE SYSTEM IF SERVICE FILE           
+         B     EXIT                SERVICE IS NOT GLOBAL                        
+*                                                                               
+LKOFF2   OC    LOCKADR,LOCKADR     TEST UNLOCK ALL RECS                         
+         BNZ   *+12                                                             
+         TM    SAVEP2,X'C0'        TEST SPECIAL ENQUIRY TYPE CALLS              
+         BZ    UNLOCK                                                           
+         CLC   P2+1(3),=C'TST'     TEST LOCK HELD                               
+         BE    LKOFF3                                                           
+         CLC   P2+1(3),=C'UNL'     TEST UNLOCK SPECIFIC RECORD                  
+         BNE   *+12                                                             
+         TM    P2,X'10'            MUST ALSO SET X'10' TO UNLOCK                
+         BO    UNLOCK                                                           
+*                                                                               
+LKOFF3   MVI   P2,0                RESET RETURN CODE FLAGS                      
+         MVI   P3,0                                                             
+         CLI   P1,0                EXIT IF NO FILE NUMBER                       
+         BE    EXIT                                                             
+         OC    1(3,R2),1(R2)       EXIT IF NO DATAMGR COMMAND                   
+         BZ    EXIT                                                             
+*                                                                               
+LKOFF4   L     R1,ADMCB            EXIT IF NOT READ-FOR-UPDATE                  
+         TM    0(R1),X'80'                                                      
+         BZ    EXIT                                                             
+         B     LK10                GO TO LOCK ROUTINE                           
+         EJECT                                                                  
+***********************************************************************         
+* ONLINE LOCKING                                                      *         
+***********************************************************************         
+         USING SSBD,RE             RE=A(SSB)                                    
+LKONLINE L     R9,=V(SYSFAC)       R9=A(SYSFAC LIST)                            
+         USING SYSFACD,R9                                                       
+         MVC   ALET,SSBALET        EXTRACT ALET FROM SSB                        
+         XC    OFFS,OFFS                                                        
+*                                                                               
+         L     R3,SSBTKADR         R3=A(MY TASK)                                
+         USING TCBD,R3                                                          
+         ST    R3,ATCB                                                          
+         MVC   LOCKSYS,TCBSEN                                                   
+         MVC   LOCKSIN,TCBSIN                                                   
+         OC    TCBSCRPT,TCBSCRPT   TEST IF SCRIPT                               
+         BZ    *+8                                                              
+         OI    ABFLAGS,ABSCRIPT                                                 
+*&&US                                                                           
+         CLI   TCBOVSYS,06         TEST IF ACC                                  
+         BNE   *+8                                                              
+         OI    ABFLAGS,ABSDUMP     SET TO DUMP                                  
+*&&                                                                             
+         L     R8,TCBUTL           R8=A(UTL ENTRY)                              
+         USING UTLD,R8                                                          
+         CLC   TSVCREQ,$UPD        TEST IF SRUPD00                              
+         BNE   *+8                                                              
+         OI    ABFLAGS,ABSRUPD     SET TO SHOW SRUPD                            
+*                                                                               
+         LLC   RF,P1               TEST IF A SERVICE SYSTEM FILE                
+         SLL   RF,5                INDEX INTO 32-BYTE FILE TABLE                
+         A     RF,=V(FILTABL)                                                   
+         TM    DMFLSTYP-FILTABD(RF),DMFLSRV                                     
+         BZ    *+8                                                              
+         MVI   LOCKSYS,1           SET SERVICE SYSTEM IF SERVICE FILE           
+*                                                                               
+LK0      OC    LOCKADR,LOCKADR     TEST UNLOCK ALL RECS                         
+         BNZ   *+12                                                             
+         TM    SAVEP2,X'C0'        TEST SPECIAL ENQUIRY TYPE CALLS              
+         BZ    UNLOCK                                                           
+         CLC   P2+1(3),=C'TST'     TEST LOCK HELD                               
+         BE    LK0A                                                             
+         CLC   P2+1(3),=C'UNL'     TEST UNLOCK SPECIFIC RECORD                  
+         BNE   *+12                                                             
+         TM    P2,X'10'            MUST ALSO SET X'10' TO UNLOCK                
+         BO    UNLOCK                                                           
+LK0A     MVI   P2,0                RESET LOCK-OUT INDIC                         
+         MVI   P3,0                RESET RETURN CODE FLAGS                      
+         CLI   P1,0                EXIT IF NO FILE NUMBER                       
+         BE    EXIT                                                             
+         OC    1(3,R2),1(R2)       EXIT IF NO DATAMGR COMMAND                   
+         BZ    EXIT                                                             
+*                                                                               
+LK1      CLI   LOCKSYS,1           SERVICE FILES MUST ASK FOR LOCK              
+         BE    LK3                                                              
+         OC    TSVCREQ,TSVCREQ     SERVICE REQUESTS MUST ASK FOR LOCK           
+         BNZ   LK3                                                              
+         TM    TPRGIND,X'02'       EXIT IF READ ONLY PROGRAM                    
+         BZ    *+12                                                             
+         OI    P3,X'01'                                                         
+         B     EXIT                                                             
+         TM    TPRGIND,X'04'       USE LOOK UP IF UNCONVERTED PROGRAM           
+         BZ    LK4                                                              
+         TM    TTEST,TTESTNOU+TTESTUEN+TTESTUEV TEST IF UPDATE=VER              
+         BNO   LK3                                                              
+         L     R1,ADMCB            EXIT IF NOT READ FOR UPDATE                  
+         TM    0(R1),X'80'                                                      
+         BZ    EXIT                                                             
+         OI    P3,X'01'                                                         
+         B     EXIT                                                             
+*                                                                               
+LK3      L     R1,ADMCB            EXIT IF NOT READ FOR UPDATE                  
+         TM    0(R1),X'80'                                                      
+         BZ    EXIT                                                             
+         TM    SAVEP2,X'40'        EXIT IF CALL TO TEST UNCONVERTED             
+         BO    EXIT                                                             
+         B     LK10                GO TO LOCK ROUTINE                           
+         EJECT                                                                  
+***********************************************************************         
+* OUTPUT LOCKING STATISTICS IF LOCK WAS DONE                          *         
+***********************************************************************         
+EXIT     SAC   0                                                                
+         OC    LKRTOTAL,LKRTOTAL   TEST IF RECORD WAS LOCKED                    
+         BZ    EXITX                                                            
+         TIME  TU                                                               
+         ST    R0,ENDTUS           SAVE END TIME IN TUS                         
+         LAM   ARE,AR1,ARZEROS                                                  
+*                                                                               
+EXIT1    OC    LKRWAITS,LKRWAITS   TEST IF HAD TO WAIT FOR LOCK                 
+         BZ    EXIT2                                                            
+         LR    R1,R0               TIME NOW                                     
+         SL    R1,WAITUS           LESS TIME OF FIRST WAIT                      
+         LTR   R1,R1                                                            
+         BNM   *+6                                                              
+         SR    R1,R1                                                            
+         ST    R1,LKRTIMEW         SET WAIT TIME                                
+*                                                                               
+EXIT2    LR    R1,R0               TIME NOW                                     
+         SL    R1,STRTUS           LESS TIME OF ENTRY TO ROUTINE                
+         LTR   R1,R1                                                            
+         BNM   *+6                                                              
+         SR    R1,R1                                                            
+         ST    R1,LKRTIMET         SET TOTAL TIME                               
+*                                                                               
+EXIT3    ICM   R3,15,ATCB          SET DETAILS IN TCB IF ONLINE                 
+         BZ    EXIT4                                                            
+         USING TCBD,R3                                                          
+         LH    RF,TCBLKRT          TOTAL NUMBER OF LOCKS                        
+         AH    RF,LKRTOTAL                                                      
+         STH   RF,TCBLKRT                                                       
+         STH   RF,TCBLKST                                                       
+         LH    RF,TCBLKRW          TOTAL NUMBER OF WAITS                        
+         AH    RF,LKRWAITS                                                      
+         STH   RF,TCBLKRW                                                       
+         STH   RF,TCBLKSW                                                       
+         L     RF,TCBLKRTT         TOTAL TIME SPENT LOCKING                     
+         AL    RF,LKRTIMET                                                      
+         ST    RF,TCBLKRTT                                                      
+         L     RF,TCBLKRTW         TOTAL TIME SPENT WAITING                     
+         AL    RF,LKRTIMEW                                                      
+         ST    RF,TCBLKRTW                                                      
+         B     EXITX                                                            
+*                                                                               
+EXIT4    ICM   RE,15,=V(SSB)       SET DETAILS IN SSB IF ONLINE                 
+         BZ    EXITX                                                            
+         USING SSOOFF,RE                                                        
+         CLI   SSOXTND,X'FF'                                                    
+         BNE   EXITX                                                            
+         LH    RF,SSOLKRT          TOTAL NUMBER OF LOCKS                        
+         AH    RF,LKRTOTAL                                                      
+         STH   RF,SSOLKRT                                                       
+         STH   RF,SSOLKST                                                       
+         LH    RF,SSOLKRW          TOTAL NUMBER OF WAITS                        
+         AH    RF,LKRWAITS                                                      
+         STH   RF,SSOLKRW                                                       
+         STH   RF,SSOLKSW                                                       
+         L     RF,SSOLKRTT         TOTAL TIME SPENT LOCKING                     
+         AL    RF,LKRTIMET                                                      
+         ST    RF,SSOLKRTT                                                      
+         L     RF,SSOLKRTW         TOTAL TIME SPENT WAITING                     
+         AL    RF,LKRTIMEW                                                      
+         ST    RF,SSOLKRTW                                                      
+         B     EXITX                                                            
+         DROP  RE                                                               
+*                                                                               
+EXITX    XMOD1 1                                                                
+         EJECT                                                                  
+***********************************************************************         
+* UNCONVERTED PROGRAM - FIND LOCKOUT RULES                            *         
+***********************************************************************         
+LK4      CLC   P2+1(3),=C'TST'     IGNORE IF CALL TO TEST LOCK                  
+         BE    LK7C                                                             
+         CLI   TCBOVSYS,4          TEST IF MEDIA OR PRINT SYSTEM                
+         BNE   LK5                                                              
+         L     RE,TCBSE                                                         
+         USING SELISTD,RE                                                       
+         CLI   SENAME,C'P'                                                      
+         BE    LK5                                                              
+         LA    RF,MEDPGMS                                                       
+         B     LK6                                                              
+*                                                                               
+LK5      SR    RF,RF               POINT TO PROGRAM TABLE FOR SYSTEM            
+         IC    RF,TCBOVSYS                                                      
+         BCTR  RF,0                                                             
+         SLL   RF,2                                                             
+         L     RF,LKSYSTAB(RF)                                                  
+         LTR   RF,RF                                                            
+         BZ    LK7C                EXIT IF NO TABLE                             
+*                                                                               
+LK6      SR    RE,RE               POINT TO TABLE OF LOCKOUT LISTS              
+         IC    RE,TCBPRG                                                        
+         BCTR  RE,0                                                             
+         SLL   RE,2                                                             
+         L     RF,0(RE,RF)                                                      
+         LTR   RF,RF               USED TO BE BNZ *+6/DC H'0'                   
+         BZ    LK7C                BUT CAUSES DEATH IN FASWITCH                 
+         CLI   0(RF),X'FF'                                                      
+         BE    LK7C                EXIT IF NO LOCKOUTS FOR PROGRAM              
+         TM    SAVEP2,X'40'        TEST IF CALL TO TEST UNCONVERTED             
+         BZ    LK7                 NO                                           
+         OI    P3,X'04'            YES RETURN UNCONVERTED PROGRAM               
+         B     EXIT                                                             
+*                                                                               
+LK7      SR    RE,RE               SEARCH LOCKOUT LIST                          
+         ICM   RE,7,P2+1                                                        
+*                                                                               
+LK7A     CLC   P1(1),0(RF)         RIGHT FILE                                   
+         BNE   LK7B                NO                                           
+         SR    R5,R5                                                            
+         IC    R5,1(RF)            GET DISPLACEMENT                             
+         AR    R5,RE               POINT TO TEST BYTE IN KEY                    
+         CLC   0(1,R5),2(RF)       COMPARE TO LOW VAL                           
+         BL    LK7B                                                             
+         CLC   0(1,R5),3(RF)       COMPARE TO HI VAL                            
+         BH    LK7B                                                             
+         TM    TTEST,TTESTNOU+TTESTUEN+TTESTUEV TEST IF UPDATE=VER              
+         BO    LK7C                                                             
+         B     LK10                GO LOCK OUT REC                              
+*                                                                               
+LK7B     LA    RF,4(RF)            NEXT LIST ENTRY                              
+         CLI   0(RF),X'FF'                                                      
+         BNE   LK7A                                                             
+*                                                                               
+LK7C     OI    P3,X'01'                                                         
+         B     EXIT                                                             
+         EJECT                                                                  
+***********************************************************************         
+* RECORD REQUIRES LOCKOUT - CHECK TO SEE IF ALREADY OWNED             *         
+***********************************************************************         
+LK10     TM    SAVEP2,X'80'        TEST IF CALLED TO SEE IF LOCK NEEDED         
+         BZ    *+12                                                             
+         OI    P3,X'04'            RETURN LOCKTAB ENTRY NEEDED                  
+         B     EXIT                                                             
+         XC    DUB,DUB             LOCK SYSTEM                                  
+         XC    ANEXT,ANEXT                                                      
+         MVC   DUB+3(1),LOCKSYS                                                 
+         GOTO1 =V(LOCKSPC),DUB     ON RETURN WE OWN THIS RESOURCE               
+*                                                                               
+         L     R2,4(R1)                                                         
+         USING DMSPACED,R2                                                      
+         MVC   ALOCKTAB,DSPECB     SAVE RESOURCE ADDRESS                        
+         MVC   LOCKWORD,DSPLOCK                                                 
+         OC    ALOCKTAB,ALOCKTAB                                                
+         BZ    NOTDEF                                                           
+*                                                                               
+         TM    DSPTYPE,DSPJOBQ     TEST OFFLINE                                 
+         BNO   LK10A                                                            
+         MVC   LOCKID,DSPJOB       JOBNO                                        
+         B     LK10B                                                            
+*                                                                               
+LK10A    L     RE,VSSB                                                          
+         MVC   LOCKID+0(1),SSBSYSIX-SSBD(RE)                                    
+         MVC   LOCKID+1(1),TCBTASK                                              
+         MVI   LOCKID+2,0                                                       
+*                                                                               
+LK10B    MVC   FILEID,P1           SAVE FILE ID                                 
+*                                                                               
+         SAC   512                                                              
+         LAM   AR2,AR2,ALET                                                     
+         L     R2,ALOCKTAB         R2=A(RESOURCE)                               
+         MVC   BYTE,DSYSATTR-DMSYSHDR(R2)                                       
+         L     R2,DSYALOCK-DMSYSHDR(,R2)                                        
+         ST    R2,ALOCKTAB         R2=A(LOCKTAB)                                
+         LTR   R2,R2                                                            
+         BZ    NOTDEF                                                           
+*                                                                               
+         LH    R7,2(,R2)           GET NUMBER OF ACTIVE ENTRIES                 
+         LA    R2,16(,R2)          POINT TO FIRST ACTIVE ENTRY                  
+         USING LKTABD,R2                                                        
+         LTR   R7,R7               TEST ANYTHING IN TABLE                       
+         BNZ   LK12                                                             
+*                                                                               
+         CLC   P2+1(3),=C'TST'     ARE WE HERE TO TEST A LOCK                   
+         BE    LKEXIT              YES EXIT NO ONE OWNS IT                      
+         B     LK19                                                             
+*                                                                               
+LK12     CLI   LKFILE,0            BLANK ENTRY                                  
+         BNE   LK12A                                                            
+         OC    ANEXT,ANEXT         SAVE A OF FIRST BLANK                        
+         BNZ   *+8                                                              
+         ST    R2,ANEXT                                                         
+         LA    R2,L'LKDATA(,R2)    IGNORE BLANKS                                
+         B     LK12                                                             
+*                                                                               
+LK12A    CLC   LOCKID,LKJOB        DO WE OWN IT                                 
+         BE    LK12B                                                            
+         TM    BYTE,DSYQHLOC       HIGH LEVEL LOCKS                             
+         BO    LK15                OK THEN WAIT FOR IT                          
+*                                                                               
+LK12B    CLC   LKFILE,FILEID       SAME FILE                                    
+         BNE   LK16                                                             
+         CLC   LKDSKADR(3),LOCKADR SAME TRACK                                   
+         BNE   LK16                                                             
+         CLC   LKDSKADR+3(1),LOCKADR+3 SAME BLOCK                               
+         BE    LK13                                                             
+         CLI   LKDSKADR+3,0        TEST IF WHOLE TRACK IS LOCKED                
+         BE    LK13                                                             
+         CLI   LOCKADR+3,0         REQUESTED WHOLE TRACK LOCK                   
+         BNE   LK16                                                             
+*                                                                               
+LK13     TM    LKTYPE,X'80'        OFFLINE LOCKS ARE GLOBAL                     
+         BO    LK13A                                                            
+         SR    R1,R1                                                            
+         ICM   R1,7,P5+1           ANY DTF IN P5 (IF NOT ASSUME LOCAL)          
+         BZ    *+12                                                             
+         TM    19(R1),X'40'        IS IT A GLOBAL RESOURCE                      
+         BO    LK13A                                                            
+         CLC   LKSYS,LOCKID        LOCAL LOCK (SAME ADV SYSTEM?)                
+         BNE   LK16                                                             
+*                                                                               
+LK13A    CLC   LOCKID,LKJOB        DO WE OWN IT                                 
+         BNE   LK14                                                             
+         OI    P3,X'01'            SET FLAG TO SHOW WE OWN IT                   
+         B     LKEXIT                                                           
+*                                                                               
+LK14     CLC   P2+1(3),=C'TST'     SOMEONE OWNS THE BLOCK                       
+         BNE   LK15                                                             
+         OI    P3,X'02'            SET OWNED BY ANOTHER TASK                    
+         MVC   P2(2),LKJOB         AND RETURN OWNER                             
+         B     LKEXIT                                                           
+*                                                                               
+LK15     EQU   *                                                                
+*&&NOP                                                                          
+         MVC   TRCDATA,=AL2(12)    TRACE WAIT FOR LOCK ENTRY                    
+         MVI   TRCDATA+2,C'W'                                                   
+         MVC   TRCDATA+3(1),LOCKSYS                                             
+         MVC   TRCDATA+4(8),0(R2)                                               
+         MVC   TRCDATA+6(2),LOCKID SHOW WHOS WAITING                            
+         ICM   RF,15,=V(DDTRACE)                                                
+         BZ    LK15A                                                            
+         CLI   LOCKSYS,X'34'       ACCK                                         
+         BNE   LK15A                                                            
+         SAC   0                                                                
+         GOTO1 (RF),DUB,X'00000008',TRCDATA                                     
+         SAC   512                                                              
+*&&                                                                             
+LK15A    B     LK40                GO WAIT FOR OWNER                            
+*                                                                               
+LK16     LA    R2,L'LKDATA(,R2)    NEXT ENTRY                                   
+         BCT   R7,LK12                                                          
+         CLC   P2+1(3),=C'TST'     ARE WE HERE TO TEST IF WE OWN BLOCK          
+         BE    EXIT                YES EXIT BECAUSE WE DONT                     
+*                                                                               
+         OC    ANEXT,ANEXT         SET R2 TO FIRST FREE                         
+         BZ    LK19                                                             
+         L     R2,ANEXT                                                         
+LK19     ST    R2,ANEXT                                                         
+         EJECT                                                                  
+***********************************************************************         
+* CHECK FOR WRITE NOT PRECEDED BY READ FOR UPDATE                     *         
+***********************************************************************         
+LK20     L     RE,ADMCB            GET DATAMGR COMMAND                          
+         ICM   RE,7,1(RE)                                                       
+         CLC   0(3,RE),=C'DMW'                                                  
+         BE    *+14                                                             
+         CLC   0(3,RE),=C'PUT'                                                  
+         BNE   LK30                                                             
+         CLC   P3+1(3),=VL3(WRTAFT)                                             
+         BE    LK30                EXTENDING PUTRECS OK                         
+         CLC   P3+1(3),=VL3(RKEY)                                               
+         BE    LK30                READING BEFORE DMWRITE OK                    
+         SAC   0                                                                
+*                                                                               
+         L     RF,=V(DMOD000)                                                   
+         LA    R1,LKERRPL                                                       
+         BASR  RE,RF                                                            
+*                                                                               
+         CLI   ONLINE,C'Y'         TEST IF ONLINE                               
+         BE    *+8                                                              
+         BAS   RE,FREESYS          FREE SYSTEM BEFORE DUMP IF OFFLINE           
+         DC    H'0'                DIE                                          
+*                                                                               
+LKERRPL  DC    V(WCTYPE)                                                        
+         DC    A(LKERRMSG)                                                      
+         DC    A(L'LKERRMSG)                                                    
+LKERRMSG DC    C'INVALID WRITE SEQ'                                             
+         EJECT                                                                  
+***********************************************************************         
+* ADD ITEM INTO LOCK TABLE                                            *         
+***********************************************************************         
+LK30     L     R2,ALOCKTAB                                                      
+         CLC   0(2,R2),2(R2)       TEST MAX LOCKS                               
+         BNH   LKFULL              COPY LOCK TABLE FOR DUMP AND DIE             
+*                                                                               
+         L     R2,ANEXT            FILL IN NEW LOCK ENTRY                       
+         MVC   LKFILE,FILEID                                                    
+         MVC   LKJOB(3),LOCKID                                                  
+         MVC   LKDSKADR,LOCKADR                                                 
+         OI    P3,X'04'                                                         
+         MVC   LKRTOTAL,=H'1'      SET LOCK DONE THIS CALL                      
+*                                                                               
+         CLI   ONLINE,C'Y'         NO TCBLKSE IF OFFLINE                        
+         BNE   LK31                                                             
+         OI    TCBLOCK,X'80'                                                    
+         LA    RF,TCBLKSE          ADD SE TO LIST OF LOCKED SYSTEMS             
+         LA    R0,10                                                            
+LK30A    CLC   1(1,RF),LOCKSYS     IGNORE IF ALREADY THERE                      
+         BE    LK31                                                             
+         OC    0(2,RF),0(RF)       PUT IT IN FIRST FREE ENTRY                   
+         BZ    LK30B                                                            
+         LA    RF,2(RF)                                                         
+         BCT   R0,LK30A                                                         
+         DC    H'0'                DIE IF MORE THAN 10 SYSTEMS                  
+LK30B    MVC   1(1,RF),LOCKSYS                                                  
+*                                                                               
+LK31     EQU   *                                                                
+*&&NOP                                                                          
+         MVC   TRCDATA,=AL2(12)    TRACE ADD LOCK ENTRY                         
+         MVI   TRCDATA+2,C'A'                                                   
+         MVC   TRCDATA+3(1),LOCKSYS                                             
+         MVC   TRCDATA+4(8),0(R2)                                               
+         ICM   RF,15,=V(DDTRACE)                                                
+         BZ    LK31A                                                            
+         CLI   LOCKSYS,X'34'       ACCK                                         
+         BNE   LK31A                                                            
+         SAC   0                                                                
+         GOTO1 (RF),DUB,X'00000008',TRCDATA                                     
+         SAC   512                                                              
+*&&                                                                             
+LK31A    L     R2,ALOCKTAB                                                      
+         LH    RF,2(,R2)           BUMP ACTIVE COUNTER                          
+         LA    RF,1(RF)                                                         
+         STH   RF,2(,R2)                                                        
+*                                                                               
+         CH    RF,4(,R2)           SAVE HIGH WATER MARK                         
+         BL    *+8                                                              
+         STH   RF,4(,R2)                                                        
+*                                                                               
+         L     RF,12(,R2)          BUMP TOTAL COUNT                             
+         LA    RF,1(RF)                                                         
+         ST    RF,12(,R2)                                                       
+*                                                                               
+LKEXIT   BAS   RE,FREESYS          SET AMODE BACK AND FREE                      
+         B     EXIT                                                             
+*                                                                               
+FREESYS  SAC   0                                                                
+         ST    RE,SAVERE           FREE RESOURCE                                
+         XC    DUB,DUB                                                          
+         MVC   DUB+3(1),LOCKSYS    LOCKSYS=RESOURCE NUM                         
+         OI    DUB,X'10'                                                        
+         GOTO1 =V(LOCKSPC),DUB                                                  
+         L     RE,SAVERE                                                        
+         BR    RE                                                               
+*                                                                               
+LKFULL   LA    R1,LOCDUMP          DUMP LOCK TABLE SO VISIBLE                   
+         L     R2,ALOCKTAB                                                      
+         LA    R0,256                                                           
+LKFULL1  MVC   0(8,R1),0(R2)       COPY IN 1ST 256 ENTRIES                      
+         LA    R2,8(R2)                                                         
+         LA    R1,8(R1)                                                         
+         BCT   R0,LKFULL1                                                       
+         LA    R1,LOCDUMP                                                       
+         DC    H'0'                LOCKTAB FULL                                 
+         EJECT                                                                  
+***********************************************************************         
+* DATA IS ALREADY LOCKED OUT - SET UP ECB AND WAIT FOR IT             *         
+***********************************************************************         
+LK40     OI    P3,X'08'+X'02'      RETURN WAITED FLAG                           
+         MVC   TRCDATA+2(8),LKFILE SET THIS FOR TRACE                           
+         LH    R0,LKRWAITS                                                      
+         AHI   R0,1                                                             
+         STH   R0,LKRWAITS         BUMP LOCAL WAIT COUNT                        
+         CHI   R0,1                                                             
+         BNE   LK40A                                                            
+         SAC   0                                                                
+         TIME  TU                                                               
+         SAC   512                                                              
+         ST    R0,WAITUS           SAVE FIRST TIME WE HAD TO WAIT               
+         LAM   ARE,AR1,ARZEROS                                                  
+*                                                                               
+NEW      USING ECBD,ECBENTRY                                                    
+LK40A    XC    NEW.ECBD(ECBLNQ),NEW.ECBD                                        
+         MVC   NEW.ECBOWNER(3),LKJOB   OWNER                                    
+         MVC   NEW.ECBREQ(3),LOCKID    REQUETOR                                 
+         MVC   NEW.ECBRQSIN,LOCKSIN    SAVE REQUESTOR SIN                       
+         MVI   NEW.ECBECB,0                                                     
+         DROP  NEW                                                              
+*                                                                               
+         L     R2,ALOCKTAB                                                      
+         L     RF,8(,R2)           BUMP NUMBER OF WAITS                         
+         LA    RF,1(RF)                                                         
+         ST    RF,8(,R2)                                                        
+         L     R2,OFFS             ADD TO ECB TABLE                             
+         L     R2,0(,R2)           GET A(ECBS)                                  
+         USING ECBD,R2                                                          
+*                                                                               
+         SAC   0                                                                
+         ENQ   (UPDMAJ,UPDMIN,E,8,SYSTEM),RET=HAVE                              
+         SAC   512                                                              
+*                                                                               
+LK40B    L     RF,0(,R2)           BUMP COUNTER BY 1                            
+         LA    R1,1(RF)                                                         
+         CS    RF,R1,0(R2)                                                      
+         BNE   LK40B                                                            
+*                                                                               
+         L     R0,=F'-1'           SET FFS TO GRAB A FREE ENTRY                 
+LK41     SR    RE,RE                                                            
+         LA    R2,16(,R2)          POINT TO FIRST/NEXT ENTRY                    
+         CS    RE,R0,0(R2)                                                      
+         BE    LK41A                                                            
+         B     LK41                                                             
+*                                                                               
+LK41A    MVC   ECBD(ECBLNQ),ECBENTRY   SET NEW ENTRY                            
+         ST    R2,FULL                 SAVE ITS ADDRESS                         
+         DROP  R2                                                               
+*                                                                               
+         SAC   0                                                                
+         DEQ   (UPDMAJ,UPDMIN,8,SYSTEM),RET=HAVE                                
+*                                                                               
+         BAS   RE,FREESYS          FREE RESOURCE NOW                            
+         SAC   512                                                              
+*                                                                               
+LK41B    BAS   RE,CHKECB           CHECK FOR DEADLY                             
+*                                                                               
+         L     R2,FULL                                                          
+         CLI   ONLINE,C'Y'         TEST ONLINE                                  
+         BE    LK42                                                             
+*                                                                               
+LK41C    SAC   0                                                                
+         LHI   R1,10               1/10 SEC OR 100 MILLISECS                    
+         MHI   R1,384              384 TUS IS 1/100 SEC OR 10 MILLISECS         
+         ST    R1,FULL                                                          
+         STIMER WAIT,TUINTVL=FULL  WAIT N MILLISECS THEN TRY AGAIN              
+*                                                                               
+         SAC   512                                                              
+         TM    12(R2),X'40'        HAS IT BEEN POSTED                           
+         BZ    LK41C                                                            
+         B     LK42D               CONTINUE                                     
+*                                                                               
+LK42     CLI   TRCFLAG,0           TEST IF TRACING                              
+         BE    LK42AX                                                           
+LK42A    SAC   0                                                                
+         MVI   TRCDATA+1,C'W'      SET WAIT CODE                                
+         MVC   TRCDATA+10(8),ECBENTRY                                           
+         MVI   TRCDATA,18                                                       
+         LA    R1,DUB                                                           
+         LA    RF,TRCDATA                                                       
+         ST    RF,DUB+4                                                         
+         MVC   DUB(4),=F'3'                                                     
+         ICM   RF,15,=V(TEMPTRC)                                                
+         BZ    *+6                                                              
+         BASR  RE,RF                                                            
+LK42AX   SAC   512                                                              
+*                                                                               
+LK42B    LA    R1,12(,R2)                                                       
+         O     R1,=X'FE000000'     WAIT ON IT                                   
+         SAC   0                                                                
+         GOTO1 =V(ADWAIT)          GO WAIT FOR LOCKOUT TO CLEAR                 
+*                                                                               
+         CLC   ECBENTRY(1),ECBENTRY+4   SAME ADDRESS SPACE?                     
+         BE    LK42C                                                            
+         GOTO1 =V(TICTOC),DUB,F'3840'   NO WAIT 100MS TO BE SURE                
+*                                                                               
+LK42C    CLI   TRCFLAG,0           TEST IF TRACING                              
+         BE    LK42CX                                                           
+         MVI   TRCDATA+1,C'X'      SET CLEAR CODE                               
+         MVC   TRCDATA+10(8),ECBENTRY                                           
+         MVI   TRCDATA,18                                                       
+         LA    R1,DUB                                                           
+         LA    RF,TRCDATA                                                       
+         ST    RF,DUB+4                                                         
+         MVC   DUB(4),=F'3'                                                     
+         ICM   RF,15,=V(TEMPTRC)                                                
+         BZ    *+6                                                              
+         BASR  RE,RF                                                            
+LK42CX   SAC   512                                                              
+*                                                                               
+LK42D    ST    R2,FULL             SAVE A(ECB)                                  
+         TM    12(R2),X'80'        TEST ECBECB                                  
+         BO    LK41B               KILLED SO GO BACK TO DEADLY                  
+*                                                                               
+         L     R2,OFFS                                                          
+         L     R2,0(,R2)           GET A(ECBS)                                  
+*                                                                               
+         SAC   0                                                                
+         ENQ   (UPDMAJ,UPDMIN,E,8,SYSTEM),RET=HAVE                              
+         SAC   512                                                              
+*                                                                               
+LK42E    L     R2,FULL                                                          
+         XC    0(16,R2),0(R2)      REMOVE FROM ECB TABLE                        
+         L     R2,OFFS                                                          
+         L     R2,0(,R2)           GET A(ECBS)                                  
+*                                                                               
+LK42F    L     R1,0(,R2)           DECR COUNTER                                 
+         LR    R0,R1                                                            
+         BCTR  R1,0                                                             
+         CS    R0,R1,0(R2)                                                      
+         BNE   LK42F                                                            
+*                                                                               
+         SAC   0                                                                
+         DEQ   (UPDMAJ,UPDMIN,8,SYSTEM),RET=HAVE                                
+*                                                                               
+         B     LK10                BACK AGAIN TO TRY TO GET THE LOCK            
+         EJECT                                                                  
+***********************************************************************         
+* CHECK ECB WAITS FOR DEADLY EMBRACES                                 *         
+***********************************************************************         
+CHKECB   NTR1                                                                   
+         MVC   ECBSAVE,ECBENTRY    MOVE CURRENT ENTRY TO ECBSAVE                
+         TM    12(R2),X'80'                                                     
+         BO    CHKECB3B            POSTED DEADLY                                
+*                                                                               
+         XC    ECBKILL,ECBKILL                                                  
+         XC    ECBAKILL,ECBAKILL                                                
+         TM    ECBSAVE+6,X'80'     IF REQUESTOR A JOB                           
+         BZ    CHKECB0                                                          
+         TM    ECBSAVE+2,X'80'     AND OWNER AN ADV                             
+         BNZ   CHKECB0                                                          
+         MVC   ECBKILL(4),ECBSAVE  SAVE OWNER ID IN KILL                        
+*                                                                               
+CHKECB0  SAC   0                                                                
+         ENQ   (UPDMAJ,UPDMIN,E,8,SYSTEM),RET=HAVE                              
+         SAC   512                                                              
+*                                                                               
+CHKECB1  L     R2,OFFS             ADD TO ECB TABLE                             
+         L     R2,0(,R2)           GET A(ECBS)                                  
+         L     RF,0(,R2)           RF=NUMBER OF ECBS                            
+*                                                                               
+CHKECB2  LTR   RF,RF               END OF TABLE                                 
+         BZ    CHKECBX                                                          
+         LA    R2,ECBLNQ(,R2)      POINT TO FIRST NEXT ECB                      
+         OC    0(ECBLNQ,R2),0(R2)                                               
+         BZ    *-16                IGNORE ZERO ENTRIES                          
+*                                                                               
+         USING ECBD,R2                                                          
+         TM    ECBECB,X'40'        IGNORE POSTED ENTRYS                         
+         BO    *+14                                                             
+         CLC   ECBSAVE(3),ECBREQ   DOES OWNER APPEAR AS REQUESTOR               
+         BE    CHKECB3             YES                                          
+         BCT   RF,CHKECB2          GO CHECK NEXT ECB                            
+         B     CHKECBX                                                          
+*                                                                               
+CHKECB3  CLC   ECBREQ,ECBKILL      IS REQUESTOR SAME AS KILL                    
+         BNE   CHKECB3A                                                         
+         OC    ECBAKILL,ECBAKILL   ANY ECB TO KILL YET                          
+         BNZ   CHKECB3A                                                         
+         ST    R2,ECBAKILL         SAVE A(ECB TO KILL)                          
+*                                                                               
+CHKECB3A MVC   ECBSAVE(4),ECBOWNER MOVE THAT OWNER TO CURRENT                   
+         CLC   ECBSAVE(4),ECBSAVE+4 TEST POINTING TO SELF                       
+         BNE   CHKECB1             IF NOT EQUAL, GO CHECK AGAIN                 
+*                                                                               
+         OC    ECBAKILL,ECBAKILL   ANY ECB TO KILL                              
+         BZ    CHKECB3B                                                         
+         L     R2,ECBAKILL                                                      
+         OI    ECBECB,X'C0'        POST WITH KILL FLAG X'80'                    
+         SAC   0                                                                
+         WTO   'DEADLY EMBRACE - DEFERRED'                                      
+         B     CHKECBX                                                          
+*                                                                               
+CHKECB3B MVC   ECB2,ECBOWNER       SAVE FOR REPORTING                           
+         DROP  R2                                                               
+*                                                                               
+*FOR DEBUGGING DEADLYS                                                          
+*                                                                               
+         LA    R1,ECBDUMP          DUMP ECB TABLE SO VISIBLE                    
+         L     R2,OFFS                                                          
+         L     R2,0(,R2)           GET A(ECBS)                                  
+         MVC   0(256,R1),0(R2)                                                  
+         LA    R1,LOCDUMP          DUMP LOCK TABLE SO VISIBLE                   
+         L     R2,ALOCKTAB                                                      
+         LA    R0,256                                                           
+DUMP010  MVC   0(8,R1),0(R2)       COPY IN 1ST 256 ENTRIES                      
+         LA    R2,8(R2)                                                         
+         LA    R1,8(R1)                                                         
+         BCT   R0,DUMP010                                                       
+*                                                                               
+*FOR DEBUGGING DEADLYS                                                          
+*                                                                               
+         L     R2,FULL                                                          
+         XC    0(16,R2),0(R2)      REMOVE FROM ECB TABLE                        
+         L     R2,OFFS                                                          
+         L     R2,0(,R2)           GET A(ECBS)                                  
+*                                                                               
+CHKECB4  L     R1,0(,R2)           BUMP COUNTER DOWN BY 1                       
+         LR    R0,R1                                                            
+         BCTR  R1,0                                                             
+         CS    R0,R1,0(R2)                                                      
+         BNE   CHKECB4                                                          
+*                                                                               
+         SAC   0                                                                
+         DEQ   (UPDMAJ,UPDMIN,8,SYSTEM),RET=HAVE                                
+         B     DEADLY              C'EST TOUT QU'ELLE A ECRIT                   
+*                                                                               
+CHKECBX  SAC   0                                                                
+         DEQ   (UPDMAJ,UPDMIN,8,SYSTEM),RET=HAVE                                
+         XIT1                      OK TO WAIT                                   
+         EJECT                                                                  
+***********************************************************************         
+* UNLOCK ENTRIES FOR CURRENT TASK.                                    *         
+* IF P2+1(3) IS C'UNL' THE ONLY UNLOCK FILE/RECORD DEFINED IN P1.     *         
+* IF FILE NUM IN P1(1) IS ZERO UNLOCK ALL RECORDS FOR ALL FILES.      *         
+* FINALLY CLEAR ANY ECB WAITING ON THIS TASK.                         *         
+***********************************************************************         
+UNLOCK   CLI   ONLINE,C'Y'         TEST OFFLINE                                 
+         BNE   UNLK006                                                          
+         L     RE,VSSB             EXTRACT THIS TASK ADDR FROM SSB              
+         USING SSBD,RE                                                          
+         L     R3,SSBTKADR                                                      
+         USING TCBD,R3                                                          
+         CLI   P1,0                TEST UNLOCKING ALL FILES                     
+         BNE   UNLK006             NO                                           
+*                                                                               
+UNLK000  SAC   0                                                                
+         XC    TCBLOCK,TCBLOCK     CLEAR LOCK FLAG                              
+         LA    RF,TCBLKSE+18       GO THROUGH TABLE                             
+UNLK001  OC    0(2,RF),0(RF)                                                    
+         BNZ   UNLK005                                                          
+         AHI   RF,-2                                                            
+         LA    RE,TCBLKSE                                                       
+         CR    RF,RE                                                            
+         BNL   UNLK001                                                          
+         B     UNLKFREE            UNTIL ALL UNLOCKED                           
+*                                                                               
+UNLK005  MVC   LOCKSYS,1(RF)       EXTRACT SYSTEM                               
+         XC    0(2,RF),0(RF)       CLEAR ENTRY                                  
+*                                                                               
+UNLK006  XC    DUB,DUB                                                          
+         MVC   DUB+3(1),LOCKSYS                                                 
+         GOTO1 =V(LOCKSPC),DUB     ON RETURN WE OWN THIS RESOURCE               
+*                                                                               
+         L     R2,4(R1)                                                         
+         USING DMSPACED,R2                                                      
+         MVC   ALOCKTAB,DSPECB     SAVE RESOURCE ADDRESS                        
+         MVC   LOCKWORD,DSPLOCK                                                 
+*                                                                               
+         TM    DSPTYPE,DSPJOBQ     TEST OFFLINE                                 
+         BNO   ULK10A                                                           
+         MVC   LOCKID,DSPJOB       JOBNO                                        
+         B     ULK10B                                                           
+*                                                                               
+ULK10A   L     RE,VSSB                                                          
+         MVC   LOCKID+0(1),SSBSYSIX-SSBD(RE)                                    
+         MVC   LOCKID+1(1),TCBTASK                                              
+         MVI   LOCKID+2,0                                                       
+*                                                                               
+ULK10B   MVC   FILEID,P1           SAVE FILE ID                                 
+*                                                                               
+         SAC   512                                                              
+         LAM   AR2,AR2,ALET                                                     
+         L     R2,ALOCKTAB         R2=A(RESOURCE)                               
+         L     R2,DSYALOCK-DMSYSHDR(,R2)                                        
+         ST    R2,ALOCKTAB         R2=A(LOCKTAB)                                
+         USING LKTABD,R2                                                        
+*                                                                               
+         LH    R7,2(,R2)           R7=NUM OF ACTIVE ENTRIES                     
+         LA    R2,16(,R2)          POINT TO FIRST ACTIVE ENTRY                  
+         LTR   R0,R7               R0=NUM OF ENTRIES AFTER UNLOCK               
+         BZ    UNLK2D              EXIT IF NO ENTRIES AT ALL                    
+*                                                                               
+UNLK2    CLI   LKFILE,0            IGNORE BLANKS                                
+         BNE   *+12                                                             
+         LA    R2,L'LKDATA(,R2)                                                 
+         B     UNLK2                                                            
+*                                                                               
+         CLC   LKJOB(3),LOCKID     TEST SAME LOCKID                             
+         BNE   UNLK2C                                                           
+         CLC   P2+1(3),=C'UNL'     TEST SPECIFIC UNLOCK                         
+         BNE   UNLK2A                                                           
+         CLC   P1(1),LKFILE        TEST RIGHT FILE                              
+         BNE   UNLK2C                                                           
+         CLC   LOCKADR,LKDSKADR    TEST RIGHT RECORD                            
+         BNE   UNLK2C                                                           
+         XC    LKDATA,LKDATA       CLEAR ENTRY FOR THIS RECORD                  
+         BCTR  R0,0                AND UPDATE REMAINING COUNT                   
+         B     UNLK2D                                                           
+*                                                                               
+UNLK2A   CLI   P1,0                TEST ALL FILES                               
+         BE    UNLK2B                                                           
+         CLC   P1(1),LKFILE        TEST RIGHT FILE                              
+         BNE   UNLK2C                                                           
+*                                                                               
+UNLK2B   EQU   *                                                                
+*&&NOP                                                                          
+         MVC   TRCDATA,=AL2(12)    TRACE DELETE LOCK ENTRY                      
+         MVI   TRCDATA+2,C'D'                                                   
+         MVC   TRCDATA+3(1),LOCKSYS                                             
+         MVC   TRCDATA+4(8),0(R2)                                               
+         ICM   RF,15,=V(DDTRACE)                                                
+         BZ    UNLK2BA                                                          
+         CLI   LOCKSYS,X'34'       ACCK                                         
+         BNE   UNLK2BA                                                          
+         SAC   0                                                                
+         GOTO1 (RF),DUB,X'00000008',TRCDATA                                     
+         SAC   512                                                              
+*&&                                                                             
+UNLK2BA  XC    LKDATA,LKDATA       CLEAR ENTRY                                  
+         BCTR  R0,0                AND UPDATE REMAINING COUNT                   
+UNLK2C   LA    R2,L'LKDATA(,R2)                                                 
+         BCT   R7,UNLK2                                                         
+*                                                                               
+UNLK2D   L     R2,ALOCKTAB                                                      
+         STH   R0,2(,R2)           SET NEW COUNT IN LOCK TABLE                  
+*                                                                               
+         BAS   RE,FREESYS          FREE UP SYSTEM                               
+         SAC   512                                                              
+*                                                                               
+         CLI   ONLINE,C'Y'         ONE SYSTEM ONLY IF OFFLINE                   
+         BNE   UNLKFREE                                                         
+*                                                                               
+         CLI   P1,0                TEST UNLOCKING ALL FILES                     
+         BE    UNLK000             YES                                          
+         EJECT                                                                  
+***********************************************************************         
+* FREE ECBS WAITING ON THIS TASK                                      *         
+***********************************************************************         
+UNLKFREE SAC   512                                                              
+         LAM   AR2,AR2,ALET        MAKE SURE ITS ON DMGR DATASPACE              
+         L     R2,OFFS             FREE ECBS FOR THIS LOCKID                    
+         L     R2,0(,R2)           GET A(ECBS)                                  
+*                                                                               
+         SAC   0                                                                
+         ENQ   (UPDMAJ,UPDMIN,E,8,SYSTEM),RET=HAVE                              
+         SAC   512                                                              
+*                                                                               
+UNLK02   ICM   R0,15,0(R2)         RF=NUMBER OF ACTIVE ECBS                     
+         BZ    UNLKXXX                                                          
+*                                                                               
+         USING ECBD,R2                                                          
+UNLK21   LA    R2,ECBLNQ(,R2)      POINT TO FIRST / NEXT ENTRY                  
+         OC    ECBOWNER,ECBOWNER                                                
+         BZ    UNLK21              IGNORE ZERO ENTRIES                          
+         CLC   LOCKID,ECBOWNER     DO I OWN IT?                                 
+         BNE   UNLK22              NO, ONLY UNLOCK MY ENTRIES                   
+*                                                                               
+         TM    ECBECB,X'40'        TEST ALREADY POSTED                          
+         BNZ   *+8                                                              
+         MVI   ECBECB,X'40'        POST COMPLETE                                
+         SR    R1,R1                                                            
+         IC    R1,ECBECB                                                        
+         LA    R1,1(,R1)           POST 41,42,43,44,45                          
+         STC   R1,ECBECB                                                        
+         CLI   ECBECB,X'4E'                                                     
+         BL    UNLK21A                                                          
+         MVI   ECBECB,X'40'                                                     
+         B     UNLK22              NOP THIS IF CORE LOOPS START                 
+*                                                                               
+         SAC   0                                                                
+         DEQ   (UPDMAJ,UPDMIN,8,SYSTEM),RET=HAVE                                
+         DC    H'0'                DIE                                          
+*                                                                               
+UNLK21A  CLI   TRCFLAG,0           TEST IF TRACING                              
+         BE    UNLK21AX                                                         
+         SAC   0                                                                
+         MVC   TRCDATA+10(8),ECBOWNER                                           
+         MVI   TRCDATA+1,C'P'      SET POST CODE                                
+         XC    TRCDATA+2(8),TRCDATA+2                                           
+         MVI   TRCDATA,18                                                       
+         LA    R1,DUB                                                           
+         LA    RF,TRCDATA                                                       
+         ST    RF,DUB+4                                                         
+         MVC   DUB(4),=F'3'                                                     
+         ICM   RF,15,=V(TEMPTRC)                                                
+         BZ    *+6                                                              
+         BASR  RE,RF                                                            
+UNLK21AX SAC   512                                                              
+*                                                                               
+UNLK22   BCT   R0,UNLK21                                                        
+         DROP  R2                                                               
+*                                                                               
+UNLKXXX  SAC   0                                                                
+         DEQ   (UPDMAJ,UPDMIN,8,SYSTEM),RET=HAVE                                
+         B     EXIT                                                             
+         EJECT                                                                  
+***********************************************************************         
+* DEADLY EMBRACE - BACK OUT TANSACTION & INFORM USER                  *         
+***********************************************************************         
+DEADLY   CLI   ONLINE,C'Y'                                                      
+         BNE   DEADLY3             DIE IF OFFLINE                               
+*                                                                               
+DEADLY0  SR    RF,RF               GET CORRECT MESSAGE FOR LANGUAGE             
+         IC    RF,TLANG                                                         
+         SLL   RF,2                                                             
+         EX    0,DEADMSG(RF)                                                    
+         B     DEADLY1                                                          
+*                                                                               
+DEADMSG  L     RF,=A(DE00)         LOAD APPROPRIATE MESSAGE                     
+         L     RF,=A(DE00)         UK                                           
+         L     RF,=A(DE00)         US                                           
+         L     RF,=A(DE03)         GER                                          
+         L     RF,=A(DE04)         FRE                                          
+         L     RF,=A(DE05)         SPA                                          
+         L     RF,=A(DE06)         ITA                                          
+         L     RF,=A(DE07)         DUT                                          
+         DC    F'0'                NOT YET DEFINED                              
+         DC    F'0'                                                             
+*                                                                               
+NOTDEF   SAC   0                                                                
+         CLI   ONLINE,C'Y'                                                      
+         JNE   *+2                 DIE IF OFFLINE                               
+         L     RF,=A(ND00)         SYSTEM NOT DEFINED                           
+*                                                                               
+DEADLY1  L     RE,VSSB             GET MESSAGE DELIMITER CHR                    
+         MVC   DELIM,SSBSYSCH-SSBD(RE)                                          
+         L     RE,SSBTKADR-SSBD(RE)                                             
+         L     RE,TCBUTL-TCBD(RE)                                               
+         TM    TSTAT6-UTLD(RE),TST6STRO+TST6STFU TEST FULL STEREO MODE          
+         BNO   *+8                                                              
+         MVI   DELIM,C'/'                                                       
+*                                                                               
+DEADLY2  L     RE,TCBTWA           RF=A(40 CHR ERROR MSG)                       
+         LA    RE,64(RE)                                                        
+         OI    6(RE),X'80'         SET XMIT BIT                                 
+         SR    R1,R1                                                            
+         IC    R1,0(RE)                                                         
+         AHI   R1,-9                                                            
+         TM    1(RE),X'02'         TEST EXTENDED                                
+         BNO   *+8                                                              
+         AHI   R1,-8                                                            
+         EX    R1,*+8              CLEAR TWA HEADER MESSAGE FIELD               
+         B     *+10                                                             
+         XC    8(0,RE),8(RE)                                                    
+         MVC   8(8,RE),=C'ED/0330 '                                             
+         MVC   10(1,RE),DELIM                                                   
+         MVC   16(40,RE),0(RF)     MOVE DEADLY EMBRACE MSG TO TWA               
+*                                                                               
+         L     RE,VSSB             SET DEADLY EMBRACE FLAG IN UTL               
+         L     RE,SSBTKADR-SSBD(RE)                                             
+         L     RE,TCBUTL-TCBD(RE)                                               
+         OI    TSTATU-UTLD(RE),TSTATDED                                         
+*                                                                               
+DEADLY3  GOTO1 =V(HEXO24),PLIST,ECB2,DEDOWN,16                                  
+         GOTO1 (RF),(R1),ECBENTRY,DEDWANT,16                                    
+         GOTO1 (RF),(R1),LOCKADR,DEDBLK,4                                       
+         GOTO1 (RF),(R1),FILEID,DEDFIL,1                                        
+*                                                                               
+         XR    R0,R0                                                            
+         WTO   TEXT=((DEAD1H,D),(DEAD2H,D),(DEAD3H,D),(0,E))                    
+*                                                                               
+         CLI   ONLINE,C'Y'                                                      
+         BE    DEADLY4             DIE IF OFFLINE                               
+         ABEND 269,DUMP            ABEND 269 DEADLY EMBRACE                     
+DEADLY4  EQU   *                                                                
+*                                                                               
+*&&UK                                                                           
+         TM    ABFLAGS,ABSDUMP+ABSCRIPT                                         
+         BNZ   DEADDUMP                                                         
+*&&                                                                             
+*&&US                                                                           
+         TM    ABFLAGS,ABSDUMP+ABSCRIPT                                         
+         BO    DEADDUMP                                                         
+         TM    ABFLAGS,ABSRUPD                                                  
+         BO    DEADDUMP                                                         
+*&&                                                                             
+DEADSOFT DC    H'0',C'$RET'        DIE AND RETURN                               
+*                                                                               
+         MVI   DEADSOFT+2,C'$'     RESET LOOP TRAPS READY FOR $ABEND            
+         L     RE,VSSB             GET TASK ADDRESS FROM SSB                    
+         L     RE,SSBTKADR-SSBD(RE)                                             
+         NI    TCBINDS1-TCBD(RE),255-TCBFABND                                   
+*                                                                               
+         DC    H'0',C'$ABEND'      DIE WITHOUT DUMP                             
+DEADDUMP DC    H'0',C'DEADLY'      DIE WITH REGULAR ON-LINE DUMP                
+         EJECT                                                                  
+**********************************************************************          
+* DEADLY EMBRACE MESSAGE                                             *          
+**********************************************************************          
+DEAD1H   DC    AL2(65)                                                          
+DEAD1    DC    65C' '                                                           
+         ORG   DEAD1                                                            
+         DC    CL20'DEADLY - OWNER='                                            
+DEDOWN   DC    CL32' '                                                          
+         ORG                                                                    
+*                                                                               
+DEAD2H   DC    AL2(65)                                                          
+DEAD2    DC    65C' '                                                           
+         ORG   DEAD2                                                            
+         DC    CL20'       - REQUESTOR='                                        
+DEDWANT  DC    CL32' '                                                          
+         ORG                                                                    
+*                                                                               
+DEAD3H   DC    AL2(65)                                                          
+DEAD3    DC    65C' '                                                           
+         ORG   DEAD3                                                            
+         DC    CL20'       - BLOCK='                                            
+DEDBLK   DC    CL08' '                                                          
+         DC    CL08' - FILE='                                                   
+DEDFIL   DC    CL02' '                                                          
+         ORG                                                                    
+         EJECT                                                                  
+**********************************************************************          
+* LITERALS AND CONSTANTS                                             *          
+**********************************************************************          
+         LTORG                                                                  
+*                                                                               
+ONLINE   DC    C' '                SET TO C'Y' OR C'N' ON FIRST CALL            
+$UPD     DC    X'010D'                                                          
+ARZEROS  DC    16F'0'                                                           
+         CNOP  0,8                                                              
+MYUPDID  DS    0CL16                                                            
+UPDMAJ   DC    CL8'DMGR    '       SET FROM V(UPDID) ON FIRST CALL              
+UPDMIN   DC    CL8'ECBTABLE'                                                    
+         EJECT                                                                  
+**********************************************************************          
+* LOOK UP TABLE FOR PROGRAM LIST BY SE NUMBER                        *          
+**********************************************************************          
+LKSYSTAB DC    A(0)                SYS 1 = SERVICE                              
+         DC    A(SPOTPGMS)         SYS 2 = SPOT1                                
+         DC    A(SPOTPGMS)         SYS 3 = SPOT2                                
+         DC    A(PRNTPGMS)         SYS 4 = PRNT1                                
+         DC    A(0)                SYS 5                                        
+         DC    A(ACCTPGMS)         SYS 6 = ACCT1                                
+         DC    A(SPOTPGMS)         SYS 7 = SPOT3                                
+         DC    A(REPPGMS)          SYS 8 = REP1                                 
+         DC    A(0)                SYS 9                                        
+         DC    A(CTLPGMS)          SYS A = CONTROL                              
+         DC    A(0)                SYS B = GAMES                                
+         DC    A(0)                SYS C                                        
+         DC    A(SPOTPGMS)         SYS D = SPOT4                                
+         DC    A(0)                SYS E                                        
+         DC    A(0)                SYS F                                        
+         DC    A(0)                SYS10                                        
+         DC    A(SPOTPGMS)         SYS11 = SPOT5                                
+         DC    A(0)                SYS12                                        
+         DC    A(0)                SYS13                                        
+         DC    A(0)                SYS14                                        
+         EJECT                                                                  
+**********************************************************************          
+* LOOK UP TABLE FOR PROGRAM LOCKOUT LIST BY PROGRAM NUMBER           *          
+**********************************************************************          
+SPOTPGMS DC    A(0)                01 = PFM                                     
+         DC    A(SPGOL)            02                                           
+         DC    A(SPPAY)            03                                           
+         DC    A(SPFIL)            04                                           
+         DC    A(SPPEP)            05 = PEPSI                                   
+         DC    A(SPINV)            06                                           
+         DC    A(0)                07                                           
+         DC    A(NOLOCK)           08 = REQ                                     
+         DC    A(0)                09                                           
+         DC    A(0)                0A                                           
+         DC    A(NOLOCK)           0B = MIS                                     
+         DC    A(SPTRA)            0C                                           
+         DC    A(NOLOCK)           0D = FIS                                     
+         DC    A(NOLOCK)           0E = DEM                                     
+         DC    A(SPTSTA)           0F                                           
+         DC    A(0)                10                                           
+         DC    A(SPBUY)            11                                           
+         DC    A(0)                12                                           
+         DC    A(SPPAY)            13                                           
+         DC    A(0)                14                                           
+         DC    A(SPMAT)            15                                           
+         DC    A(SPTRA)            16 = NEW TRAFFIC                             
+         DC    A(SPFIL)            17 = SUPER FILE MAINT                        
+         DC    A(0)                18                                           
+         DC    A(SPFIL)            19                                           
+         DC    A(NOLOCK)           1A = INFO                                    
+         DC    A(0)                1B                                           
+         DC    A(SPSYN)            1C                                           
+         DC    A(NOLOCK)           1D = SPOOL                                   
+         DC    A(0)                1E                                           
+         DC    A(0)                1F                                           
+                                                                                
+PRNTPGMS DS    A(0)                01                                           
+         DC    A(0)                02                                           
+         DC    A(PRPAY)            03                                           
+         DC    A(PRFIL)            04                                           
+         DC    A(0)                05                                           
+         DC    A(PRPUBF)           06                                           
+         DC    A(PRSFM)            07                                           
+         DC    A(PRCOM)            08                                           
+         DC    A(PRDRD)            09                                           
+         DC    A(PRPUBL)           0A                                           
+         DC    A(NOLOCK)           0B = INFO                                    
+         DC    A(PRREP)            0C                                           
+         DC    A(PRCON)            0D                                           
+         DC    A(PRBUD)            0E                                           
+         DC    A(PRADF)            0F                                           
+         DC    A(0)                10                                           
+         DC    A(PRBUY)            11                                           
+         DC    A(NOLOCK)           12 = REQ                                     
+         DC    A(PRINS)            13                                           
+         DC    A(0)                14                                           
+         DC    A(0)                15                                           
+         DC    A(0)                16 = PFM                                     
+         DC    A(0)                17                                           
+         DC    A(PRBUY)            18 = MBC                                     
+         DC    A(0)                19                                           
+         DC    A(0)                1A                                           
+         DC    A(0)                1B                                           
+         DC    A(PRSFM)            1C                                           
+         DC    A(0)                1D                                           
+         DC    A(0)                1E                                           
+         DC    A(0)                1F                                           
+                                                                                
+REPPGMS  DC    A(RECON)            01                                           
+         DC    A(0)                02                                           
+         DC    A(REINV)            03                                           
+         DC    A(REFIL)            04                                           
+         DC    A(0)                05                                           
+         DC    A(RESIN)            06                                           
+         DC    A(NOLOCK)           07 = REQ                                     
+         DC    A(NOLOCK)           08 = SPOOL                                   
+         DC    A(0)                09                                           
+         DC    A(0)                0A = PFM                                     
+         DC    A(NOLOCK)           0B = INFO                                    
+         DC    A(0)                0C = MSI                                     
+         DC    A(NOLOCK)           0D = RIS                                     
+         DC    A(0)                0E                                           
+         DC    A(0)                0F                                           
+         DC    A(0)                10                                           
+                                                                                
+ACCTPGMS DC    A(0)                01 = PFM                                     
+         DC    A(ACBAT)            02                                           
+         DC    A(ACLFM)            03                                           
+         DC    A(NOLOCK)           04 = REQ                                     
+         DC    A(0)                05                                           
+         DC    A(NOLOCK)           06 = ENQ = INFO                              
+         DC    A(NOLOCK)           07 = CASH                                    
+         DC    A(ACART)            08                                           
+         DC    A(ACVOID)           09                                           
+         DC    A(NOLOCK)           0A = TALENT                                  
+         DC    A(0)                0B                                           
+         DC    A(0)                0C                                           
+         DC    A(0)                0D                                           
+         DC    A(0)                0E                                           
+         DC    A(0)                0F                                           
+         DC    A(0)                10                                           
+         DC    A(0)                11                                           
+         DC    A(0)                12                                           
+         DC    A(0)                13                                           
+         DC    A(0)                14                                           
+         DC    A(0)                15                                           
+         DC    A(0)                16                                           
+         DC    A(0)                17                                           
+         DC    A(0)                18                                           
+         DC    A(0)                19                                           
+         DC    A(0)                1A                                           
+         DC    A(0)                1B                                           
+         DC    A(NOLOCK)           1C = PRINT SFM (1C) SWITCHES TO ACC          
+                                                                                
+CTLPGMS  DC    A(0)                01 = PFM                                     
+         DC    A(CTLFM)            02                                           
+         DC    A(CTPRO)            03                                           
+         DC    A(0)                04                                           
+         DC    A(NOLOCK)           05 = INFO                                    
+         DC    A(0)                06                                           
+         DC    A(0)                07                                           
+         DC    A(0)                08                                           
+         DC    A(0)                09                                           
+         DC    A(0)                0A                                           
+         DC    A(0)                0B                                           
+         DC    A(0)                0C                                           
+         DC    A(0)                0D                                           
+         DC    A(0)                0E                                           
+         DC    A(0)                0F                                           
+                                                                                
+MEDPGMS  DC    A(0)                01 = PFM                                     
+         DC    A(MEDBUY)           02                                           
+         DC    A(MEDLFM)           03                                           
+         DC    A(NOLOCK)           04 = REQ                                     
+         DC    A(0)                05                                           
+         DC    A(NOLOCK)           06 = FIS                                     
+         DC    A(NOLOCK)           07 = MIS                                     
+         DC    A(NOLOCK)           08 = WIS                                     
+         DC    A(0)                09                                           
+         DC    A(MEDRAT)           0A                                           
+         DC    A(0)                0B                                           
+         DC    A(0)                0C                                           
+         DC    A(0)                0D                                           
+         DC    A(0)                0E                                           
+         DC    A(NOLOCK)           0F = ENQ                                     
+         DC    A(0)                10                                           
+         DC    A(MEDPAY)           11                                           
+         DC    A(0)                12                                           
+         DC    A(0)                13                                           
+         DC    A(NOLOCK)           14 = NREQ                                    
+         DC    A(0)                15                                           
+         DC    A(0)                16                                           
+         DC    A(0)                17                                           
+         DC    A(0)                18                                           
+         DC    A(0)                19                                           
+         DC    A(0)                1A                                           
+         DC    A(0)                1B                                           
+         DC    A(0)                1C                                           
+         DC    A(0)                1D                                           
+         DC    A(0)                1E                                           
+         DC    A(0)                1F                                           
+         EJECT                                                                  
+***********************************************************************         
+* 0  FILE ID                                                          *         
+* 1  DISPLACEMENT OF VALUES IN KEY                                    *         
+* 2  LOW VALUE FOR LOCKOUT                                            *         
+* 3  HIGH VALUE FOR LOCKOUT                                           *         
+*                                                                     *         
+* MULTIPLE ENTRIES ARE PERMITTED - X'FF' IS EOL FLAG                  *         
+***********************************************************************         
+* SPOT -  X'21'=SPTFILE, X'22'=STATION, X'23'=SPTDIR, X'25'=REQ                 
+*                                                                               
+SPBUY    DC    X'210010FF',X'21000A0A',X'21000D0D'                              
+         DC    X'230010FF',X'23000303',X'23000A0A',X'23000D0D',X'FF'            
+SPGOL    DC    X'21000202',X'23000202',X'FF'                                    
+SPPAY    DC    X'210010FF',X'FF'                                                
+SPFIL    DC    X'21000010',X'23000010',X'220000FF',X'FF'                        
+SPINV    DC    X'21000B0B',X'21000D0D',X'23000B0B',X'FF'                        
+SPSFM    DC    X'210000FF',X'230000FF',X'FF'                                    
+SPTRA    DC    X'21000A0A',X'23000A0A',X'FF'                                    
+SPTSTA   EQU   SPTRA                                                            
+SPMAT    DC    X'210010FF',X'FF'                                                
+SPSYN    DC    X'21000303',X'23000303',X'FF'                                    
+SPPEP    DC    X'21000D0D',X'23000D0D',X'FF'                                    
+                                                                                
+* PRINT - X'40'=PRTD, X'41'=PUBD, X'42'=PRTF, X'43'=PUBF, X'45'=PREQ            
+*                                                                               
+PRPAY    DC    X'42032020',X'FF'                                                
+PRFIL    DC    X'400302FF',X'420302FF',X'FF'                                    
+PRPUBF   DC    X'410000FF',X'430000FF',X'FF'                                    
+PRSFM    DC    X'400000FF',X'420000FF',X'FF'                                    
+PRCOM    DC    X'40034040',X'42034040',X'FF'                                    
+PRDRD    DC    X'40030305',X'42030305',X'FF'                                    
+PRPUBL   DC    X'40031717',X'42031717',X'FF'                                    
+PRREP    DC    X'40031111',X'42031111',X'FF'                                    
+PRCON    DC    X'40031010',X'42031010',X'FF'                                    
+PRBUD    DC    X'40031212',X'42031212',X'FF'                                    
+PRADF    DC    X'40031515',X'42031515',X'FF'                                    
+PRBUY    DC    X'40032021',X'40039999',X'42032020',X'FF'                        
+PRINS    DC    X'42032020',X'FF'                                                
+                                                                                
+* ACC - X'61'=ACCOUNT,X'63'=ACCREQ,X'66'=ACCDAY                                 
+*                                                                               
+ACBAT    DC    X'61000B0B',X'FF'                                                
+ACLFM    DC    X'610000FF',X'FF'                                                
+ACVOID   DC    X'610000FF',X'FF'                                                
+ACART    DC    X'610000FF',X'FF'                                                
+                                                                                
+* REP -  X'81'=REPDIR, X'82'=REPFILE, X'83'=REPREQ                              
+*                                                                               
+RECON    DC    X'81000B0C',X'81008CFF',X'82000B0C',X'FF'                        
+REFIL    DC    X'810000FF',X'820000FF',X'FF'                                    
+REINV    DC    X'82000C0C',X'FF'                                                
+RESIN    EQU   REINV                                                            
+REMSI    EQU   REINV                                                            
+                                                                                
+* CONTROL - X'A1'=CTFILE                                                        
+*                                                                               
+CTLFM    DC    X'A10000FF',X'FF'                                                
+CTPRO    DC    X'A10000FF',X'FF'                                                
+                                                                                
+* MEDIA - X'41'=MEDIR, X'42'=MEDFILE, X'43'=REQUEST                             
+*                                                                               
+MEDBUY   DC    X'4100C7C7',X'4100E2E6',X'4200C7C7',X'4200E2E6',X'FF'            
+MEDLFM   DC    X'410000FF',X'420000FF',X'FF'                                    
+MEDRAT   DC    X'4100E2E2',X'4200E2E2',X'FF'                                    
+MEDPAY   DC    X'4100E2E6',X'4200E2E6',X'FF'                                    
+                                                                                
+NOLOCK   DC    X'FF'                                                            
+         EJECT                                                                  
+         LTORG                                                                  
+                                                                                
+ND00     DC    CL40'System not defined ***CONTACT DDS***   '                    
+DE00     DC    CL40'Unable to lock records. Please retry.  '                    
+DE01     DC    CL40'Unable to lock records. Please retry.  '                    
+DE02     DC    CL40'Unable to lock records. Please retry.  '                    
+DE03     DC    CL40'Unable to lock records. Please retry.  '                    
+DE04     DC    CL40'Unable to lock records. Please retry.  '                    
+DE05     DC    CL40'Unable to lock records. Please retry.  '                    
+DE06     DC    CL40'Unable to lock records. Please retry.  '                    
+DE07     DC    CL40'Unable to lock records. Please retry.  '                    
+                                                                                
+         DC    C'****ECB DUMP****'                                              
+ECBDUMP  DC    16XL16'00'                                                       
+         DC    C'***LOCK DUMP****'                                              
+LOCDUMP  DC    256XL8'00'                                                       
+         EJECT                                                                  
+WORKD    DSECT                                                                  
+DUB      DS    D                                                                
+ECB2     DS    XL16                                                             
+ECBENTRY DS    XL16                                                             
+ECBSAVE  DS    XL16                                                             
+ECBKILL  DS    XL4                                                              
+ECBAKILL DS    XL4                                                              
+FULL     DS    F                                                                
+SAVERE   DS    A                                                                
+ATCB     DS    F                                                                
+STRTUS   DS    F                                                                
+WAITUS   DS    F                                                                
+ENDTUS   DS    F                                                                
+NOWTUS   DS    F                                                                
+HALF     DS    H                                                                
+BYTE     DS    X                                                                
+LOCKSYS  DS    X                                                                
+*                                                                               
+LKRDATA  DS    0XL12                                                            
+LKRTOTAL DS    XL2                 NUMBER OF LOCKS DONE                         
+LKRWAITS DS    XL2                 NUMBER OF TIMES WAITED FOR LOCK              
+LKRTIMET DS    XL4                 TOTAL TIME TO DO LOCK                        
+LKRTIMEW DS    XL4                 WAIT TIME FOR LOCK                           
+*                                                                               
+LOCKSIN  DS    XL4                                                              
+LOCKWORD DS    XL4                                                              
+LOCKADR  DS    XL4                                                              
+ALOCKTAB DS    A                                                                
+PLIST    DS    6F                                                               
+ANEXT    DS    A                                                                
+ADMCB    DS    A                                                                
+ALET     DS    A                                                                
+OFFS     DS    A                                                                
+LOCKID   DS    XL3                                                              
+FILEID   DS    XL1                                                              
+SAVEP2   DS    XL1                                                              
+DELIM    DS    C                                                                
+ABFLAGS  DS    X                   ABNORMAL TERMINATION FLAG                    
+ABSRUPD  EQU   X'04'               SRUPD IS RUNNING                             
+ABSDUMP  EQU   X'02'               SET TO DUMP INSTEAD OF $ABEND                
+ABSCRIPT EQU   X'01'               SCRIPT IS RUNNING                            
+         DS    X                                                                
+TRCFLAG  DS    X                                                                
+TRCDATA  DS    CL20                                                             
+WORKX    EQU   *                                                                
+                                                                                
+*DMLKTAB                                                                        
+       ++INCLUDE DMLKTAB                                                        
+                                                                                
+*DMSPACED                                                                       
+       ++INCLUDE DMSPACED                                                       
+                                                                                
+*DMDSYSHDR                                                                      
+       ++INCLUDE DMDSYSHDR                                                      
+                                                                                
+PARAMS   DSECT                                                                  
+P1       DS    A                                                                
+P2       DS    A                                                                
+P3       DS    A                                                                
+P4       DS    A                                                                
+P5       DS    A                                                                
+                                                                                
+*FADSECTS                                                                       
+       ++INCLUDE FADSECTS                                                       
+*DMDTFPH                                                                        
+       ++INCLUDE DMDTFPH                                                        
+*DMFILTABD                                                                      
+       ++INCLUDE DMFILTABD                                                      
+                                                                                
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'006DMLOCKER  10/16/14'                                      
+         END                                                                    

@@ -1,0 +1,2843 @@
+*          DATA SET SPSLENTAB  AT LEVEL 137 AS OF 03/01/21                      
+*PHASE T00A57C                                                                  
+         TITLE 'NEW SPOT LENGTH TABLES'                                         
+*                                                                               
+* NEW CORE-RESIDENT SPOT LENGTH TABLE WHICH CONSISTS OF 2 PARTS:                
+*                                                                               
+* PART 1 IS A NEW TABLE OF ACCEPTABLE SPOT LENGHTS  WHICH SUPPORTS              
+* SPOT LENGTHS FROM 1 TO 250, THE LENGTHS OF 0 AND 251-255 WERE ADDED           
+* TO SIMPLIFY THE CODING                                                        
+* THIS TABLE HAS 256 2-BYTE ENTRIES                                             
+* BYTE1 -- DISPLACEMENT INTO EQUSECT                                            
+* BYTE2 -- ACTUAL SPOT LENGTH, SUPPORTED BY EQU RECORD                          
+*                                                                               
+* NOTE*1  ENTRY FOR ZERO LEN WAS ADDED TO SIMPLIFY CALCULATIONS                 
+*         IT'LL ALWAYS BE AL1(0,0)  SAME IS TRUE FOR 251 TO 255                 
+*                                                                               
+* NOTE*2  SLNTAB CAN BE SETUP BY AGENCY/MEDIA                                   
+*         AGY/MED ARE STORED IN 1ST 3 BYTES OF EACH TABLE,                      
+*         PRECEDING LENGTH ENTRIES                                              
+*         4TH BYTE (ZERO) WAS ADDED FOR HALFWORD ALIGNMENT                      
+*         DEFAULT TABLE WILL HAVE 00T AND 00R FOR AGY/MED                       
+*         SO TOTAL LENGTH OF A TABLE FOR AN AGY/MED WOULD BE:                   
+*         4+256*2=516 BYTES                                                     
+*                                                                               
+*         IF AGENCY HAS DIFFERENT EQUIVALENCING RULES THEN DEFAULT              
+*         WE WILL ADD A TABLE WITH THEIR VALUES BEFORE DEFAULT TAB              
+*                                                                               
+* NOTE*3  LENGTH EQUATE ADDED FOR EACH TABLE TO EASILY EYEBALL                  
+*         A TABLE THAT DOESN'T CORRECTLY ADD UP TO 516 (X'204')                 
+*         BYTES.  THE PENALTY FOR MAKING A MISTAKE MEANS THAT EVERY             
+*         TABLE THAT FOLLOWS WILL BE IN THE WRONG PLACE!                        
+*                                                                               
+*                                                                               
+* PART 2  IS OLD SLNTAB (JUST IN CASE)                                          
+*                                                                               
+SLNTAB   CSECT                                                                  
+         DC    AL2(SLN00TX-SLN00T)   LENGTH OF EACH ENTRY                       
+         DC    AL4(SLNTABX-SLNTAB)   DSPL FROM TOP TO END OF TABLE              
+*                                                                               
+SLNYNT   DC    C'YNT '             YNR TV                                       
+         DC    AL1(0,0)            0                                            
+         DC    AL1(DSPL30,1)       1                                            
+         DC    4AL1(DSPL05,5)      2-5                                          
+         DC    3AL1(DSPL07,7)      6-8                                          
+         DC    5AL1(DSPL10,10)     9-13                                         
+         DC    2AL1(DSPL15,15)     14-15                                        
+         DC    AL1(0,0)            16                                           
+         DC    AL2(DSPL15,15)      17-18                                        
+         DC    AL1(0,0)            19                                           
+         DC    AL1(DSPL20,20)      20                                           
+         DC    4AL1(0,0)           21-24                                        
+         DC    AL1(DSPL20,20)      25                                           
+         DC    2AL1(0,0)           26-27                                        
+         DC    5AL1(DSPL30,30)     28-32                                        
+         DC    2AL1(0,0)           33-34                                        
+         DC    AL1(DSPL30,30)      35                                           
+         DC    2AL1(DSPL40,40)     36-37                                        
+         DC    2AL1(0,0)           38-39                                        
+         DC    2AL1(DSPL40,40)     40-41                                        
+         DC    3AL1(0,0)           42-44                                        
+         DC    AL1(DSPL45,45)      45                                           
+         DC    4AL1(0,0)           46-49                                        
+         DC    AL1(DSPL50,50)      50                                           
+         DC    9AL1(0,0)           51-59                                        
+         DC    AL1(DSPL60,60)      60                                           
+         DC    4AL1(0,0)           61-64                                        
+         DC    AL1(DSPL60,60)      65                                           
+         DC    9AL1(0,0)           66-74                                        
+         DC    AL1(DSPL75,75)      75                                           
+         DC    14AL1(0,0)          76-89                                        
+         DC    AL1(DSPL90,90)      90                                           
+         DC    14AL1(0,0)          91-104                                       
+         DC    AL1(DSPL105,105)    105                                          
+         DC    14AL1(0,0)          106-119                                      
+         DC    2AL1(DSPL120,120)   120-121                                      
+         DC    3AL1(0,0)           122-124                                      
+         DC    AL1(DSPL120,120)    125                                          
+         DC    24AL1(0,0)          126-149                                      
+         DC    AL1(DSPL150,150)    150                                          
+         DC    26AL1(0,0)          151-176                                      
+         DC    AL1(DSPL150,150)    177                                          
+         DC    2AL1(0,0)           178-179                                      
+         DC    AL1(DSPL150,150)    180                                          
+         DC    49AL1(0,0)          181-229                                      
+         DC    AL1(DSPL150,150)    230                                          
+         DC    25AL1(0,0)          231-255                                      
+SLNYNTX  EQU   *                                                                
+SLNYNTL  EQU   *-SLNYNT                                                         
+*                                                                               
+SLNYNR   DC    C'YNR '             YNR RADIO                                    
+         DC    AL1(0,0)            0                                            
+         DC    AL1(DSPL60,1)       1                                            
+         DC    4AL1(DSPL05,5)      2-5                                          
+         DC    2AL1(DSPL07,7)      6-7                                          
+         DC    5AL1(DSPL10,10)     8-12                                         
+         DC    6AL1(DSPL15,15)     13-18                                        
+         DC    2AL1(DSPL20,20)     19-20                                        
+         DC    4AL1(0,0)           21-24                                        
+         DC    AL1(DSPL20,20)      25                                           
+         DC    2AL1(0,0)           26-27                                        
+         DC    4AL1(DSPL30,30)     28-31                                        
+         DC    8AL1(0,0)           32-39                                        
+         DC    AL1(DSPL40,40)      40                                           
+         DC    4AL1(0,0)           41-44                                        
+         DC    AL1(DSPL45,45)      45                                           
+         DC    AL1(0,0)            46                                           
+         DC    AL1(DSPL50,50)      47                                           
+         DC    2AL1(0,0)           48-49                                        
+         DC    AL1(DSPL50,50)      50                                           
+         DC    4AL1(0,0)           51-54                                        
+         DC    AL1(DSPL50,50)      55                                           
+         DC    2AL1(DSPL60,60)     56-57                                        
+         DC    3AL1(DSPL60,60)     58-60                                        
+         DC    AL1(0,0)            61                                           
+         DC    AL1(DSPL60,60)      62                                           
+         DC    2AL1(0,0)           63-64                                        
+         DC    AL1(DSPL60,60)      65                                           
+         DC    4AL1(0,0)           66-69                                        
+         DC    AL1(DSPL60,60)      70                                           
+         DC    4AL1(0,0)           71-74                                        
+         DC    AL1(DSPL75,75)      75                                           
+         DC    4AL1(0,0)           76-79                                        
+         DC    AL1(DSPL75,75)      80                                           
+         DC    9AL1(0,0)           81-89                                        
+         DC    AL1(DSPL90,90)      90                                           
+         DC    14AL1(0,0)          91-104                                       
+         DC    AL1(DSPL105,105)    105                                          
+         DC    14AL1(0,0)          106-119                                      
+         DC    AL1(DSPL120,120)    120                                          
+         DC    4AL1(0,0)           121-124                                      
+         DC    AL1(DSPL120,120)    125                                          
+         DC    24AL1(0,0)          126-149                                      
+         DC    AL1(DSPL150,150)    150                                          
+         DC    105AL1(0,0)         151-255                                      
+SLNYNRX  EQU   *                                                                
+SLNYNRL  EQU   *-SLNYNR                                                         
+*                                                                               
+SLNH7T   DC    C'H7T '             MINDSHARE TV                                 
+         DC    AL1(0,0)            0                                            
+         DC    AL1(DSPL30,1)       1                                            
+         DC    4AL1(DSPL05,5)      2-5                                          
+         DC    3AL1(DSPL07,7)      6-8                                          
+         DC    5AL1(DSPL10,10)     9-13                                         
+         DC    2AL1(DSPL15,15)     14-15                                        
+         DC    AL1(0,0)            16                                           
+         DC    AL2(DSPL15,15)      17-18                                        
+         DC    AL1(0,0)            19                                           
+         DC    AL1(DSPL20,20)      20                                           
+         DC    2AL1(0,0)           21-22                                        
+         DC    3AL1(DSPL20,20)     23-25                                        
+         DC    2AL1(0,0)           26-27                                        
+         DC    5AL1(DSPL30,30)     28-32                                        
+         DC    2AL1(0,0)           33-34                                        
+         DC    AL1(DSPL30,30)      35                                           
+         DC    2AL1(DSPL40,40)     36-37                                        
+         DC    2AL1(0,0)           38-39                                        
+         DC    2AL1(DSPL40,40)     40-41                                        
+         DC    3AL1(0,0)           42-44                                        
+         DC    AL1(DSPL45,45)      45                                           
+         DC    4AL1(0,0)           46-49                                        
+         DC    AL1(DSPL50,50)      50                                           
+         DC    5AL1(0,0)           51-55                                        
+         DC    AL1(DSPL60,60)      56                                           
+         DC    3AL1(0,0)           57-59                                        
+         DC    AL1(DSPL60,60)      60                                           
+         DC    4AL1(0,0)           61-64                                        
+         DC    AL1(DSPL60,60)      65                                           
+         DC    9AL1(0,0)           66-74                                        
+         DC    AL1(DSPL75,75)      75                                           
+         DC    9AL1(0,0)           76-84                                        
+         DC    AL1(DSPL90,90)      85                                           
+         DC    4AL1(0,0)           86-89                                        
+         DC    AL1(DSPL90,90)      90                                           
+         DC    4AL1(0,0)           91-94                                        
+         DC    AL1(DSPL90,90)      95                                           
+         DC    9AL1(0,0)           96-104                                       
+         DC    AL1(DSPL105,105)    105                                          
+         DC    9AL1(0,0)           106-114                                      
+         DC    AL1(DSPL120,120)    115                                          
+         DC    4AL1(0,0)           116-119                                      
+         DC    2AL1(DSPL120,120)   120-121                                      
+         DC    3AL1(0,0)           122-124                                      
+         DC    AL1(DSPL120,120)    125                                          
+         DC    9AL1(0,0)           126-134                                      
+         DC    AL1(DSPL120,120)    135                                          
+         DC    14AL1(0,0)          136-149                                      
+         DC    AL1(DSPL150,150)    150                                          
+         DC    26AL1(0,0)          151-176                                      
+         DC    AL1(DSPL150,150)    177                                          
+         DC    2AL1(0,0)           178-179                                      
+         DC    AL1(DSPL150,150)    180                                          
+         DC    19AL1(0,0)          181-199                                      
+         DC    AL1(DSPL150,150)    200                                          
+         DC    29AL1(0,0)          201-229                                      
+         DC    AL1(DSPL150,150)    230                                          
+         DC    9AL1(0,0)           231-239                                      
+         DC    AL1(DSPL30,30)      240                                          
+         DC    8AL1(0,0)           241-248                                      
+         DC    AL1(DSPL30,30)      249                                          
+         DC    AL1(DSPL150,150)    250                                          
+         DC    5AL1(0,0)           251-255                                      
+SLNH7TX  EQU   *                                                                
+SLNH7TL  EQU   *-SLNH7T                                                         
+*                                                                               
+SLNH7R   DC    C'H7R '             MINDSHARE RADIO                              
+         DC    AL1(0,0)            0                                            
+         DC    AL1(DSPL60,1)       1                                            
+         DC    4AL1(DSPL05,5)      2-5                                          
+         DC    2AL1(DSPL07,7)      6-7                                          
+         DC    5AL1(DSPL10,10)     8-12                                         
+         DC    6AL1(DSPL15,15)     13-18                                        
+         DC    2AL1(DSPL20,20)     19-20                                        
+         DC    4AL1(0,0)           21-24                                        
+         DC    AL1(DSPL20,20)      25                                           
+         DC    2AL1(0,0)           26-27                                        
+         DC    4AL1(DSPL30,30)     28-31                                        
+         DC    3AL1(0,0)           32-34                                        
+         DC    2AL1(DSPL30,30)     35-36                                        
+         DC    3AL1(0,0)           37-39                                        
+         DC    AL1(DSPL40,40)      40                                           
+         DC    4AL1(0,0)           41-44                                        
+         DC    AL1(DSPL45,45)      45                                           
+         DC    2AL1(DSPL50,50)     46-47                                        
+         DC    2AL1(0,0)           48-49                                        
+         DC    AL1(DSPL50,50)      50                                           
+         DC    4AL1(0,0)           51-54                                        
+         DC    AL1(DSPL50,50)      55                                           
+         DC    2AL1(DSPL60,60)     56-57                                        
+         DC    3AL1(DSPL60,60)     58-60                                        
+         DC    AL1(0,0)            61                                           
+         DC    AL1(DSPL60,60)      62                                           
+         DC    2AL1(0,0)           63-64                                        
+         DC    AL1(DSPL60,60)      65                                           
+         DC    4AL1(0,0)           66-69                                        
+         DC    AL1(DSPL60,60)      70                                           
+         DC    4AL1(0,0)           71-74                                        
+         DC    AL1(DSPL75,75)      75                                           
+         DC    4AL1(0,0)           76-79                                        
+         DC    AL1(DSPL75,75)      80                                           
+         DC    9AL1(0,0)           81-89                                        
+         DC    AL1(DSPL90,90)      90                                           
+         DC    14AL1(0,0)          91-104                                       
+         DC    AL1(DSPL105,105)    105                                          
+         DC    14AL1(0,0)          106-119                                      
+         DC    AL1(DSPL120,120)    120                                          
+         DC    4AL1(0,0)           121-124                                      
+         DC    AL1(DSPL120,120)    125                                          
+         DC    24AL1(0,0)          126-149                                      
+         DC    AL1(DSPL150,150)    150                                          
+         DC    29AL1(0,0)          151-179                                      
+         DC    AL1(DSPL150,150)    180                                          
+         DC    59AL1(0,0)          181-239                                      
+         DC    AL1(DSPL150,150)    240                                          
+         DC    15AL1(0,0)          241-255                                      
+SLNH7RX  EQU   *                                                                
+SLNH7RL  EQU   *-SLNH7R                                                         
+*                                                                               
+SLNFRT   DC    C'FRT '             TEAM DETROIT TV                              
+         DC    AL1(0,0)            0                                            
+         DC    AL1(DSPL30,1)       1                                            
+         DC    4AL1(DSPL05,5)      2-5                                          
+         DC    3AL1(DSPL07,7)      6-8                                          
+         DC    5AL1(DSPL10,10)     9-13                                         
+         DC    2AL1(DSPL15,15)     14-15                                        
+         DC    AL1(0,0)            16                                           
+         DC    AL2(DSPL15,15)      17-18                                        
+         DC    AL1(0,0)            19                                           
+         DC    AL1(DSPL20,20)      20                                           
+         DC    AL1(0,0)            21                                           
+         DC    4AL1(DSPL20,20)     22-25                                        
+         DC    6AL1(DSPL30,30)     26-31                                        
+         DC    AL1(DSPL10,10)      32                                           
+         DC    2AL1(0,0)           33-34                                        
+         DC    AL1(DSPL30,30)      35                                           
+         DC    AL1(DSPL10,10)      36                                           
+         DC    AL1(DSPL40,40)      37                                           
+         DC    2AL1(0,0)           38-39                                        
+         DC    2AL1(DSPL40,40)     40-41                                        
+         DC    3AL1(0,0)           42-44                                        
+         DC    AL1(DSPL45,45)      45                                           
+         DC    4AL1(0,0)           46-49                                        
+         DC    AL1(DSPL50,50)      50                                           
+         DC    6AL1(0,0)           51-56                                        
+         DC    2AL1(DSPL60,60)     57-58                                        
+         DC    AL1(0,0)            59                                           
+         DC    2AL1(DSPL60,60)     60-61                                        
+         DC    2AL1(0,0)           62-63                                        
+         DC    2AL1(DSPL60,60)     64-65                                        
+         DC    AL1(0,0)            66                                           
+         DC    AL1(DSPL60,60)      67                                           
+         DC    2AL1(0,0)           68-69                                        
+         DC    AL1(DSPL60,60)      70                                           
+         DC    4AL1(0,0)           71-74                                        
+         DC    AL1(DSPL75,75)      75                                           
+         DC    10AL1(0,0)          76-85                                        
+         DC    2AL1(DSPL60,60)     86-87                                        
+         DC    2AL1(0,0)           88-89                                        
+         DC    AL1(DSPL90,90)      90                                           
+         DC    5AL1(0,0)           91-95                                        
+         DC    2AL1(DSPL60,60)     96-97                                        
+         DC    7AL1(0,0)           98-104                                       
+         DC    AL1(DSPL105,105)    105                                          
+         DC    2AL1(DSPL60,60)     106-107                                      
+         DC    5AL1(0,0)           108-112                                      
+         DC    AL1(DSPL60,60)      113                                          
+         DC    6AL1(0,0)           114-119                                      
+         DC    8AL1(DSPL120,120)   120-127                                      
+         DC    3AL1(0,0)           128-130                                      
+         DC    6AL1(DSPL120,120)   131-136                                      
+         DC    3AL1(0,0)           137-139                                      
+         DC    AL1(DSPL120,120)    140                                          
+         DC    5AL1(0,0)           141-145                                      
+         DC    3AL1(DSPL120,120)   146-148                                      
+         DC    AL1(0,0)            149                                          
+         DC    AL1(DSPL150,150)    150                                          
+         DC    3AL1(0,0)           151-153                                      
+         DC    AL1(DSPL150,150)    154                                          
+         DC    AL1(0,0)            155                                          
+         DC    3AL1(DSPL120,120)   156-158                                      
+         DC    4AL1(0,0)           159-162                                      
+         DC    AL1(DSPL120,120)    163                                          
+         DC    13AL1(0,0)          164-176                                      
+         DC    AL1(DSPL150,150)    177                                          
+         DC    2AL1(0,0)           178-179                                      
+         DC    AL1(DSPL150,150)    180                                          
+         DC    AL1(0,0)            181                                          
+         DC    AL1(DSPL150,150)    182                                          
+         DC    12AL1(0,0)          183-194                                      
+         DC    AL1(DSPL150,150)    195                                          
+         DC    34AL1(0,0)          196-229                                      
+         DC    AL1(DSPL150,150)    230                                          
+         DC    9AL1(0,0)           231-239                                      
+         DC    AL1(DSPL150,150)    240                                          
+         DC    15AL1(0,0)          241-255                                      
+SLNFRTX  EQU   *                                                                
+SLNFRTL  EQU   *-SLNFRT                                                         
+*                                                                               
+SLNFRR   DC    C'FRR '             TEAM DETROIT RADIO                           
+         DC    AL1(0,0)            0                                            
+         DC    AL1(DSPL60,1)       1                                            
+         DC    4AL1(DSPL05,5)      2-5                                          
+         DC    2AL1(DSPL07,7)      6-7                                          
+         DC    5AL1(DSPL10,10)     8-12                                         
+         DC    6AL1(DSPL15,15)     13-18                                        
+         DC    2AL1(DSPL20,20)     19-20                                        
+         DC    4AL1(0,0)           21-24                                        
+         DC    AL1(DSPL20,20)      25                                           
+         DC    2AL1(0,0)           26-27                                        
+         DC    4AL1(DSPL30,30)     28-31                                        
+         DC    AL1(DSPL10,10)      32                                           
+         DC    3AL1(0,0)           33-35                                        
+         DC    AL1(DSPL10,10)      36                                           
+         DC    3AL1(0,0)           37-39                                        
+         DC    AL1(DSPL40,40)      40                                           
+         DC    4AL1(0,0)           41-44                                        
+         DC    AL1(DSPL45,45)      45                                           
+         DC    AL1(0,0)            46                                           
+         DC    AL1(DSPL50,50)      47                                           
+         DC    2AL1(0,0)           48-49                                        
+         DC    AL1(DSPL50,50)      50                                           
+         DC    4AL1(0,0)           51-54                                        
+         DC    AL1(DSPL50,50)      55                                           
+         DC    2AL1(DSPL60,60)     56-57                                        
+         DC    5AL1(DSPL60,60)     58-62                                        
+         DC    2AL1(0,0)           63-64                                        
+         DC    AL1(DSPL60,60)      65                                           
+         DC    4AL1(0,0)           66-69                                        
+         DC    AL1(DSPL60,60)      70                                           
+         DC    4AL1(0,0)           71-74                                        
+         DC    AL1(DSPL75,75)      75                                           
+         DC    4AL1(0,0)           76-79                                        
+         DC    AL1(DSPL75,75)      80                                           
+         DC    9AL1(0,0)           81-89                                        
+         DC    AL1(DSPL90,90)      90                                           
+         DC    14AL1(0,0)          91-104                                       
+         DC    AL1(DSPL105,105)    105                                          
+         DC    14AL1(0,0)          106-119                                      
+         DC    AL1(DSPL120,120)    120                                          
+         DC    4AL1(0,0)           121-124                                      
+         DC    AL1(DSPL120,120)    125                                          
+         DC    24AL1(0,0)          126-149                                      
+         DC    AL1(DSPL150,150)    150                                          
+         DC    29AL1(0,0)          151-179                                      
+         DC    AL1(DSPL150,150)    180                                          
+         DC    75AL1(0,0)          181-255                                      
+SLNFRRX  EQU   *                                                                
+SLNFRRL  EQU   *-SLNFRR                                                         
+*                                                                               
+SLNM2T   DC    C'M2T '             MEDIACOM TV                                  
+         DC    AL1(0,0)            0                                            
+         DC    AL1(DSPL30,1)       1                                            
+         DC    4AL1(DSPL05,5)      2-5                                          
+         DC    3AL1(DSPL07,7)      6-8                                          
+         DC    5AL1(DSPL10,10)     9-13                                         
+         DC    2AL1(DSPL15,15)     14-15                                        
+         DC    AL1(0,0)            16                                           
+         DC    AL2(DSPL15,15)      17-18                                        
+         DC    AL1(0,0)            19                                           
+         DC    AL1(DSPL20,20)      20                                           
+         DC    4AL1(0,0)           21-24                                        
+         DC    AL1(DSPL20,20)      25                                           
+         DC    2AL1(0,0)           26-27                                        
+         DC    5AL1(DSPL30,30)     28-32                                        
+         DC    2AL1(0,0)           33-34                                        
+         DC    AL1(DSPL30,30)      35                                           
+         DC    2AL1(DSPL40,40)     36-37                                        
+         DC    2AL1(0,0)           38-39                                        
+         DC    2AL1(DSPL40,40)     40-41                                        
+         DC    3AL1(0,0)           42-44                                        
+         DC    AL1(DSPL45,45)      45                                           
+         DC    4AL1(0,0)           46-49                                        
+         DC    AL1(DSPL50,50)      50                                           
+         DC    9AL1(0,0)           51-59                                        
+         DC    AL1(DSPL60,60)      60                                           
+         DC    4AL1(0,0)           61-64                                        
+         DC    AL1(DSPL60,60)      65                                           
+         DC    9AL1(0,0)           66-74                                        
+         DC    AL1(DSPL75,75)      75                                           
+         DC    14AL1(0,0)          76-89                                        
+         DC    AL1(DSPL90,90)      90                                           
+         DC    14AL1(0,0)          91-104                                       
+         DC    AL1(DSPL105,105)    105                                          
+         DC    14AL1(0,0)          106-119                                      
+         DC    2AL1(DSPL120,120)   120-121                                      
+         DC    3AL1(0,0)           122-124                                      
+         DC    AL1(DSPL120,120)    125                                          
+         DC    24AL1(0,0)          126-149                                      
+         DC    AL1(DSPL150,150)    150                                          
+         DC    26AL1(0,0)          151-176                                      
+         DC    AL1(DSPL150,150)    177                                          
+         DC    2AL1(0,0)           178-179                                      
+         DC    AL1(DSPL150,150)    180                                          
+         DC    49AL1(0,0)          181-229                                      
+         DC    AL1(DSPL150,150)    230                                          
+         DC    25AL1(0,0)          231-255                                      
+SLNM2TX  EQU   *                                                                
+SLNM2TL  EQU   *-SLNM2T                                                         
+*                                                                               
+SLNM2R   DC    C'M2R '             MEDIACOM RADIO                               
+         DC    AL1(0,0)            0                                            
+         DC    AL1(DSPL60,1)       1                                            
+         DC    4AL1(DSPL05,5)      2-5                                          
+         DC    2AL1(DSPL07,7)      6-7                                          
+         DC    AL1(0,0)            8                                            
+         DC    3AL1(DSPL10,10)     9-11                                         
+         DC    2AL1(0,0)           12-13                                        
+         DC    5AL1(DSPL15,15)     14-18                                        
+         DC    AL1(0,0)            19                                           
+         DC    AL1(DSPL20,20)      20                                           
+         DC    4AL1(0,0)           21-24                                        
+         DC    AL1(DSPL20,20)      25                                           
+         DC    3AL1(0,0)           26-28                                        
+         DC    3AL1(DSPL30,30)     29-31                                        
+         DC    8AL1(0,0)           32-39                                        
+         DC    AL1(DSPL40,40)      40                                           
+         DC    4AL1(0,0)           41-44                                        
+         DC    AL1(DSPL45,45)      45                                           
+         DC    AL1(0,0)            46                                           
+         DC    AL1(DSPL50,50)      47                                           
+         DC    2AL1(0,0)           48-49                                        
+         DC    AL1(DSPL50,50)      50                                           
+         DC    4AL1(0,0)           51-54                                        
+         DC    AL1(DSPL50,50)      55                                           
+         DC    AL1(DSPL60,60)      56                                           
+         DC    AL1(0,0)            57                                           
+         DC    3AL1(DSPL60,60)     58-60                                        
+         DC    AL1(0,0)            61                                           
+         DC    AL1(DSPL60,60)      62                                           
+         DC    2AL1(0,0)           63-64                                        
+         DC    AL1(DSPL60,60)      65                                           
+         DC    4AL1(0,0)           66-69                                        
+         DC    AL1(DSPL60,60)      70                                           
+         DC    4AL1(0,0)           71-74                                        
+         DC    AL1(DSPL75,75)      75                                           
+         DC    4AL1(0,0)           76-79                                        
+         DC    AL1(DSPL75,75)      80                                           
+         DC    9AL1(0,0)           81-89                                        
+         DC    AL1(DSPL90,90)      90                                           
+         DC    14AL1(0,0)          91-104                                       
+         DC    AL1(DSPL105,105)    105                                          
+         DC    14AL1(0,0)          106-119                                      
+         DC    AL1(DSPL120,120)    120                                          
+         DC    4AL1(0,0)           121-124                                      
+         DC    AL1(DSPL120,120)    125                                          
+         DC    24AL1(0,0)          126-149                                      
+         DC    AL1(DSPL150,150)    150                                          
+         DC    105AL1(0,0)         151-255                                      
+SLNM2RX  EQU   *                                                                
+SLNM2RL  EQU   *-SLNM2R                                                         
+*                                                                               
+SLNGZT   DC    C'GZT '             GM TV                                        
+         DC    AL1(0,0)            0                                            
+         DC    AL1(DSPL30,1)       1                                            
+         DC    4AL1(DSPL05,5)      2-5                                          
+         DC    3AL1(DSPL07,7)      6-8                                          
+         DC    5AL1(DSPL10,10)     9-13                                         
+         DC    2AL1(DSPL15,15)     14-15                                        
+         DC    4AL1(0,0)           16-19                                        
+         DC    AL1(DSPL20,20)      20                                           
+         DC    4AL1(0,0)           21-24                                        
+         DC    AL1(DSPL20,20)      25                                           
+         DC    2AL1(0,0)           26-27                                        
+         DC    5AL1(DSPL30,30)     28-32                                        
+         DC    2AL1(0,0)           33-34                                        
+         DC    AL1(DSPL30,30)      35                                           
+         DC    2AL1(DSPL40,40)     36-37                                        
+         DC    2AL1(0,0)           38-39                                        
+         DC    2AL1(DSPL40,40)     40-41                                        
+         DC    3AL1(0,0)           42-44                                        
+         DC    AL1(DSPL45,45)      45                                           
+         DC    4AL1(0,0)           46-49                                        
+         DC    AL1(DSPL50,50)      50                                           
+         DC    9AL1(0,0)           51-59                                        
+         DC    AL1(DSPL60,60)      60                                           
+         DC    14AL1(0,0)          61-74                                        
+         DC    AL1(DSPL75,75)      75                                           
+         DC    9AL1(0,0)           76-84                                        
+         DC    AL1(DSPL90,90)      85                                           
+         DC    4AL1(0,0)           86-89                                        
+         DC    AL1(DSPL90,90)      90                                           
+         DC    14AL1(0,0)          91-104                                       
+         DC    AL1(DSPL105,105)    105                                          
+         DC    14AL1(0,0)          106-119                                      
+         DC    2AL1(DSPL120,120)   120-121                                      
+         DC    28AL1(0,0)          122-149                                      
+         DC    AL1(DSPL150,150)    150                                          
+         DC    26AL1(0,0)          151-176                                      
+         DC    AL1(DSPL150,150)    177                                          
+         DC    2AL1(0,0)           178-179                                      
+         DC    AL1(DSPL150,150)    180                                          
+         DC    29AL1(0,0)          181-209                                      
+         DC    AL1(DSPL150,150)    210                                          
+         DC    29AL1(0,0)          211-239                                      
+         DC    AL1(DSPL150,150)    240                                          
+         DC    15AL1(0,0)          211-255                                      
+SLNGZTX  EQU   *                                                                
+SLNGZTL  EQU   *-SLNGZT                                                         
+*                                                                               
+SLNGZR   DC    C'GZR '             GM RADIO                                     
+         DC    AL1(0,0)            0                                            
+         DC    AL1(DSPL60,1)       1                                            
+         DC    4AL1(DSPL05,5)      2-5                                          
+         DC    2AL1(DSPL07,7)      6-7                                          
+         DC    AL1(0,0)            8                                            
+         DC    3AL1(DSPL10,10)     9-11                                         
+         DC    2AL1(0,0)           12-13                                        
+         DC    3AL1(DSPL15,15)     14-16                                        
+         DC    3AL1(0,0)           17-19                                        
+         DC    AL1(DSPL20,20)      20                                           
+         DC    4AL1(0,0)           21-24                                        
+         DC    AL1(DSPL20,20)      25                                           
+         DC    3AL1(0,0)           26-28                                        
+         DC    3AL1(DSPL30,30)     29-31                                        
+         DC    8AL1(0,0)           32-39                                        
+         DC    AL1(DSPL40,40)      40                                           
+         DC    4AL1(0,0)           41-44                                        
+         DC    AL1(DSPL45,45)      45                                           
+         DC    AL1(0,0)            46                                           
+         DC    AL1(DSPL50,50)      47                                           
+         DC    2AL1(0,0)           48-49                                        
+         DC    AL1(DSPL50,50)      50                                           
+         DC    4AL1(0,0)           51-54                                        
+         DC    AL1(DSPL50,50)      55                                           
+         DC    AL1(DSPL60,60)      56                                           
+         DC    AL1(0,0)            57                                           
+         DC    AL1(DSPL60,60)      58                                           
+         DC    AL1(0,0)            59                                           
+         DC    AL1(DSPL60,60)      60                                           
+         DC    AL1(0,0)            61                                           
+         DC    AL1(DSPL60,60)      62                                           
+         DC    2AL1(0,0)           63-64                                        
+         DC    AL1(DSPL60,60)      65                                           
+         DC    4AL1(0,0)           66-69                                        
+         DC    AL1(DSPL60,60)      70                                           
+         DC    4AL1(0,0)           71-74                                        
+         DC    AL1(DSPL75,75)      75                                           
+         DC    4AL1(0,0)           76-79                                        
+         DC    AL1(DSPL75,75)      80                                           
+         DC    4AL1(0,0)           81-84                                        
+         DC    AL1(DSPL90,90)      85                                           
+         DC    4AL1(0,0)           86-89                                        
+         DC    AL1(DSPL90,90)      90                                           
+         DC    14AL1(0,0)          91-104                                       
+         DC    AL1(DSPL105,105)    105                                          
+         DC    14AL1(0,0)          106-119                                      
+         DC    AL1(DSPL120,120)    120                                          
+         DC    29AL1(0,0)          121-149                                      
+         DC    AL1(DSPL150,150)    150                                          
+         DC    105AL1(0,0)         151-255                                      
+SLNGZRX  EQU   *                                                                
+SLNGZRL  EQU   *-SLNGZR                                                         
+*                                                                               
+SLNBNT   DC    C'BNT '             PHD TV                                       
+         DC    AL1(0,0)            0                                            
+         DC    AL1(DSPL30,1)       1                                            
+         DC    4AL1(DSPL05,5)      2-5                                          
+         DC    3AL1(DSPL07,7)      6-8                                          
+         DC    5AL1(DSPL10,10)     9-13                                         
+         DC    2AL1(DSPL15,15)     14-15                                        
+         DC    4AL1(0,0)           16-19                                        
+         DC    AL1(DSPL20,20)      20                                           
+         DC    AL1(0,0)            21                                           
+         DC    AL1(DSPL20,20)      22                                           
+         DC    2AL1(0,0)           23-24                                        
+         DC    AL1(DSPL20,20)      25                                           
+         DC    2AL1(0,0)           26-27                                        
+         DC    5AL1(DSPL30,30)     28-32                                        
+         DC    2AL1(0,0)           33-34                                        
+         DC    AL1(DSPL30,30)      35                                           
+         DC    2AL1(DSPL40,40)     36-37                                        
+         DC    2AL1(0,0)           38-39                                        
+         DC    2AL1(DSPL40,40)     40-41                                        
+         DC    3AL1(0,0)           42-44                                        
+         DC    AL1(DSPL45,45)      45                                           
+         DC    4AL1(0,0)           46-49                                        
+         DC    AL1(DSPL50,50)      50                                           
+         DC    9AL1(0,0)           51-59                                        
+         DC    AL1(DSPL60,60)      60                                           
+         DC    14AL1(0,0)          61-74                                        
+         DC    AL1(DSPL75,75)      75                                           
+         DC    14AL1(0,0)          76-89                                        
+         DC    AL1(DSPL90,90)      90                                           
+         DC    14AL1(0,0)          91-104                                       
+         DC    AL1(DSPL105,105)    105                                          
+         DC    14AL1(0,0)          106-119                                      
+         DC    2AL1(DSPL120,120)   120-121                                      
+         DC    28AL1(0,0)          122-149                                      
+         DC    AL1(DSPL150,150)    150                                          
+         DC    26AL1(0,0)          151-176                                      
+         DC    AL1(DSPL150,150)    177                                          
+         DC    2AL1(0,0)           178-179                                      
+         DC    AL1(DSPL150,150)    180                                          
+         DC    75AL1(0,0)          181-255                                      
+SLNBNTX  EQU   *                                                                
+SLNBNTL  EQU   *-SLNBNT                                                         
+*                                                                               
+SLNBNR   DC    C'BNR '             PHD RADIO                                    
+         DC    AL1(0,0)            0                                            
+         DC    AL1(DSPL60,1)       1                                            
+         DC    4AL1(DSPL05,5)      2-5                                          
+         DC    2AL1(DSPL07,7)      6-7                                          
+         DC    AL1(0,0)            8                                            
+         DC    3AL1(DSPL10,10)     9-11                                         
+         DC    2AL1(0,0)           12-13                                        
+         DC    3AL1(DSPL15,15)     14-16                                        
+         DC    3AL1(0,0)           17-19                                        
+         DC    AL1(DSPL20,20)      20                                           
+         DC    AL1(0,0)            21                                           
+         DC    AL1(DSPL20,20)      22                                           
+         DC    2AL1(0,0)           23-24                                        
+         DC    AL1(DSPL20,20)      25                                           
+         DC    3AL1(0,0)           26-28                                        
+         DC    3AL1(DSPL30,30)     29-31                                        
+         DC    8AL1(0,0)           32-39                                        
+         DC    AL1(DSPL40,40)      40                                           
+         DC    4AL1(0,0)           41-44                                        
+         DC    AL1(DSPL45,45)      45                                           
+         DC    AL1(0,0)            46                                           
+         DC    AL1(DSPL50,50)      47                                           
+         DC    2AL1(0,0)           48-49                                        
+         DC    AL1(DSPL50,50)      50                                           
+         DC    4AL1(0,0)           51-54                                        
+         DC    AL1(DSPL50,50)      55                                           
+         DC    AL1(DSPL60,60)      56                                           
+         DC    AL1(0,0)            57                                           
+         DC    AL1(DSPL60,60)      58                                           
+         DC    AL1(0,0)            59                                           
+         DC    AL1(DSPL60,60)      60                                           
+         DC    AL1(0,0)            61                                           
+         DC    AL1(DSPL60,60)      62                                           
+         DC    2AL1(0,0)           63-64                                        
+         DC    AL1(DSPL60,60)      65                                           
+         DC    4AL1(0,0)           66-69                                        
+         DC    AL1(DSPL60,60)      70                                           
+         DC    4AL1(0,0)           71-74                                        
+         DC    AL1(DSPL75,75)      75                                           
+         DC    4AL1(0,0)           76-79                                        
+         DC    AL1(DSPL75,75)      80                                           
+         DC    9AL1(0,0)           81-89                                        
+         DC    AL1(DSPL90,90)      90                                           
+         DC    14AL1(0,0)          91-104                                       
+         DC    AL1(DSPL105,105)    105                                          
+         DC    14AL1(0,0)          106-119                                      
+         DC    AL1(DSPL120,120)    120                                          
+         DC    29AL1(0,0)          121-149                                      
+         DC    AL1(DSPL150,150)    150                                          
+         DC    105AL1(0,0)         151-255                                      
+SLNBNRX  EQU   *                                                                
+SLNBNRL  EQU   *-SLNBNR                                                         
+*                                                                               
+SLNDFT   DC    C'DFT '             RESOURCES/PROGRAM EXCHANGE TV                
+         DC    AL1(0,0)            0                                            
+         DC    AL1(DSPL30,1)       1                                            
+         DC    4AL1(DSPL05,5)      2-5                                          
+         DC    3AL1(DSPL07,7)      6-8                                          
+         DC    5AL1(DSPL10,10)     9-13                                         
+         DC    2AL1(DSPL15,15)     14-15                                        
+         DC    4AL1(0,0)           16-19                                        
+         DC    AL1(DSPL20,20)      20                                           
+         DC    4AL1(0,0)           21-24                                        
+         DC    AL1(DSPL20,20)      25                                           
+         DC    2AL1(0,0)           26-27                                        
+         DC    5AL1(DSPL30,30)     28-32                                        
+         DC    2AL1(0,0)           33-34                                        
+         DC    AL1(DSPL30,30)      35                                           
+         DC    2AL1(DSPL40,40)     36-37                                        
+         DC    2AL1(0,0)           38-39                                        
+         DC    2AL1(DSPL40,40)     40-41                                        
+         DC    3AL1(0,0)           42-44                                        
+         DC    AL1(DSPL45,45)      45                                           
+         DC    4AL1(0,0)           46-49                                        
+         DC    AL1(DSPL50,50)      50                                           
+         DC    9AL1(0,0)           51-59                                        
+         DC    AL1(DSPL60,60)      60                                           
+         DC    14AL1(0,0)          61-74                                        
+         DC    AL1(DSPL75,75)      75                                           
+         DC    14AL1(0,0)          76-89                                        
+         DC    AL1(DSPL90,90)      90                                           
+         DC    9AL1(0,0)           91-99                                        
+         DC    AL1(DSPL30,30)      100                                          
+         DC    4AL1(0,0)           101-104                                      
+         DC    AL1(DSPL105,105)    105                                          
+         DC    14AL1(0,0)          106-119                                      
+         DC    2AL1(DSPL120,120)   120-121                                      
+         DC    28AL1(0,0)          122-149                                      
+         DC    AL1(DSPL150,150)    150                                          
+         DC    26AL1(0,0)          151-176                                      
+         DC    AL1(DSPL150,150)    177                                          
+         DC    2AL1(0,0)           178-179                                      
+         DC    AL1(DSPL150,150)    180                                          
+         DC    75AL1(0,0)          181-255                                      
+SLNDFTX  EQU   *                                                                
+SLNDFTL  EQU   *-SLNDFT                                                         
+*                                                                               
+SLNH9T   DC    C'H9T '             BROMLEY                                      
+         DC    AL1(0,0)            0                                            
+         DC    AL1(DSPL30,1)       1                                            
+         DC    4AL1(DSPL05,5)      2-5                                          
+         DC    3AL1(DSPL07,7)      6-8                                          
+         DC    5AL1(DSPL10,10)     9-13                                         
+         DC    2AL1(DSPL15,15)     14-15                                        
+         DC    4AL1(0,0)           16-19                                        
+         DC    AL1(DSPL20,20)      20                                           
+         DC    4AL1(0,0)           21-24                                        
+         DC    AL1(DSPL20,20)      25                                           
+         DC    2AL1(0,0)           26-27                                        
+         DC    5AL1(DSPL30,30)     28-32                                        
+         DC    2AL1(0,0)           33-34                                        
+         DC    AL1(DSPL30,30)      35                                           
+         DC    2AL1(DSPL40,40)     36-37                                        
+         DC    2AL1(0,0)           38-39                                        
+         DC    2AL1(DSPL40,40)     40-41                                        
+         DC    3AL1(0,0)           42-44                                        
+         DC    AL1(DSPL45,45)      45                                           
+         DC    4AL1(0,0)           46-49                                        
+         DC    AL1(DSPL50,50)      50                                           
+         DC    8AL1(0,0)           51-58                                        
+         DC    2AL1(DSPL60,60)     59-60                                        
+         DC    14AL1(0,0)          61-74                                        
+         DC    AL1(DSPL75,75)      75                                           
+         DC    9AL1(0,0)           76-84                                        
+         DC    AL1(DSPL90,90)      85                                           
+         DC    4AL1(0,0)           86-89                                        
+         DC    AL1(DSPL90,90)      90                                           
+         DC    14AL1(0,0)          91-104                                       
+         DC    AL1(DSPL105,105)    105                                          
+         DC    14AL1(0,0)          106-119                                      
+         DC    2AL1(DSPL120,120)   120-121                                      
+         DC    28AL1(0,0)          122-149                                      
+         DC    AL1(DSPL150,150)    150                                          
+         DC    26AL1(0,0)          151-176                                      
+         DC    AL1(DSPL150,150)    177                                          
+         DC    2AL1(0,0)           178-179                                      
+         DC    AL1(DSPL150,150)    180                                          
+         DC    75AL1(0,0)          181-255                                      
+SLNH9TX  EQU   *                                                                
+SLNH9TL  EQU   *-SLNH9T                                                         
+*                                                                               
+SLNH9R   DC    C'H9R '             BROMLEY RADIO                                
+         DC    AL1(0,0)            0                                            
+         DC    AL1(DSPL60,1)       1                                            
+         DC    4AL1(DSPL05,5)      2-5                                          
+         DC    2AL1(DSPL07,7)      6-7                                          
+         DC    AL1(0,0)            8                                            
+         DC    3AL1(DSPL10,10)     9-11                                         
+         DC    2AL1(0,0)           12-13                                        
+         DC    3AL1(DSPL15,15)     14-16                                        
+         DC    3AL1(0,0)           17-19                                        
+         DC    2AL1(DSPL20,20)     20-21                                        
+         DC    3AL1(0,0)           22-24                                        
+         DC    AL1(DSPL20,20)      25                                           
+         DC    3AL1(0,0)           26-28                                        
+         DC    3AL1(DSPL30,30)     29-31                                        
+         DC    8AL1(0,0)           32-39                                        
+         DC    AL1(DSPL40,40)      40                                           
+         DC    4AL1(0,0)           41-44                                        
+         DC    AL1(DSPL45,45)      45                                           
+         DC    AL1(0,0)            46                                           
+         DC    AL1(DSPL50,50)      47                                           
+         DC    2AL1(0,0)           48-49                                        
+         DC    AL1(DSPL50,50)      50                                           
+         DC    4AL1(0,0)           51-54                                        
+         DC    AL1(DSPL50,50)      55                                           
+         DC    AL1(DSPL60,60)      56                                           
+         DC    AL1(0,0)            57                                           
+         DC    3AL1(DSPL60,60)     58-60                                        
+         DC    AL1(0,0)            61                                           
+         DC    AL1(DSPL60,60)      62                                           
+         DC    2AL1(0,0)           63-64                                        
+         DC    AL1(DSPL60,60)      65                                           
+         DC    4AL1(0,0)           66-69                                        
+         DC    AL1(DSPL60,60)      70                                           
+         DC    4AL1(0,0)           71-74                                        
+         DC    AL1(DSPL75,75)      75                                           
+         DC    4AL1(0,0)           76-79                                        
+         DC    AL1(DSPL75,75)      80                                           
+         DC    9AL1(0,0)           81-89                                        
+         DC    AL1(DSPL90,90)      90                                           
+         DC    14AL1(0,0)          91-104                                       
+         DC    AL1(DSPL105,105)    105                                          
+         DC    14AL1(0,0)          106-119                                      
+         DC    AL1(DSPL120,120)    120                                          
+         DC    29AL1(0,0)          121-149                                      
+         DC    AL1(DSPL150,150)    150                                          
+         DC    105AL1(0,0)         151-255                                      
+SLNH9RX  EQU   *                                                                
+SLNH9RL  EQU   *-SLNH9R                                                         
+*                                                                               
+SLNMCT   DC    C'MCT '             UNIVERSAL MCCANN TV                          
+         DC    AL1(0,0)            0                                            
+         DC    AL1(DSPL30,1)       1                                            
+         DC    4AL1(DSPL05,5)      2-5                                          
+         DC    3AL1(DSPL07,7)      6-8                                          
+         DC    5AL1(DSPL10,10)     9-13                                         
+         DC    2AL1(DSPL15,15)     14-15                                        
+         DC    4AL1(0,0)           16-19                                        
+         DC    AL1(DSPL20,20)      20                                           
+         DC    4AL1(0,0)           21-24                                        
+         DC    AL1(DSPL20,20)      25                                           
+         DC    2AL1(0,0)           26-27                                        
+         DC    5AL1(DSPL30,30)     28-32                                        
+         DC    2AL1(0,0)           33-34                                        
+         DC    AL1(DSPL30,30)      35                                           
+         DC    2AL1(DSPL40,40)     36-37                                        
+         DC    2AL1(0,0)           38-39                                        
+         DC    2AL1(DSPL40,40)     40-41                                        
+         DC    3AL1(0,0)           42-44                                        
+         DC    AL1(DSPL45,45)      45                                           
+         DC    4AL1(0,0)           46-49                                        
+         DC    AL1(DSPL50,50)      50                                           
+         DC    8AL1(0,0)           51-58                                        
+         DC    2AL1(DSPL60,60)     59-60                                        
+         DC    14AL1(0,0)          61-74                                        
+         DC    AL1(DSPL75,75)      75                                           
+         DC    14AL1(0,0)          76-89                                        
+         DC    AL1(DSPL90,90)      90                                           
+         DC    14AL1(0,0)          91-104                                       
+         DC    AL1(DSPL105,105)    105                                          
+         DC    14AL1(0,0)          106-119                                      
+         DC    2AL1(DSPL120,120)   120-121                                      
+         DC    28AL1(0,0)          122-149                                      
+         DC    AL1(DSPL150,150)    150                                          
+         DC    26AL1(0,0)          151-176                                      
+         DC    AL1(DSPL150,150)    177                                          
+         DC    2AL1(0,0)           178-179                                      
+         DC    AL1(DSPL150,150)    180                                          
+         DC    75AL1(0,0)          181-255                                      
+SLNMCTX  EQU   *                                                                
+SLNMCTL  EQU   *-SLNMCT                                                         
+*                                                                               
+SLNMCR   DC    C'MCR '             UNIVERSAL MCCANN RADIO                       
+         DC    AL1(0,0)            0                                            
+         DC    AL1(DSPL60,1)       1                                            
+         DC    4AL1(DSPL05,5)      2-5                                          
+         DC    2AL1(DSPL07,7)      6-7                                          
+         DC    AL1(0,0)            8                                            
+         DC    3AL1(DSPL10,10)     9-11                                         
+         DC    2AL1(0,0)           12-13                                        
+         DC    3AL1(DSPL15,15)     14-16                                        
+         DC    3AL1(0,0)           17-19                                        
+         DC    AL1(DSPL20,20)      20                                           
+         DC    4AL1(0,0)           21-24                                        
+         DC    AL1(DSPL20,20)      25                                           
+         DC    3AL1(0,0)           26-28                                        
+         DC    3AL1(DSPL30,30)     29-31                                        
+         DC    8AL1(0,0)           32-39                                        
+         DC    AL1(DSPL40,40)      40                                           
+         DC    4AL1(0,0)           41-44                                        
+         DC    AL1(DSPL45,45)      45                                           
+         DC    AL1(0,0)            46                                           
+         DC    AL1(DSPL50,50)      47                                           
+         DC    2AL1(0,0)           48-49                                        
+         DC    AL1(DSPL50,50)      50                                           
+         DC    4AL1(0,0)           51-54                                        
+         DC    AL1(DSPL50,50)      55                                           
+         DC    AL1(DSPL60,60)      56                                           
+         DC    AL1(0,0)            57                                           
+         DC    3AL1(DSPL60,60)     58,59,60                                     
+         DC    AL1(0,0)            61                                           
+         DC    AL1(DSPL60,60)      62                                           
+         DC    2AL1(0,0)           63-64                                        
+         DC    AL1(DSPL60,60)      65                                           
+         DC    4AL1(0,0)           66-69                                        
+         DC    AL1(DSPL60,60)      70                                           
+         DC    4AL1(0,0)           71-74                                        
+         DC    AL1(DSPL75,75)      75                                           
+         DC    4AL1(0,0)           76-79                                        
+         DC    AL1(DSPL75,75)      80                                           
+         DC    9AL1(0,0)           81-89                                        
+         DC    AL1(DSPL90,90)      90                                           
+         DC    14AL1(0,0)          91-104                                       
+         DC    AL1(DSPL105,105)    105                                          
+         DC    14AL1(0,0)          106-119                                      
+         DC    AL1(DSPL120,120)    120                                          
+         DC    29AL1(0,0)          121-149                                      
+         DC    AL1(DSPL150,150)    150                                          
+         DC    105AL1(0,0)         151-255                                      
+SLNMCRX  EQU   *                                                                
+SLNMCRL  EQU   *-SLNMCR                                                         
+*                                                                               
+SLNRBT   DC    C'RBT '             RB - RJ PALMER MEDIA                         
+         DC    AL1(0,0)            0                                            
+         DC    AL1(DSPL30,1)       1                                            
+         DC    4AL1(DSPL05,5)      2-5                                          
+         DC    3AL1(DSPL07,7)      6-8                                          
+         DC    5AL1(DSPL10,10)     9-13                                         
+         DC    2AL1(DSPL15,15)     14-15                                        
+         DC    AL1(0,0)            16                                           
+         DC    AL1(DSPL15,15)      17                                           
+         DC    AL1(0,0)            18                                           
+         DC    AL1(DSPL15,15)      19                                           
+         DC    AL1(DSPL20,20)      20                                           
+         DC    4AL1(0,0)           21-24                                        
+         DC    AL1(DSPL20,20)      25                                           
+         DC    AL1(DSPL30,30)      26                                           
+         DC    AL1(0,0)            27                                           
+         DC    5AL1(DSPL30,30)     28-32                                        
+         DC    2AL1(0,0)           33-34                                        
+         DC    AL1(DSPL30,30)      35                                           
+         DC    2AL1(DSPL40,40)     36-37                                        
+         DC    2AL1(0,0)           38-39                                        
+         DC    2AL1(DSPL40,40)     40-41                                        
+         DC    3AL1(0,0)           42-44                                        
+         DC    AL1(DSPL45,45)      45                                           
+         DC    4AL1(0,0)           46-49                                        
+         DC    AL1(DSPL50,50)      50                                           
+         DC    9AL1(0,0)           51-59                                        
+         DC    AL1(DSPL60,60)      60                                           
+         DC    9AL1(0,0)           61-69                                        
+         DC    AL1(DSPL60,60)      70                                           
+         DC    4AL1(0,0)           71-74                                        
+         DC    AL1(DSPL75,75)      75                                           
+         DC    14AL1(0,0)          76-89                                        
+         DC    AL1(DSPL90,90)      90                                           
+         DC    4AL1(0,0)           91-94                                        
+         DC    AL1(DSPL120,120)    95                                           
+         DC    9AL1(0,0)           96-104                                       
+         DC    AL1(DSPL105,105)    105                                          
+         DC    4AL1(0,0)           106-109                                      
+         DC    AL1(DSPL120,120)    110                                          
+         DC    9AL1(0,0)           111-119                                      
+         DC    2AL1(DSPL120,120)   120-121                                      
+         DC    28AL1(0,0)          122-149                                      
+         DC    AL1(DSPL150,150)    150                                          
+         DC    26AL1(0,0)          151-176                                      
+         DC    AL1(DSPL150,150)    177                                          
+         DC    2AL1(0,0)           178-179                                      
+         DC    AL1(DSPL150,150)    180                                          
+         DC    29AL1(0,0)          181-209                                      
+         DC    AL1(DSPL150,150)    210                                          
+         DC    45AL1(0,0)          211-255                                      
+SLNRBTX  EQU   *                                                                
+SLNRBTL  EQU   *-SLNRBT                                                         
+*                                                                               
+SLNRBR   DC    C'RBR '             ASSEMBLY RADIO                               
+         DC    AL1(0,0)            0                                            
+         DC    AL1(DSPL60,1)       1                                            
+         DC    4AL1(DSPL05,5)      2-5                                          
+         DC    2AL1(DSPL07,7)      6-7                                          
+         DC    5AL1(DSPL10,10)     8-12                                         
+         DC    AL1(0,0)            13                                           
+         DC    4AL1(DSPL15,15)     14-17                                        
+         DC    2AL1(0,0)           18-19                                        
+         DC    AL1(DSPL20,20)      20                                           
+         DC    4AL1(0,0)           21-24                                        
+         DC    AL1(DSPL20,20)      25                                           
+         DC    2AL1(0,0)           26-27                                        
+         DC    4AL1(DSPL30,30)     28-31                                        
+         DC    8AL1(0,0)           32-39                                        
+         DC    AL1(DSPL40,40)      40                                           
+         DC    4AL1(0,0)           41-44                                        
+         DC    AL1(DSPL45,45)      45                                           
+         DC    AL1(0,0)            46                                           
+         DC    AL1(DSPL50,50)      47                                           
+         DC    2AL1(0,0)           48-49                                        
+         DC    AL1(DSPL50,50)      50                                           
+         DC    4AL1(0,0)           51-54                                        
+         DC    AL1(DSPL50,50)      55                                           
+         DC    AL1(DSPL60,60)      56                                           
+         DC    AL1(0,0)            57                                           
+         DC    5AL1(DSPL60,60)     58-62                                        
+         DC    2AL1(0,0)           63-64                                        
+         DC    AL1(DSPL60,60)      65                                           
+         DC    AL1(0,0)            66                                           
+         DC    4AL1(DSPL60,60)     67-70                                        
+         DC    4AL1(0,0)           71-74                                        
+         DC    AL1(DSPL75,75)      75                                           
+         DC    4AL1(0,0)           76-79                                        
+         DC    AL1(DSPL75,75)      80                                           
+         DC    9AL1(0,0)           81-89                                        
+         DC    AL1(DSPL90,90)      90                                           
+         DC    14AL1(0,0)          91-104                                       
+         DC    AL1(DSPL105,105)    105                                          
+         DC    14AL1(0,0)          106-119                                      
+         DC    AL1(DSPL120,120)    120                                          
+         DC    29AL1(0,0)          121-149                                      
+         DC    AL1(DSPL150,150)    150                                          
+         DC    105AL1(0,0)         151-255                                      
+SLNRBRX  EQU   *                                                                
+SLNRBRL  EQU   *-SLNRBR                                                         
+*                                                                               
+SLNTBT   DC    C'TBT '             TB - ZENITH OPTIMEDIA TV                     
+         DC    AL1(0,0)            0                                            
+         DC    AL1(DSPL30,1)       1                                            
+         DC    4AL1(DSPL05,5)      2-5                                          
+         DC    3AL1(DSPL07,7)      6-8                                          
+         DC    5AL1(DSPL10,10)     9-13                                         
+         DC    2AL1(DSPL15,15)     14-15                                        
+         DC    4AL1(0,0)           16-19                                        
+         DC    AL1(DSPL20,20)      20                                           
+         DC    4AL1(0,0)           21-24                                        
+         DC    AL1(DSPL20,20)      25                                           
+         DC    2AL1(0,0)           26-27                                        
+         DC    5AL1(DSPL30,30)     28-32                                        
+         DC    2AL1(0,0)           33-34                                        
+         DC    AL1(DSPL30,30)      35                                           
+         DC    2AL1(DSPL40,40)     36-37                                        
+         DC    2AL1(0,0)           38-39                                        
+         DC    2AL1(DSPL40,40)     40-41                                        
+         DC    3AL1(0,0)           42-44                                        
+         DC    AL1(DSPL45,45)      45                                           
+         DC    4AL1(0,0)           46-49                                        
+         DC    AL1(DSPL50,50)      50                                           
+         DC    9AL1(0,0)           51-59                                        
+         DC    AL1(DSPL60,60)      60                                           
+         DC    14AL1(0,0)          61-74                                        
+         DC    AL1(DSPL75,75)      75                                           
+         DC    14AL1(0,0)          76-89                                        
+         DC    AL1(DSPL90,90)      90                                           
+         DC    14AL1(0,0)          91-104                                       
+         DC    AL1(DSPL105,105)    105                                          
+         DC    4AL1(0,0)           106-109                                      
+         DC    AL1(DSPL120,120)    110                                          
+         DC    9AL1(0,0)           111-119                                      
+         DC    2AL1(DSPL120,120)   120-121                                      
+         DC    13AL1(0,0)          122-134                                      
+         DC    AL1(DSPL120,120)    135                                          
+         DC    4AL1(0,0)           136-139                                      
+         DC    AL1(DSPL120,120)    140                                          
+         DC    2AL1(0,0)           141-142                                      
+         DC    AL1(DSPL120,120)    143                                          
+         DC    AL1(0,0)            144                                          
+         DC    AL1(DSPL150,150)    145                                          
+         DC    4AL1(0,0)           146-149                                      
+         DC    AL1(DSPL150,150)    150                                          
+         DC    14AL1(0,0)          151-164                                      
+         DC    AL1(DSPL150,150)    165                                          
+         DC    11AL1(0,0)          166-176                                      
+         DC    AL1(DSPL150,150)    177                                          
+         DC    2AL1(0,0)           178-179                                      
+         DC    AL1(DSPL150,150)    180                                          
+         DC    75AL1(0,0)          181-255                                      
+SLNTBTX  EQU   *                                                                
+SLNTBTL  EQU   *-SLNTBT                                                         
+*                                                                               
+SLNTBR   DC    C'TBR '             TB - ZENITH OPTIMEDIA RADIO                  
+         DC    AL1(0,0)            0                                            
+         DC    AL1(DSPL60,1)       1                                            
+         DC    4AL1(DSPL05,5)      2-5                                          
+         DC    3AL1(DSPL07,7)      6-8                                          
+         DC    3AL1(DSPL10,10)     9-11                                         
+         DC    2AL1(0,0)           12-13                                        
+         DC    3AL1(DSPL15,15)     14-16                                        
+         DC    3AL1(0,0)           17-19                                        
+         DC    AL1(DSPL20,20)      20                                           
+         DC    4AL1(0,0)           21-24                                        
+         DC    AL1(DSPL20,20)      25                                           
+         DC    3AL1(0,0)           26-28                                        
+         DC    3AL1(DSPL30,30)     29-31                                        
+         DC    8AL1(0,0)           32-39                                        
+         DC    AL1(DSPL40,40)      40                                           
+         DC    4AL1(0,0)           41-44                                        
+         DC    AL1(DSPL45,45)      45                                           
+         DC    AL1(0,0)            46                                           
+         DC    AL1(DSPL50,50)      47                                           
+         DC    2AL1(0,0)           48-49                                        
+         DC    AL1(DSPL50,50)      50                                           
+         DC    4AL1(0,0)           51-54                                        
+         DC    AL1(DSPL50,50)      55                                           
+         DC    AL1(DSPL60,60)      56                                           
+         DC    AL1(0,0)            57                                           
+         DC    AL1(DSPL60,60)      58                                           
+         DC    AL1(0,0)            59                                           
+         DC    AL1(DSPL60,60)      60                                           
+         DC    AL1(0,0)            61                                           
+         DC    AL1(DSPL60,60)      62                                           
+         DC    2AL1(0,0)           63-64                                        
+         DC    AL1(DSPL60,60)      65                                           
+         DC    4AL1(0,0)           66-69                                        
+         DC    AL1(DSPL60,60)      70                                           
+         DC    4AL1(0,0)           71-74                                        
+         DC    AL1(DSPL75,75)      75                                           
+         DC    4AL1(0,0)           76-79                                        
+         DC    AL1(DSPL75,75)      80                                           
+         DC    9AL1(0,0)           81-89                                        
+         DC    AL1(DSPL90,90)      90                                           
+         DC    14AL1(0,0)          91-104                                       
+         DC    AL1(DSPL105,105)    105                                          
+         DC    14AL1(0,0)          106-119                                      
+         DC    AL1(DSPL120,120)    120                                          
+         DC    29AL1(0,0)          121-149                                      
+         DC    AL1(DSPL150,150)    150                                          
+         DC    29AL1(0,0)          151-179                                      
+         DC    AL1(DSPL150,150)    180                                          
+         DC    75AL1(0,0)          181-255                                      
+SLNTBRX  EQU   *                                                                
+SLNTBRL  EQU   *-SLNTBR                                                         
+*                                                                               
+SLNS4R   DC    C'S4R '             S4 - WASSERMAN RADIO                         
+         DC    AL1(0,0)            0                                            
+         DC    AL1(DSPL60,1)       1                                            
+         DC    4AL1(DSPL05,5)      2-5                                          
+         DC    3AL1(DSPL07,7)      6-8                                          
+         DC    3AL1(DSPL10,10)     9-11                                         
+         DC    2AL1(0,0)           12-13                                        
+         DC    3AL1(DSPL15,15)     14-16                                        
+         DC    3AL1(0,0)           17-19                                        
+         DC    AL1(DSPL20,20)      20                                           
+         DC    4AL1(0,0)           21-24                                        
+         DC    AL1(DSPL20,20)      25                                           
+         DC    3AL1(0,0)           26-28                                        
+         DC    3AL1(DSPL30,30)     29-31                                        
+         DC    8AL1(0,0)           32-39                                        
+         DC    AL1(DSPL40,40)      40                                           
+         DC    4AL1(0,0)           41-44                                        
+         DC    AL1(DSPL45,45)      45                                           
+         DC    AL1(0,0)            46                                           
+         DC    AL1(DSPL50,50)      47                                           
+         DC    2AL1(0,0)           48-49                                        
+         DC    AL1(DSPL50,50)      50                                           
+         DC    4AL1(0,0)           51-54                                        
+         DC    AL1(DSPL50,50)      55                                           
+         DC    AL1(DSPL60,60)      56                                           
+         DC    AL1(0,0)            57                                           
+         DC    AL1(DSPL60,60)      58                                           
+         DC    AL1(0,0)            59                                           
+         DC    AL1(DSPL60,60)      60                                           
+         DC    AL1(0,0)            61                                           
+         DC    AL1(DSPL60,60)      62                                           
+         DC    2AL1(0,0)           63-64                                        
+         DC    AL1(DSPL60,60)      65                                           
+         DC    4AL1(0,0)           66-69                                        
+         DC    AL1(DSPL60,60)      70                                           
+         DC    4AL1(0,0)           71-74                                        
+         DC    AL1(DSPL75,75)      75                                           
+         DC    4AL1(0,0)           76-79                                        
+         DC    AL1(DSPL75,75)      80                                           
+         DC    9AL1(0,0)           81-89                                        
+         DC    AL1(DSPL90,90)      90                                           
+         DC    14AL1(0,0)          91-104                                       
+         DC    AL1(DSPL105,105)    105                                          
+         DC    14AL1(0,0)          106-119                                      
+         DC    AL1(DSPL120,120)    120                                          
+         DC    29AL1(0,0)          121-149                                      
+         DC    AL1(DSPL150,150)    150                                          
+         DC    105AL1(0,0)         151-255                                      
+SLNS4RX  EQU   *                                                                
+SLNS4RL  EQU   *-SLNS4R                                                         
+*                                                                               
+SLNTRR   DC    C'TRR '             TR - TLDA                                    
+         DC    AL1(0,0)            0                                            
+         DC    AL1(DSPL60,1)       1                                            
+         DC    4AL1(DSPL05,5)      2-5                                          
+         DC    2AL1(DSPL07,7)      6-7                                          
+         DC    AL1(0,0)            8                                            
+         DC    3AL1(DSPL10,10)     9-11                                         
+         DC    2AL1(0,0)           12-13                                        
+         DC    3AL1(DSPL15,15)     14-16                                        
+         DC    3AL1(0,0)           17-19                                        
+         DC    AL1(DSPL20,20)      20                                           
+         DC    4AL1(0,0)           21-24                                        
+         DC    AL1(DSPL20,20)      25                                           
+         DC    3AL1(0,0)           26-28                                        
+         DC    3AL1(DSPL30,30)     29-31                                        
+         DC    8AL1(0,0)           32-39                                        
+         DC    AL1(DSPL40,40)      40                                           
+         DC    4AL1(0,0)           41-44                                        
+         DC    AL1(DSPL45,45)      45                                           
+         DC    AL1(0,0)            46                                           
+         DC    AL1(DSPL50,50)      47                                           
+         DC    2AL1(0,0)           48-49                                        
+         DC    AL1(DSPL50,50)      50                                           
+         DC    4AL1(0,0)           51-54                                        
+         DC    AL1(DSPL50,50)      55                                           
+         DC    AL1(DSPL60,60)      56                                           
+         DC    AL1(0,0)            57                                           
+         DC    AL1(DSPL60,60)      58                                           
+         DC    2AL1(DSPL60,60)     59-60                                        
+         DC    AL1(0,0)            61                                           
+         DC    AL1(DSPL60,60)      62                                           
+         DC    2AL1(0,0)           63-64                                        
+         DC    AL1(DSPL60,60)      65                                           
+         DC    4AL1(0,0)           66-69                                        
+         DC    2AL1(DSPL60,60)     70-71                                        
+         DC    3AL1(0,0)           72-74                                        
+         DC    AL1(DSPL75,75)      75                                           
+         DC    4AL1(0,0)           76-79                                        
+         DC    AL1(DSPL75,75)      80                                           
+         DC    9AL1(0,0)           81-89                                        
+         DC    AL1(DSPL90,90)      90                                           
+         DC    14AL1(0,0)          91-104                                       
+         DC    AL1(DSPL105,105)    105                                          
+         DC    14AL1(0,0)          106-119                                      
+         DC    AL1(DSPL120,120)    120                                          
+         DC    29AL1(0,0)          121-149                                      
+         DC    AL1(DSPL150,150)    150                                          
+         DC    105AL1(0,0)         151-255                                      
+SLNTRRX  EQU   *                                                                
+SLNTRRL  EQU   *-SLNTRR                                                         
+*                                                                               
+SLNWTT   DC    C'WTT '             WT - INITIATIVE TV                           
+         DC    AL1(0,0)            0                                            
+         DC    AL1(DSPL30,1)       1                                            
+         DC    4AL1(DSPL05,5)      2-5                                          
+         DC    3AL1(DSPL07,7)      6-8                                          
+         DC    5AL1(DSPL10,10)     9-13                                         
+         DC    2AL1(DSPL15,15)     14-15                                        
+         DC    4AL1(0,0)           16-19                                        
+         DC    AL1(DSPL20,20)      20                                           
+         DC    4AL1(0,0)           21-24                                        
+         DC    AL1(DSPL20,20)      25                                           
+         DC    2AL1(0,0)           26-27                                        
+         DC    5AL1(DSPL30,30)     28-32                                        
+         DC    2AL1(0,0)           33-34                                        
+         DC    AL1(DSPL30,30)      35                                           
+         DC    2AL1(DSPL40,40)     36-37                                        
+         DC    2AL1(0,0)           38-39                                        
+         DC    2AL1(DSPL40,40)     40-41                                        
+         DC    3AL1(0,0)           42-44                                        
+         DC    AL1(DSPL45,45)      45                                           
+         DC    4AL1(0,0)           46-49                                        
+         DC    AL1(DSPL50,50)      50                                           
+         DC    9AL1(0,0)           51-59                                        
+         DC    AL1(DSPL60,60)      60                                           
+         DC    14AL1(0,0)          61-74                                        
+         DC    AL1(DSPL75,75)      75                                           
+         DC    14AL1(0,0)          76-89                                        
+         DC    AL1(DSPL90,90)      90                                           
+         DC    14AL1(0,0)          91-104                                       
+         DC    AL1(DSPL105,105)    105                                          
+         DC    14AL1(0,0)          106-119                                      
+         DC    2AL1(DSPL120,120)   120-121                                      
+         DC    28AL1(0,0)          122-149                                      
+         DC    AL1(DSPL150,150)    150                                          
+         DC    10AL1(0,0)          151-160                                      
+         DC    AL1(DSPL150,150)    161                                          
+         DC    15AL1(0,0)          162-176                                      
+         DC    AL1(DSPL150,150)    177                                          
+         DC    2AL1(0,0)           178-179                                      
+         DC    AL1(DSPL150,150)    180                                          
+         DC    75AL1(0,0)          181-255                                      
+SLNWTTX  EQU   *                                                                
+SLNWTTL  EQU   *-SLNWTT                                                         
+*                                                                               
+SLNWTR   DC    C'WTR '             WT - INITIATIVE RADIO                        
+         DC    AL1(0,0)            0                                            
+         DC    AL1(DSPL60,1)       1                                            
+         DC    4AL1(DSPL05,5)      2-5                                          
+         DC    2AL1(DSPL07,7)      6-7                                          
+         DC    AL1(0,0)            8                                            
+         DC    3AL1(DSPL10,10)     9-11                                         
+         DC    2AL1(0,0)           12-13                                        
+         DC    3AL1(DSPL15,15)     14-16                                        
+         DC    3AL1(0,0)           17-19                                        
+         DC    AL1(DSPL20,20)      20                                           
+         DC    4AL1(0,0)           21-24                                        
+         DC    AL1(DSPL20,20)      25                                           
+         DC    3AL1(0,0)           26-28                                        
+         DC    3AL1(DSPL30,30)     29-31                                        
+         DC    8AL1(0,0)           32-39                                        
+         DC    AL1(DSPL40,40)      40                                           
+         DC    4AL1(0,0)           41-44                                        
+         DC    AL1(DSPL45,45)      45                                           
+         DC    AL1(0,0)            46                                           
+         DC    AL1(DSPL50,50)      47                                           
+         DC    2AL1(0,0)           48-49                                        
+         DC    AL1(DSPL50,50)      50                                           
+         DC    4AL1(0,0)           51-54                                        
+         DC    AL1(DSPL50,50)      55                                           
+         DC    AL1(DSPL60,60)      56                                           
+         DC    AL1(0,0)            57                                           
+         DC    AL1(DSPL60,60)      58                                           
+         DC    AL1(0,0)            59                                           
+         DC    AL1(DSPL60,60)      60                                           
+         DC    AL1(0,0)            61                                           
+         DC    AL1(DSPL60,60)      62                                           
+         DC    2AL1(0,0)           63-64                                        
+         DC    AL1(DSPL60,60)      65                                           
+         DC    4AL1(0,0)           66-69                                        
+         DC    AL1(DSPL60,60)      70                                           
+         DC    4AL1(0,0)           71-74                                        
+         DC    AL1(DSPL75,75)      75                                           
+         DC    4AL1(0,0)           76-79                                        
+         DC    AL1(DSPL75,75)      80                                           
+         DC    9AL1(0,0)           81-89                                        
+         DC    AL1(DSPL90,90)      90                                           
+         DC    14AL1(0,0)          91-104                                       
+         DC    AL1(DSPL105,105)    105                                          
+         DC    14AL1(0,0)          106-119                                      
+         DC    AL1(DSPL120,120)    120                                          
+         DC    29AL1(0,0)          121-149                                      
+         DC    AL1(DSPL150,150)    150                                          
+         DC    10AL1(0,0)          151-160                                      
+         DC    AL1(DSPL150,150)    161                                          
+         DC    94AL1(0,0)          162-255                                      
+SLNWTRX  EQU   *                                                                
+SLNWTRL  EQU   *-SLNWTR                                                         
+*                                                                               
+SLNU#T   DC    C'U#T '             U# - M2 UNIVERSAL TV                         
+         DC    AL1(0,0)            0                                            
+         DC    AL1(DSPL30,1)       1                                            
+         DC    4AL1(DSPL05,5)      2-5                                          
+         DC    3AL1(DSPL07,7)      6-8                                          
+         DC    5AL1(DSPL10,10)     9-13                                         
+         DC    2AL1(DSPL15,15)     14-15                                        
+         DC    AL1(0,0)            16                                           
+         DC    AL1(DSPL15,15)      17                                           
+         DC    2AL1(0,0)           18-19                                        
+         DC    AL1(DSPL20,20)      20                                           
+         DC    4AL1(0,0)           21-24                                        
+         DC    AL1(DSPL20,20)      25                                           
+         DC    2AL1(0,0)           26-27                                        
+         DC    5AL1(DSPL30,30)     28-32                                        
+         DC    2AL1(0,0)           33-34                                        
+         DC    AL1(DSPL30,30)      35                                           
+         DC    2AL1(DSPL40,40)     36-37                                        
+         DC    2AL1(0,0)           38-39                                        
+         DC    2AL1(DSPL40,40)     40-41                                        
+         DC    3AL1(0,0)           42-44                                        
+         DC    AL1(DSPL45,45)      45                                           
+         DC    4AL1(0,0)           46-49                                        
+         DC    AL1(DSPL50,50)      50                                           
+         DC    9AL1(0,0)           51-59                                        
+         DC    AL1(DSPL60,60)      60                                           
+         DC    14AL1(0,0)          61-74                                        
+         DC    AL1(DSPL75,75)      75                                           
+         DC    14AL1(0,0)          76-89                                        
+         DC    AL1(DSPL90,90)      90                                           
+         DC    14AL1(0,0)          91-104                                       
+         DC    AL1(DSPL105,105)    105                                          
+         DC    14AL1(0,0)          106-119                                      
+         DC    2AL1(DSPL120,120)   120-121                                      
+         DC    28AL1(0,0)          122-149                                      
+         DC    AL1(DSPL150,150)    150                                          
+         DC    26AL1(0,0)          151-176                                      
+         DC    AL1(DSPL150,150)    177                                          
+         DC    2AL1(0,0)           178-179                                      
+         DC    AL1(DSPL150,150)    180                                          
+         DC    75AL1(0,0)          181-255                                      
+SLNU#TX  EQU   *                                                                
+SLNU#TL  EQU   *-SLNU#T                                                         
+*                                                                               
+SLNM$T   DC    C'M$T '             M$ -- MUWS                                   
+         DC    AL1(0,0)            0                                            
+         DC    AL1(DSPL30,1)       1                                            
+         DC    4AL1(DSPL05,5)      2-5                                          
+         DC    3AL1(DSPL07,7)      6-8                                          
+         DC    5AL1(DSPL10,10)     9-13                                         
+         DC    2AL1(DSPL15,15)     14-15                                        
+         DC    4AL1(0,0)           16-19                                        
+         DC    AL1(DSPL20,20)      20                                           
+         DC    4AL1(0,0)           21-24                                        
+         DC    AL1(DSPL20,20)      25                                           
+         DC    2AL1(0,0)           26-27                                        
+         DC    5AL1(DSPL30,30)     28-32                                        
+         DC    2AL1(0,0)           33-34                                        
+         DC    AL1(DSPL30,30)      35                                           
+         DC    2AL1(DSPL40,40)     36-37                                        
+         DC    2AL1(0,0)           38-39                                        
+         DC    2AL1(DSPL40,40)     40-41                                        
+         DC    3AL1(0,0)           42-44                                        
+         DC    AL1(DSPL45,45)      45                                           
+         DC    4AL1(0,0)           46-49                                        
+         DC    AL1(DSPL50,50)      50                                           
+         DC    9AL1(0,0)           51-59                                        
+         DC    AL1(DSPL60,60)      60                                           
+         DC    14AL1(0,0)          61-74                                        
+         DC    AL1(DSPL75,75)      75                                           
+         DC    14AL1(0,0)          76-89                                        
+         DC    AL1(DSPL90,90)      90                                           
+         DC    4AL1(0,0)           91-94                                        
+         DC    AL1(DSPL90,90)      95                                           
+         DC    9AL1(0,0)           96-104                                       
+         DC    AL1(DSPL105,105)    105                                          
+         DC    14AL1(0,0)          106-119                                      
+         DC    2AL1(DSPL120,120)   120-121                                      
+         DC    28AL1(0,0)          122-149                                      
+         DC    AL1(DSPL150,150)    150                                          
+         DC    26AL1(0,0)          151-176                                      
+         DC    AL1(DSPL150,150)    177                                          
+         DC    2AL1(0,0)           178-179                                      
+         DC    AL1(DSPL150,150)    180                                          
+         DC    75AL1(0,0)          181-255                                      
+SLNM$TX  EQU   *                                                                
+SLNM$TL  EQU   *-SLNM$T                                                         
+*                                                                               
+SLNM$R   DC    C'M$R '             M$ -- MUWS                                   
+         DC    AL1(0,0)            0                                            
+         DC    AL1(DSPL60,1)       1                                            
+         DC    4AL1(DSPL05,5)      2-5                                          
+         DC    3AL1(DSPL07,7)      6-8                                          
+         DC    3AL1(DSPL10,10)     9-11                                         
+         DC    2AL1(0,0)           12-13                                        
+         DC    3AL1(DSPL15,15)     14-16                                        
+         DC    3AL1(0,0)           17-19                                        
+         DC    AL1(DSPL20,20)      20                                           
+         DC    4AL1(0,0)           21-24                                        
+         DC    AL1(DSPL20,20)      25                                           
+         DC    3AL1(0,0)           26-28                                        
+         DC    3AL1(DSPL30,30)     29-31                                        
+         DC    8AL1(0,0)           32-39                                        
+         DC    AL1(DSPL40,40)      40                                           
+         DC    4AL1(0,0)           41-44                                        
+         DC    AL1(DSPL45,45)      45                                           
+         DC    AL1(0,0)            46                                           
+         DC    AL1(DSPL50,50)      47                                           
+         DC    2AL1(0,0)           48-49                                        
+         DC    AL1(DSPL50,50)      50                                           
+         DC    4AL1(0,0)           51-54                                        
+         DC    AL1(DSPL50,50)      55                                           
+         DC    AL1(DSPL60,60)      56                                           
+         DC    AL1(0,0)            57                                           
+         DC    AL1(DSPL60,60)      58                                           
+         DC    AL1(0,0)            59                                           
+         DC    AL1(DSPL60,60)      60                                           
+         DC    AL1(0,0)            61                                           
+         DC    AL1(DSPL60,60)      62                                           
+         DC    2AL1(0,0)           63-64                                        
+         DC    AL1(DSPL60,60)      65                                           
+         DC    4AL1(0,0)           66-69                                        
+         DC    AL1(DSPL60,60)      70                                           
+         DC    4AL1(0,0)           71-74                                        
+         DC    AL1(DSPL75,75)      75                                           
+         DC    4AL1(0,0)           76-79                                        
+         DC    AL1(DSPL75,75)      80                                           
+         DC    9AL1(0,0)           81-89                                        
+         DC    AL1(DSPL90,90)      90                                           
+         DC    14AL1(0,0)          91-104                                       
+         DC    AL1(DSPL105,105)    105                                          
+         DC    14AL1(0,0)          106-119                                      
+         DC    AL1(DSPL120,120)    120                                          
+         DC    29AL1(0,0)          121-149                                      
+         DC    AL1(DSPL150,150)    150                                          
+         DC    105AL1(0,0)         151-255                                      
+SLNM$RX  EQU   *                                                                
+SLNM$RL  EQU   *-SLNM$R                                                         
+*                                                                               
+*                                                                               
+SLNFMT   DC    C'FMT '             FM -- MPG                                    
+         DC    AL1(0,0)            0                                            
+         DC    AL1(DSPL30,1)       1                                            
+         DC    4AL1(DSPL05,5)      2-5                                          
+         DC    3AL1(DSPL07,7)      6-8                                          
+         DC    5AL1(DSPL10,10)     9-13                                         
+         DC    2AL1(DSPL15,15)     14-15                                        
+         DC    4AL1(0,0)           16-19                                        
+         DC    AL1(DSPL20,20)      20                                           
+         DC    3AL1(0,0)           21-23                                        
+         DC    AL1(DSPL60,60)      24                                           
+         DC    AL1(DSPL20,20)      25                                           
+         DC    AL1(0,0)            26                                           
+         DC    6AL1(DSPL30,30)     27-32                                        
+         DC    2AL1(0,0)           33-34                                        
+         DC    AL1(DSPL30,30)      35                                           
+         DC    2AL1(DSPL40,40)     36-37                                        
+         DC    2AL1(0,0)           38-39                                        
+         DC    2AL1(DSPL40,40)     40-41                                        
+         DC    3AL1(0,0)           42-44                                        
+         DC    AL1(DSPL45,45)      45                                           
+         DC    4AL1(0,0)           46-49                                        
+         DC    AL1(DSPL50,50)      50                                           
+         DC    9AL1(0,0)           51-59                                        
+         DC    AL1(DSPL60,60)      60                                           
+         DC    14AL1(0,0)          61-74                                        
+         DC    AL1(DSPL75,75)      75                                           
+         DC    4AL1(0,0)           76-79                                        
+         DC    AL1(DSPL90,90)      80                                           
+         DC    4AL1(0,0)           81-84                                        
+         DC    AL1(DSPL90,90)      85                                           
+         DC    4AL1(0,0)           86-89                                        
+         DC    AL1(DSPL90,90)      90                                           
+         DC    14AL1(0,0)          91-104                                       
+         DC    AL1(DSPL105,105)    105                                          
+         DC    4AL1(0,0)           106-109                                      
+         DC    AL1(DSPL120,120)    110                                          
+         DC    9AL1(0,0)           111-119                                      
+         DC    2AL1(DSPL120,120)   120-121                                      
+         DC    28AL1(0,0)          122-149                                      
+         DC    AL1(DSPL150,150)    150                                          
+         DC    26AL1(0,0)          151-176                                      
+         DC    AL1(DSPL150,150)    177                                          
+         DC    2AL1(0,0)           178-179                                      
+         DC    AL1(DSPL150,150)    180                                          
+         DC    75AL1(0,0)          181-255                                      
+SLNFMTX  EQU   *                                                                
+SLNFMTL  EQU   *-SLNFMT                                                         
+*                                                                               
+*                                                                               
+SLNFMR   DC    C'FMR '             FM RADIO                                     
+         DC    AL1(0,0)            0                                            
+         DC    AL1(DSPL60,1)       1                                            
+         DC    4AL1(DSPL05,5)      2-5                                          
+         DC    2AL1(DSPL07,7)      6-7                                          
+         DC    AL1(0,0)            8                                            
+         DC    3AL1(DSPL10,10)     9-11                                         
+         DC    AL1(0,0)            12                                           
+         DC    5AL1(DSPL15,15)     13-17                                        
+         DC    2AL1(0,0)           18-19                                        
+         DC    AL1(DSPL20,20)      20                                           
+         DC    4AL1(0,0)           21-24                                        
+         DC    AL1(DSPL20,20)      25                                           
+         DC    3AL1(0,0)           26-28                                        
+         DC    4AL1(DSPL30,30)     29-32                                        
+         DC    7AL1(0,0)           33-39                                        
+         DC    AL1(DSPL40,40)      40                                           
+         DC    4AL1(0,0)           41-44                                        
+         DC    AL1(DSPL45,45)      45                                           
+         DC    AL1(0,0)            46                                           
+         DC    AL1(DSPL50,50)      47                                           
+         DC    2AL1(0,0)           48-49                                        
+         DC    AL1(DSPL50,50)      50                                           
+         DC    4AL1(0,0)           51-54                                        
+         DC    AL1(DSPL50,50)      55                                           
+         DC    AL1(DSPL60,60)      56                                           
+         DC    AL1(0,0)            57                                           
+         DC    AL1(DSPL60,60)      58                                           
+         DC    AL1(0,0)            59                                           
+         DC    AL1(DSPL60,60)      60                                           
+         DC    AL1(0,0)            61                                           
+         DC    AL1(DSPL60,60)      62                                           
+         DC    2AL1(0,0)           63-64                                        
+         DC    AL1(DSPL60,60)      65                                           
+         DC    4AL1(0,0)           66-69                                        
+         DC    AL1(DSPL60,60)      70                                           
+         DC    4AL1(0,0)           71-74                                        
+         DC    AL1(DSPL75,75)      75                                           
+         DC    4AL1(0,0)           76-79                                        
+         DC    AL1(DSPL75,75)      80                                           
+         DC    9AL1(0,0)           81-89                                        
+         DC    AL1(DSPL90,90)      90                                           
+         DC    14AL1(0,0)          91-104                                       
+         DC    AL1(DSPL105,105)    105                                          
+         DC    14AL1(0,0)          106-119                                      
+         DC    AL1(DSPL120,120)    120                                          
+         DC    29AL1(0,0)          121-149                                      
+         DC    AL1(DSPL150,150)    150                                          
+         DC    29AL1(0,0)          151-179                                      
+         DC    AL1(DSPL150,150)    180                                          
+         DC    75AL1(0,0)          181-255                                      
+SLNFMRX  EQU   *                                                                
+SLNFMRL  EQU   *-SLNFMR                                                         
+*                                                                               
+*                                                                               
+SLNTHT   DC    C'THT '             ZENY TV                                      
+         DC    AL1(0,0)            0                                            
+         DC    AL1(DSPL30,1)       1                                            
+         DC    4AL1(DSPL05,5)      2-5                                          
+         DC    3AL1(DSPL07,7)      6-8                                          
+         DC    5AL1(DSPL10,10)     9-13                                         
+         DC    2AL1(DSPL15,15)     14-15                                        
+         DC    AL1(0,0)            16                                           
+         DC    AL1(DSPL15,15)      17                                           
+         DC    2AL1(0,0)           18-19                                        
+         DC    AL1(DSPL20,20)      20                                           
+         DC    4AL1(0,0)           21-24                                        
+         DC    AL1(DSPL20,20)      25                                           
+         DC    AL1(0,0)            26                                           
+         DC    6AL1(DSPL30,30)     27-32                                        
+         DC    2AL1(0,0)           33-34                                        
+         DC    AL1(DSPL30,30)      35                                           
+         DC    2AL1(DSPL40,40)     36-37                                        
+         DC    2AL1(0,0)           38-39                                        
+         DC    2AL1(DSPL40,40)     40-41                                        
+         DC    3AL1(0,0)           42-44                                        
+         DC    AL1(DSPL45,45)      45                                           
+         DC    4AL1(0,0)           46-49                                        
+         DC    AL1(DSPL50,50)      50                                           
+         DC    9AL1(0,0)           51-59                                        
+         DC    AL1(DSPL60,60)      60                                           
+         DC    14AL1(0,0)          61-74                                        
+         DC    AL1(DSPL75,75)      75                                           
+         DC    14AL1(0,0)          76-89                                        
+         DC    AL1(DSPL90,90)      90                                           
+         DC    14AL1(0,0)          91-104                                       
+         DC    AL1(DSPL105,105)    105                                          
+         DC    14AL1(0,0)          106-119                                      
+         DC    2AL1(DSPL120,120)   120-121                                      
+         DC    28AL1(0,0)          122-149                                      
+         DC    AL1(DSPL150,150)    150                                          
+         DC    26AL1(0,0)          151-176                                      
+         DC    AL1(DSPL150,150)    177                                          
+         DC    2AL1(0,0)           178-179                                      
+         DC    AL1(DSPL150,150)    180                                          
+         DC    75AL1(0,0)          181-255                                      
+SLNTHTX  EQU   *                                                                
+SLNTHTL  EQU   *-SLNTHT                                                         
+*                                                                               
+*                                                                               
+SLNUBT   DC    C'UBT '             CARAT                                        
+         DC    AL1(0,0)            0                                            
+         DC    AL1(DSPL30,1)       1                                            
+         DC    4AL1(DSPL05,5)      2-5                                          
+         DC    3AL1(DSPL07,7)      6-8                                          
+         DC    5AL1(DSPL10,10)     9-13                                         
+         DC    2AL1(DSPL15,15)     14-15                                        
+         DC    AL1(0,0)            16                                           
+         DC    AL1(DSPL15,15)      17                                           
+         DC    2AL1(0,0)           18-19                                        
+         DC    4AL1(DSPL20,20)     20-23                                        
+         DC    AL1(0,0)            24                                           
+         DC    AL1(DSPL20,20)      25                                           
+         DC    AL1(DSPL30,30)      26                                           
+         DC    AL1(0,0)            27                                           
+         DC    5AL1(DSPL30,30)     28-32                                        
+         DC    AL1(0,0)            33                                           
+         DC    2AL1(DSPL30,30)     34-35                                        
+         DC    2AL1(DSPL40,40)     36-37                                        
+         DC    2AL1(0,0)           38-39                                        
+         DC    2AL1(DSPL40,40)     40-41                                        
+         DC    3AL1(0,0)           42-44                                        
+         DC    AL1(DSPL45,45)      45                                           
+         DC    4AL1(0,0)           46-49                                        
+         DC    AL1(DSPL50,50)      50                                           
+         DC    5AL1(0,0)           51-55                                        
+         DC    AL1(DSPL60,60)      56                                           
+         DC    3AL1(0,0)           57-59                                        
+         DC    AL1(DSPL60,60)      60                                           
+         DC    14AL1(0,0)          61-74                                        
+         DC    AL1(DSPL75,75)      75                                           
+         DC    13AL1(0,0)          76-88                                        
+         DC    3AL1(DSPL90,90)     89-91                                        
+         DC    13AL1(0,0)          92-104                                       
+         DC    AL1(DSPL105,105)    105                                          
+         DC    14AL1(0,0)          106-119                                      
+         DC    2AL1(DSPL120,120)   120-121                                      
+         DC    28AL1(0,0)          122-149                                      
+         DC    AL1(DSPL150,150)    150                                          
+         DC    17AL1(0,0)          151-167                                      
+         DC    AL1(DSPL30,30)      168                                          
+         DC    8AL1(0,0)           169-176                                      
+         DC    AL1(DSPL150,150)    177                                          
+         DC    2AL1(0,0)           178-179                                      
+         DC    AL1(DSPL150,150)    180                                          
+         DC    14AL1(0,0)          181-194                                      
+         DC    AL1(DSPL30,30)      195                                          
+         DC    3AL1(0,0)           196-198                                      
+         DC    AL1(DSPL30,30)      199                                          
+         DC    AL1(0,0)            200                                          
+         DC    AL1(DSPL30,30)      201                                          
+         DC    45AL1(0,0)          202-246                                      
+         DC    AL1(DSPL30,30)      247                                          
+         DC    8AL1(0,0)           248-255                                      
+SLNUBTX  EQU   *                                                                
+SLNUBTL  EQU   *-SLNUBT                                                         
+*                                                                               
+*                                                                               
+SLNUBR   DC    C'UBR '             CARAT                                        
+         DC    AL1(0,0)            0                                            
+         DC    AL1(DSPL60,1)       1                                            
+         DC    4AL1(DSPL05,5)      2-5                                          
+         DC    2AL1(DSPL07,7)      6-7                                          
+         DC    4AL1(DSPL10,10)     8-11                                         
+         DC    2AL1(0,0)           12-13                                        
+         DC    3AL1(DSPL15,15)     14-16                                        
+         DC    3AL1(0,0)           17-19                                        
+         DC    AL1(DSPL20,20)      20                                           
+         DC    AL1(0,0)            21                                           
+         DC    AL1(DSPL30,30)      22                                           
+         DC    2AL1(0,0)           23-24                                        
+         DC    AL1(DSPL20,20)      25                                           
+         DC    3AL1(0,0)           26-28                                        
+         DC    3AL1(DSPL30,30)     29-31                                        
+         DC    3AL1(0,0)           32-34                                        
+         DC    AL1(DSPL30,30)      35                                           
+         DC    4AL1(0,0)           36-39                                        
+         DC    AL1(DSPL40,40)      40                                           
+         DC    4AL1(0,0)           41-44                                        
+         DC    AL1(DSPL45,45)      45                                           
+         DC    AL1(0,0)            46                                           
+         DC    AL1(DSPL50,50)      47                                           
+         DC    2AL1(0,0)           48-49                                        
+         DC    AL1(DSPL50,50)      50                                           
+         DC    4AL1(0,0)           51-54                                        
+         DC    AL1(DSPL50,50)      55                                           
+         DC    AL1(DSPL60,60)      56                                           
+         DC    AL1(0,0)            57                                           
+         DC    3AL1(DSPL60,60)     58-60                                        
+         DC    AL1(0,0)            61                                           
+         DC    AL1(DSPL60,60)      62                                           
+         DC    2AL1(0,0)           63-64                                        
+         DC    AL1(DSPL60,60)      65                                           
+         DC    4AL1(0,0)           66-69                                        
+         DC    AL1(DSPL60,60)      70                                           
+         DC    4AL1(0,0)           71-74                                        
+         DC    AL1(DSPL75,75)      75                                           
+         DC    4AL1(0,0)           76-79                                        
+         DC    AL1(DSPL75,75)      80                                           
+         DC    9AL1(0,0)           81-89                                        
+         DC    AL1(DSPL90,90)      90                                           
+         DC    14AL1(0,0)          91-104                                       
+         DC    AL1(DSPL105,105)    105                                          
+         DC    14AL1(0,0)          106-119                                      
+         DC    AL1(DSPL120,120)    120                                          
+         DC    29AL1(0,0)          121-149                                      
+         DC    AL1(DSPL150,150)    150                                          
+         DC    29AL1(0,0)          151-179                                      
+         DC    AL1(DSPL150,150)    180                                          
+         DC    75AL1(0,0)          181-255                                      
+SLNUBRX  EQU   *                                                                
+SLNUBRL  EQU   *-SLNUBR                                                         
+*                                                                               
+*                                                                               
+SLNB$R   DC    C'B$R '             BARKLEY RADIO                                
+         DC    AL1(0,0)            0                                            
+         DC    AL1(DSPL60,1)       1                                            
+         DC    4AL1(DSPL05,5)      2-5                                          
+         DC    2AL1(DSPL07,7)      6-7                                          
+         DC    AL1(0,0)            8                                            
+         DC    3AL1(DSPL10,10)     9-11                                         
+         DC    2AL1(0,0)           12-13                                        
+         DC    3AL1(DSPL15,15)     14-16                                        
+         DC    3AL1(0,0)           17-19                                        
+         DC    AL1(DSPL20,20)      20                                           
+         DC    4AL1(0,0)           21-24                                        
+         DC    AL1(DSPL20,20)      25                                           
+         DC    3AL1(0,0)           26-28                                        
+         DC    3AL1(DSPL30,30)     29-31                                        
+         DC    8AL1(0,0)           32-39                                        
+         DC    AL1(DSPL40,40)      40                                           
+         DC    4AL1(0,0)           41-44                                        
+         DC    AL1(DSPL45,45)      45                                           
+         DC    AL1(0,0)            46                                           
+         DC    AL1(DSPL50,50)      47                                           
+         DC    2AL1(0,0)           48-49                                        
+         DC    AL1(DSPL50,50)      50                                           
+         DC    4AL1(0,0)           51-54                                        
+         DC    AL1(DSPL50,50)      55                                           
+         DC    AL1(DSPL60,60)      56                                           
+         DC    AL1(0,0)            57                                           
+         DC    3AL1(DSPL60,60)     58-60                                        
+         DC    AL1(0,0)            61                                           
+         DC    AL1(DSPL60,60)      62                                           
+         DC    2AL1(0,0)           63-64                                        
+         DC    AL1(DSPL60,60)      65                                           
+         DC    4AL1(0,0)           66-69                                        
+         DC    AL1(DSPL60,60)      70                                           
+         DC    4AL1(0,0)           71-74                                        
+         DC    AL1(DSPL75,75)      75                                           
+         DC    4AL1(0,0)           76-79                                        
+         DC    AL1(DSPL75,75)      80                                           
+         DC    9AL1(0,0)           81-89                                        
+         DC    AL1(DSPL90,90)      90                                           
+         DC    14AL1(0,0)          91-104                                       
+         DC    AL1(DSPL105,105)    105                                          
+         DC    14AL1(0,0)          106-119                                      
+         DC    AL1(DSPL120,120)    120                                          
+         DC    29AL1(0,0)          121-149                                      
+         DC    AL1(DSPL150,150)    150                                          
+         DC    105AL1(0,0)         151-255                                      
+SLNB$RX  EQU   *                                                                
+SLNB$RL  EQU   *-SLNB$R                                                         
+*                                                                               
+*                                                                               
+SLNOOR   DC    C'OOR '             OMD RADIO                                    
+         DC    AL1(0,0)            0                                            
+         DC    AL1(DSPL60,1)       1                                            
+         DC    4AL1(DSPL05,5)      2-5                                          
+         DC    2AL1(DSPL07,7)      6-7                                          
+         DC    4AL1(DSPL10,10)     9-11                                         
+         DC    2AL1(0,0)           12-13                                        
+         DC    3AL1(DSPL15,15)     14-16                                        
+         DC    3AL1(0,0)           17-19                                        
+         DC    AL1(DSPL20,20)      20                                           
+         DC    2AL1(0,0)           21-22                                        
+         DC    2AL1(DSPL30,30)     23-24                                        
+         DC    AL1(DSPL20,20)      25                                           
+         DC    3AL1(0,0)           26-28                                        
+         DC    3AL1(DSPL30,30)     29-31                                        
+         DC    8AL1(0,0)           32-39                                        
+         DC    AL1(DSPL40,40)      40                                           
+         DC    4AL1(0,0)           41-44                                        
+         DC    AL1(DSPL45,45)      45                                           
+         DC    AL1(0,0)            46                                           
+         DC    AL1(DSPL50,50)      47                                           
+         DC    2AL1(0,0)           48-49                                        
+         DC    AL1(DSPL50,50)      50                                           
+         DC    AL1(0,0)            51                                           
+         DC    4AL1(DSPL50,50)     52-55                                        
+         DC    5AL1(DSPL60,60)     56-60                                        
+         DC    AL1(0,0)            61                                           
+         DC    AL1(DSPL60,60)      62                                           
+         DC    2AL1(0,0)           63-64                                        
+         DC    AL1(DSPL60,60)      65                                           
+         DC    4AL1(0,0)           66-69                                        
+         DC    AL1(DSPL60,60)      70                                           
+         DC    4AL1(0,0)           71-74                                        
+         DC    AL1(DSPL75,75)      75                                           
+         DC    4AL1(0,0)           76-79                                        
+         DC    AL1(DSPL75,75)      80                                           
+         DC    9AL1(0,0)           81-89                                        
+         DC    AL1(DSPL90,90)      90                                           
+         DC    14AL1(0,0)          91-104                                       
+         DC    AL1(DSPL105,105)    105                                          
+         DC    14AL1(0,0)          106-119                                      
+         DC    AL1(DSPL120,120)    120                                          
+         DC    29AL1(0,0)          121-149                                      
+         DC    AL1(DSPL150,150)    150                                          
+         DC    29AL1(0,0)          151-179                                      
+         DC    AL1(DSPL150,150)    180                                          
+         DC    75AL1(0,0)          181-255                                      
+SLNOORX  EQU   *                                                                
+SLNOORL  EQU   *-SLNOOR                                                         
+*                                                                               
+SLNOOT   DC    C'OOT '             PHD (OMD) TV                                 
+         DC    AL1(0,0)            0                                            
+         DC    AL1(DSPL30,1)       1                                            
+         DC    4AL1(DSPL05,5)      2-5                                          
+         DC    3AL1(DSPL07,7)      6-8                                          
+         DC    5AL1(DSPL10,10)     9-13                                         
+         DC    2AL1(DSPL15,15)     14-15                                        
+         DC    4AL1(0,0)           16-19                                        
+         DC    AL1(DSPL20,20)      20                                           
+         DC    AL1(DSPL30,30)      21                                           
+         DC    3AL1(0,0)           22-24                                        
+         DC    AL1(DSPL20,20)      25                                           
+         DC    2AL1(0,0)           26-27                                        
+         DC    5AL1(DSPL30,30)     28-32                                        
+         DC    2AL1(0,0)           33-34                                        
+         DC    AL1(DSPL30,30)      35                                           
+         DC    2AL1(DSPL40,40)     36-37                                        
+         DC    2AL1(0,0)           38-39                                        
+         DC    2AL1(DSPL40,40)     40-41                                        
+         DC    3AL1(0,0)           42-44                                        
+         DC    AL1(DSPL45,45)      45                                           
+         DC    4AL1(0,0)           46-49                                        
+         DC    AL1(DSPL50,50)      50                                           
+         DC    9AL1(0,0)           51-59                                        
+         DC    AL1(DSPL60,60)      60                                           
+         DC    14AL1(0,0)          61-74                                        
+         DC    AL1(DSPL75,75)      75                                           
+         DC    14AL1(0,0)          76-89                                        
+         DC    AL1(DSPL90,90)      90                                           
+         DC    14AL1(0,0)          91-104                                       
+         DC    AL1(DSPL105,105)    105                                          
+         DC    14AL1(0,0)          106-119                                      
+         DC    2AL1(DSPL120,120)   120-121                                      
+         DC    28AL1(0,0)          122-149                                      
+         DC    AL1(DSPL150,150)    150                                          
+         DC    26AL1(0,0)          151-176                                      
+         DC    AL1(DSPL150,150)    177                                          
+         DC    2AL1(0,0)           178-179                                      
+         DC    AL1(DSPL150,150)    180                                          
+         DC    75AL1(0,0)          181-255                                      
+SLNOOTX  EQU   *                                                                
+SLNOOTL  EQU   *-SLNOOT                                                         
+*                                                                               
+*                                                                               
+SLNJST   DC    C'JST '             JWT ACTION TV                                
+         DC    AL1(0,0)            0                                            
+         DC    AL1(DSPL30,1)       1                                            
+         DC    4AL1(DSPL05,5)      2-5                                          
+         DC    3AL1(DSPL07,7)      6-8                                          
+         DC    5AL1(DSPL10,10)     9-13                                         
+         DC    2AL1(DSPL15,15)     14-15                                        
+         DC    AL1(0,0)            16                                           
+         DC    2AL1(DSPL15,15)     17-18                                        
+         DC    AL1(0,0)            19                                           
+         DC    AL1(DSPL20,20)      20                                           
+         DC    4AL1(0,0)           21-24                                        
+         DC    AL1(DSPL20,20)      25                                           
+         DC    2AL1(0,0)           26-27                                        
+         DC    5AL1(DSPL30,30)     28-32                                        
+         DC    2AL1(0,0)           33-34                                        
+         DC    AL1(DSPL30,30)      35                                           
+         DC    2AL1(DSPL40,40)     36-37                                        
+         DC    2AL1(0,0)           38-39                                        
+         DC    2AL1(DSPL40,40)     40-41                                        
+         DC    3AL1(0,0)           42-44                                        
+         DC    AL1(DSPL45,45)      45                                           
+         DC    4AL1(0,0)           46-49                                        
+         DC    AL1(DSPL50,50)      50                                           
+         DC    9AL1(0,0)           51-59                                        
+         DC    AL1(DSPL60,60)      60                                           
+         DC    4AL1(0,0)           61-64                                        
+         DC    AL1(DSPL60,60)      65                                           
+         DC    9AL1(0,0)           66-74                                        
+         DC    AL1(DSPL75,75)      75                                           
+         DC    14AL1(0,0)          76-89                                        
+         DC    AL1(DSPL90,90)      90                                           
+         DC    14AL1(0,0)          91-104                                       
+         DC    AL1(DSPL105,105)    105                                          
+         DC    14AL1(0,0)          106-119                                      
+         DC    2AL1(DSPL120,120)   120-121                                      
+         DC    3AL1(0,0)           122-124                                      
+         DC    AL1(DSPL120,120)    125                                          
+         DC    24AL1(0,0)          126-149                                      
+         DC    AL1(DSPL150,150)    150                                          
+         DC    26AL1(0,0)          151-176                                      
+         DC    AL1(DSPL150,150)    177                                          
+         DC    2AL1(0,0)           178-179                                      
+         DC    AL1(DSPL150,150)    180                                          
+         DC    49AL1(0,0)          181-229                                      
+         DC    AL1(DSPL150,150)    230                                          
+         DC    25AL1(0,0)          231-255                                      
+SLNJSTX  EQU   *                                                                
+SLNJSTL  EQU   *-SLNJST                                                         
+*                                                                               
+SLNJSR   DC    C'JSR '             JWT ACTION RADIO                             
+         DC    AL1(0,0)            0                                            
+         DC    AL1(DSPL60,1)       1                                            
+         DC    4AL1(DSPL05,5)      2-5                                          
+         DC    2AL1(DSPL07,7)      6-7                                          
+         DC    5AL1(DSPL10,10)     8-12                                         
+         DC    6AL1(DSPL15,15)     13-18                                        
+         DC    2AL1(DSPL20,20)     19-20                                        
+         DC    4AL1(0,0)           21-24                                        
+         DC    AL1(DSPL20,20)      25                                           
+         DC    2AL1(0,0)           26-27                                        
+         DC    4AL1(DSPL30,30)     28-31                                        
+         DC    8AL1(0,0)           32-39                                        
+         DC    AL1(DSPL40,40)      40                                           
+         DC    4AL1(0,0)           41-44                                        
+         DC    AL1(DSPL45,45)      45                                           
+         DC    AL1(0,0)            46                                           
+         DC    AL1(DSPL50,50)      47                                           
+         DC    2AL1(0,0)           48-49                                        
+         DC    AL1(DSPL50,50)      50                                           
+         DC    4AL1(0,0)           51-54                                        
+         DC    AL1(DSPL50,50)      55                                           
+         DC    5AL1(DSPL60,60)     56-60                                        
+         DC    AL1(0,0)            61                                           
+         DC    AL1(DSPL60,60)      62                                           
+         DC    2AL1(0,0)           63-64                                        
+         DC    AL1(DSPL60,60)      65                                           
+         DC    4AL1(0,0)           66-69                                        
+         DC    AL1(DSPL60,60)      70                                           
+         DC    4AL1(0,0)           71-74                                        
+         DC    AL1(DSPL75,75)      75                                           
+         DC    4AL1(0,0)           76-79                                        
+         DC    AL1(DSPL75,75)      80                                           
+         DC    9AL1(0,0)           81-89                                        
+         DC    AL1(DSPL90,90)      90                                           
+         DC    14AL1(0,0)          91-104                                       
+         DC    AL1(DSPL105,105)    105                                          
+         DC    14AL1(0,0)          106-119                                      
+         DC    AL1(DSPL120,120)    120                                          
+         DC    4AL1(0,0)           121-124                                      
+         DC    AL1(DSPL120,120)    125                                          
+         DC    24AL1(0,0)          126-149                                      
+         DC    AL1(DSPL150,150)    150                                          
+         DC    29AL1(0,0)          151-179                                      
+         DC    AL1(DSPL150,150)    180                                          
+         DC    75AL1(0,0)          181-255                                      
+SLNJSRX  EQU   *                                                                
+SLNJSRL  EQU   *-SLNJSR                                                         
+*                                                                               
+SLNH0R   DC    C'H0R '             MINDSHARE CANADA RADIO                       
+         DC    AL1(0,0)            0                                            
+         DC    AL1(DSPL60,1)       1                                            
+         DC    4AL1(DSPL05,5)      2-5                                          
+         DC    3AL1(DSPL07,7)      6-8                                          
+         DC    3AL1(DSPL10,10)     9-11                                         
+         DC    5AL1(DSPL15,15)     12-16                                        
+         DC    3AL1(0,0)           17-19                                        
+         DC    AL1(DSPL20,20)      20                                           
+         DC    4AL1(0,0)           21-24                                        
+         DC    AL1(DSPL20,20)      25                                           
+         DC    10AL1(DSPL30,30)    26-35                                        
+         DC    4AL1(0,0)           36-39                                        
+         DC    AL1(DSPL40,40)      40                                           
+         DC    4AL1(0,0)           41-44                                        
+         DC    AL1(DSPL45,45)      45                                           
+         DC    AL1(0,0)            46                                           
+         DC    AL1(DSPL50,50)      47                                           
+         DC    2AL1(0,0)           48-49                                        
+         DC    AL1(DSPL50,50)      50                                           
+         DC    4AL1(0,0)           51-54                                        
+         DC    AL1(DSPL50,50)      55                                           
+         DC    AL1(DSPL60,60)      56                                           
+         DC    AL1(0,0)            57                                           
+         DC    AL1(DSPL60,60)      58                                           
+         DC    AL1(0,0)            59                                           
+         DC    AL1(DSPL60,60)      60                                           
+         DC    AL1(0,0)            61                                           
+         DC    AL1(DSPL60,60)      62                                           
+         DC    2AL1(0,0)           63-64                                        
+         DC    AL1(DSPL60,60)      65                                           
+         DC    4AL1(0,0)           66-69                                        
+         DC    AL1(DSPL60,60)      70                                           
+         DC    4AL1(0,0)           71-74                                        
+         DC    AL1(DSPL75,75)      75                                           
+         DC    4AL1(0,0)           76-79                                        
+         DC    AL1(DSPL75,75)      80                                           
+         DC    9AL1(0,0)           81-89                                        
+         DC    AL1(DSPL90,90)      90                                           
+         DC    14AL1(0,0)          91-104                                       
+         DC    AL1(DSPL105,105)    105                                          
+         DC    14AL1(0,0)          106-119                                      
+         DC    AL1(DSPL120,120)    120                                          
+         DC    29AL1(0,0)          121-149                                      
+         DC    AL1(DSPL150,150)    150                                          
+         DC    105AL1(0,0)         151-255                                      
+SLNH0RX  EQU   *                                                                
+SLNH0RL  EQU   *-SLNH0R                                                         
+*                                                                               
+SLNH0T   DC    C'H0T '             MINDSHARE CANADA TV                          
+         DC    AL1(0,0)            0                                            
+         DC    AL1(DSPL30,1)       1                                            
+         DC    4AL1(DSPL05,5)      2-5                                          
+         DC    3AL1(DSPL07,7)      6-8                                          
+         DC    5AL1(DSPL10,10)     9-13                                         
+         DC    2AL1(DSPL15,15)     14-15                                        
+         DC    4AL1(0,0)           16-19                                        
+         DC    AL1(DSPL20,20)      20                                           
+         DC    4AL1(0,0)           21-24                                        
+         DC    AL1(DSPL20,20)      25                                           
+         DC    2AL1(0,0)           26-27                                        
+         DC    5AL1(DSPL30,30)     28-32                                        
+         DC    2AL1(0,0)           33-34                                        
+         DC    AL1(DSPL30,30)      35                                           
+         DC    2AL1(DSPL40,40)     36-37                                        
+         DC    2AL1(0,0)           38-39                                        
+         DC    2AL1(DSPL40,40)     40-41                                        
+         DC    3AL1(0,0)           42-44                                        
+         DC    AL1(DSPL45,45)      45                                           
+         DC    4AL1(0,0)           46-49                                        
+         DC    AL1(DSPL50,50)      50                                           
+         DC    4AL1(0,0)           51-54                                        
+         DC    AL1(DSPL50,50)      55                                           
+         DC    4AL1(0,0)           56-59                                        
+         DC    AL1(DSPL60,60)      60                                           
+         DC    14AL1(0,0)          61-74                                        
+         DC    AL1(DSPL75,75)      75                                           
+         DC    14AL1(0,0)          76-89                                        
+         DC    AL1(DSPL90,90)      90                                           
+         DC    14AL1(0,0)          91-104                                       
+         DC    AL1(DSPL105,105)    105                                          
+         DC    14AL1(0,0)          106-119                                      
+         DC    2AL1(DSPL120,120)   120-121                                      
+         DC    28AL1(0,0)          122-149                                      
+         DC    AL1(DSPL150,150)    150                                          
+         DC    26AL1(0,0)          151-176                                      
+         DC    AL1(DSPL150,150)    177                                          
+         DC    2AL1(0,0)           178-179                                      
+         DC    AL1(DSPL150,150)    180                                          
+         DC    75AL1(0,0)          181-255                                      
+SLNH0TX  EQU   *                                                                
+SLNH0TL  EQU   *-SLNH0T                                                         
+*                                                                               
+SLNLGR   DC    C'LGR '             LWMED                                        
+         DC    AL1(0,0)            0                                            
+         DC    AL1(DSPL60,1)       1                                            
+         DC    4AL1(DSPL05,5)      2-5                                          
+         DC    2AL1(DSPL07,7)      6-7                                          
+         DC    AL1(0,0)            8                                            
+         DC    3AL1(DSPL10,10)     9-11                                         
+         DC    2AL1(0,0)           12-13                                        
+         DC    3AL1(DSPL15,15)     14-16                                        
+         DC    3AL1(0,0)           17-19                                        
+         DC    AL1(DSPL20,20)      20                                           
+         DC    4AL1(0,0)           21-24                                        
+         DC    AL1(DSPL20,20)      25                                           
+         DC    3AL1(0,0)           26-28                                        
+         DC    3AL1(DSPL30,30)     29-31                                        
+         DC    2AL1(0,0)           32-33                                        
+         DC    AL1(DSPL30,30)      34                                           
+         DC    5AL1(0,0)           35-39                                        
+         DC    AL1(DSPL40,40)      40                                           
+         DC    2AL1(0,0)           41-42                                        
+         DC    AL1(DSPL45,45)      43                                           
+         DC    AL1(0,0)            44                                           
+         DC    AL1(DSPL45,45)      45                                           
+         DC    AL1(0,0)            46                                           
+         DC    AL1(DSPL50,50)      47                                           
+         DC    2AL1(0,0)           48-49                                        
+         DC    AL1(DSPL50,50)      50                                           
+         DC    4AL1(0,0)           51-54                                        
+         DC    AL1(DSPL50,50)      55                                           
+         DC    AL1(DSPL60,60)      56                                           
+         DC    AL1(DSPL60,60)      57                                           
+         DC    5AL1(DSPL60,60)     58-62                                        
+         DC    2AL1(0,0)           63-64                                        
+         DC    AL1(DSPL60,60)      65                                           
+         DC    AL1(0,0)            66                                           
+         DC    AL1(DSPL60,60)      67                                           
+         DC    2AL1(0,0)           68-69                                        
+         DC    AL1(DSPL60,60)      70                                           
+         DC    4AL1(0,0)           71-74                                        
+         DC    AL1(DSPL75,75)      75                                           
+         DC    4AL1(0,0)           76-79                                        
+         DC    AL1(DSPL75,75)      80                                           
+         DC    9AL1(0,0)           81-89                                        
+         DC    AL1(DSPL90,90)      90                                           
+         DC    14AL1(0,0)          91-104                                       
+         DC    AL1(DSPL105,105)    105                                          
+         DC    14AL1(0,0)          106-119                                      
+         DC    AL1(DSPL120,120)    120                                          
+         DC    29AL1(0,0)          121-149                                      
+         DC    AL1(DSPL150,150)    150                                          
+         DC    105AL1(0,0)         151-255                                      
+SLNLGRX  EQU   *                                                                
+SLNLGRL  EQU   *-SLNLGR                                                         
+*                                                                               
+SLNG#T   DC    C'G',X'50',C'T '    GLOBALHUE TV SLNG&T                          
+         DC    AL1(0,0)            0                                            
+         DC    AL1(DSPL30,1)       1                                            
+         DC    4AL1(DSPL05,5)      2-5                                          
+         DC    3AL1(DSPL07,7)      6-8                                          
+         DC    5AL1(DSPL10,10)     9-13                                         
+         DC    2AL1(DSPL15,15)     14-15                                        
+         DC    4AL1(0,0)           16-19                                        
+         DC    AL1(DSPL20,20)      20                                           
+         DC    4AL1(0,0)           21-24                                        
+         DC    AL1(DSPL20,20)      25                                           
+         DC    2AL1(0,0)           26-27                                        
+         DC    5AL1(DSPL30,30)     28-32                                        
+         DC    2AL1(0,0)           33-34                                        
+         DC    AL1(DSPL30,30)      35                                           
+         DC    2AL1(DSPL40,40)     36-37                                        
+         DC    2AL1(0,0)           38-39                                        
+         DC    2AL1(DSPL40,40)     40-41                                        
+         DC    3AL1(0,0)           42-44                                        
+         DC    AL1(DSPL45,45)      45                                           
+         DC    4AL1(0,0)           46-49                                        
+         DC    AL1(DSPL50,50)      50                                           
+         DC    9AL1(0,0)           51-59                                        
+         DC    AL1(DSPL60,60)      60                                           
+         DC    14AL1(0,0)          61-74                                        
+         DC    AL1(DSPL75,75)      75                                           
+         DC    14AL1(0,0)          76-89                                        
+         DC    AL1(DSPL90,90)      90                                           
+         DC    14AL1(0,0)          91-104                                       
+         DC    AL1(DSPL105,105)    105                                          
+         DC    4AL1(0,0)           106-109                                      
+         DC    AL1(DSPL105,105)    110                                          
+         DC    9AL1(0,0)           111-119                                      
+         DC    2AL1(DSPL120,120)   120-121                                      
+         DC    28AL1(0,0)          122-149                                      
+         DC    AL1(DSPL150,150)    150                                          
+         DC    26AL1(0,0)          151-176                                      
+         DC    AL1(DSPL150,150)    177                                          
+         DC    2AL1(0,0)           178-179                                      
+         DC    AL1(DSPL150,150)    180                                          
+         DC    75AL1(0,0)          181-255                                      
+SLNG#TX  EQU   *                                                                
+SLNG#TL  EQU   *-SLNG#T                                                         
+*                                                                               
+SLNNIT   DC    C'NIT '             NAIMLA                                       
+         DC    AL1(0,0)            0                                            
+         DC    AL1(DSPL30,1)       1                                            
+         DC    4AL1(DSPL05,5)      2-5                                          
+         DC    3AL1(DSPL07,7)      6-8                                          
+         DC    5AL1(DSPL10,10)     9-13                                         
+         DC    2AL1(DSPL15,15)     14-15                                        
+         DC    4AL1(0,0)           16-19                                        
+         DC    AL1(DSPL20,20)      20                                           
+         DC    4AL1(0,0)           21-24                                        
+         DC    AL1(DSPL20,20)      25                                           
+         DC    2AL1(0,0)           26-27                                        
+         DC    5AL1(DSPL30,30)     28-32                                        
+         DC    2AL1(0,0)           33-34                                        
+         DC    AL1(DSPL30,30)      35                                           
+         DC    2AL1(DSPL40,40)     36-37                                        
+         DC    2AL1(0,0)           38-39                                        
+         DC    2AL1(DSPL40,40)     40-41                                        
+         DC    3AL1(0,0)           42-44                                        
+         DC    AL1(DSPL45,45)      45                                           
+         DC    4AL1(0,0)           46-49                                        
+         DC    AL1(DSPL50,50)      50                                           
+         DC    9AL1(0,0)           51-59                                        
+         DC    AL1(DSPL60,60)      60                                           
+         DC    14AL1(0,0)          61-74                                        
+         DC    AL1(DSPL75,75)      75                                           
+         DC    9AL1(0,0)           76-84                                        
+         DC    AL1(DSPL90,90)      85                                           
+         DC    4AL1(0,0)           86-89                                        
+         DC    AL1(DSPL90,90)      90                                           
+         DC    14AL1(0,0)          91-104                                       
+         DC    AL1(DSPL105,105)    105                                          
+         DC    14AL1(0,0)          106-119                                      
+         DC    2AL1(DSPL120,120)   120-121                                      
+         DC    28AL1(0,0)          122-149                                      
+         DC    AL1(DSPL150,150)    150                                          
+         DC    26AL1(0,0)          151-176                                      
+         DC    AL1(DSPL150,150)    177                                          
+         DC    2AL1(0,0)           178-179                                      
+         DC    AL1(DSPL150,150)    180                                          
+         DC    75AL1(0,0)          181-255                                      
+SLNNITX  EQU   *                                                                
+SLNNITL  EQU   *-SLNNIT                                                         
+*                                                                               
+SLNG#R   DC    C'G',X'50',C'R '    GLOBALHUE RADIO SLNG&R                       
+         DC    AL1(0,0)            0                                            
+         DC    AL1(DSPL60,1)       1                                            
+         DC    4AL1(DSPL05,5)      2-5                                          
+         DC    2AL1(DSPL07,7)      6-7                                          
+         DC    AL1(0,0)            8                                            
+         DC    3AL1(DSPL10,10)     9-11                                         
+         DC    2AL1(0,0)           12-13                                        
+         DC    3AL1(DSPL15,15)     14-16                                        
+         DC    3AL1(0,0)           17-19                                        
+         DC    AL1(DSPL20,20)      20                                           
+         DC    4AL1(0,0)           21-24                                        
+         DC    AL1(DSPL20,20)      25                                           
+         DC    3AL1(0,0)           26-28                                        
+         DC    3AL1(DSPL30,30)     29-31                                        
+         DC    8AL1(0,0)           32-39                                        
+         DC    AL1(DSPL40,40)      40                                           
+         DC    4AL1(0,0)           41-44                                        
+         DC    AL1(DSPL45,45)      45                                           
+         DC    AL1(0,0)            46                                           
+         DC    AL1(DSPL50,50)      47                                           
+         DC    2AL1(0,0)           48-49                                        
+         DC    AL1(DSPL50,50)      50                                           
+         DC    4AL1(0,0)           51-54                                        
+         DC    AL1(DSPL50,50)      55                                           
+         DC    AL1(DSPL60,60)      56                                           
+         DC    AL1(0,0)            57                                           
+         DC    AL1(DSPL60,60)      58                                           
+         DC    AL1(0,0)            59                                           
+         DC    AL1(DSPL60,60)      60                                           
+         DC    AL1(0,0)            61                                           
+         DC    AL1(DSPL60,60)      62                                           
+         DC    2AL1(0,0)           63-64                                        
+         DC    AL1(DSPL60,60)      65                                           
+         DC    4AL1(0,0)           66-69                                        
+         DC    AL1(DSPL60,60)      70                                           
+         DC    4AL1(0,0)           71-74                                        
+         DC    AL1(DSPL75,75)      75                                           
+         DC    4AL1(0,0)           76-79                                        
+         DC    AL1(DSPL75,75)      80                                           
+         DC    9AL1(0,0)           81-89                                        
+         DC    AL1(DSPL90,90)      90                                           
+         DC    14AL1(0,0)          91-104                                       
+         DC    AL1(DSPL105,105)    105                                          
+         DC    4AL1(0,0)           106-109                                      
+         DC    AL1(DSPL105,105)    110                                          
+         DC    9AL1(0,0)           111-119                                      
+         DC    AL1(DSPL120,120)    120                                          
+         DC    29AL1(0,0)          121-149                                      
+         DC    AL1(DSPL150,150)    150                                          
+         DC    105AL1(0,0)         151-255                                      
+SLNG#RX  EQU   *                                                                
+SLNG#RL  EQU   *-SLNG#R                                                         
+*                                                                               
+SLNHYR   DC    C'HYR '             GROUPM CANADA RADIO                          
+         DC    AL1(0,0)            0                                            
+         DC    AL1(DSPL60,1)       1                                            
+         DC    4AL1(DSPL05,5)      2-5                                          
+         DC    2AL1(DSPL07,7)      6-7                                          
+         DC    4AL1(DSPL10,10)     8-11                                         
+         DC    2AL1(0,0)           12-13                                        
+         DC    3AL1(DSPL15,15)     14-16                                        
+         DC    3AL1(0,0)           17-19                                        
+         DC    AL1(DSPL20,20)      20                                           
+         DC    4AL1(0,0)           21-24                                        
+         DC    AL1(DSPL20,20)      25                                           
+         DC    3AL1(0,0)           26-28                                        
+         DC    3AL1(DSPL30,30)     29-31                                        
+         DC    8AL1(0,0)           32-39                                        
+         DC    AL1(DSPL40,40)      40                                           
+         DC    4AL1(0,0)           41-44                                        
+         DC    AL1(DSPL45,45)      45                                           
+         DC    AL1(0,0)            46                                           
+         DC    AL1(DSPL50,50)      47                                           
+         DC    2AL1(0,0)           48-49                                        
+         DC    AL1(DSPL50,50)      50                                           
+         DC    4AL1(0,0)           51-54                                        
+         DC    AL1(DSPL50,50)      55                                           
+         DC    AL1(DSPL60,60)      56                                           
+         DC    AL1(0,0)            57                                           
+         DC    AL1(DSPL60,60)      58                                           
+         DC    AL1(0,0)            59                                           
+         DC    AL1(DSPL60,60)      60                                           
+         DC    AL1(0,0)            61                                           
+         DC    AL1(DSPL60,60)      62                                           
+         DC    2AL1(0,0)           63-64                                        
+         DC    AL1(DSPL60,60)      65                                           
+         DC    4AL1(0,0)           66-69                                        
+         DC    AL1(DSPL60,60)      70                                           
+         DC    4AL1(0,0)           71-74                                        
+         DC    AL1(DSPL75,75)      75                                           
+         DC    4AL1(0,0)           76-79                                        
+         DC    AL1(DSPL75,75)      80                                           
+         DC    9AL1(0,0)           81-89                                        
+         DC    AL1(DSPL90,90)      90                                           
+         DC    14AL1(0,0)          91-104                                       
+         DC    AL1(DSPL105,105)    105                                          
+         DC    14AL1(0,0)          106-119                                      
+         DC    AL1(DSPL120,120)    120                                          
+         DC    29AL1(0,0)          121-149                                      
+         DC    AL1(DSPL150,150)    150                                          
+         DC    105AL1(0,0)         151-255                                      
+SLNHYRX  EQU   *                                                                
+SLNHYRL  EQU   *-SLNHYR                                                         
+*                                                                               
+SLNDVT   DC    C'DVT '             MOROCH TV                                    
+         DC    AL1(0,0)            0                                            
+         DC    AL1(DSPL30,1)       1                                            
+         DC    4AL1(DSPL05,5)      2-5                                          
+         DC    3AL1(DSPL07,7)      6-8                                          
+         DC    5AL1(DSPL10,10)     9-13                                         
+         DC    2AL1(DSPL15,15)     14-15                                        
+         DC    4AL1(0,0)           16-19                                        
+         DC    AL1(DSPL20,20)      20                                           
+         DC    2AL1(0,0)           21-22                                        
+         DC    AL1(DSPL20,20)      23                                           
+         DC    AL1(0,0)            24                                           
+         DC    AL1(DSPL20,20)      25                                           
+         DC    2AL1(0,0)           26-27                                        
+         DC    5AL1(DSPL30,30)     28-32                                        
+         DC    2AL1(0,0)           33-34                                        
+         DC    AL1(DSPL30,30)      35                                           
+         DC    2AL1(DSPL40,40)     36-37                                        
+         DC    2AL1(0,0)           38-39                                        
+         DC    2AL1(DSPL40,40)     40-41                                        
+         DC    3AL1(0,0)           42-44                                        
+         DC    AL1(DSPL45,45)      45                                           
+         DC    4AL1(0,0)           46-49                                        
+         DC    AL1(DSPL50,50)      50                                           
+         DC    8AL1(0,0)           51-58                                        
+         DC    3AL1(DSPL60,60)     59-61                                        
+         DC    13AL1(0,0)          62-74                                        
+         DC    AL1(DSPL75,75)      75                                           
+         DC    14AL1(0,0)          76-89                                        
+         DC    AL1(DSPL90,90)      90                                           
+         DC    14AL1(0,0)          91-104                                       
+         DC    AL1(DSPL105,105)    105                                          
+         DC    14AL1(0,0)          106-119                                      
+         DC    2AL1(DSPL120,120)   120-121                                      
+         DC    28AL1(0,0)          122-149                                      
+         DC    AL1(DSPL150,150)    150                                          
+         DC    26AL1(0,0)          151-176                                      
+         DC    AL1(DSPL150,150)    177                                          
+         DC    2AL1(0,0)           178-179                                      
+         DC    AL1(DSPL150,150)    180                                          
+         DC    75AL1(0,0)          181-255                                      
+SLNDVTX  EQU   *                                                                
+SLNDVTL  EQU   *-SLNDVT                                                         
+*                                                                               
+SLNDVR   DC    C'DVR '             MOROCH RADIO                                 
+         DC    AL1(0,0)            0                                            
+         DC    AL1(DSPL60,1)       1                                            
+         DC    4AL1(DSPL05,5)      2-5                                          
+         DC    2AL1(DSPL07,7)      6-7                                          
+         DC    4AL1(DSPL10,10)     8-11                                         
+         DC    2AL1(0,0)           12-13                                        
+         DC    3AL1(DSPL15,15)     14-16                                        
+         DC    3AL1(0,0)           17-19                                        
+         DC    AL1(DSPL20,20)      20                                           
+         DC    4AL1(0,0)           21-24                                        
+         DC    AL1(DSPL20,20)      25                                           
+         DC    3AL1(0,0)           26-28                                        
+         DC    3AL1(DSPL30,30)     29-31                                        
+         DC    8AL1(0,0)           32-39                                        
+         DC    AL1(DSPL40,40)      40                                           
+         DC    4AL1(0,0)           41-44                                        
+         DC    AL1(DSPL45,45)      45                                           
+         DC    AL1(0,0)            46                                           
+         DC    AL1(DSPL50,50)      47                                           
+         DC    2AL1(0,0)           48-49                                        
+         DC    AL1(DSPL50,50)      50                                           
+         DC    4AL1(0,0)           51-54                                        
+         DC    AL1(DSPL50,50)      55                                           
+         DC    AL1(DSPL60,60)      56                                           
+         DC    AL1(0,0)            57                                           
+         DC    5AL1(DSPL60,60)     58-62                                        
+         DC    2AL1(0,0)           63-64                                        
+         DC    AL1(DSPL60,60)      65                                           
+         DC    4AL1(0,0)           66-69                                        
+         DC    AL1(DSPL60,60)      70                                           
+         DC    4AL1(0,0)           71-74                                        
+         DC    AL1(DSPL75,75)      75                                           
+         DC    4AL1(0,0)           76-79                                        
+         DC    AL1(DSPL75,75)      80                                           
+         DC    9AL1(0,0)           81-89                                        
+         DC    AL1(DSPL90,90)      90                                           
+         DC    14AL1(0,0)          91-104                                       
+         DC    AL1(DSPL105,105)    105                                          
+         DC    14AL1(0,0)          106-119                                      
+         DC    AL1(DSPL120,120)    120                                          
+         DC    29AL1(0,0)          121-149                                      
+         DC    AL1(DSPL150,150)    150                                          
+         DC    105AL1(0,0)         151-255                                      
+SLNDVRX  EQU   *                                                                
+SLNDVRL  EQU   *-SLNDVR                                                         
+*                                                                               
+SLNOUR   DC    C'OUR '             OMNICOM RADIO                                
+         DC    AL1(0,0)            0                                            
+         DC    AL1(DSPL60,1)       1                                            
+         DC    4AL1(DSPL05,5)      2-5                                          
+         DC    2AL1(DSPL07,7)      6-7                                          
+         DC    4AL1(DSPL10,10)     8-11                                         
+         DC    2AL1(0,0)           12-13                                        
+         DC    3AL1(DSPL15,15)     14-16                                        
+         DC    3AL1(0,0)           17-19                                        
+         DC    AL1(DSPL20,20)      20                                           
+         DC    4AL1(0,0)           21-24                                        
+         DC    AL1(DSPL20,20)      25                                           
+         DC    3AL1(0,0)           26-28                                        
+         DC    3AL1(DSPL30,30)     29-31                                        
+         DC    8AL1(0,0)           32-39                                        
+         DC    AL1(DSPL40,40)      40                                           
+         DC    4AL1(0,0)           41-44                                        
+         DC    AL1(DSPL45,45)      45                                           
+         DC    AL1(0,0)            46                                           
+         DC    AL1(DSPL50,50)      47                                           
+         DC    2AL1(0,0)           48-49                                        
+         DC    AL1(DSPL50,50)      50                                           
+         DC    4AL1(0,0)           51-54                                        
+         DC    AL1(DSPL50,50)      55                                           
+         DC    AL1(DSPL60,60)      56                                           
+         DC    AL1(0,0)            57                                           
+         DC    AL1(DSPL60,60)      58                                           
+         DC    AL1(0,0)            59                                           
+         DC    AL1(DSPL60,60)      60                                           
+         DC    AL1(0,0)            61                                           
+         DC    AL1(DSPL60,60)      62                                           
+         DC    2AL1(0,0)           63-64                                        
+         DC    AL1(DSPL60,60)      65                                           
+         DC    4AL1(0,0)           66-69                                        
+         DC    AL1(DSPL60,60)      70                                           
+         DC    4AL1(0,0)           71-74                                        
+         DC    AL1(DSPL75,75)      75                                           
+         DC    4AL1(0,0)           76-79                                        
+         DC    AL1(DSPL75,75)      80                                           
+         DC    9AL1(0,0)           81-89                                        
+         DC    AL1(DSPL90,90)      90                                           
+         DC    14AL1(0,0)          91-104                                       
+         DC    AL1(DSPL105,105)    105                                          
+         DC    14AL1(0,0)          106-119                                      
+         DC    AL1(DSPL120,120)    120                                          
+         DC    29AL1(0,0)          121-149                                      
+         DC    AL1(DSPL150,150)    150                                          
+         DC    105AL1(0,0)         151-255                                      
+SLNOURX  EQU   *                                                                
+SLNOURL  EQU   *-SLNOUR                                                         
+*                                                                               
+SLNHWT   DC    C'HWT '             HAWORTH TV                                   
+         DC    AL1(0,0)            0                                            
+         DC    AL1(DSPL30,1)       1                                            
+         DC    4AL1(DSPL05,5)      2-5                                          
+         DC    3AL1(DSPL07,7)      6-8                                          
+         DC    5AL1(DSPL10,10)     9-13                                         
+         DC    2AL1(DSPL15,15)     14-15                                        
+         DC    4AL1(0,0)           16-19                                        
+         DC    AL1(DSPL20,20)      20                                           
+         DC    4AL1(0,0)           21-24                                        
+         DC    AL1(DSPL20,20)      25                                           
+         DC    2AL1(0,0)           26-27                                        
+         DC    5AL1(DSPL30,30)     28-32                                        
+         DC    2AL1(0,0)           33-34                                        
+         DC    AL1(DSPL30,30)      35                                           
+         DC    2AL1(DSPL40,40)     36-37                                        
+         DC    2AL1(0,0)           38-39                                        
+         DC    2AL1(DSPL40,40)     40-41                                        
+         DC    3AL1(0,0)           42-44                                        
+         DC    AL1(DSPL45,45)      45                                           
+         DC    4AL1(0,0)           46-49                                        
+         DC    AL1(DSPL50,50)      50                                           
+         DC    8AL1(0,0)           51-58                                        
+         DC    AL1(DSPL60,60)      59                                           
+         DC    AL1(DSPL60,60)      60                                           
+         DC    14AL1(0,0)          61-74                                        
+         DC    AL1(DSPL75,75)      75                                           
+         DC    14AL1(0,0)          76-89                                        
+         DC    AL1(DSPL90,90)      90                                           
+         DC    14AL1(0,0)          91-104                                       
+         DC    AL1(DSPL105,105)    105                                          
+         DC    14AL1(0,0)          106-119                                      
+         DC    2AL1(DSPL120,120)   120-121                                      
+         DC    28AL1(0,0)          122-149                                      
+         DC    AL1(DSPL150,150)    150                                          
+         DC    26AL1(0,0)          151-176                                      
+         DC    AL1(DSPL150,150)    177                                          
+         DC    2AL1(0,0)           178-179                                      
+         DC    AL1(DSPL150,150)    180                                          
+         DC    59AL1(0,0)          181-239                                      
+         DC    AL1(DSPL150,150)    240                                          
+         DC    15AL1(0,0)          241-255                                      
+SLNHWTX  EQU   *                                                                
+SLNHWTL  EQU   *-SLNHWT                                                         
+*                                                                               
+SLNHWR   DC    C'HWR '             HAWORTH RADIO                                
+         DC    AL1(0,0)            0                                            
+         DC    AL1(DSPL60,1)       1                                            
+         DC    4AL1(DSPL05,5)      2-5                                          
+         DC    2AL1(DSPL07,7)      6-7                                          
+         DC    AL1(0,0)            8                                            
+         DC    3AL1(DSPL10,10)     9-11                                         
+         DC    2AL1(0,0)           12-13                                        
+         DC    3AL1(DSPL15,15)     14-16                                        
+         DC    3AL1(0,0)           17-19                                        
+         DC    AL1(DSPL20,20)      20                                           
+         DC    4AL1(0,0)           21-24                                        
+         DC    AL1(DSPL20,20)      25                                           
+         DC    3AL1(0,0)           26-28                                        
+         DC    3AL1(DSPL30,30)     29-31                                        
+         DC    8AL1(0,0)           32-39                                        
+         DC    AL1(DSPL40,40)      40                                           
+         DC    4AL1(0,0)           41-44                                        
+         DC    AL1(DSPL45,45)      45                                           
+         DC    AL1(0,0)            46                                           
+         DC    AL1(DSPL50,50)      47                                           
+         DC    2AL1(0,0)           48-49                                        
+         DC    AL1(DSPL50,50)      50                                           
+         DC    4AL1(0,0)           51-54                                        
+         DC    AL1(DSPL50,50)      55                                           
+         DC    AL1(DSPL60,60)      56                                           
+         DC    AL1(0,0)            57                                           
+         DC    AL1(DSPL60,60)      58                                           
+         DC    AL1(DSPL60,60)      59                                           
+         DC    AL1(DSPL60,60)      60                                           
+         DC    AL1(0,0)            61                                           
+         DC    AL1(DSPL60,60)      62                                           
+         DC    2AL1(0,0)           63-64                                        
+         DC    AL1(DSPL60,60)      65                                           
+         DC    4AL1(0,0)           66-69                                        
+         DC    AL1(DSPL60,60)      70                                           
+         DC    4AL1(0,0)           71-74                                        
+         DC    AL1(DSPL75,75)      75                                           
+         DC    4AL1(0,0)           76-79                                        
+         DC    AL1(DSPL75,75)      80                                           
+         DC    9AL1(0,0)           81-89                                        
+         DC    AL1(DSPL90,90)      90                                           
+         DC    14AL1(0,0)          91-104                                       
+         DC    AL1(DSPL105,105)    105                                          
+         DC    14AL1(0,0)          106-119                                      
+         DC    AL1(DSPL120,120)    120                                          
+         DC    29AL1(0,0)          121-149                                      
+         DC    AL1(DSPL150,150)    150                                          
+         DC    105AL1(0,0)         151-255                                      
+SLNHWRX  EQU   *                                                                
+SLNHWRL  EQU   *-SLNHWR                                                         
+*                                                                               
+SLNO0R   DC    C'O0R '             O0 - STARCOM                                 
+         DC    AL1(0,0)            0                                            
+         DC    AL1(DSPL60,1)       1                                            
+         DC    4AL1(DSPL05,5)      2-5                                          
+         DC    3AL1(DSPL07,7)      6-8                                          
+         DC    3AL1(DSPL10,10)     9-11                                         
+         DC    2AL1(0,0)           12-13                                        
+         DC    3AL1(DSPL15,15)     14-16                                        
+         DC    3AL1(0,0)           17-19                                        
+         DC    AL1(DSPL20,20)      20                                           
+         DC    4AL1(0,0)           21-24                                        
+         DC    AL1(DSPL20,20)      25                                           
+         DC    3AL1(0,0)           26-28                                        
+         DC    3AL1(DSPL30,30)     29-31                                        
+         DC    8AL1(0,0)           32-39                                        
+         DC    AL1(DSPL40,40)      40                                           
+         DC    4AL1(0,0)           41-44                                        
+         DC    AL1(DSPL45,45)      45                                           
+         DC    AL1(0,0)            46                                           
+         DC    AL1(DSPL50,50)      47                                           
+         DC    2AL1(0,0)           48-49                                        
+         DC    AL1(DSPL50,50)      50                                           
+         DC    4AL1(0,0)           51-54                                        
+         DC    AL1(DSPL50,50)      55                                           
+         DC    AL1(DSPL60,60)      56                                           
+         DC    AL1(0,0)            57                                           
+         DC    AL1(DSPL60,60)      58                                           
+         DC    AL1(0,0)            59                                           
+         DC    AL1(DSPL60,60)      60                                           
+         DC    AL1(0,0)            61                                           
+         DC    AL1(DSPL60,60)      62                                           
+         DC    2AL1(0,0)           63-64                                        
+         DC    AL1(DSPL60,60)      65                                           
+         DC    4AL1(0,0)           66-69                                        
+         DC    AL1(DSPL60,60)      70                                           
+         DC    4AL1(0,0)           71-74                                        
+         DC    AL1(DSPL75,75)      75                                           
+         DC    4AL1(0,0)           76-79                                        
+         DC    AL1(DSPL75,75)      80                                           
+         DC    9AL1(0,0)           81-89                                        
+         DC    AL1(DSPL90,90)      90                                           
+         DC    14AL1(0,0)          91-104                                       
+         DC    AL1(DSPL105,105)    105                                          
+         DC    14AL1(0,0)          106-119                                      
+         DC    AL1(DSPL120,120)    120                                          
+         DC    29AL1(0,0)          121-149                                      
+         DC    AL1(DSPL150,150)    150                                          
+         DC    105AL1(0,0)         151-255                                      
+SLNO0RX  EQU   *                                                                
+SLNO0RL  EQU   *-SLNO0R                                                         
+*                                                                               
+SLNT$R   DC    C'T$R '             THE INTEGER GROUP RADIO                      
+         DC    AL1(0,0)            0                                            
+         DC    AL1(DSPL15,15)      1                                            
+         DC    4AL1(DSPL05,5)      2-5                                          
+         DC    2AL1(DSPL07,7)      6-7                                          
+         DC    AL1(0,0)            8                                            
+         DC    2AL1(DSPL10,10)     9-10                                         
+         DC    AL1(DSPL15,15)      11                                           
+         DC    2AL1(0,0)           12-13                                        
+         DC    3AL1(DSPL15,15)     14-16                                        
+         DC    2AL1(0,0)           17-18                                        
+         DC    2AL1(DSPL20,20)     19-20                                        
+         DC    4AL1(0,0)           21-24                                        
+         DC    AL1(DSPL20,20)      25                                           
+         DC    3AL1(0,0)           26-28                                        
+         DC    3AL1(DSPL30,30)     29-31                                        
+         DC    8AL1(0,0)           32-39                                        
+         DC    AL1(DSPL40,40)      40                                           
+         DC    4AL1(0,0)           41-44                                        
+         DC    AL1(DSPL45,45)      45                                           
+         DC    AL1(0,0)            46                                           
+         DC    AL1(DSPL50,50)      47                                           
+         DC    2AL1(0,0)           48-49                                        
+         DC    AL1(DSPL50,50)      50                                           
+         DC    4AL1(0,0)           51-54                                        
+         DC    AL1(DSPL50,50)      55                                           
+         DC    AL1(DSPL60,60)      56                                           
+         DC    AL1(0,0)            57                                           
+         DC    5AL1(DSPL60,60)     58-62                                        
+         DC    2AL1(0,0)           63-64                                        
+         DC    AL1(DSPL60,60)      65                                           
+         DC    4AL1(0,0)           66-69                                        
+         DC    AL1(DSPL60,60)      70                                           
+         DC    4AL1(0,0)           71-74                                        
+         DC    AL1(DSPL75,75)      75                                           
+         DC    4AL1(0,0)           76-79                                        
+         DC    AL1(DSPL75,75)      80                                           
+         DC    9AL1(0,0)           81-89                                        
+         DC    AL1(DSPL90,90)      90                                           
+         DC    14AL1(0,0)          91-104                                       
+         DC    AL1(DSPL105,105)    105                                          
+         DC    14AL1(0,0)          106-119                                      
+         DC    AL1(DSPL120,120)    120                                          
+         DC    29AL1(0,0)          121-149                                      
+         DC    AL1(DSPL150,150)    150                                          
+         DC    105AL1(0,0)         151-255                                      
+SLNT$RX  EQU   *                                                                
+SLNT$RL  EQU   *-SLNT$R                                                         
+*                                                                               
+SLNXXT   DC    C'XXT '             OLD DEFAULT TV (NO-ONE SHOULD USE)           
+         DC    5AL1(0,0)           0-4                                          
+         DC    AL1(DSPL05,5)       5                                            
+         DC    AL1(0,0)            6                                            
+         DC    AL1(DSPL07,7)       7                                            
+         DC    2AL1(0,0)           8-9                                          
+         DC    AL1(0,10)           10                                           
+         DC    4AL1(0,0)           11-14                                        
+         DC    AL1(DSPL15,15)      15                                           
+         DC    4AL1(0,0)           16-19                                        
+         DC    AL1(DSPL20,20)      20                                           
+         DC    9AL1(0,0)           21-29                                        
+         DC    AL1(DSPL30,30)      30                                           
+         DC    9AL1(0,0)           31-39                                        
+         DC    AL1(DSPL40,40)      40                                           
+         DC    4AL1(0,0)           41-44                                        
+         DC    AL1(DSPL45,45)      45                                           
+         DC    4AL1(0,0)           46-49                                        
+         DC    AL1(DSPL50,50)      50                                           
+         DC    9AL1(0,0)           51-59                                        
+         DC    AL1(DSPL60,60)      60                                           
+         DC    14AL1(0,0)          61-74                                        
+         DC    AL1(DSPL75,75)      75                                           
+         DC    14AL1(0,0)          76-89                                        
+         DC    AL1(DSPL90,90)      90                                           
+         DC    14AL1(0,0)          91-104                                       
+         DC    AL1(DSPL105,105)    105                                          
+         DC    14AL1(0,0)          106-119                                      
+         DC    AL1(DSPL120,120)    120                                          
+         DC    29AL1(0,0)          121-149                                      
+         DC    AL1(DSPL150,150)    150                                          
+         DC    105AL1(0,0)         151-255                                      
+SLNXXTX  EQU   *                                                                
+SLNXXTL  EQU   *-SLNXXT                                                         
+*                                                                               
+SLNXXR   DC    C'XXR '             OLD DEFAULT RADIO                            
+         DC    5AL1(0,0)           0-4                                          
+         DC    AL1(DSPL05,5)       5                                            
+         DC    AL1(0,0)            6                                            
+         DC    AL1(DSPL07,7)       7                                            
+         DC    2AL1(0,0)           8-9                                          
+         DC    AL1(0,10)           10                                           
+         DC    4AL1(0,0)           11-14                                        
+         DC    AL1(DSPL15,15)      15                                           
+         DC    4AL1(0,0)           16-19                                        
+         DC    AL1(DSPL20,20)      20                                           
+         DC    9AL1(0,0)           21-29                                        
+         DC    AL1(DSPL30,30)      30                                           
+         DC    9AL1(0,0)           31-39                                        
+         DC    AL1(DSPL40,40)      40                                           
+         DC    4AL1(0,0)           41-44                                        
+         DC    AL1(DSPL45,45)      45                                           
+         DC    4AL1(0,0)           46-49                                        
+         DC    AL1(DSPL50,50)      50                                           
+         DC    9AL1(0,0)           51-59                                        
+         DC    AL1(DSPL60,60)      60                                           
+         DC    14AL1(0,0)          61-74                                        
+         DC    AL1(DSPL75,75)      75                                           
+         DC    14AL1(0,0)          76-89                                        
+         DC    AL1(DSPL90,90)      90                                           
+         DC    14AL1(0,0)          91-104                                       
+         DC    AL1(DSPL105,105)    105                                          
+         DC    14AL1(0,0)          106-119                                      
+         DC    AL1(DSPL120,120)    120                                          
+         DC    29AL1(0,0)          121-149                                      
+         DC    AL1(DSPL150,150)    150                                          
+         DC    105AL1(0,0)         151-255                                      
+SLNXXRX  EQU   *                                                                
+SLNXXRL  EQU   *-SLNXXR                                                         
+*                                                                               
+SLN00T   DC    C'00T '             DEFAULT TV                                   
+         DC    AL1(0,0)            0                                            
+         DC    AL1(DSPL30,1)       1                                            
+         DC    4AL1(DSPL05,5)      2-5                                          
+         DC    3AL1(DSPL07,7)      6-8                                          
+         DC    5AL1(DSPL10,10)     9-13                                         
+         DC    2AL1(DSPL15,15)     14-15                                        
+         DC    4AL1(0,0)           16-19                                        
+         DC    AL1(DSPL20,20)      20                                           
+         DC    4AL1(0,0)           21-24                                        
+         DC    AL1(DSPL20,20)      25                                           
+         DC    2AL1(0,0)           26-27                                        
+         DC    5AL1(DSPL30,30)     28-32                                        
+         DC    2AL1(0,0)           33-34                                        
+         DC    AL1(DSPL30,30)      35                                           
+         DC    2AL1(DSPL40,40)     36-37                                        
+         DC    2AL1(0,0)           38-39                                        
+         DC    2AL1(DSPL40,40)     40-41                                        
+         DC    3AL1(0,0)           42-44                                        
+         DC    AL1(DSPL45,45)      45                                           
+         DC    4AL1(0,0)           46-49                                        
+         DC    AL1(DSPL50,50)      50                                           
+         DC    9AL1(0,0)           51-59                                        
+         DC    AL1(DSPL60,60)      60                                           
+         DC    14AL1(0,0)          61-74                                        
+         DC    AL1(DSPL75,75)      75                                           
+         DC    14AL1(0,0)          76-89                                        
+         DC    AL1(DSPL90,90)      90                                           
+         DC    14AL1(0,0)          91-104                                       
+         DC    AL1(DSPL105,105)    105                                          
+         DC    14AL1(0,0)          106-119                                      
+         DC    2AL1(DSPL120,120)   120-121                                      
+         DC    28AL1(0,0)          122-149                                      
+         DC    AL1(DSPL150,150)    150                                          
+         DC    26AL1(0,0)          151-176                                      
+         DC    AL1(DSPL150,150)    177                                          
+         DC    2AL1(0,0)           178-179                                      
+         DC    AL1(DSPL150,150)    180                                          
+         DC    75AL1(0,0)          181-255                                      
+SLN00TX  EQU   *                                                                
+SLN00TL  EQU   *-SLN00T                                                         
+*                                                                               
+SLN00R   DC    C'00R '             DEFAULT RADIO                                
+         DC    AL1(0,0)            0                                            
+         DC    AL1(DSPL60,1)       1                                            
+         DC    4AL1(DSPL05,5)      2-5                                          
+         DC    2AL1(DSPL07,7)      6-7                                          
+         DC    AL1(0,0)            8                                            
+         DC    3AL1(DSPL10,10)     9-11                                         
+         DC    2AL1(0,0)           12-13                                        
+         DC    3AL1(DSPL15,15)     14-16                                        
+         DC    3AL1(0,0)           17-19                                        
+         DC    AL1(DSPL20,20)      20                                           
+         DC    4AL1(0,0)           21-24                                        
+         DC    AL1(DSPL20,20)      25                                           
+         DC    3AL1(0,0)           26-28                                        
+         DC    3AL1(DSPL30,30)     29-31                                        
+         DC    8AL1(0,0)           32-39                                        
+         DC    AL1(DSPL40,40)      40                                           
+         DC    4AL1(0,0)           41-44                                        
+         DC    AL1(DSPL45,45)      45                                           
+         DC    AL1(0,0)            46                                           
+         DC    AL1(DSPL50,50)      47                                           
+         DC    2AL1(0,0)           48-49                                        
+         DC    AL1(DSPL50,50)      50                                           
+         DC    4AL1(0,0)           51-54                                        
+         DC    AL1(DSPL50,50)      55                                           
+         DC    AL1(DSPL60,60)      56                                           
+         DC    AL1(0,0)            57                                           
+         DC    AL1(DSPL60,60)      58                                           
+         DC    AL1(0,0)            59                                           
+         DC    AL1(DSPL60,60)      60                                           
+         DC    AL1(0,0)            61                                           
+         DC    AL1(DSPL60,60)      62                                           
+         DC    2AL1(0,0)           63-64                                        
+         DC    AL1(DSPL60,60)      65                                           
+         DC    4AL1(0,0)           66-69                                        
+         DC    AL1(DSPL60,60)      70                                           
+         DC    4AL1(0,0)           71-74                                        
+         DC    AL1(DSPL75,75)      75                                           
+         DC    4AL1(0,0)           76-79                                        
+         DC    AL1(DSPL75,75)      80                                           
+         DC    9AL1(0,0)           81-89                                        
+         DC    AL1(DSPL90,90)      90                                           
+         DC    14AL1(0,0)          91-104                                       
+         DC    AL1(DSPL105,105)    105                                          
+         DC    14AL1(0,0)          106-119                                      
+         DC    AL1(DSPL120,120)    120                                          
+         DC    29AL1(0,0)          121-149                                      
+         DC    AL1(DSPL150,150)    150                                          
+         DC    105AL1(0,0)         151-255                                      
+SLN00RX  EQU   *                                                                
+SLN00RL  EQU   *-SLN00R                                                         
+*                                                                               
+SLNTABX  EQU   *                                                                
+         EJECT                                                                  
+DSPL10   EQU   0                                                                
+DSPL15   EQU   4                                                                
+DSPL20   EQU   8                                                                
+DSPL30   EQU   12                                                               
+DSPL40   EQU   16                                                               
+DSPL45   EQU   20                                                               
+DSPL50   EQU   24                                                               
+DSPL60   EQU   28                                                               
+DSPL90   EQU   32                                                               
+DSPL120  EQU   36                                                               
+DSPL105  EQU   40                                                               
+DSPL150  EQU   44                                                               
+DSPL75   EQU   48                                                               
+DSPL05   EQU   52                                                               
+DSPL07   EQU   56                                                               
+*                                                                               
+         EJECT                                                                  
+OLDTAB   DS    0C                                                               
+       ++INCLUDE SPSLNTAB                                                       
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'137SPSLENTAB 03/01/21'                                      
+         END                                                                    

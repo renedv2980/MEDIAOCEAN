@@ -1,0 +1,975 @@
+*          DATA SET CXFATISTR  AT LEVEL 011 AS OF 05/01/02                      
+*CATALP FATISTR                                                                 
+** THIS VERSION FIXED THE =SEARCH PROBLEM, BUT BROKE                            
+** =PC SERVICE REQUEST. WE FIXED ON 12/05/97.                                   
+*<><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><*             
+* OH, ALAN. MAKE ME ALIVE PLEASE !                                              
+*<><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><><*             
+** MHER 12/5/97                                                                 
+*                                                                               
+*+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*             
+* NOTE TO THE CURIOUS -- THE FIRST BYTE OF TSVCREQ IS SET BY SOME *             
+* OF THE SERVICE REQUESTS TO X'02' TO SUPPRESS THE FEATURE THAT   *             
+* IGNORES ALL INPUT FIELDS THAT FOLLOW THE CURSOR, LIKE =PQ       *             
+*+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*             
+*                                                                               
+         TITLE 'TISTR - STEREO 3270 TERMINAL INPUT TRANSLATOR'                  
+*        THIS MODULE CONVERTS A STEREO 3270 INPUT DATA STRING                   
+*        IN THE TIA TO STANDARD INTERNAL FORMAT IE TRANSLATES                   
+*        STEREO DATA BUFFER FIELDS TO (LEN)(ABS#1)(ABS#2)(DATA)                 
+*        AND MERGES THESE FLDS TO THE TWA. PARAMS VIA R1                        
+*                                                                               
+*        AL4   A(TIA)                                                           
+*        AL4   A(TWA)                                                           
+*        AL4   A(UTL)                                                           
+*                                                                               
+*        THE PARAM LIST IS OVERWRITTEN WITH RETURN VALUES                       
+*                                                                               
+*        XL2   TWA INDEX TO FIRST INPUT FLD                                     
+*        XL2   TWA INDEX TO LAST INPUT FLD                                      
+*        XL2   NUMBER OF INPUT FLDS (SET TO ZERO IF MERGE ERRORS)               
+*        XL1   AID VALUE X'00'=ENTER,X'01-24'=PF KEY NUMBER                     
+*        XL1   N/D                                                              
+*        XL2   CURSOR SCREEN ADDRESS                                            
+*        XL2   DISP TO TWA FIELD THAT CURSOR IS IN OR                           
+*              ZERO IF CURSOR NOT POSITIONED TO A FORMATTED FIELD               
+*        XL1   INDEX TO CURSOR POSITION WITHIN TWA FIELD                        
+*        XL2   DISP TO FIRST HELP SUPPORTED FIELD CONTAINING '?'                
+*        XL1   N/D                                                              
+         SPACE 1                                                                
+         PRINT NOGEN                                                            
+TISTR    CSECT                                                                  
+*                                                                               
+         NMOD1 FLDMRGX-TIOBD,**TISTR*                                           
+         USING TIOBD,RC                                                         
+         ST    R1,FMRGSR1          SAVE R1                                      
+         MVC   FMRGTIAA(12),0(R1)  SAVE A(TIA) & A(TWA) & A(UTL)                
+         XC    TIOBD(TIOBL),TIOBD                                               
+*                                                                               
+INIT1    L     RF,FMRGUTLA         RF=A(UTL ENTRY)                              
+         USING UTLD,RF                                                          
+         MVC   SVCRSAVE,TSVCREQ    SAVE SERVICE REQUEST VALUES                  
+         MVC   CTRY,TCTRY          EXTRACT COUNTRY/LANGUAGE/SYSTEM              
+         MVC   LANG,TLANG                                                       
+         MVC   SYS,TOVSYS                                                       
+         MVC   SVCREQ,TSVCREQ+1                                                 
+         MVI   SAVIND2,0           EXTRACT PGMIND2 FROM PROGRAM LIST            
+         XR    RE,RE                                                            
+         ICM   RE,7,TAPRG                                                       
+         BZ    INIT1B                                                           
+         L     R6,=V(SSB)          TAPRG IS DISPLACEMENT?                       
+         TM    SSBSTAT4-SSBD(R6),SSBPGDSP                                       
+         BZ    INIT1A              NO                                           
+*                                                                               
+         XR    R6,R6               INDEX INTO TAPRG                             
+         ICM   R6,7,TARSYS                                                      
+         ICM   R6,15,SEPGMS-SELISTD(R6)                                         
+         AR    RE,R6                                                            
+*                                                                               
+INIT1A   MVC   SAVIND2,PGMIND2-PGMLSTD(RE)                                      
+*                                                                               
+INIT1B   SR    RE,RE                                                            
+         IC    RE,CTRY                                                          
+         CLI   CTRY,15                                                          
+         BNH   *+6                                                              
+         SR    RE,RE                                                            
+         SLL   RE,4                                                             
+         LA    RE,CTRYXLAT(RE)     INDEX INTO COUNTRY TRANSLATE TABLES          
+         LM    R6,R8,4(RE)                                                      
+         STM   R6,R8,VALID                                                      
+*                                                                               
+INIT2    TM    TSTAT6,TST6SCRP     TEST IF PROCESSING A SCRIPT                  
+         BZ    INIT3                                                            
+         ICM   RE,15,TBUFF         SCRUNCH HAS SET AID AND CURSOR               
+         BNZ   *+6                                                              
+         DC    H'0'                                                             
+         MVC   TIOBAID,TBHAID-TBHDATA(RE)                                       
+         MVC   TIOBCURS,TBHCURS-TBHDATA(RE)                                     
+         B     TIA                                                              
+*                                                                               
+INIT3    ICM   RE,15,TBUFF         POINT TO INPUT BUFFER                        
+         BZ    TIA                                                              
+         CLI   4(RE),24            VALID AID BYTE IN BUFFER                     
+         BH    *+10                                                             
+         MVC   TIOBAID,4(RE)       SET PROGRAM FUNCTION KEY                     
+         SR    R6,R6                                                            
+         SR    R7,R7                                                            
+         IC    R6,5(RE)                                                         
+         IC    R7,6(RE)                                                         
+         SLL   R7,26                                                            
+         SRDL  R6,26                                                            
+         STCM  R7,3,TIOBCURS                                                    
+         NI    TIOBCURS,X'0F'      SET CURSOR SCREEN ADDRESS                    
+         EJECT                                                                  
+* TRANSLATE 3270 INPUT TO STANDARD INTERNAL                                     
+*                                                                               
+TIA      L     R2,FMRGTIAA         R2=A(TIA)                                    
+         LH    R8,4(R2)                                                         
+         SPACE 2                                                                
+TIA0     SH    R8,=H'1'            R8=L'INPUT DATA STRING                       
+         BNZ   TIA1                                                             
+         CLI   SVCREQ,0            TEST ZERO INPUT TO APPLIC PROG               
+         BNE   NOINPUT                                                          
+         CLI   SYS,0                                                            
+         BE    NOINPUT                                                          
+         TM    SAVIND2,PGMINOD     TEST APPLIC PROG ALLOWS NO DATA              
+         BZ    NOINPUT                                                          
+         MVI   64(R2),0            YES SET END OF INPUT DATA IN TIA             
+         B     TIA3                CALL MERGE ROUTINE TO SET TWA INDS           
+         SPACE 2                                                                
+TIA1     TM    TSTAT6,TST6SCRP     SCRUNCH HAS SET TIA TO THIS FORMAT           
+         BO    TIA3                                                             
+         CH    R8,=H'3'                                                         
+         BL    ERROR                                                            
+         BCTR  R8,0                                                             
+         DROP  RF                                                               
+         SPACE 2                                                                
+         BAS   RE,MOVESTR          MOVE STEREO DATA BUFFER TO WORK AREA         
+         BNZ   ERRORMS             MOVESTR ERROR EXIT                           
+         BAS   RE,TRANSTR          TRANSLATE STERO DATA BUFFER FIELDS           
+         BNZ   ERRORTS             TRANSTR ERROR EXIT                           
+         SPACE 2                                                                
+TIA3     GOTO1 FLDMRG,FMRGTIAA     NOW MERGE TO TWA                             
+         BNZ   ERROR               EXIT WITH ERROR VALUE                        
+         L     R1,FMRGSR1          RETURN TWA MERGE DATA                        
+         MVC   0(TIOBL,R1),TIOBD                                                
+         B     EXIT                                                             
+         SPACE 2                                                                
+NOINPUT  EQU   *                                                                
+ERROR    XC    TIOBCNT,TIOBCNT     ZERO INPUT OR INVALID                        
+         L     R1,FMRGSR1                                                       
+         MVC   0(TIOBL,R1),TIOBD   EXIT WITH ZERO INPUT FIELDS COUNT            
+         B     EXIT                                                             
+         SPACE 2                                                                
+ERRORMS  SR    R0,R0                                                            
+         ICM   R0,3,MOVESERR                                                    
+         DC    H'0'                                                             
+ERRORTS  SR    R0,R0                                                            
+         ICM   R0,3,TRANSERR                                                    
+         DC    H'0'                                                             
+EXIT     XMOD1 1                                                                
+         EJECT                                                                  
+* MOVE STEREO DATA BUFFER TO SAVE AREA - STRIPPING 3270 CONTROL                 
+* CHARACTERS FROM 24 UNPROTECTED LINES.                                         
+*                                                                               
+* R2=A(TIA), R8=(LENGTH 3270 DATA IN TIA)                                       
+*                                                                               
+MOVESTR  NTR1                                                                   
+         XC    MOVESERR,MOVESERR                                                
+         LA    R3,STDBUF           R3=A(STEREO DATA BUFFER SAVE AREA)           
+*                                  CLEAR STDBUF                                 
+         LR    RE,R3                                                            
+         ICM   RF,15,=AL4(L'STDBUF)                                             
+         LA    R0,*                                                             
+         L     R1,=F'0'                                                         
+         MVCL  RE,R0                                                            
+*                                  BUILD STEREO MESSAGE HEADER                  
+         LA    R4,64(R2)           R4=A(FIRST SBA IN TIA)                       
+         LA    R9,65(R2)                                                        
+         SPACE 2                                                                
+MSTR010  CLI   0(R9),X'11'         THIS CHR (SBA)                               
+         BE    MSTR030                                                          
+         CLI   0(R9),X'03'         THIS CHR (ETX)                               
+         BE    MSTR030                                                          
+MSTR020  LA    R9,1(R9)                                                         
+         BCT   R8,MSTR010                                                       
+         SPACE 2                                                                
+MSTR030  LR    R5,R9                                                            
+         SR    R5,R4               R5=L'3270 FLD                                
+         SPACE 2                                                                
+         SH    R5,=H'3'                                                         
+         LTR   R5,R5                                                            
+         BZ    MSTR050                                                          
+         SPACE 2                                                                
+MSTR040  MVC   0(1,R3),3(R4)                                                    
+         LA    R3,1(R3)                                                         
+         LA    R4,1(R4)                                                         
+         BCT   R5,MSTR040                                                       
+         SPACE 2                                                                
+MSTR050  LR    R4,R9                                                            
+         CLI   0(R4),X'03'         THIS CHR (ETX)                               
+         BE    MSTREXIT                                                         
+         LTR   R8,R8                                                            
+         BNZ   MSTR020                                                          
+         SPACE 2                                                                
+MSTREXIT MVI   0(R3),0                                                          
+         OC    MOVESERR,MOVESERR                                                
+         BZ    *+6                                                              
+         DC    H'0'                                                             
+         XIT1                                                                   
+         EJECT                                                                  
+* TRANSLATE STEREO DATA BUFFER FIELDS TO STANDARD INTERNAL FORMAT               
+*                                                                               
+* R2=A(TIA)                                                                     
+*                                                                               
+TRANSTR  NTR1                                                                   
+         XC    TRANSERR,TRANSERR                                                
+         LA    R3,STDBUF           R3=A(STEREO DATA BUFFER SAVE AREA)           
+         LA    R4,64(R2)           R4=A(OUTPUT IN TIA FOR TRANSLATE)            
+         MVI   ROWNUM,0                                                         
+         SPACE 2                                                                
+         CLI   0(R3),0                                                          
+         BE    TSTREND                                                          
+         MVC   SFLDID,0(R3)                                                     
+         LA    R3,3(R3)            BUMP PAST STEREO MESSAGE TYPE FIELD          
+         TR    SFLDID,DECTRAN      PROCESS STEREO MESSAGE TYPE FIELD            
+         CLI   SFLDID,SDBMHSTM     STANDARD STEREO DATA BUFFER                  
+         BE    TSTMSG                                                           
+         CLI   SFLDID,SDBMHMAM                                                  
+         BE    TMADMSG                                                          
+         CLI   SFLDID,SDBMHSOM                                                  
+         BE    TSTOMSG                                                          
+         B     TSTRER10                                                         
+         EJECT                                                                  
+TSTMSG   EQU   *                   PROCESS STEREO DATA FIELDS                   
+         CLI   0(R3),0                                                          
+         BE    TSTREND                                                          
+         MVC   SFLDID,0(R3)                                                     
+         TR    SFLDID,DECTRAN                                                   
+         CLI   SFLDID,SDSRMIN                                                   
+         BL    TSTM020                                                          
+         CLI   SFLDID,SDSRMAX                                                   
+         BH    TSTM020                                                          
+         SPACE 2                                                                
+         SR    RF,RF                                                            
+         IC    RF,SFLDID           PROCESS STEREO ROW FIELD                     
+         LA    RF,1(RF)                                                         
+         SH    RF,=Y(SDSRMIN)                                                   
+         STC   RF,ROWNUM                                                        
+         LA    R3,1(R3)                                                         
+         B     TSTMNEXT                                                         
+         SPACE 2                                                                
+TSTM020  MVI   PROTFLD,C'N'                                                     
+         CLI   SFLDID,SDBUFMIN     TEST UNPROTECTED FIELD                       
+         BL    *+12                                                             
+         CLI   SFLDID,SDBUFMAX                                                  
+         BNH   TSTMUNP                                                          
+*                                                                               
+         CLI   SFLDID,SDBPFMIN     TEST PROTECTED FIELD                         
+         BL    TSTM022                                                          
+         CLI   SFLDID,SDBPFMAX                                                  
+         BH    TSTM022                                                          
+         MVI   PROTFLD,C'Y'                                                     
+         B     TSTMUNP                                                          
+*                                                                               
+TSTM022  CLI   SFLDID,SDBCEXP                                                   
+         BE    TSTMCEX                                                          
+         B     TSTRER20                                                         
+         EJECT                                                                  
+TSTMUNP  MVC   SFLDCOL,1(R3)       STEREO UNPROTECTED FIELD DATA                
+         MVC   SFLDDLEN,2(R3)                                                   
+         TR    SFLDCOL,DECTRAN                                                  
+         TR    SFLDDLEN,DECTRAN                                                 
+         SR    RF,RF                                                            
+         IC    RF,SFLDCOL                                                       
+         STC   RF,COLNUM                                                        
+         BCTR  RF,0                                                             
+         SR    RE,RE                                                            
+         IC    RE,ROWNUM                                                        
+         BCTR  RE,0                                                             
+         MH    RE,=H'80'                                                        
+         AR    RE,RF                                                            
+         STCM  RE,3,1(R4)                                                       
+         SPACE 2                                                                
+TSTU010  XC    FDATA,FDATA                                                      
+         SR    RF,RF                                                            
+         ICM   RF,1,SFLDDLEN                                                    
+         BNZ   TSTU020                                                          
+         LA    RF,3(RF)                                                         
+         STC   RF,0(R4)                                                         
+         LA    R3,4(R3)                                                         
+         CLI   PROTFLD,C'Y'                                                     
+         BNE   *+6                                                              
+         BCTR  R3,0                WATCH OUT FOR 0 LEN PROT FIELDS !            
+         LA    R4,3(R4)                                                         
+         B     TSTMNEXT                                                         
+         SPACE 2                                                                
+TSTU020  LA    RE,4(R3)                                                         
+         CLI   PROTFLD,C'Y'                                                     
+         BNE   *+6                                                              
+         BCTR  RE,0                ADJUST FOR MISSING FLD IF PROT               
+*                                                                               
+         BCTR  RF,0                                                             
+         EX    RF,*+8                                                           
+         B     *+10                                                             
+         MVC   FDATA(0),0(RE)                                                   
+*                                                                               
+         SR    RF,RF                                                            
+         IC    RF,SFLDDLEN                                                      
+         GOTO1 DECOMP,DMCB,FDATA,(RF),DECOMBUF                                  
+         BNZ   TSTRER30                                                         
+         SPACE 2                                                                
+         ICM   RF,15,4(R1)                                                      
+         BCTR  RF,0                                                             
+         EX    RF,*+8                                                           
+         B     *+10                                                             
+         MVC   3(0,R4),DECOMBUF                                                 
+*                                                                               
+         LA    RF,4(RF)                                                         
+         STC   RF,0(R4)                                                         
+         LA    R4,0(RF,R4)                                                      
+         IC    RF,SFLDDLEN                                                      
+         LA    R3,4(RF,R3)                                                      
+         CLI   PROTFLD,C'Y'                                                     
+         BNE   *+6                                                              
+         BCTR  R3,0                ADJUST FOR MISSING FLD IF PROT               
+         B     TSTMNEXT                                                         
+         SPACE 2                                                                
+TSTMCEX  EQU   *                   PROCESS CURSOR EXCEPTION FIELD               
+         MVC   SFLDCEXP,1(R3)                                                   
+         TR    SFLDCEXP,DECTRAN                                                 
+         SR    RE,RE                                                            
+         SR    RF,RF                                                            
+         ICM   RE,3,TIOBCURS                                                    
+         IC    RF,SFLDCEXP                                                      
+         AR    RE,RF                                                            
+         STCM  RE,3,TIOBCURS       UPDATE CURRENT CURSOR POSITION               
+         LA    R3,2(R3)                                                         
+         B     TSTMNEXT                                                         
+         SPACE 2                                                                
+TSTMNEXT EQU   *                                                                
+         B     TSTMSG                                                           
+         EJECT                                                                  
+TMADMSG  EQU   *                   PROCESS STEREO MAD MESSAGE                   
+         LA    R0,60                                                            
+TMAD010  CLI   0(R3),X'00'                                                      
+         BNE   *+6                                                              
+         DC    H'0'                                                             
+         LA    R3,1(R3)                                                         
+         BCT   R0,TMAD010                                                       
+         SPACE 2                                                                
+         MVC   0(3,R4),=XL3'14003E'                                             
+         LA    R0,17                                                            
+         LA    R4,3(R4)                                                         
+TMAD020  CLI   0(R3),X'00'                                                      
+         BNE   *+8                                                              
+         MVI   0(R3),C' '                                                       
+         MVC   0(1,R4),0(R3)                                                    
+         LA    R3,1(R3)                                                         
+         LA    R4,1(R4)                                                         
+         BCT   R0,TMAD020                                                       
+         SPACE 2                                                                
+         MVC   0(3,R4),=XL3'3F0051'                                             
+         LA    R0,60                                                            
+         LA    R4,3(R4)                                                         
+TMAD030  CLI   0(R3),X'00'                                                      
+         BNE   *+8                                                              
+         MVI   0(R3),C' '                                                       
+         MVC   0(1,R4),0(R3)                                                    
+         LA    R3,1(R3)                                                         
+         LA    R4,1(R4)                                                         
+         BCT   R0,TMAD030                                                       
+         SPACE 2                                                                
+         MVC   0(3,R4),=XL3'15008E'                                             
+         LA    R0,18                                                            
+         LA    R4,3(R4)                                                         
+TMAD040  CLI   0(R3),X'00'                                                      
+         BNE   *+8                                                              
+         MVI   0(R3),C' '                                                       
+         MVC   0(1,R4),0(R3)                                                    
+         LA    R3,1(R3)                                                         
+         LA    R4,1(R4)                                                         
+         BCT   R0,TMAD040                                                       
+         SPACE 2                                                                
+TMAD100  LA    RF,22                                                            
+         MVC   0(3,R4),=XL3'5200A1'                                             
+         SPACE 2                                                                
+TMAD110  LR    RE,R4                                                            
+         LA    R0,79                                                            
+         LA    R4,3(R4)                                                         
+TMAD120  CLI   0(R3),X'00'                                                      
+         BNE   *+8                                                              
+         MVI   0(R3),C' '                                                       
+         MVC   0(1,R4),0(R3)                                                    
+         LA    R3,1(R3)                                                         
+         LA    R4,1(R4)                                                         
+         BCT   R0,TMAD120                                                       
+         SPACE 2                                                                
+         SR    R1,R1                                                            
+         ICM   R1,3,1(RE)                                                       
+         AH    R1,=H'80'                                                        
+         STCM  R1,3,1(R4)                                                       
+         MVI   0(R4),X'52'                                                      
+         BCT   RF,TMAD110                                                       
+         B     TSTREND                                                          
+         EJECT                                                                  
+TSTOMSG  EQU   *                   PROCESS STEREO OPEN MESSAGE                  
+         LA    RF,24                                                            
+         MVC   0(3,R4),=XL3'5200A1'                                             
+         SPACE 2                                                                
+TSTO010  LR    RE,R4                                                            
+         LA    R0,79                                                            
+         LA    R4,3(R4)                                                         
+TSTO020  CLI   0(R3),X'00'                                                      
+         BNE   *+8                                                              
+         MVI   0(R3),C' '                                                       
+         MVC   0(1,R4),0(R3)                                                    
+         LA    R3,1(R3)                                                         
+         LA    R4,1(R4)                                                         
+         BCT   R0,TSTO020                                                       
+         SPACE 2                                                                
+         SR    R1,R1                                                            
+         ICM   R1,3,1(RE)                                                       
+         AH    R1,=H'80'                                                        
+         STCM  R1,3,1(R4)                                                       
+         MVI   0(R4),X'52'                                                      
+         BCT   RF,TSTO010                                                       
+         B     TSTREND                                                          
+         EJECT                                                                  
+TSTREND  EQU   *                                                                
+         MVI   0(R4),0             MARK END OF DATA IN TIA                      
+         B     TSTREXIT                                                         
+         SPACE 2                                                                
+TSTRER10 MVC   TRANSERR,=XL2'0010'                                              
+         B     TSTREXIT                                                         
+TSTRER20 MVC   TRANSERR,=XL2'0020'                                              
+         B     TSTREXIT                                                         
+TSTRER30 MVC   TRANSERR,DECOMERR                                                
+         B     TSTREXIT                                                         
+TSTREXIT OC    TRANSERR,TRANSERR                                                
+         BZ    *+6                                                              
+         DC    H'0'                                                             
+         XIT1                                                                   
+         EJECT                                                                  
+* MERGES INPUT FIELDS IN TIA WITH FIELDS IN TWA                                 
+*                                                                               
+FLDMRG   NTR1                                                                   
+         L     R4,FMRGTIAA                                                      
+         L     R5,FMRGTWAA                                                      
+         LA    R4,64(R4)           R4=A(TIA FIELD)                              
+         USING IFLDHDRD,R4                                                      
+         LA    R5,64(R5)           R5=A(TWA FIELD)                              
+         USING FLDHDRD,R5                                                       
+         SR    R2,R2                                                            
+         IC    R2,IFLDLEN          R2=LENGTH OF TIA FIELD                       
+         SR    R3,R3                                                            
+         IC    R3,FLDLEN           R3=LENGTH OF TWA FIELD                       
+         XC    FMRGERR,FMRGERR                                                  
+         SPACE 2                                                                
+FLDM10   MVI   FMRGFLAG,0          RESET FLAG FOR NEXT TWA FIELD                
+         LTR   R2,R2                                                            
+         BZ    FLDM40              TIA END                                      
+         CH    R3,=H'9'                                                         
+         BNL   FLDM11                                                           
+         LTR   R3,R3               TEST VALID TWA FIELD                         
+         BZ    *+6                                                              
+         DC    H'0'                                                             
+         CLI   IFLDADR,X'FF'       TEST IF ERASING INPUT FIELDS                 
+         BE    FLDM40                                                           
+         B     FLDMERR1            ERROR IF END OF TWA BEFORE TIA END           
+*                                                                               
+FLDM11   CLI   FLDATB,X'FF'        TEST NOP FIELD                               
+         BE    FLDM32              DON'T DO MUCH TO IT                          
+         TM    FLDATB,FATBPROT                                                  
+         BO    FLDM30              BYPASS PROT FIELDS                           
+         CLI   IFLDADR,X'FF'       TEST IF ERASING INPUT FIELDS                 
+         BE    FLDM12                                                           
+         OC    SVCRSAVE,SVCRSAVE   TEST IF SERVICE REQUEST                      
+         BNZ   FLDM11A             YES                                          
+* NOT A SERVICE REQUEST                                                         
+         CLC   IFLDADR,FLDADR                                                   
+         BE    FLDM12              PROCESS MATCHING FIELDS                      
+         BH    FLDM20              CONTINUE TO NEXT                             
+         B     FLDMERR2            ERROR - FIELDS DONT MATCH                    
+* SERVICE REQUEST                                                               
+FLDM11A  CLC   FLDADR,=XL2'003E'   TEST SERVICE REQUEST FIELD                   
+         BE    FLDM12              YES / (01,63) ALWAYS PROCESSED               
+         CLI   SVCRSAVE,X'02'      TEST IF CURSOR TRUNCATE                      
+         BE    *+14                                                             
+         CLC   IFLDADR,TIOBCURS    EXIT IF A(FIELD) >= A(CURSOR)                
+         BNL   FLDM40                                                           
+         LR    R7,R2                                                            
+         SH    R7,=H'4'            R7=LEN OF DATA -1                            
+         BM    FLDM12                                                           
+         EX    R7,INPSKIP          TEST IF FLD CONTAINS >>>>>>>>...             
+         BNE   FLDM12                                                           
+         AR    R4,R2               YES SKIP THIS INPUT FIELD                    
+         IC    R2,IFLDLEN                                                       
+         B     FLDM10                                                           
+*                                                                               
+*        NORMAL PROCESSING - FIELD IS INPUT (BUFFER ADDRS MATCH)                
+*                                                                               
+FLDM12   LR    R6,R3                                                            
+         SH    R6,=H'8'            R6=MAXIMUM LEN OF TWA FLD                    
+         TM    FLDATB,FATBXHDR     TEST EXTENDED HEADER                         
+         BZ    *+8                                                              
+         SH    R6,=H'8'                                                         
+         LR    R7,R2                                                            
+         SH    R7,=H'3'            R7=ACTUAL LEN OF DATA                        
+         BZ    FLDM13                                                           
+         TM    FLDATB,FATBDEL      DELETE TRAILING BLANKS                       
+         BO    FLDM13              NO                                           
+         LA    RE,2(R4,R7)         YES POINT TO LAST CHR                        
+         CLI   0(RE),C' '                                                       
+         BNE   *+10                                                             
+         BCTR  RE,0                                                             
+         BCT   R7,*-10                                                          
+FLDM13   CR    R6,R7                                                            
+         BNL   *+6                                                              
+         LR    R7,R6               TRUNC INPUT FLD DATA                         
+         OC    IFLDADR,IFLDADR                                                  
+         BZ    FLDM14                                                           
+         CLC   FLDEOF,IFLDDATA     TEST IF END OF INPUT CHRS                    
+         BNE   FLDM14                                                           
+         MVC   IFLDLEN(3),=X'03FFFF'                                            
+         LA    R2,3                                                             
+         SR    R7,R7               SET ERASING INPUT FIELDS                     
+         SPACE 2                                                                
+FLDM14   NI    FLDIIND,FINPVAL+X'01' RESET NONUSER INPUT INDS                   
+         BCTR  R6,0                                                             
+         EX    R6,FLDSAVE          SAVE TWA FLD                                 
+         EX    R6,FLDNULL          NULL TWA FLD                                 
+         STC   R7,FLDILEN                                                       
+         SH    R7,=H'1'                                                         
+         BM    FLDM14B                                                          
+         EX    R7,FLDMOVE          MOVE INPUT FLD TO TWA                        
+         LR    R0,R2                                                            
+         L     RE,VALID                                                         
+         EX    R7,FLDTRNT          TEST IF ANY INVALID CHARACTERS               
+         BZ    *+10                                                             
+         LR    R2,R0                                                            
+         MVI   FMRGFLAG,1          SET TRANSLATED INVALID CHARACTERS            
+         L     RE,LOWER            POINT TO LOWER CASE TRANSLATE                
+         TM    FLDATB,FATBLC                                                    
+         BO    *+8                                                              
+         L     RE,UPPER            POINT TO UPPER CASE TRANSLATE                
+         EX    R7,FLDTRNS                                                       
+FLDM14B  BAS   RE,FLDMTYPE         SET FLD TYPE INDS                            
+         EX    R6,FLDCOMP                                                       
+         BE    FLDM14C                                                          
+         OI    FLDIIND,FINPTHIS+FINPPREV   FLD CHANGED - SET INP + PRV          
+         NI    FLDIIND,X'FF'-FINPVAL                   + NOT VALIDATED          
+         B     FLDM15                                                           
+FLDM14C  OI    FLDIIND,FINPTHIS+FINPPREV   FLD SAME - SET INP + PRV             
+         SPACE 2                                                                
+FLDM15   LR    RE,R5                                                            
+         S     RE,FMRGTWAA                                                      
+         STH   RE,TIOBLAST         UPDATE LAST INPUT FLD INDX                   
+         LH    RF,TIOBCNT                                                       
+         LTR   RF,RF                                                            
+         BNZ   *+8                                                              
+         STH   RE,TIOBFRST         UPDATE FRST INPUT FLD INDX                   
+         LA    RF,1(RF)                                                         
+         STH   RF,TIOBCNT          UPDATE FIELD COUNTER                         
+         SPACE 2                                                                
+         CLI   IFLDADR,X'FF'       TEST IF ERASING INPUT FIELDS                 
+         BE    *+6                                                              
+         AR    R4,R2               UPDATE TO NEXT TIA FIELD                     
+         IC    R2,IFLDLEN                                                       
+         B     FLDM30                                                           
+*                                                                               
+*        THE ADDRESS IN TIA IS HIGHER THAN THAT IN TWA                          
+*                                                                               
+FLDM20   BAS   RA,FLDMNOTI         SET NOT INPUT FLAGS                          
+FLDM30   MVI   FLDOIND,X'00'       ZERO OUTPUT INDICS                           
+         CLI   IFLDADR,X'FF'       TEST IF ERASING INPUT FIELDS                 
+         BNE   *+8                                                              
+         OI    FLDOIND,FOUTTRN                                                  
+         CLI   FMRGFLAG,0          TEST IF TRANSLATED INVALID CHRS              
+         BE    *+8                                                              
+         OI    FLDOIND,FOUTTRN                                                  
+         BAS   RE,FLDMCURS         TEST CURSOR POSITION                         
+         BAS   RE,FLDMHELP         TEST HELP REQUEST                            
+FLDM32   AR    R5,R3               UPDATE TO NEXT TWA FIELD                     
+         IC    R3,FLDLEN                                                        
+         B     FLDM10                                                           
+*                                                                               
+*        ALL INPUT FIELDS IN THE TIA HAVE NOW BEEN MERGED                       
+*                                                                               
+FLDM40   CH    R3,=H'9'            TEST VALID TWA FIELD                         
+         BNL   FLDM42                                                           
+         LTR   R3,R3               TEST END OF TWA                              
+         BZ    FLDM50                                                           
+         DC    H'0'                                                             
+FLDM42   CLI   FLDATB,X'FF'        TEST NOP FIELD                               
+         BE    FLDM44              DON'T DO MUCH TO IT                          
+         BAS   RA,FLDMNOTI         SET NOT INPUT FLAGS                          
+         MVI   FLDOIND,X'00'       ZERO OUTPUT INDICS                           
+         BAS   RE,FLDMCURS         TEST CURSOR POSITION                         
+         BAS   RE,FLDMHELP         TEST HELP REQUEST                            
+FLDM44   AR    R5,R3                                                            
+         IC    R3,FLDLEN                                                        
+         B     FLDM40                                                           
+FLDM50   XC    1(2,R5),1(R5)       SET BEFORE=AFTER=NOTHING                     
+         B     FLDMEXIT                                                         
+         SPACE 2                                                                
+FLDMOVE  MVC   FLDDATA(0),IFLDDATA                                              
+FLDTRNS  TR    FLDDATA(0),0(RE)                                                 
+FLDTRNT  TRT   FLDDATA(0),0(RE)                                                 
+FLDNULL  XC    FLDDATA(0),FLDDATA                                               
+FLDTEST  OC    FLDDATA(0),FLDDATA                                               
+FLDCOMP  CLC   FMRGFLD(0),FLDDATA                                               
+FLDSAVE  MVC   FMRGFLD(0),FLDDATA                                               
+INPSKIP  CLC   3(0,R4),FLDSKIP                                                  
+         SPACE 2                                                                
+FLDMERR  MVI   FMRGERR+1,X'01'     SET ERROR CODE                               
+         B     FLDMEXIT                                                         
+         SPACE 2                                                                
+FLDMERR1 MVI   FMRGERR+1,X'02'     SET ERROR CODE                               
+         B     FLDMEXIT                                                         
+         SPACE 2                                                                
+FLDMERR2 MVI   FMRGERR+1,X'03'     SET ERROR CODE                               
+         B     FLDMEXIT                                                         
+         SPACE 2                                                                
+FLDMEXIT OC    FMRGERR,FMRGERR                                                  
+         XIT1                                                                   
+         EJECT                                                                  
+* SETS NUM/ALPHA/HEX BITS FOR INPUT FIELD                                       
+*                                                                               
+FLDMTYPE SR    R7,R7               SET FIELD NUM/ALPHA/HEX                      
+         IC    R7,FLDILEN                                                       
+         LTR   R7,R7                                                            
+         BZR   RE                                                               
+         LA    R8,FLDDATA                                                       
+         OI    FLDIIND,FINPNUM+FINPALF+FINPHEX                                  
+*                                                                               
+FLDMT2   TM    FLDATB,FATBLC       LOWER CASE TESTS                             
+         BZ    FLDMT3                                                           
+         CLI   0(R8),X'81'         TEST LITTLE A                                
+         BL    FLDMT3A                                                          
+         CLI   0(R8),X'A9'         TEST LITTLE Z                                
+         BH    FLDMT3                                                           
+         NI    FLDIIND,X'FF'-(FINPNUM+FINPHEX)  FIELD NOT NUM/HEX               
+         B     FLDMT4                                                           
+*                                                                               
+FLDMT3   CLI   0(R8),C'A'                                                       
+         BNL   *+12                                                             
+FLDMT3A  NI    FLDIIND,X'FF'-(FINPNUM+FINPALF+FINPHEX) NOT NUM/ALFA/HEX         
+         B     FLDMT6                                                           
+FLDMT3B  CLI   0(R8),C'Z'                                                       
+         BNH   FLDMT3C                                                          
+         NI    FLDIIND,X'FF'-FINPALF   FLD NOT ALPHA                            
+         B     FLDMT4                                                           
+FLDMT3C  NI    FLDIIND,X'FF'-FINPNUM   FLD NOT NUM                              
+         CLI   0(R8),C'F'                                                       
+         BNH   *+8                                                              
+         NI    FLDIIND,X'FF'-FINPHEX   FLD NOT HEX                              
+*                                                                               
+FLDMT4   LA    R8,1(R8)                                                         
+         BCT   R7,FLDMT2                                                        
+*                                                                               
+FLDMT6   TM    FLDATB,FATBNUM      REQUIRED NUM FIELD                           
+         BZR   RE                  NO                                           
+         TM    FLDIIND,FINPNUM     IS IT NUM                                    
+         BOR   RE                  YES                                          
+         OI    FLDIIND,FINPINV     NO SET FLD INV                               
+         BR    RE                                                               
+         EJECT                                                                  
+* SETS FIELD HDR FOR A FIELD THAT IS NOT INPUT                                  
+*                                                                               
+FLDMNOTI TM    FLDATB,FATBPROT     EXIT IF PROTECTED FIELD                      
+         BOR   RA                                                               
+         L     RF,FMRGUTLA                                                      
+         TM    TFLAG-UTLD(RF),TFLAGHLP                                          
+         BOR   RA                                                               
+         NI    FLDIIND,X'FF'-FINPTHIS SET FLD NOT INPUT THIS TIME               
+         TM    FLDOIND,FOUTTRN                                                  
+         BZR   RA                  EXIT IF FIELD TRANS LAST TIME                
+         LR    RF,R3                                                            
+         SH    RF,=H'9'                                                         
+         TM    FLDATB,FATBXHDR     TEST EXTENDED FIELD HEADER                   
+         BZ    *+8                                                              
+         SH    RF,=H'8'                                                         
+         EX    RF,FLDTEST          TEST IF FIELD CONTAINS NULLS                 
+         BNZ   *+8                                                              
+         MVI   FLDOLEN,0                                                        
+         MVC   FLDILEN,FLDOLEN                                                  
+         NI    FLDIIND,FINPVAL+X'01' RESET NONUSER INPUT INDS                   
+         CLI   FLDILEN,0                                                        
+         BER   RA                                                               
+         OI    FLDIIND,FINPPREV                                                 
+         BAS   RE,FLDMTYPE                                                      
+         BR    RA                                                               
+         EJECT                                                                  
+* SETS CURSOR FIELD DISPLACEMENT & INDEX VALUES                                 
+*                                                                               
+FLDMCURS OC    TIOBCURS,TIOBCURS   TEST CURSOR ADDRESS SET                      
+         BZR   RE                                                               
+         OC    TIOBCURD,TIOBCURD   TEST TWA FIELD DISP SET                      
+         BNZR  RE                                                               
+         CLC   TIOBCURS,FLDADR     TEST CURSOR BEFORE THIS FIELD                
+         BLR   RE                                                               
+         BE    FLDMCUR2                                                         
+         SR    R1,R1               CALCULATE FIELD END ADDRESS                  
+         ICM   R1,1,FLDLEN                                                      
+         SH    R1,=H'8'                                                         
+         TM    FLDATB,FATBXHDR     TEST EXTENDED HEADER                         
+         BZ    *+8                                                              
+         SH    R1,=H'8'            R1=FIELD DATA LENGTH                         
+         SR    RF,RF                                                            
+         ICM   RF,3,FLDADR                                                      
+         AR    RF,R1               RF=FIELD END SCREEN ADDRESS+1                
+         CLM   RF,3,TIOBCURS       TEST CURSOR WITHIN FIELD                     
+         BNHR  RE                                                               
+         SR    RF,R1               RF=FIELD ADDRESS                             
+         ICM   R1,3,TIOBCURS       R1=CURSOR ADDRESS                            
+         SR    R1,RF                                                            
+         STC   R1,TIOBCURI         SET CURSOR INDEX VALUE                       
+FLDMCUR2 L     RF,FMRGTWAA                                                      
+         LA    R1,FLDHDRD                                                       
+         SR    R1,RF                                                            
+         STCM  R1,3,TIOBCURD       SET DISP TO TWA FIELD                        
+         BR    RE                                                               
+         EJECT                                                                  
+* SET DISPLACEMENT TO FIRST HELP SUPPORTED FIELD                                
+*                                                                               
+FLDMHELP DS    0H                                                               
+         OC    TIOBHELP,TIOBHELP   TEST FOR PREVIOUS HELP REQUEST               
+         BNZR  RE                                                               
+*                                                                               
+         LA    R0,FLDHDRD          SET R0=DISPLACEMENT TO THIS FIELD            
+         S     R0,FMRGTWAA                                                      
+*                                                                               
+         CLI   FLDDATA,C'?'        TEST HELP FOR THIS FIELD                     
+         BE    FLDMH4                                                           
+*                                                                               
+         CLM   R0,3,TIOBCURD       OR TEST THIS IS FIELD WITH CURSOR            
+         BNER  RE                                                               
+         TM    SAVIND2,PGMIHPF1    TEST ALLOW PF1 HELP                          
+         BZR   RE                                                               
+         CLI   TIOBAID,1           TEST FOR PF1                                 
+         BNER  RE                                                               
+*                                                                               
+FLDMH4   TM    FLDATB,FATBXHDR     TEST EXTENDED FIELD HEADER                   
+         BZR   RE                                                               
+         ZIC   R1,FLDLEN                                                        
+         SH    R1,=H'8'                                                         
+         LA    R1,FLDHDRD(R1)      R1=A(FIELD HEADER EXTENSION)                 
+         CLI   0(R1),0             TEST FIELD NUMBER PRESENT                    
+         BER   RE                                                               
+         STCM  R0,3,TIOBHELP       SET DISP TO THIS TWA FIELD                   
+         OI    FLDOIND,FOUTCUR     SET OUTPUT CURSOR HERE                       
+         L     RF,FMRGTWAA                                                      
+         AR    RF,R0                                                            
+         CLI   8(RF),C'?'          DID THEY ASK FOR HELP WITH A ?               
+         BNE   *+12                NO                                           
+         MVI   8(RF),C' '          REPLACE ? WITH SPACE                         
+         OI    6(RF),X'01'         AND SET TO INPUT THIS TIME                   
+         ZIC   R1,FLDILEN                                                       
+         BCTR  R1,0                                                             
+         BCTR  R1,0                                                             
+         EX    R1,*+8              COMPARE THE REST OF THE FIELD                
+         B     *+10                                                             
+         CLC   9(0,RF),FMRGFLD+1   IF THEY ARE THE SAME                         
+         BNER  RE                                                               
+         CLI   FMRGFLD,C'?'        AND THE SAVED CHR IS NOT A ?                 
+         BER   RE                                                               
+         MVC   8(1,RF),FMRGFLD     PUT BACK SAVED CHR                           
+         BR    RE                                                               
+         EJECT                                                                  
+***********************************************************************         
+*                                                                     *         
+* THE FOLLOWING ROUTINES WERE MODIFIED FROM:                          *         
+*          DATA SET CTMAD00    AT LEVEL 150 AS OF 28/06/95            *         
+*                                                                     *         
+***********************************************************************         
+***********************************************************************         
+* THIS ROUTINE DECOMPRESSES THE DATA POINTED TO BY ADATA INTO THE               
+* COMPRESSION BUFFER, ACOMP.  IN THE PROCESS, THE LENGTH OF THE                 
+* COMPRESSED DATA WILL BE DETERMINED AND STORED IN COMPLEN.  ALSO,              
+* IF THE SOURCE DATA LENGTH, DETERMINED BY FINDING THE TERMINATOR               
+* CHARACTER AT THE END,  DOES NOT MATCH THE DATA LENGTH PART OF THE             
+* OBJECT, AN ERROR IS REPORTED.  THE ROUTINE DOES NOT ALLOW DATA                
+* LENGTHS GREATER THAT 4096, THE SIZE OF THE COMPRESSION BUFFER.                
+* THE ROUTINE RETURNS 'NO' IF AN ERROR HAS OCCURED.  OTHERWISE IT               
+* RETURNS 'YES'.                                                                
+***********************************************************************         
+DECOMP   NTR1                                                                   
+         XC    DECOMERR,DECOMERR                                                
+         OC    4(4,R1),4(R1)       IF NO LENGTH                                 
+         BZ    DCX                 THEN NOTHING TO COMPRESS                     
+         LR    R7,R1                                                            
+*                                                                               
+*                                  ERROR IF DATA LENGTH TOO BIG                 
+         CLC   4(4,R7),=A(90)                                                   
+         BH    DCOVER1                                                          
+*                                                                               
+         L     R4,0(R7)            R4 = A(SOURCE DATA)                          
+         L     R5,4(R7)            R5 = L'SOURCE DATA                           
+         L     R3,8(R7)            R3 = A(DEST DATA - COMP BUFFER)              
+         LR    R2,R3               R2 = A(END OF COMP BUFFER)                   
+         A     R2,=A(90)                                                        
+*                                                                               
+DC10     CR    R3,R2               IF NO MORE ROOM THEN OVERFLOW ERROR          
+         BNL   DCOVER2                                                          
+*                                                                               
+         CLI   0(R4),C'?'          IF CHAR NOT ESCAPE CHAR ('?')                
+         BE    DC20                                                             
+         MVC   0(1,R3),0(R4)       THEN COPY IT TO DEST DATA                    
+         LA    R4,1(R4)            BUMP SOURCE AND DEST                         
+         LA    R3,1(R3)                                                         
+         B     DC100                                                            
+*                                                                               
+DC20     CLI   1(R4),C'?'          ELSE IF '??'                                 
+         BNE   DC30                                                             
+         MVI   0(R3),C'?'          THEN STORE '?' IN DEST DATA                  
+         LA    R4,2(R4)            BUMP SOURCE AND DEST                         
+         LA    R3,1(R3)            BUMP DEST DATA FOR '?' ESCAPES               
+         BCT   R5,DC100                                                         
+         B     DCSERR                                                           
+*                                                                               
+DC30     EQU   *                                                                
+         MVC   REPEATLN,1(R4)                                                   
+         TR    REPEATLN,DECTRAN    TRANSLATE REPEAT LENGTH TO STEREO            
+         SR    R1,R1                                                            
+         ICM   R1,1,REPEATLN       R1 = REPEAT LENGTH                           
+         BZ    DCSERR              ELSE DECOMPRESSION SYNTAX ERROR              
+*                                                                               
+         LR    RF,R3               IF NOT ENOUGH ROOM THEN OVERFLOW ERR         
+         AR    RF,R1                                                            
+         CR    RF,R2                                                            
+         BNL   DCOVER3                                                          
+*                                                                               
+DC40     MVC   0(1,R3),2(R4)       ELSE LOOP AND STORE REPEATED CHAR IN         
+         LA    R3,1(R3)                DEST BUFFER                              
+         BCT   R1,DC40                                                          
+*                                                                               
+         LA    R4,3(R4)            BUMP SOURCE AND DEST                         
+         BCTR  R5,0                                                             
+         BCTR  R5,0                                                             
+*                                                                               
+DC100    EQU   *                   IF NO END OF SOURCE THEN LOOP BACK           
+         BCT   R5,DC10                                                          
+*                                                                               
+         L     RF,8(R7)            SET DECOMPRESSED LENGTH                      
+         SR    R3,RF                                                            
+         ST    R3,4(R7)                                                         
+*                                                                               
+         B     DCX                 NO ERRORS - RETURN OK                        
+*                                                                               
+*                                  DECOMPRESSION OVERFLOW                       
+DCOVER   MVC   DECOMERR,=XL2'1010'                                              
+         DC    H'0'                                                             
+         B     DCX                                                              
+*                                  DECOMPRESSION OVERFLOW                       
+DCOVER1  MVC   DECOMERR,=XL2'1090'                                              
+         DC    H'0'                                                             
+*                                  DECOMPRESSION OVERFLOW                       
+DCOVER2  MVC   DECOMERR,=XL2'1080'                                              
+         DC    H'0'                                                             
+*                                  DECOMPRESSION OVERFLOW                       
+DCOVER3  MVC   DECOMERR,=XL2'1070'                                              
+         DC    H'0'                                                             
+*                                  DECOMPRESSION SYNTAX ERROR                   
+DCSERR   MVC   DECOMERR,=XL2'1020'                                              
+         DC    H'0'                                                             
+         B     DCX                                                              
+*                                                                               
+DCX      OC    DECOMERR,DECOMERR                                                
+         XIT1                                                                   
+         EJECT                                                                  
+FLDEOF   DS    0CL2                                                             
+*&&US*&& DC    X'6161'             END OF INPUT CHRS US (SLASH SLASH)           
+*&&UK*&& DC    X'4C6E'             END OF INPUT CHRS UK (LT GT)                 
+FLDSKIP  DC    80C'>'              SKIP S/R FLDS CONTAINING THIS TEXT           
+         SPACE 1                                                                
+*                                                                               
+*        EBCDIC ID TO DECIMAL TRANSLATION TABLE FOR STEREO DATA BUFFER          
+*                                                                               
+         SPACE 2                                                                
+*                   0 1 2 3 4 5 6 7 8 9 A B C D E F                             
+*                                                                               
+DECTRAN  DC    XL16'00000000000000000000000000000000'  00-0F                    
+         DC    XL16'00000000000000000000000000000000'  10-1F                    
+         DC    XL16'00000000000000000000000000000000'  20-2F                    
+         DC    XL16'00000000000000000000000000000000'  30-3F                    
+         DC    XL16'00000000000000000000004041424300'  40-4F                    
+         DC    XL16'45000000000000000000464748494A00'  50-5F                    
+         DC    XL16'4C4D0000000000000000004F50515253'  60-6F                    
+         DC    XL16'000000000000000000545556573F444B'  70-7F                    
+         DC    XL16'0025262728292A2B2C2D000000000000'  80-8F                    
+         DC    XL16'002E2F30313233343536000000000000'  90-9F                    
+         DC    XL16'00003738393A3B3C3D3E000000000000'  A0-AF                    
+         DC    XL16'00000000000000000000000000000000'  B0-BF                    
+         DC    XL16'4E010203040506070809000000000000'  C0-CF                    
+         DC    XL16'000A0B0C0D0E0F101112000000000000'  D0-DF                    
+         DC    XL16'0000131415161718191A000000000000'  E0-EF                    
+         DC    XL16'1B1C1D1E1F2021222324000000000000'  F0-FF                    
+*                                                                               
+* BELOW ARE ORIGINAL LINES SO JOMU CAN SEE WHAT I DID                           
+**NOP    DC    XL16'4C4D00000000000000004E4F50515253'  60-6F                    
+**NOP    DC    XL16'00010203040506070809000000000000'  C0-CF                    
+         EJECT                                                                  
+         LTORG                                                                  
+         EJECT                                                                  
+       ++INCLUDE FACTRYXLAT                                                     
+         EJECT                                                                  
+         EJECT                                                                  
+IFLDHDRD DSECT                                                                  
+IFLDLEN  DS    CL1       INPUT FLD LENGTH=(3+L'DATA)=X'00' IF TIA END           
+IFLDADR  DS    CL2       INPUT FLD START SCREEN ADR =(ROW-1)*80+(COL-1)         
+IFLDDATA DS    0C        INPUT FLD DATA                                         
+         SPACE 2                                                                
+       ++INCLUDE FATIOB                                                         
+         SPACE 1                                                                
+DMCB     DS    6F                                                               
+         SPACE 1                                                                
+FMRGTIAA DS    A         A(TIA)                                                 
+FMRGTWAA DS    A         A(TWA)                                                 
+FMRGUTLA DS    A         A(UTL)                                                 
+FMRGERR  DS    H         IF NON ZERO MERGE ERROR                                
+MOVESERR DS    H         IF NON ZERO MOVE STEREO BUFFER ERROR                   
+TRANSERR DS    H         IF NON ZERO TRANSLATE STEREO BUFFER ERROR              
+DECOMERR DS    H         IF NON ZERO FIELD DECOMPRESSION ERROR                  
+SVCREQ   DS    X         SAVE S/R                                               
+SAVIND2  DS    X         SAVE PGMIND2                                           
+FMRGSR1  DS    A         SAVE R1                                                
+*                                                                               
+VALID    DS    A         VALID INPUT CHRS TRT TABLE                             
+UPPER    DS    A         UPPER CASE TRANSLATE TABLE                             
+LOWER    DS    A         LOWER CASE TRANSLATE TABLE                             
+*                                                                               
+BYTE     DS    X                                                                
+PROTFLD  DS    C                                                                
+*                                                                               
+CTRY     DS    X         TERMINAL COUNTRY                                       
+LANG     DS    X         TERMINAL LANGUAGE                                      
+SYS      DS    X         TERMINAL SYSTEM                                        
+SVCRSAVE DS    XL2       TSVCREQ SAVE - SERVICE REQUEST VALUES                  
+*                                                                               
+ROWNUM   DS    XL1       CURRENT STEREO ROW NUMBER                              
+COLNUM   DS    XL1       CURRENT STEREO COLUMN NUMBER                           
+SFLDID   DS    XL1       STEREO FIELD ID                                        
+SFLDCOL  DS    XL1       STEREO FIELD COLUMN NUMBER                             
+SFLDDLEN DS    XL1       STEREO FIELD DATA LENGFTH                              
+SFLDCEXP DS    XL1       STEREO CURSOR EXCEPTION OFFSET                         
+REPEATLN DS    XL1       DECOMPRESS REPEAT TR. LENGTH                           
+*                                                                               
+FMRGFLAG DS    X         FLAG SET NONZERO IF TRANSLATED INPUT DATA              
+*                                                                               
+FMRGFLD  DS    CL255     SAVE AREA FOR TWA FLD                                  
+*                                                                               
+FDATA    DS    CL255     FIELD DATA WORK AREA                                   
+DECOMBUF DS    CL255     FIELD DATA DECOMPRESSION BUFFER                        
+*                                                                               
+STDBUF   DS    CL((24*79)+1)  SAVE AREA FOR STEREO DATA BUFFER                  
+*                                                                               
+FLDMRGX  EQU   *                                                                
+         SPACE 1                                                                
+*FAUTL                                                                          
+         PRINT OFF                                                              
+       ++INCLUDE FAUTL                                                          
+         PRINT ON                                                               
+         SPACE 1                                                                
+*FAPGMLST                                                                       
+         PRINT OFF                                                              
+       ++INCLUDE FAPGMLST                                                       
+         PRINT ON                                                               
+*FASSB                                                                          
+         PRINT OFF                                                              
+       ++INCLUDE FASSB                                                          
+         PRINT ON                                                               
+*FASELIST                                                                       
+         PRINT OFF                                                              
+       ++INCLUDE FASELIST                                                       
+         PRINT ON                                                               
+         EJECT                                                                  
+       ++INCLUDE DDFLDHDR                                                       
+         EJECT                                                                  
+       ++INCLUDE FATBHD                                                         
+         SPACE 2                                                                
+       ++INCLUDE FASTEREOQ                                                      
+         SPACE 2                                                                
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'011CXFATISTR 05/01/02'                                      
+         END                                                                    

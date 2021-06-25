@@ -1,0 +1,992 @@
+*          DATA SET DMDALDDS   AT LEVEL 003 AS OF 04/20/12                      
+*CATALP DMDALDDS                                                                
+                                                                                
+***********************************************************************         
+*P1      PASS X'FF' IN P1(1) AT EOF TO FORCE WRITE OF LAST TRACK      *         
+*P1      PASS X'01' IN P1+1(1) TO INDICATE WANT UNBLOCKED MODE        *         
+*P2      A(RECORD)                                                    *         
+*P3      PASS FILE NUM 1-4 IN P3(1) AND RECORD LENGTH IN P3+2(2)      *         
+*P3      RETURN ERROR INDICATORS IN P3(2)                             *         
+*P4      A(DTFPH)                                                     *         
+*P5      RETURN TTBR OF RECORD                                        *         
+*P6      RETURN TT00 OF TRACK WHEN ACTUALLY WRITTEN ELSE ZEROS        *         
+***********************************************************************         
+                                                                                
+DALDDS   TITLE 'DALDDS - DIRECT ACCESS LOAD MODULE - MULTIPLE FILES'            
+         PRINT NOGEN                                                            
+DALDDS   CSECT                                                                  
+         ENTRY DALFILE1                                                         
+         ENTRY DALFILE2                                                         
+         ENTRY DALFILE3                                                         
+         ENTRY DALFILE4                                                         
+*                                                                               
+         NMOD1 0,DALDDS                                                         
+         LR    RA,R1               RA=A(PARAM LIST)                             
+         USING PARAMS,RA                                                        
+         L     R2,P4               R2=A(DAFILE DTF)                             
+         USING DTFPHD,R2                                                        
+         SR    R7,R7                                                            
+         IC    R7,P3                                                            
+         CH    R7,=H'4'            FILE NUMBER SHOULD BE 1 THRU 4               
+         BNH   *+6                                                              
+         DC    H'0'                                                             
+         SLL   R7,2                                                             
+         L     R7,DALFADRS(R7)     R7=A(DAFILE DATA)                            
+         USING DALFILED,R7                                                      
+         MVC   SAVEP1,P1                                                        
+                                                                                
+DALDDS1  XC    P3(2),P3            CLEAR ERROR RETURN FIELD                     
+         XC    P6,P6               CLEAR TRK WRITTEN RETURN VALUE               
+         OC    HIBLK,HIBLK                                                      
+         BZ    INIT                INITIALISE IF FIRST CALL                     
+                                                                                
+DALDDS2  CLI   P1,X'FF'            TEST EOF CALL TO WRITE LAST TRACK            
+         BNE   DALDDS3                                                          
+DALDDS2A TM    WRTFLG,X'02'        TEST IF UNBLOCKED WRITE PENDING              
+         BZ    DALDDS2B                                                         
+         ICM   RF,15,=V(DALDDU)    PASS CONTROL TO UNBLOCKED LOAD               
+         BNZ   *+6                                                              
+         DC    H'0'                                                             
+         LR    R1,RA                                                            
+         BASR  RE,RF                                                            
+DALDDS2B B     DALWRT                                                           
+                                                                                
+DALDDS3  CLI   COMPRESS,C'Y'       TEST IF KEY COMPRESSION REQUIRED             
+         BE    DALC1                                                            
+         B     DAL1                                                             
+                                                                                
+DALDDSX  B     DALDDSXX                                                         
+         L     R9,=V(CPRINT)       **DEBUG** PRINT PLIST AND RECORD KEY         
+         USING DPRINT,R9                                                        
+         MVC   P+00(4),=C'DAL '                                                 
+         GOTO1 =V(HEXOUT),DMCB,(RA),P+04,24,=C'MIX'                             
+         OC    20(4,RA),20(RA)                                                  
+         BNZ   *+14                                                             
+         MVC   P+44(8),SPACES                                                   
+         B     *+8                                                              
+         MVI   P+53,C'<'           FLAG IF TRACK IS WRITTEN                     
+         L     RF,P2                                                            
+         LA    RF,0(RF)                                                         
+         GOTO1 =V(HEXOUT),DMCB,(RF),P+54,20,=C'MIX'                             
+         GOTO1 =V(PRINTER)                                                      
+         B     DALDDSXX                                                         
+DMCB     DC    6F'0'                                                            
+         DROP  R9                                                               
+                                                                                
+DALDDSXX XMOD1 1                                                                
+         EJECT                                                                  
+***********************************************************************         
+*NORMAL NON COMPRESSED FILE - EACH BLOCK HAS 6 BYTE HEADER            *         
+*XL4 BLOCK DISK ADDRESS X'TTTTBBRR' WHERE RR IS NUM OF RECS IN BLOCK  *         
+*XL2 TOTAL SPACE USED IN BLOCK                                        *         
+*                                                                     *         
+*EACH V/L RECORD STARTS WITH XL2 REC LEN FOLLOWED BY RECORD KEY/DATA  *         
+***********************************************************************         
+                                                                                
+DAL1     SR    R6,R6               GET REC LEN AND RANGE CHECK                  
+         ICM   R6,3,P3+2                                                        
+         BZ    LENERR                                                           
+         CH    R6,MAXLEN                                                        
+         BH    LENERR                                                           
+         STH   R6,RECLEN                                                        
+         L     R3,P2               R3=A(DAFILE RECORD TO BE LOADED)             
+         LA    R3,0(R3)                                                         
+                                                                                
+DAL1A    CLI   P1+1,1              LOAD MODE 0=BLOCKED,1=UNBLOCKED              
+         BH    LENERR                                                           
+         MVC   LASTMODE,THISMODE                                                
+         MVC   THISMODE,P1+1                                                    
+         CLI   THISMODE,1          TEST UNBLOCKED MODE                          
+         BNE   DAL1B                                                            
+         OC    UNBLKLEN,UNBLKLEN   SAVE THE FIRST UNBLOCKED REC LEN             
+         BNZ   *+10                                                             
+         MVC   UNBLKLEN,P3+2                                                    
+*                                                                               
+DAL1B    CLC   LASTMODE,THISMODE   THIS MODE SAME AS LAST MODE                  
+         BNE   DAL1D                                                            
+         CLI   THISMODE,0          TEST NORMAL (BLOCKED) MODE                   
+         BE    DAL2                                                             
+*                                                                               
+DAL1C    CLC   UNBLKLEN,P3+2       TEST SAME UNBLOCKED LEN                      
+         BNE   LENERR                                                           
+         ICM   RF,15,=V(DALDDU)    PASS CONTROL TO UNBLOCKED LOAD               
+         BZ    LENERR                                                           
+         LR    R1,RA                                                            
+         BASR  RE,RF                                                            
+         B     DALDDSX                                                          
+*                                                                               
+DAL1D    CLI   THISMODE,0          NOW BACK IN BLOCKED MODE                     
+         BNE   DAL1E                                                            
+         ICM   RF,15,=V(DALDDU)    PASS CONTROL TO UNBLOCKED LOAD               
+         BZ    LENERR                                                           
+         LR    R1,RA                                                            
+         MVI   0(R1),X'FE'         SET TO WRITE LAST UNBLOCKED TRACK            
+         BASR  RE,RF                                                            
+         MVC   P1,SAVEP1                                                        
+         B     DAL2                                                             
+*                                                                               
+DAL1E    MVI   P1,X'FE'            WANT TO GO INTO UNBLOCKED MODE               
+         B     DALWRT              SO WRITE OFF THIS TRACK                      
+DAL1F    MVC   P1,SAVEP1           RESTORE PLIST                                
+         ICM   RF,15,=V(DALDDU)    AND PASS CONTROL TO UNBLOCKED LOAD           
+         BZ    LENERR                                                           
+         LR    R1,RA                                                            
+         BASR  RE,RF                                                            
+         B     DALDDSX                                                          
+                                                                                
+DAL2     L     RE,NEXTREC          POINT TO NEXT REC ADDRESS                    
+         LA    RE,2(RE,R6)         ADJUST FOR 2 BYTE REC LEN                    
+         C     RE,BLKADDRX         DOES IT FIT                                  
+         BH    DAL3                NO PUT IT IN NEXT BLOCK                      
+         CLI   RECNUM,0            CHECK FOR MAX RECS IN A BLOCK                
+         BNE   DAL4                NO MOVE TO THIS BLOCK                        
+                                                                                
+DAL3     LH    R4,BLKNUM           NEW BLOCK REQUIRED                           
+         LA    R4,1(R4)                                                         
+         CH    R4,HIBLK                                                         
+         BH    DALWRT              LAST BLK IS FULL SO WRITE TRACK              
+         STH   R4,BLKNUM                                                        
+         MVI   RECNUM,1                                                         
+         L     R4,THISCCW                                                       
+         LA    R4,8(R4)                                                         
+         ST    R4,THISCCW                                                       
+         L     R4,0(R4)            GET A(COUNT FIELD)                           
+         LA    R4,0(R4)            CLEAR HOB                                    
+         ST    R4,BLKADDR                                                       
+         LA    R0,6                SET INITIAL BLKLEN                           
+         STH   R0,8+4(R4)                                                       
+         AH    R4,DBLKSZ                                                        
+         LA    R4,8(R4)            ADD LENGTH OF COUNT FIELD                    
+         ST    R4,BLKADDRX         SET END BLK ADDRESS + 1                      
+         L     R4,BLKADDR                                                       
+         LA    R4,8+6(R4)          COUNT+BLKHDR                                 
+         ST    R4,NEXTREC          SET INITIAL DATA ADDRESS                     
+         B     DAL1                SET MOVE PARAMETERS                          
+                                                                                
+DAL4     LH    R5,RECLEN           MOVE RECORD TO BLOCK                         
+         LA    R5,2(R5)                                                         
+         STH   R5,RECHDR                                                        
+         L     R4,BLKADDR          POINT TO FIRST DATA BYTE IN BLOCK            
+         LA    R4,8(R4)                                                         
+         MVC   3(1,R4),RECNUM      SET NUM OF RECS IN BLOCK                     
+         LH    RE,4(R4)                                                         
+         AR    RE,R5                                                            
+         STH   RE,4(R4)            SET NEW BYTES USED IN BLOCK                  
+         L     R4,NEXTREC                                                       
+         MVC   0(2,R4),RECHDR                                                   
+         AR    R5,R4                                                            
+         ST    R5,NEXTREC          SET ADDR FOR NEXT REC                        
+*                                                                               
+DAL4C    LA    R0,2(R4)            MOVE RECORD TO BLOCK                         
+         LH    R1,RECLEN                                                        
+         LR    RE,R3                                                            
+         LR    RF,R1                                                            
+         MVCL  R0,RE                                                            
+*                                                                               
+DAL4D    MVC   P5(3),NEXTTRK       RETURN DISK ADDRESS                          
+         OC    P5+2(1),BLKNUM+1                                                 
+         MVC   P5+3(1),RECNUM                                                   
+         IC    RE,RECNUM                                                        
+         LA    RE,1(RE)                                                         
+         STC   RE,RECNUM           RECNUM BECOMES ZERO IF GT 255                
+         OI    WRTFLG,X'01'        SET TRACK WRITE PENDING                      
+         B     DALDDSX                                                          
+         EJECT                                                                  
+***********************************************************************         
+*KEY COMPRESSED - EACH BLOCK HAS 6 BYTE HEADER                        *         
+*XL4 BLOCK DISK ADDRESS X'TTTTBBRR' WHERE RR IS NUM OF RECS IN BLOCK  *         
+*XL2 TOTAL SPACE USED IN BLOCK                                        *         
+*                                                                     *         
+*EACH V/L RECORD IN BLOCK STARTS WITH XL2 RECORD LENGTH               *         
+*IF COMPRESS LEFT FOLLOWED BY XL1=NUM OF LEFT KEY BYTES MISSING       *         
+*IF COMPRESS RIGHT FOLLOWED BY XL1=NUM OF RIGHT KEY BYTES MISSING     *         
+*FOLLOWED BY THAT PART OF KEY THAT HAS NOT BEEN REMOVED               *         
+*FOLLOWED BY THE DATA PART OF THE RECORD                              *         
+***********************************************************************         
+                                                                                
+DALC1    SR    R6,R6               GET REC LEN AND RANGE CHECK                  
+         ICM   R6,3,P3+2                                                        
+         CH    R6,KEYLEN                                                        
+         BNH   LENERR                                                           
+         CH    R6,MAXLEN                                                        
+         BH    LENERR                                                           
+         L     R3,P2               R3=A(DAFILE RECORD TO BE LOADED)             
+         LA    R3,0(R3)                                                         
+*                                                                               
+DALC1A   LH    RF,KEYLEN1          SAVE THIS ACTUAL KEY                         
+         EX    RF,*+8                                                           
+         B     *+10                                                             
+         MVC   THISKEY,0(R3)                                                    
+         LA    R3,1(RF,R3)         R3=A(DATA PART OF RECORD)                    
+         SH    R6,KEYLEN                                                        
+         STH   R6,RECLEN           RECLEN=L'DATA PART OF RECORD                 
+         XC    SAMEL(4),SAMEL                                                   
+         CLI   NEWBLOCK,C'Y'       NO COMPRESSION FOR FIRST IN BLOCK            
+         BE    DALC2                                                            
+*                                                                               
+DALC1B   CLI   LEFT,C'Y'           TEST IF KEY COMPRESS FROM LEFT               
+         BNE   DALC1F                                                           
+         LH    R0,KEYLEN                                                        
+         SR    R1,R1                                                            
+         LA    RE,LASTKEY                                                       
+         LA    RF,THISKEY                                                       
+DALC1C   CLC   0(1,RE),0(RF)       COMPARE EACH KEY BYTE FROM LEFT              
+         BNE   DALC1D                                                           
+         LA    R1,1(R1)            BUMP EQUAL COUNT                             
+         LA    RE,1(RE)                                                         
+         LA    RF,1(RF)                                                         
+         BCT   R0,DALC1C                                                        
+DALC1D   STH   R1,SAMEL            SAVE SAME ON LEFT COUNT                      
+*                                                                               
+DALC1F   CLI   RIGHT,C'Y'          TEST IF KEY COMPRESS FROM RIGHT              
+         BNE   DALC2                                                            
+         LH    R0,KEYLEN           SET LENGTH TO COMPARE FOR EQUAL              
+         SH    R0,SAMEL                                                         
+         BNP   DALC2                                                            
+         SR    R1,R1                                                            
+         LH    RE,KEYLEN1                                                       
+         LA    RE,LASTKEY(RE)                                                   
+         LH    RF,KEYLEN1                                                       
+         LA    RF,THISKEY(RF)                                                   
+DALC1G   CLC   0(1,RE),0(RF)       COMPARE EACH KEY BYTE FROM LEFT              
+         BNE   DALC1H                                                           
+         LA    R1,1(R1)            BUMP EQUAL COUNT                             
+         BCTR  RE,0                                                             
+         BCTR  RF,0                                                             
+         BCT   R0,DALC1G                                                        
+DALC1H   STH   R1,SAMER            SAVE SAME ON RIGHT COUNT                     
+                                                                                
+DALC2    LA    RE,RECHDR+2         BUILD RECORD HEADER                          
+         LH    R1,RECLEN                                                        
+         AH    R1,KEYLEN           R1=KEYLEN+DATALEN                            
+*                                                                               
+DALC2A   CLI   LEFT,C'Y'           ADJUST IF KEY COMPRESS FROM LEFT             
+         BNE   DALC2B                                                           
+         LH    RF,SAMEL                                                         
+         SR    R1,RF                                                            
+         LA    R1,1(R1)            ADJUST FOR ONE BYTE MISSING LEFT             
+         STC   RF,0(RE)            SET MISSING LEFT VALUE IN HEADER             
+         LA    RE,1(RE)                                                         
+*                                                                               
+DALC2B   CLI   RIGHT,C'Y'          ADJUST IF KEY COMPRESS FROM RIGHT            
+         BNE   DALC2C                                                           
+         LH    RF,SAMER                                                         
+         SR    R1,RF                                                            
+         LA    R1,1(R1)            ADJUST FOR ONE BYTE MISSING RIGHT            
+         STC   RF,0(RE)            SET MISSING RIGHT VALUE                      
+         LA    RE,1(RE)                                                         
+*                                                                               
+DALC2C   LA    R1,2(R1)            ADJUST FOR TWO BYTE RECLEN                   
+         STH   R1,RECHDR           R1=LEN REQUIRED FOR REC IN BLOCK             
+         LA    R0,RECHDR                                                        
+         SR    RE,R0                                                            
+         STH   RE,HDRLEN           SET LEN OF HEADER (3 OR 4 BYTES)             
+*                                                                               
+DALC2D   L     RE,NEXTREC          POINT TO NEXT REC ADDRESS                    
+         AR    RE,R1                                                            
+         AH    RE,DKEYSPC          ADJUST FOR ANY SPARE REQUIRED                
+         C     RE,BLKADDRX         DOES IT FIT                                  
+         BH    DALC3               NO PUT IT IN NEXT BLOCK                      
+         CLI   RECNUM,0            CHECK FOR MAX RECS IN A BLOCK                
+         BNE   DALC4               NO MOVE TO THIS BLOCK                        
+                                                                                
+DALC3    MVI   NEWBLOCK,C'Y'       INITIALISE FOR NEW BLOCK                     
+         LH    R4,BLKNUM                                                        
+         LA    R4,1(R4)                                                         
+         CH    R4,HIBLK                                                         
+         BH    DALWRT              LAST BLK IS FULL SO WRITE TRACK              
+         STH   R4,BLKNUM                                                        
+         MVI   RECNUM,1                                                         
+         L     R4,THISCCW                                                       
+         LA    R4,8(R4)                                                         
+         ST    R4,THISCCW                                                       
+         L     R4,0(R4)            GET A(COUNT FIELD)                           
+         LA    R4,0(R4)            CLEAR HOB                                    
+         ST    R4,BLKADDR                                                       
+         LA    R0,6                SET INITIAL SPACE USED IN BLOCK              
+         STH   R0,8+4(R4)                                                       
+         AH    R4,DBLKSZ                                                        
+         LA    R4,8(R4)            ADD LENGTH OF COUNT FIELD                    
+         ST    R4,BLKADDRX         SET END BLK ADDRESS + 1                      
+         L     R4,BLKADDR                                                       
+         LA    R4,8+6(R4)          COUNT+BLKHDR                                 
+         ST    R4,NEXTREC          SET INITIAL DATA ADDRESS                     
+         B     DALC1               BACK TO REPROCESS RECORD                     
+                                                                                
+DALC4    L     R4,BLKADDR          POINT TO BLOCK HEADER INFO                   
+         LA    R4,8(R4)                                                         
+         MVC   3(1,R4),RECNUM      SET NUM OF RECS IN BLOCK                     
+         LH    RE,4(R4)                                                         
+         AR    RE,R1                                                            
+         STH   RE,4(R4)            SET TOTAL SPACE USED IN BLOCK                
+*                                                                               
+DALC4A   L     R4,NEXTREC          MOVE IN RECORD HEADER                        
+         LH    R1,HDRLEN                                                        
+         BCTR  R1,0                                                             
+         EX    R1,*+8                                                           
+         B     *+10                                                             
+         MVC   0(0,R4),RECHDR                                                   
+         LA    R4,1(R1,R4)         BUMP TO NEXT LOCATION IN BLOCK               
+*                                                                               
+DALC4B   LA    RE,THISKEY          MOVE IN NON COMPRESSED PART OF KEY           
+         AH    RE,SAMEL                                                         
+         LH    R1,KEYLEN1                                                       
+         SH    R1,SAMEL                                                         
+         SH    R1,SAMER                                                         
+         BM    DALC4C                                                           
+         EX    R1,*+8                                                           
+         B     *+10                                                             
+         MVC   0(0,R4),0(RE)                                                    
+         LA    R4,1(R1,R4)         BUMP TO NEXT LOCATION IN BLOCK               
+*                                                                               
+DALC4C   LR    R0,R4               MOVE NON COMPRESSED PART OF REC              
+         LH    R1,RECLEN                                                        
+         LR    RE,R3                                                            
+         LR    RF,R1                                                            
+         MVCL  R0,RE                                                            
+         AH    R4,RECLEN           BUMP TO NEXT LOCATION IN BLOCK               
+*                                                                               
+DALC4D   MVC   P5(3),NEXTTRK       RETURN X'TTTTBBRR' TO CALLER                 
+         OC    P5+2(1),BLKNUM+1                                                 
+         MVC   P5+3(1),RECNUM                                                   
+*                                                                               
+DALC4E   ST    R4,NEXTREC          SET A(NEXT RECORD IN BLOCK)                  
+         IC    RE,RECNUM           SET NEXT RECORD NUMBER                       
+         LA    RE,1(RE)                                                         
+         STC   RE,RECNUM           RECNUM BECOMES ZERO IF GT 255                
+         OI    WRTFLG,X'01'        SET TRACK WRITE PENDING                      
+*                                                                               
+         LH    RF,KEYLEN1          SAVE LAST KEY MOVED TO BLOCK                 
+         EX    RF,*+8                                                           
+         B     *+10                                                             
+         MVC   LASTKEY,THISKEY                                                  
+         MVI   NEWBLOCK,C'N'       SET NOT FIRST RECORD IN BLOCK                
+         B     DALDDSX                                                          
+         EJECT                                                                  
+***********************************************************************         
+*WRITE WHOLE TRACK OF BLOCKED RECORDS TO DISK                         *         
+***********************************************************************         
+                                                                                
+DALWRT   MVC   P6(3),NEXTTRK       RETURN REL TRK ADDR TO USER                  
+         TM    WRTFLG,X'01'        TEST IF WRITE PENDING                        
+         BZ    DALWRT8                                                          
+         GOTO1 =V(DADDS),DAPL1     TRANSLATE TO ACTUAL DISK ADDR                
+         OC    8(2,R1),8(R1)                                                    
+         BZ    *+12                DADDS HAS SAVED EXCP DATA IN DTF             
+         CLI   WRITESW,C'N'        TEST WRITE=NO SET                            
+         BNE   EOFERR                                                           
+*                                                                               
+         L     R4,ABUFFER          CREATE COUNT AND ID FIELDS                   
+         LA    R5,1                                                             
+         LH    R6,DBLKSZ                                                        
+*                                                                               
+DALWRT2  MVC   0(4,R4),SRCH        BUILD COUNT FIELD C'CCHHR0LL'                
+         STC   R5,4(R4)                                                         
+         STH   R6,6(R4)                                                         
+*                                                                               
+         XC    8(2,R4),8(R4)       SET X'TTTTBB' AT START OF BLOCK              
+         STC   R5,10(R4)           SET BLOCK NUMBER                             
+         OC    8(3,R4),NEXTTRK     'OR' IN THE TRACK NUMBER                     
+*                                                                               
+         LA    R4,8(R4,R6)         BUMP TO NEXT BLK                             
+         LA    R5,1(R5)            BUMP BLK COUNTER                             
+         CLI   P1,X'FE'            TEST IF WANT UNBLOCKED MODE                  
+         BE    DALWRT2A                                                         
+         OC    12(2,R4),12(R4)     TEST BLK EXISTS (LAST TIME TEST)             
+         BNZ   DALWRT2                                                          
+         B     DALWRT3                                                          
+*                                                                               
+DALWRT2A CH    R5,HIBLK            WRITE FULL TRACK OF BLOCKED RECS             
+         BNH   DALWRT2                                                          
+         MVC   BLKNUM,HIBLK                                                     
+*                                                                               
+DALWRT3  LH    R0,BLKNUM           NUMBER OF BLKS                               
+         LA    R1,CCW-8            A(DATA CCWS)                                 
+         LA    R1,8(R1)                                                         
+         BCT   R0,*-4                                                           
+         NI    4(R1),X'BF'         TURN OFF CC IN LAST CCW                      
+*                                                                               
+DALWRT4  BAS   R9,EXCP             WRITE TRACK TO DISK                          
+         B     DSKERR              ERROR RETURN                                 
+*                                                                               
+DALWRT6  ICM   RE,15,NEXTTRK                                                    
+         TM    DTFTYPE,DTFTBIG+DTFTBIGF                                         
+         BZ    DALWRT7             16-BIT                                       
+         BO    DALWRT6C            22-BIT                                       
+         TM    DTFTYPE,DTFTBIGF                                                 
+         BO    DALWRT6B                                                         
+DALWRT6A A     RE,=X'00004000'     ADD 1 TO LOW ORDER BIT OF 18-BIT             
+         B     DALWRT6D                                                         
+DALWRT6B A     RE,=X'00001000'     ADD 1 TO LOW ORDER BIT OF 20-BIT             
+         B     DALWRT6D                                                         
+DALWRT6C A     RE,=X'00000400'     ADD 1 TO LOW ORDER BIT OF 22-BIT             
+DALWRT6D STCM  RE,15,NEXTTRK                                                    
+         B     DALWRT8                                                          
+*                                                                               
+DALWRT7  SR    RE,RE               NORMAL FILE - 16-BIT TRACK NUMBER            
+         ICM   RE,3,NEXTTRK                                                     
+         LA    RE,1(RE)                                                         
+         STH   RE,NEXTTRK          BUMP TO NEXT TRACK                           
+*                                                                               
+DALWRT8  NI    WRTFLG,255-X'01'    SET BLOCKED TRACK WRITTEN                    
+*                                                                               
+DALWRT9  CLI   P1,X'FE'            EXIT IF CALLED TO DO EOF WRITE               
+         BL    DALWRT11                                                         
+         BE    DALWRT10                                                         
+         XC    HIBLK,HIBLK         FORCE INIT NEXT TIME                         
+         B     DALDDSX             AND EXIT                                     
+*                                                                               
+DALWRT10 BAS   R9,CLRBUFF          INITIALISE NEW TRACK FOR X'FE'               
+         B     DAL1F               AND RETURN                                   
+*                                                                               
+DALWRT11 BAS   R9,CLRBUFF          INITIALISE BUFFER FOR NEW TRACK              
+         B     DALDDS2             AND START AGAIN                              
+*                                                                               
+EOFERR   ABEND 102                 DIRECT ACCESS DISK END OF FILE               
+*                                                                               
+DSKERR   ABEND 104                 DIRECT ACCESS DISK WRITE ERROR               
+*                                                                               
+LENERR   ABEND 106                 DIRECT ACCESS BAD RECORD LENGTH              
+         EJECT                                                                  
+***********************************************************************         
+*MVS EXCP TO WRITE OUT TRACK FULL OF BLOCKS                           *         
+***********************************************************************         
+                                                                                
+EXCP     XC    IOB,IOB             INITIALISE IOB                               
+         MVI   IOB,X'C3'           SET DC/CC/NOTRELATED/NOAPPENDG               
+         LA    R1,ECB                                                           
+         ST    R1,IOB+4                                                         
+         LA    R1,DALCCWS                                                       
+         LA    R1,8(R1)            REMOVE LONG SEEK                             
+         ST    R1,IOB+16                                                        
+         L     R1,DTFADCB          SET DCB ADDR                                 
+         STCM  R1,7,IOB+21                                                      
+         MVC   IOB+32(8),DTFSEEK   SEEK SAVED IN DTF BY V(DATRNS)               
+*                                                                               
+EXCP1    LA    R1,IOB              EXECUTE CHANNEL PROGRAM                      
+         CLI   WRITESW,C'N'        TEST WRITE=NO                                
+         BE    4(R9)               YES - RETURN NORMAL COMPLETION               
+         XC    ECB,ECB                                                          
+         EXCP  IOB                                                              
+         WAIT  ECB=ECB                                                          
+*                                                                               
+EXCP2    CLI   IOB+4,X'7F'         EXIT IF NORMAL COMPLETION                    
+         BE    4(R9)                                                            
+         CLI   IOB+4,X'41'         TEST PERMANENT ERROR                         
+         BE    EXCP3                                                            
+         CLI   IOB+4,X'42'         TEST OUTSIDE EXTENTS                         
+         BNE   *+10                                                             
+         MVI   P3+1,X'01'          REFERENCE OUTSIDE EXTENTS                    
+         BR    R9                                                               
+         DC    H'0'                DIE IF HORRIBLE COMPLETION CODE              
+*                                                                               
+EXCP3    TM    IOB+12,X'02'        TEST CSW UNIT STATUS FOR UNIT CHECK          
+         BO    EXCP4                                                            
+         TM    IOB+12,X'01'        TEST CSW UNIT STATUS FOR UNIT EXCPN          
+         BZ    *+10                                                             
+         MVI   P3+1,X'04'          SET EOF                                      
+         BR    R9                                                               
+         TM    IOB+12,X'FF'        TEST CSW UNIT STATUS                         
+         BZ    *+6                                                              
+         DC    H'0'                                                             
+         TM    IOB+13,X'FF'        TEST CSW CHNL STATUS                         
+         BZ    EXCP4                                                            
+ERR80    MVI   P1,X'80'            SET UNRECOVERABLE ERROR                      
+         BR    R9                  ERROR RETURN                                 
+*                                                                               
+EXCP4    TM    IOB+2,X'04'         TEST SENSE BYTE 0 ON UNIT CHECK              
+         BNZ   ERR80               TRACK OVERRUN                                
+         CLI   IOB+2,0                                                          
+         BNE   ERR80               UNRECOVERABLE ERROR                          
+         TM    IOB+3,X'04'         TEST SENSE BYTE 1 ON UNIT CHECK              
+         BZ    *+10                                                             
+         MVI   P3+1,X'08'          SET NO RECORD FOUND                          
+         BR    R9                                                               
+         B     ERR80               UNRECOVERABLE ERROR                          
+         EJECT                                                                  
+***********************************************************************         
+*INITIALISE ALL CONTROL BLOCKS ON FIRST CALL                          *         
+***********************************************************************         
+                                                                                
+INIT     L     R0,BUFFLEN          GET BUFFER                                   
+         GETMAIN RU,LV=(0),BNDRY=PAGE                                           
+         ST    R1,ABUFFER                                                       
+         LTR   RF,RF                                                            
+         BZ    INIT0                                                            
+         DC    H'0'                CANNOT ACQUIRE BUFFER                        
+BUFFLEN  DC    A(8*8000)                                                        
+*                                                                               
+INIT0    MVC   NEXTTRK,=X'00010000' FIRST TRACK IN 16-BIT FORMAT                
+         TM    DTFTYPE,DTFTBIG                                                  
+         BZ    *+10                                                             
+         MVC   NEXTTRK,=X'00004000' FIRST TRACK IN 18-BIT FORMAT                
+         TM    DTFTYPE,DTFTBIGF                                                 
+         BZ    *+10                                                             
+         MVC   NEXTTRK,=X'00001000' FIRST TRACK IN 20-BIT FORMAT                
+         TM    DTFTYPE,DTFTBIGF+DTFTBIG                                         
+         BNO   *+10                                                             
+         MVC   NEXTTRK,=X'00000400' FIRST TRACK IN 22-BIT FORMAT                
+*                                                                               
+INIT2    MVI   WRITESW,C'Y'        SET WRITE OPTION                             
+         ICM   RF,15,=V(LDWRITE)                                                
+         BZ    *+10                                                             
+         MVC   WRITESW,0(RF)                                                    
+         MVC   DAPL1+12(4),P4      SET A(DTF) IN V(DADDS) PARAM LISTS           
+         MVC   DAPL2+12(4),P4                                                   
+         MVC   DAPL2+10(2),DBLKSZ                                               
+         GOTO1 =V(DADDS),DAPL2     GET DISK DEVICE DATA AND RECS/TRACK          
+         OC    8(2,R1),8(R1)                                                    
+         BZ    *+6                                                              
+         DC    H'0'                DIE IF CANT COMPUTE RECS/TRACK               
+         L     RE,4(R1)                                                         
+         MVC   DEVDATA,0(RE)       EXTRACT DEVICE DATA                          
+         MVC   HIBLK,10(R1)        EXTRACT RECS/TRK                             
+                                                                                
+INIT8    SR    RE,RE               SET MAXIMUM RECORD LENGTH                    
+         ICM   RE,3,DBLKSZ                                                      
+         SH    RE,=H'9'            ADJUST FOR BLK HDR AND TRL                   
+         STH   RE,MAXLEN                                                        
+                                                                                
+INIT10   TM    DTFTYPE,DTFTKCL+DTFTKCR                                          
+         BZ    INIT12                                                           
+         LH    RE,DKEYLNC          SAVE KEY LENGTH AND LEN-1                    
+         STH   RE,KEYLEN                                                        
+         SH    RE,=H'1'                                                         
+         BP    *+6                                                              
+         DC    H'0'                DIE IF INVALID KEYLEN                        
+         STH   RE,KEYLEN1                                                       
+         MVI   COMPRESS,C'Y'       SET COMPRESSION IN ACTION                    
+         TM    DTFTYPE,DTFTKCL                                                  
+         BZ    *+8                                                              
+         MVI   LEFT,C'Y'           SET COMPRESS FROM LEFT                       
+         TM    DTFTYPE,DTFTKCR                                                  
+         BZ    *+8                                                              
+         MVI   RIGHT,C'Y'          SET COMPRESS FROM RIGHT                      
+         MVI   NEWBLOCK,C'Y'                                                    
+INIT12   EQU   *                                                                
+                                                                                
+INIT20   LA    R0,SEEK                                                          
+         STCM  R0,7,DALCCWSK+1     SET SEEK ADDR                                
+         LA    R0,SECTOR                                                        
+         STCM  R0,7,DALCCWSS+1     SET SECTOR ADDR                              
+         LA    R0,SRCH                                                          
+         STCM  R0,7,DALCCWSE+1     SET SEARCH ADDR                              
+         LA    R0,DALCCWSE                                                      
+         STCM  R0,7,DALCCWTI+1     SET TIC ADDR                                 
+                                                                                
+INIT30   LH    R1,HIBLK            BUILD CCWS FOR BLKS ON TRACK                 
+         L     R4,ABUFFER          START OF I/O AREA                            
+         LH    R5,DBLKSZ                                                        
+         LA    R5,8(R5)            ADD LENGTH OF COUNT FIELD                    
+         LA    R6,CCW              START OF CCW CHAIN                           
+                                                                                
+INIT40   ST    R4,0(R6)            SET BLK ADDRESS                              
+         MVI   0(R6),X'1D'         SET WCKD                                     
+         OI    4(R6),X'40'         SET COMMAND CHAIN                            
+         STH   R5,6(R6)            SET BLK LENGTH                               
+         LA    R4,0(R4,R5)         BUMP TO NEXT BLK                             
+         LA    R6,8(R6)            BUMP TO NEXT CCW                             
+         BCT   R1,INIT40                                                        
+                                                                                
+INIT50   SH    R6,=H'8'            BACK UP TO LAST                              
+         NI    4(R6),X'BF'         TURN OFF CC                                  
+         BAS   R9,CLRBUFF          CLEAR BUFFER                                 
+         B     DALDDS2             BACK TO START                                
+         EJECT                                                                  
+***********************************************************************         
+*SUBROUTINE TO CLEAR BUFFER READY FOR NEW LOGICAL RECORDS             *         
+***********************************************************************         
+                                                                                
+CLRBUFF  L     R0,ABUFFER          INITIALISE TO NULLS                          
+         L     R1,BUFFLEN                                                       
+         LR    RE,R0                                                            
+         SR    RF,RF                                                            
+         MVCL  R0,RE                                                            
+*                                                                               
+CLRBUF1  LA    R4,1                SET NEW BLKNUM=RECNUM=1                      
+         STH   R4,BLKNUM                                                        
+         STC   R4,RECNUM                                                        
+         LA    R4,CCW                                                           
+         ST    R4,THISCCW                                                       
+         L     R4,0(R4)            GET A(COUNT)                                 
+         LA    R4,0(R4)            CLEAR HOB                                    
+         ST    R4,BLKADDR                                                       
+         LA    R0,6                SET INITIAL BLKLEN                           
+         STH   R0,8+4(R4)                                                       
+         AH    R4,DBLKSZ                                                        
+         LA    R4,8(R4)            ADD LENGTH OF COUNT FIELD                    
+         ST    R4,BLKADDRX         SET END OF BLK ADDRESS + 1                   
+         L     R4,BLKADDR                                                       
+         LA    R4,8+6(R4)                                                       
+         ST    R4,NEXTREC          SET INITIAL DATA ADDRESS                     
+*                                                                               
+CLRBUFX  BR    R9                                                               
+                                                                                
+DALFADRS DC    A(DALFILE1)                                                      
+         DC    A(DALFILE1),A(DALFILE2),A(DALFILE3),A(DALFILE4)                  
+         LTORG                                                                  
+SAVEP1   DC    F'0'                                                             
+         EJECT                                                                  
+***********************************************************************         
+*FILE #1 CSECT FOR CONSTANTS AND WORK AREAS                           *         
+*THIS AREA IS COVERED BY THE DALFILED DSECT                           *         
+***********************************************************************         
+                                                                                
+DALFILE1 DS    0D                                                               
+         DC    CL8'*DAFILE1'       FILE1 LABEL                                  
+         DC    XL16'00'            DEVICE DATA                                  
+                                                                                
+         DC    A(DATRNS),A(0),A(0),A(0),A(NEXTTRK1),A(SRCH1)                    
+         DC    A(DARPT),A(0),A(0),A(0)                                          
+                                                                                
+         DS    0D                                                               
+         DC    CL8'*DAIOB1'                                                     
+         DC    XL40'00'                                                         
+                                                                                
+         DS    0D                                                               
+         DC    CL8'*DACCWS1'                                                    
+         DC    X'0700000040000006' SEEK                                         
+         DC    X'2300000040000001' SET SECTOR                                   
+         DC    X'3100000040000005' SEARCH ID EQL                                
+         DC    X'0800000040000001' TIC                                          
+         DC    100XL8'00'                                                       
+                                                                                
+         DC    XL2'00'             SEEK ADDRESS                                 
+SRCH1    DC    XL5'00'                                                          
+         DC    XL1'00'                                                          
+                                                                                
+         DC    F'0'                ECB                                          
+         DC    F'0'                                                             
+         DC    F'0'                                                             
+                                                                                
+         DC    H'0'                NUMBER OF BLKS/TRK                           
+         DC    H'0'                MAXIMUM LOGICAL RECORD LENGTH                
+         DC    H'0'                RECORD LENGTH                                
+         DC    H'2'                HEADER LENGTH                                
+         DC    XL4'00'             RECORD HEADER                                
+                                                                                
+         DC    X'00'               THIS LOAD MODE 0=BLOCKED,1=UNBLOCKED         
+         DC    X'00'               LAST LOAD MODE                               
+         DC    H'0'                UNBLOCKED RECORD LENGTH (FIXED)              
+                                                                                
+         DC    H'0'                KEY LENGTH FOR COMPRESSION                   
+         DC    H'0'                KEY LENGTH -1                                
+         DC    C'N'                COMPESSION REQUIRED                          
+         DC    C'N'                COMPRESS KEY FROM LEFT                       
+         DC    C'N'                COMPRESS KEY FROM RIGHT                      
+         DC    C'Y'                NEW BLOCK                                    
+         DC    C'Y'                WRITE TO FILE Y/N                            
+         DC    XL3'00'                                                          
+         DC    H'0'                NUM OF MATCHING LEFT BYTES                   
+         DC    H'0'                NUM OF MATCHING RIGHT BYTES                  
+         DC    XL64'00'                                                         
+         DC    XL64'00'                                                         
+                                                                                
+NEXTTRK1 DC    X'00010000'         NEXT TRACK DISK ADDR                         
+         DC    H'1'                CURRENT BLOCK NUMBER                         
+         DC    AL1(1)              CURRENT RECORD NUMBER                        
+         DC    X'00'                                                            
+                                                                                
+         DC    A(0)                CURRENT CCW POINTER                          
+         DC    A(0)                CURRENT BLK START                            
+         DC    A(0)                CURRENT BLK END + 1                          
+         DC    A(0)                NEXT RECORD ADDRESS                          
+         DC    A(0)                BUFFER ADDDRESS                              
+         EJECT                                                                  
+***********************************************************************         
+*FILE #2 CSECT FOR CONSTANTS AND WORK AREAS                           *         
+*THIS AREA IS COVERED BY THE DALFILED DSECT                           *         
+***********************************************************************         
+                                                                                
+DALFILE2 DS    0D                                                               
+         DC    CL8'*DAFILE2'       FILE2 LABEL                                  
+         DC    XL16'00'            DEVICE DATA                                  
+                                                                                
+         DC    A(DATRNS),A(0),A(0),A(0),A(NEXTTRK2),A(SRCH2)                    
+         DC    A(DARPT),A(0),A(0),A(0)                                          
+                                                                                
+         DS    0D                                                               
+         DC    CL8'*DAIOB2'                                                     
+         DC    XL40'00'                                                         
+                                                                                
+         DS    0D                                                               
+         DC    CL8'*DACCWS2'                                                    
+         DC    X'0700000040000006' SEEK                                         
+         DC    X'2300000040000001' SET SECTOR                                   
+         DC    X'3100000040000005' SEARCH ID EQL                                
+         DC    X'0800000040000001' TIC                                          
+         DC    100XL8'00'                                                       
+                                                                                
+         DC    XL2'00'             SEEK ADDRESS                                 
+SRCH2    DC    XL5'00'                                                          
+         DC    XL1'00'                                                          
+                                                                                
+         DC    F'0'                ECB                                          
+         DC    F'0'                                                             
+         DC    F'0'                                                             
+                                                                                
+         DC    H'0'                NUMBER OF BLKS/TRK                           
+         DC    H'0'                MAXIMUM LOGICAL RECORD LENGTH                
+         DC    H'0'                RECORD LENGTH                                
+         DC    H'2'                HEADER LENGTH                                
+         DC    XL4'00'             RECORD HEADER                                
+                                                                                
+         DC    X'00'               THIS LOAD MODE 0=BLOCKED,1=UNBLOCKED         
+         DC    X'00'               LAST LOAD MODE                               
+         DC    H'0'                UNBLOCKED RECORD LENGTH (FIXED)              
+                                                                                
+         DC    H'0'                KEY LENGTH FOR COMPRESSION                   
+         DC    H'0'                KEY LENGTH -1                                
+         DC    C'N'                COMPESSION REQUIRED                          
+         DC    C'N'                COMPRESS KEY FROM LEFT                       
+         DC    C'N'                COMPRESS KEY FROM RIGHT                      
+         DC    C'Y'                NEW BLOCK                                    
+         DC    C'Y'                WRITE TO FILE Y/N                            
+         DC    XL3'00'                                                          
+         DC    H'0'                NUM OF MATCHING LEFT BYTES                   
+         DC    H'0'                NUM OF MATCHING RIGHT BYTES                  
+         DC    XL64'00'                                                         
+         DC    XL64'00'                                                         
+                                                                                
+NEXTTRK2 DC    X'00010000'         NEXT TRACK DISK ADDR                         
+         DC    H'1'                CURRENT BLOCK NUMBER                         
+         DC    AL1(1)              CURRENT RECORD NUMBER                        
+         DC    X'00'                                                            
+                                                                                
+         DC    A(0)                CURRENT CCW POINTER                          
+         DC    A(0)                CURRENT BLK START                            
+         DC    A(0)                CURRENT BLK END + 1                          
+         DC    A(0)                NEXT RECORD ADDRESS                          
+         DC    A(0)                BUFFER ADDDRESS                              
+         EJECT                                                                  
+***********************************************************************         
+*FILE #3 CSECT FOR CONSTANTS AND WORK AREAS                           *         
+*THIS AREA IS COVERED BY THE DALFILED DSECT                           *         
+***********************************************************************         
+                                                                                
+DALFILE3 DS    0D                                                               
+         DC    CL8'*DAFILE3'       FILE3 LABEL                                  
+         DC    XL16'00'            DEVICE DATA                                  
+                                                                                
+         DC    A(DATRNS),A(0),A(0),A(0),A(NEXTTRK3),A(SRCH3)                    
+         DC    A(DARPT),A(0),A(0),A(0)                                          
+                                                                                
+         DS    0D                                                               
+         DC    CL8'*DAIOB3'                                                     
+         DC    XL40'00'                                                         
+                                                                                
+         DS    0D                                                               
+         DC    CL8'*DACCWS3'                                                    
+         DC    X'0700000040000006' SEEK                                         
+         DC    X'2300000040000001' SET SECTOR                                   
+         DC    X'3100000040000005' SEARCH ID EQL                                
+         DC    X'0800000040000001' TIC                                          
+         DC    100XL8'00'                                                       
+                                                                                
+         DC    XL2'00'             SEEK ADDRESS                                 
+SRCH3    DC    XL5'00'                                                          
+         DC    XL1'00'                                                          
+                                                                                
+         DC    F'0'                ECB                                          
+         DC    F'0'                                                             
+         DC    F'0'                                                             
+                                                                                
+         DC    H'0'                NUMBER OF BLKS/TRK                           
+         DC    H'0'                MAXIMUM LOGICAL RECORD LENGTH                
+         DC    H'0'                RECORD LENGTH                                
+         DC    H'2'                HEADER LENGTH                                
+         DC    XL4'00'             RECORD HEADER                                
+                                                                                
+         DC    X'00'               THIS LOAD MODE 0=BLOCKED,1=UNBLOCKED         
+         DC    X'00'               LAST LOAD MODE                               
+         DC    H'0'                UNBLOCKED RECORD LENGTH (FIXED)              
+                                                                                
+         DC    H'0'                KEY LENGTH FOR COMPRESSION                   
+         DC    H'0'                KEY LENGTH -1                                
+         DC    C'N'                COMPESSION REQUIRED                          
+         DC    C'N'                COMPRESS KEY FROM LEFT                       
+         DC    C'N'                COMPRESS KEY FROM RIGHT                      
+         DC    C'Y'                NEW BLOCK                                    
+         DC    C'Y'                WRITE TO FILE Y/N                            
+         DC    XL3'00'                                                          
+         DC    H'0'                NUM OF MATCHING LEFT BYTES                   
+         DC    H'0'                NUM OF MATCHING RIGHT BYTES                  
+         DC    XL64'00'                                                         
+         DC    XL64'00'                                                         
+                                                                                
+NEXTTRK3 DC    X'00010000'         NEXT TRACK DISK ADDR                         
+         DC    H'1'                CURRENT BLOCK NUMBER                         
+         DC    AL1(1)              CURRENT RECORD NUMBER                        
+         DC    X'00'                                                            
+                                                                                
+         DC    A(0)                CURRENT CCW POINTER                          
+         DC    A(0)                CURRENT BLK START                            
+         DC    A(0)                CURRENT BLK END + 1                          
+         DC    A(0)                NEXT RECORD ADDRESS                          
+         DC    A(0)                BUFFER ADDDRESS                              
+         EJECT                                                                  
+***********************************************************************         
+*FILE #4 CSECT FOR CONSTANTS AND WORK AREAS                           *         
+*THIS AREA IS COVERED BY THE DALFILED DSECT                           *         
+***********************************************************************         
+                                                                                
+DALFILE4 DS    0D                                                               
+         DC    CL8'*DAFILE4'       FILE4 LABEL                                  
+         DC    XL16'00'            DEVICE DATA                                  
+                                                                                
+         DC    A(DATRNS),A(0),A(0),A(0),A(NEXTTRK4),A(SRCH4)                    
+         DC    A(DARPT),A(0),A(0),A(0)                                          
+                                                                                
+         DS    0D                                                               
+         DC    CL8'*DAIOB4'                                                     
+         DC    XL40'00'                                                         
+                                                                                
+         DS    0D                                                               
+         DC    CL8'*DACCWS4'                                                    
+         DC    X'0700000040000006' SEEK                                         
+         DC    X'2300000040000001' SET SECTOR                                   
+         DC    X'3100000040000005' SEARCH ID EQL                                
+         DC    X'0800000040000001' TIC                                          
+         DC    100XL8'00'                                                       
+                                                                                
+         DC    XL2'00'             SEEK ADDRESS                                 
+SRCH4    DC    XL5'00'                                                          
+         DC    XL1'00'                                                          
+                                                                                
+         DC    F'0'                ECB                                          
+         DC    F'0'                                                             
+         DC    F'0'                                                             
+                                                                                
+         DC    H'0'                NUMBER OF BLKS/TRK                           
+         DC    H'0'                MAXIMUM LOGICAL RECORD LENGTH                
+         DC    H'0'                RECORD LENGTH                                
+         DC    H'2'                HEADER LENGTH                                
+         DC    XL4'00'             RECORD HEADER                                
+                                                                                
+         DC    X'00'               THIS LOAD MODE 0=BLOCKED,1=UNBLOCKED         
+         DC    X'00'               LAST LOAD MODE                               
+         DC    H'0'                UNBLOCKED RECORD LENGTH (FIXED)              
+                                                                                
+         DC    H'0'                KEY LENGTH FOR COMPRESSION                   
+         DC    H'0'                KEY LENGTH -1                                
+         DC    C'N'                COMPESSION REQUIRED                          
+         DC    C'N'                COMPRESS KEY FROM LEFT                       
+         DC    C'N'                COMPRESS KEY FROM RIGHT                      
+         DC    C'Y'                NEW BLOCK                                    
+         DC    C'Y'                WRITE TO FILE Y/N                            
+         DC    XL3'00'                                                          
+         DC    H'0'                NUM OF MATCHING LEFT BYTES                   
+         DC    H'0'                NUM OF MATCHING RIGHT BYTES                  
+         DC    XL64'00'                                                         
+         DC    XL64'00'                                                         
+                                                                                
+NEXTTRK4 DC    X'00010000'         NEXT TRACK DISK ADDR                         
+         DC    H'1'                CURRENT BLOCK NUMBER                         
+         DC    AL1(1)              CURRENT RECORD NUMBER                        
+         DC    X'00'                                                            
+                                                                                
+         DC    A(0)                CURRENT CCW POINTER                          
+         DC    A(0)                CURRENT BLK START                            
+         DC    A(0)                CURRENT BLK END + 1                          
+         DC    A(0)                NEXT RECORD ADDRESS                          
+         DC    A(0)                BUFFER ADDDRESS                              
+         EJECT                                                                  
+***********************************************************************         
+*DSECT TO COVER CONSTANTS AND WORK AREAS FOR AN INDIVIDUAL FILE       *         
+***********************************************************************         
+                                                                                
+DALFILED DSECT                                                                  
+FILEID   DS    CL8                                                              
+DEVDATA  DS    0CL16                                                            
+DEVTYP   DS    X                                                                
+DEVSUB   DS    X                                                                
+DEVTRKS  DS    H                                                                
+DEVIRG   DS    H                                                                
+DEVCAPL  DS    H                                                                
+DEVCAPP  DS    H                                                                
+DEVRZERO DS    H                                                                
+DEVSCT   DS    H                                                                
+DEVMOD   DS    H                                                                
+                                                                                
+DAPL1    DC    A(DATRNS),A(0),A(0),A(0),A(NEXTTRK),A(SRCH)                      
+DAPL2    DC    A(DARPT),A(0),A(0),A(0)                                          
+                                                                                
+         DS    0D                                                               
+         DC    CL8'*DAIOBN'                                                     
+IOB      DC    XL40'00'                                                         
+                                                                                
+         DS    0D                                                               
+         DC    CL8'DACCWS1'                                                     
+DALCCWS  DS    0D                                                               
+DALCCWSK DC    X'0700000040000006'      SEEK                                    
+DALCCWSS DC    X'2300000040000001'      SET SECTOR                              
+DALCCWSE DC    X'3100000040000005'      SEARCH ID EQL                           
+DALCCWTI DC    X'0800000040000001'      TIC                                     
+CCW      DC    100XL8'00'                                                       
+                                                                                
+SEEK     DS    0XL8                                                             
+         DS    XL2                                                              
+SRCH     DS    0XL5                                                             
+SKCYL    DS    XL2                                                              
+SKTRK    DS    XL2                                                              
+SKREC    DS    XL1                                                              
+         DS    XL1                                                              
+                                                                                
+ECB      DC    F'0'                                                             
+         DC    F'0'                                                             
+SECTOR   DC    F'0'                                                             
+                                                                                
+HIBLK    DC    H'0'                NUMBER OF BLKS/TRK                           
+MAXLEN   DC    H'0'                MAXIMUM LOGICAL RECORD LENGTH                
+RECLEN   DC    H'0'                RECORD LENGTH                                
+HDRLEN   DC    H'2'                                                             
+RECHDR   DC    XL4'00'                                                          
+                                                                                
+THISMODE DC    XL1'00'             0=BLOCKED,1=UNBLOCKED                        
+LASTMODE DC    XL1'00'                                                          
+UNBLKLEN DC    H'0'                LENGTH OF UNBLOCKED RECORDS                  
+                                                                                
+KEYLEN   DC    H'0'                KEY LENGTH FOR COMPRESSION                   
+KEYLEN1  DC    H'0'                KEY LENGTH -1                                
+COMPRESS DC    C'N'                COMPESSION REQUIRED                          
+LEFT     DC    C'N'                COMPRESS KEY FROM LEFT                       
+RIGHT    DC    C'N'                COMPRESS KEY FROM RIGHT                      
+NEWBLOCK DC    C'Y'                NEW BLOCK                                    
+WRITESW  DC    C'Y'                WRITE TO FILE Y/N                            
+         DC    XL3'00'             N/D                                          
+SAMEL    DC    H'0'                NUM OF MATCHING LEFT BYTES                   
+SAMER    DC    H'0'                NUM OF MATCHING RIGHT BYTES                  
+THISKEY  DC    XL64'00'                                                         
+LASTKEY  DC    XL64'00'                                                         
+                                                                                
+NEXTTRK  DC    X'00010000'         NEXT TRACK DISK ADDR                         
+BLKNUM   DC    H'1'                CURRENT BLOCK NUMBER                         
+RECNUM   DC    AL1(1)              CURRENT RECORD NUMBER                        
+WRTFLG   DC    X'00'               WRITE FLAG 01=BLOCKED,02=UNBLOCKED           
+                                                                                
+THISCCW  DS    A                   CURRENT CCW POINTER                          
+BLKADDR  DS    A                   CURRENT BLK START                            
+BLKADDRX DS    A                   CURRENT BLK END + 1                          
+NEXTREC  DS    A                   NEXT RECORD ADDRESS                          
+ABUFFER  DS    A                   BUFFER ADDRESS (VIA GETMAIN)                 
+                                                                                
+PARAMS   DSECT                                                                  
+P1       DS    A                                                                
+P2       DS    A                                                                
+P3       DS    F                                                                
+P4       DS    A                                                                
+P5       DS    F                                                                
+P6       DS    F                                                                
+         EJECT                                                                  
+*DMDTFPH                                                                        
+       ++INCLUDE DMDTFPH                                                        
+         EJECT                                                                  
+*DMGREQUS                                                                       
+       ++INCLUDE DMGREQUS                                                       
+         EJECT                                                                  
+*DDDPRINT                                                                       
+       ++INCLUDE DDDPRINT                                                       
+                                                                                
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'003DMDALDDS  04/20/12'                                      
+         END                                                                    

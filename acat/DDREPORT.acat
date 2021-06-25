@@ -1,0 +1,1114 @@
+*          DATA SET DDREPORT   AT LEVEL 004 AS OF 07/24/06                      
+*CATALP DDREPORT                                                                
+         TITLE 'DDREPORT - DATA DICTIONARY REPORT UTILITY'                      
+**********************************************************                      
+*                                                        *                      
+* PAN DATA DICTIONARY BOOK REPORT UTILITY PROGRAM.       *                      
+* READS TERMS AND OR NOTES DATA DICTIONARY SOURCE BOOKS  *                      
+* IN THE PAN LIBRARY AND PRODUCES SORTED AND FILTERED    *                      
+* REPORT.                                                *                      
+*                                                        *                      
+* INPUT JCL CARD DATA LINES:                             *                      
+*   TERMS=<PAN DATA DICTIONARY TERMS BOOK NAME>          *                      
+*   NOTES=<PAN DATA DICTIONARY NOTES BOOK NAME>          *                      
+*   EQUS=<PAN DATA DICTIONARY EQUATES BOOK NAME>         *                      
+*   SORT=<LANGUAGE FOR SORT> E.G.  SORT=E FOR ENGLISH    *                      
+*        DEFAULT IS ENGLISH                              *                      
+*   LANG=<LIST OF LANGUAGES FOR OUTPUT FILTER>           *                      
+*        USE INITIAL LETTER AS DEFINED IN SYSTEM LANGTAB *                      
+*        OR 'X' FOR ALL LANGUAGES MERGED IN ONE LANGTAB  *                      
+*        DEFAULT ALL LANGUAGES PRESENT                   *                      
+*   FILTER=<OUTPUT FILTER STRING> FILTER SORT KEY TEXT   *                      
+*          E.G.  FILTER=C FILTER TEXT STARTING WITH 'C'  *                      
+*          OR    FILTER=*C FILTER TEXT INCLUDING 'C'     *                      
+*   KEY=<S> EXTRACT SORT KEY FROM SHORT STRING ENTRY,    *                      
+*           DEFAULT IS TO EXTRACT FROM LONG ENTRY.       *                      
+*   BLANK=<Y> REPORT BLANK ENTRIES                       *                      
+*   TRACE=<Y> LISTING OF INTERNAL PROGRAM TABLES         *                      
+*                                                        *                      
+**********************************************************                      
+         SPACE 1                                                                
+DDREPORT CSECT                                                                  
+         PRINT NOGEN                                                            
+         NBASE 0,*DDREP*,=V(REGSAVE),RA,R9                                      
+*                                                                               
+         GOTO1 =V(STXITER),DMCB,A(DUMPLIST)                                     
+*                                                                               
+         L     R8,=V(CPRINT)                                                    
+         USING DPRINT,R8                                                        
+         B     MAIN                                                             
+         EJECT                                                                  
+***********************************************************************         
+* MAIN (HIGHEST LEVEL ROUTINE)                                        *         
+***********************************************************************         
+         SPACE 1                                                                
+MAIN     BAS   RE,VALCARDS         VALIDATE JCL CARD DATA LINES                 
+         BNE   MXIT                  EXIT IF ERROR                              
+         MVC   PANNAME,TERMNAME                                                 
+         BAS   RE,BLDKEY           BUILD SORT KEY TABLE                         
+         BNE   MXIT                                                             
+*                                  INITIALISE SORTER                            
+         GOTO1 =V(SORTER),DMCB,SORTCRD1,SORTCRD2,0                              
+         MVC   PANNAME,TERMNAME                                                 
+         BAS   RE,PUTSORT          READ TERMS FILE LINES TO SORTER              
+         BNE   M20                                                              
+*                                                                               
+         CLC   NOTENAME,SPACES     IF NOTES FILE NAMED                          
+         BE    M10                                                              
+         MVC   PANNAME,NOTENAME                                                 
+         BAS   RE,PUTSORT            READ NOTES FILE LINES TO SORTER            
+         BNE   M20                                                              
+*                                                                               
+M10      BAS   RE,GETSORT          PRINT OUTPUT LINES FROM SORTER               
+         BNE   M20                                                              
+*                                  CLOSE SORTER                                 
+M20      GOTO1 =V(SORTER),DMCB,=C'END'                                          
+*                                                                               
+MXIT     XBASE RC=RETCODE,RL=1                                                  
+         EJECT                                                                  
+***********************************************************************         
+* VALIDATE JCL CARD DATA LINES AS DEFINED IN CARDTBL                  *         
+***********************************************************************         
+         SPACE 1                                                                
+VALCARDS NTR1                                                                   
+*                                                                               
+VCLP1    GOTO1 =V(CARDS),DMCB,P,=C'RE00'                                        
+         CLC   =C'/*',P            IF END OF JCL                                
+         BE    VCEND                 CHECK REQUIRED CARDS INPUT                 
+*                                                                               
+         LA    RE,CARDTBL          INITIALISE TABLE POINTER                     
+*                                                                               
+VCLP2    CLI   0(RE),0             END OF TABLE                                 
+         BE    VCLP1               CARD NOT IN TABLE                            
+         SR    RF,RF                                                            
+         IC    RF,CLENGTH(RE)                                                   
+         BCTR  RF,0                                                             
+         EX    RF,*+8                                                           
+         B     *+10                                                             
+         CLC   P(0),CSTRING(RE)    COMPARE STRING                               
+         BE    VCLP2X                                                           
+         LA    RE,L'CARDTBL(RE)    GET NEXT ENTRY                               
+         B     VCLP2                                                            
+*                                                                               
+VCLP2X   SR    RF,RF               MATCH FOUND                                  
+         IC    RF,CROUTINE(RE)                                                  
+         SLL   RF,2                                                             
+         B     *+0(RF)             BRANCH TO PROCESSING ROUTINE                 
+*                                    FROM JUMP TABLE                            
+         B     VCTERMS                                                          
+         B     VCNOTES                                                          
+         B     VCSORT                                                           
+         B     VCLANG                                                           
+         B     VCFILTER                                                         
+         B     VCKEY                                                            
+         B     VCBLANK                                                          
+         B     VCTRAC                                                           
+         B     VCEQUS                                                           
+         B     VCLP1                                                            
+*                                  CHECK REQUIRED INPUT                         
+VCEND    CLC   TERMNAME,SPACES     CHECK TERMS FILE NAMED                       
+         BE    VCERR2                                                           
+         B     VCYES                                                            
+*                                  CARD DATA ERROR CONDITIONS                   
+VCERR2   GOTO1 =V(PRINTER)         MISSING TERMS FILE NAME                      
+         MVI   ERROR,2                                                          
+         BAS   RE,ERRPRT                                                        
+         B     VCNO                                                             
+*                                                                               
+VCNO     B     NO                  EXIT ERROR CONDITION                         
+*                                                                               
+VCYES    B     YES                 EXIT OK                                      
+         EJECT                                                                  
+***********************************************************************         
+* ROUTINES TO PROCESS EACH JCL CARD DATA LINE                         *         
+***********************************************************************         
+         SPACE 1                                                                
+*                                                                               
+VCTERMS  MVC   TERMNAME,P+6        TERMS=<NAME>                                 
+         B     VCLP1                                                            
+*                                                                               
+VCNOTES  MVC   NOTENAME,P+6        NOTES=<NAME>                                 
+         B     VCLP1                                                            
+*                                                                               
+VCSORT   MVC   SORTCHAR,P+5        SORT=<SORT LANGUAGE>, SINGLE LETTER          
+         CLI   SORTCHAR,X'A9'      IF LOWER CASE CONVERT TO UPPER               
+         BH    VCS01                                                            
+         CLI   SORTCHAR,X'81'                                                   
+         BL    VCS01                                                            
+         ZIC   RE,SORTCHAR                                                      
+         LA    R0,X'40'                                                         
+         AR    RE,R0               CONVERT TO UPPER                             
+         STCM  RE,1,SORTCHAR                                                    
+*                                                                               
+VCS01    B     VCLP1                                                            
+*                                                                               
+VCLANG   MVC   LANGBUFF,P+5        LANG=<LIST OF LANGUAGES>                     
+         MVI   LANGBUFF+9,C' '     MARK END OF BUFF                             
+         LA    RF,LANGBUFF                                                      
+*                                  SAVE IN INTERNAL BUFFER                      
+VCLLP1   CLI   0(RF),C' '                                                       
+         BNE   VCLLP1A                                                          
+         B     VCLP1                                                            
+VCLLP1A  CLI   0(RF),X'A9'         IF LOWER CASE CONVERT TO UPPER               
+         BH    VCLLP1B                                                          
+         CLI   0(RF),X'81'                                                      
+         BL    VCLLP1B                                                          
+         ZIC   RE,0(RF)                                                         
+         LA    R0,X'40'                                                         
+         AR    RE,R0               CONVERT TO UPPER                             
+         STCM  RE,1,0(RF)                                                       
+VCLLP1B  LA    RF,1(RF)                                                         
+         B     VCLLP1                                                           
+*                                                                               
+VCFILTER MVC   FILTER,P+7          FILTER=<STRING>                              
+         SR    RF,RF                                                            
+         LA    R1,P+7                                                           
+*                                                                               
+VCFLP1   CLI   0(R1),C' '                                                       
+         BE    VCFLP1X                                                          
+         LA    RF,1(RF)                                                         
+         LA    R1,1(R1)                                                         
+         LA    RE,P+7+L'FILTER                                                  
+         CR    R1,RE                                                            
+         BNH   VCFLP1                                                           
+*                                                                               
+VCFLP1X  STC   RF,FILTERL          SAVE LENGTH OF FILTER STRING                 
+         B     VCLP1                                                            
+*                                                                               
+VCKEY    CLI   P+4,C'S'            KEY=S                                        
+         BNE   VCLP1               DEFAULT SORT ON LONG STRING                  
+         OI    SWITCH1,SWIKEY      SORT ON SHORT STRING                         
+         B     VCLP1                                                            
+*                                                                               
+VCBLANK  OI    SWITCH1,SWIBLAN     BLANK=YES                                    
+         B     VCLP1                                                            
+*                                                                               
+VCTRAC   OI    SWITCH1,SWITRAC     TRACE=YES                                    
+         B     VCLP1                                                            
+*                                                                               
+VCEQUS   MVC   EQUSNAME,P+5        EQUS=<NAME>                                  
+         MVC   PANNAME,EQUSNAME    EQUS=<NAME>                                  
+         L     RE,AEQUTAB          CLEAR EQUATE NAME TABLE                      
+         L     RF,=A(16384*8)                                                   
+         XCEF                                                                   
+*                                  BUILD TABLE OF EQUATE NAMES                  
+VCE01    BAS   RE,GPANIC           GET EQUS LINE                                
+         BNE   VCNO                EXIT FILE ERROR                              
+         CLI   EOFFLAG,0                                                        
+         BNE   VCLP1               TO END OF FILE                               
+*                                                                               
+         BAS   RE,DICTEQUS         ENTABULATE EQUS LINE DATA                    
+         BNE   VCNO                TABLE OVERFLOW ERROR                         
+         B     VCE01               DO NEXT LINE                                 
+         EJECT                                                                  
+***********************************************************************         
+* READ THROUGH TERMS DATA DICTIONARY PAN BOOK AND BUILD TABLE OF      *         
+* SORT KEYS FOR EACH SET OF DATA DICT ENTRY EQUATE #'S                *         
+***********************************************************************         
+         SPACE 1                                                                
+BLDKEY   NTR1                                                                   
+         L     RE,AKEYTAB          CLEAR SORT KEY TABLE                         
+         L     RF,=A(16384*20)                                                  
+         XCEF                                                                   
+         LA    RF,1                INITIALISE COUNTS                            
+         STH   RF,OLDMAXN                                                       
+         STH   RF,MAXNUM                                                        
+         XC    OLDEQU,OLDEQU                                                    
+         STH   RF,EQUNUM                                                        
+         MVI   LANGSAVE,C' '                                                    
+*                                                                               
+BKLP1    BAS   RE,GPANIC           OPEN DATA DICTIONARY PAN BOOK                
+         BNE   BKNO                  EXIT IF NOT FOUND                          
+         CLI   EOFFLAG,0           IF END OF FILE                               
+         BNE   BKLP1X                EXIT LOOP                                  
+         LA    R2,LINEBUFF         POINT TO PAN BOOK LINE BUFFER                
+         BAS   RE,VALLINE          VALIDATE PAN CONTROL LINE                    
+         BNE   BKLP1                 IGNORE NON DATA LINE                       
+         BAS   RE,BLDENTRY         BUILD KEY TABLE ENTRY FROM DATA LINE         
+         BNE   BKLP1                 UNLESS INVALID DATA LINE                   
+         SR    RE,RE                                                            
+         LH    RE,EQUNUM                                                        
+         CH    RE,MAXNUM           IF NUM > MAXNUM                              
+         BNH   BKLP1                 THEN UPDATE MAXNUM                         
+         MVC   OLDMAXN,MAXNUM                                                   
+         STH   RE,MAXNUM                                                        
+         B     BKLP1               GET NEXT LINE                                
+*                                  CLOSE DATA DICTIONARY FILE                   
+BKLP1X   GOTO1 =V(PANIC),DMCB,=C'CLOSE',=C'PAN',PANNAME,LINEBUFF                
+         B     BKYES                                                            
+*                                                                               
+BKNO     B     NO                  EXIT ERROR                                   
+*                                                                               
+BKYES    B     YES                 EXIT OK                                      
+         EJECT                                                                  
+***********************************************************************         
+* READ THROUGH DATA DICTIONARY PAN BOOK, EXTRACT DATA LINES,          *         
+* GET SORT KEY FOR EQUATE NUMBER AND WRITE RECORD TO SORTER           *         
+* USED TO PROCESS BOTH TERMS AND NOTES FILES                          *         
+***********************************************************************         
+         SPACE 1                                                                
+PUTSORT  NTR1                                                                   
+         XC    OLDEQU,OLDEQU       INITIALISE COUNTS                            
+         LA    RF,1                                                             
+         STH   RF,EQUNUM                                                        
+         MVI   LANGSAVE,C' '                                                    
+*                                                                               
+PSLP1    BAS   RE,GPANIC           OPEN DATA DICTIONARY PAN BOOK                
+         BNE   PSNO                  EXIT IF NOT FOUND                          
+         CLI   EOFFLAG,0           IF END OF FILE                               
+         BNE   PSLP1X                EXIT LOOP                                  
+         LA    R2,LINEBUFF         POINT TO PAN BOOK LINE BUFFER                
+         BAS   RE,VALLINE            VALIDATE PAN CONTROL LINE                  
+         BNE   PSLP1                                                            
+         MVC   SORTDATA,SPACES                                                  
+         MVC   SORTDATA(72),LINEBUFF                                            
+         BAS   RE,GETENTRY         GET KEY TABLE ENTRY INTO SORTKEY             
+         BNE   PSLP1                                                            
+         OC    SORTKEY1,SORTKEY1                                                
+         BNZ   PSLP1B                                                           
+         MVI   SORTKEY1,X'FF'      INDICATE UNASSIGNED ENTRY                    
+*                                                                               
+PSLP1B   GOTO1 =V(SORTER),DMCB,=C'PUT',SORTREC                                  
+         B     PSLP1               GET NEXT LINE                                
+*                                  CLOSE DATA DICTIONARY FILE                   
+PSLP1X   GOTO1 =V(PANIC),DMCB,=C'CLOSE',=C'PAN',PANNAME,LINEBUFF                
+         B     PSYES                                                            
+*                                                                               
+PSNO     B     NO                  EXIT ERROR                                   
+*                                                                               
+PSYES    B     YES                 EXIT OK                                      
+         EJECT                                                                  
+***********************************************************************         
+* GET LINES FROM SORTER AND FORMAT FOR PRINTOUT.                      *         
+***********************************************************************         
+         SPACE 1                                                                
+GETSORT  NTR1                                                                   
+         TM    SWITCH1,SWITRAC     IF DEBUG TRACE REQUESTED                     
+         BZ    GS01                                                             
+         LA    RE,KEY1L              PRINT KEY TABLE                            
+         MH    RE,MAXNUM                                                        
+         A     RE,AKEYTAB                                                       
+         ST    RE,ATABEND                                                       
+         L     R7,AKEYTAB                                                       
+         LA    R2,=CL30'*** KEY TABLE ***'                                      
+         BAS   RE,PRTTAB                                                        
+*                                                                               
+GS01     XC    OLDEQU,OLDEQU       INITIALISE COUNTS                            
+         LA    RF,0                                                             
+         STH   RF,EQUNUM                                                        
+         MVI   LANGSAVE,C' '                                                    
+         MVC   TITLE,SPACES        BUILD REPORT TITLE PAGE                      
+         MVC   TITLE(22),=C'DATA DICTIONARY REPORT'                             
+         ZAP   LINE,=P'99'                                                      
+         MVC   P,SPACES                                                         
+         GOTO1 =V(PRINTER)                                                      
+         ZAP   LINE,=P'20'                                                      
+         MVC   P,SPACES                                                         
+         MVC   P(20),=C'TERMS DATA SET NAME:'                                   
+         MVC   P+22(8),TERMNAME                                                 
+         GOTO1 =V(PRINTER)                                                      
+         ZAP   LINE,=P'22'                                                      
+         MVC   P,SPACES                                                         
+         MVC   P(20),=C'NOTES DATA SET NAME:'                                   
+         MVC   P+22(8),NOTENAME                                                 
+         GOTO1 =V(PRINTER)                                                      
+         ZAP   LINE,=P'24'                                                      
+         MVC   P,SPACES                                                         
+         MVC   P(19),=C'EQUS DATA SET NAME:'                                    
+         MVC   P+22(8),EQUSNAME                                                 
+         GOTO1 =V(PRINTER)                                                      
+         ZAP   LINE,=P'30'                                                      
+         MVC   P,SPACES                                                         
+         MVC   P(14),=C'SORT LANGUAGE:'                                         
+         MVC   P+22(1),SORTCHAR                                                 
+         GOTO1 =V(PRINTER)                                                      
+         ZAP   LINE,=P'32'                                                      
+         MVC   P,SPACES                                                         
+         MVC   P(17),=C'FILTER LANGAUGES:'                                      
+         OC    LANGBUFF,LANGBUFF                                                
+         BZ    GS02                                                             
+         MVC   P+22(10),LANGBUFF                                                
+         GOTO1 =V(PRINTER)                                                      
+GS02     ZAP   LINE,=P'34'                                                      
+         MVC   P,SPACES                                                         
+         MVC   P(14),=C'FILTER STRING:'                                         
+         MVC   P+22(20),FILTER                                                  
+         GOTO1 =V(PRINTER)                                                      
+         ZAP   LINE,=P'36'                                                      
+         MVC   P,SPACES                                                         
+         MVC   P(4),=C'KEY:'                                                    
+         MVC   P+22(4),=C'LONG'                                                 
+         TM    SWITCH1,SWIKEY                                                   
+         BZ    *+10                                                             
+         MVC   P+22(5),=C'SHORT'                                                
+         GOTO1 =V(PRINTER)                                                      
+         ZAP   LINE,=P'99'                                                      
+*                                  GET LINES FROM SORTER TO END                 
+GSLP1    GOTO1 =V(SORTER),DMCB,=C'GET'                                          
+         ICM   R2,15,4(R1)                                                      
+         BZ    GSYES                                                            
+         MVC   SORTREC,0(R2)                                                    
+         BAS   RE,WRTREP           FORMAT AND OUTPUT DATA                       
+         BNE   GSNO                                                             
+         B     GSLP1                                                            
+*                                                                               
+GSNO     B     NO                  EXIT ERROR                                   
+*                                                                               
+GSYES    B     YES                 EXIT OK                                      
+***********************************************************************         
+* VALIDATE SYNTAX OF DATA DICTIONARY PAN BOOK CONTROL LINE            *         
+* RETURN DATA LINE IF OK.                                             *         
+***********************************************************************         
+         SPACE 1                                                                
+VALLINE  NTR1                                                                   
+         CLC   =C'*          DATA SET',0(R2)                                    
+         BNE   VALL06                                                           
+         MVC   DATASETN,0(R2)                                                   
+         B     VALLNO                                                           
+*                                                                               
+VALL06   CLC   =C'TITLE',0(R2)                                                  
+         BNE   VALL07                                                           
+         B     VALLNO                                                           
+*                                                                               
+VALL07   CLC   =C'EJECT',0(R2)                                                  
+         BNE   VALL08                                                           
+         MVC   P,SPACES                                                         
+         ZAP   LINE,=P'75'                                                      
+         B     VALLNO                                                           
+*                                                                               
+VALL08   CLC   =C'SPACE',0(R2)                                                  
+         BNE   VALL10                                                           
+         MVC   P,SPACES                                                         
+         CLI   6(R2),C' '                                                       
+         BE    VALLNO                                                           
+         ZIC   R3,6(R2)                                                         
+         SLL   R3,28                                                            
+         SRL   R3,28                                                            
+         OR    R3,R3                                                            
+         BZ    VALLNO                                                           
+*                                                                               
+VALL09   GOTO1 =V(PRINTER)                                                      
+         BCT   R3,VALL09                                                        
+         B     VALLNO                                                           
+*                                                                               
+VALL10   CLI   0(R2),C'*'          IF NOT CONTROL, PROCESS ENTRY                
+         BNE   VALLYES                                                          
+         B     VALLNO                                                           
+*                                                                               
+VALLYES  B     YES                 EXIT DATA LINE                               
+*                                                                               
+VALLNO   B     NO                  EXIT CONTROL LINE                            
+         EJECT                                                                  
+***********************************************************************         
+* PROCESS DATA DICTIONARY LINE AND ADD ENTRY TO SORT KEY TABLE.       *         
+* IF ENTRY IS THE REQUESTED SORT LANGUAGE SORT KEY IS ADDED TO THE    *         
+* POSITION IN A KEY TABLE OFFSET RELATIVE TO THE EQUATE NUMBER        *         
+* SORT KEY TEXT IS EXTRACTED FORM EITHER SHORT OR LONG STRING IN      *         
+* ENTRY AS REQUESTED.                                                 *         
+***********************************************************************         
+         SPACE 1                                                                
+BLDENTRY NTR1                                                                   
+         CLC   0(5,R2),SPACES      SEE IF EXTENDED LINE                         
+         BNE   BE01                IF SO USE LAST LANGUAGE/EQU#                 
+         OC    EQUNUM,EQUNUM       IF THERE WAS ONE                             
+         BZ    BENO                                                             
+         B     BE02                                                             
+*                                                                               
+BE01     BAS   RE,GETNUM           GET EQUATE # INTO EQUNUM                     
+         BNE   BENO                  ELSE INVALID NUMBER                        
+         BAS   RE,GETLANG          GET LANGUAGE CHARACTER INTO LANGSAVE         
+         BNE   BENO                  ELSE INVALID LANGUAGE                      
+*                                                                               
+BE02     CLC   LANGSAVE,SORTCHAR   CHECK IF SORT LANGUAGE                       
+         BNE   BENO                  ELSE IGNORE                                
+         TM    SWITCH1,SWIKEY      TEST IF SHORT STRING FOR KEY                 
+         BZ    BE09                                                             
+         LA    R3,6(R2)            EXTRACT SHORTEST STRING AS KEY               
+         LA    RE,66                                                            
+         CLI   0(R3),DELIM                                                      
+         BE    BE03                                                             
+         LA    R3,1(R3)            BUMP POINTER AS FAR AS LINE END              
+         BCT   RE,*-12                                                          
+         B     BENO                                                             
+*                                  EXTRACT LONGEST STRING AS KEY                
+BE09     LA    R3,71(R2)           LAST COL OF INPUT                            
+         LA    RE,72                                                            
+         CLI   0(R3),C' '          FIND FIRST NON BLANK CHAR                    
+         BNE   BE03                                                             
+         BCTR  R3,0                BACKTRACK POINTER                            
+         BCT   RE,*-10                                                          
+         B     BENO                                                             
+*                                                                               
+BE03     CLI   0(R3),DELIM         EVERY LINE MUST HAVE '>'                     
+         BNE   BENO                                                             
+         SR    RF,RF                                                            
+*                                                                               
+BE04     BCTR  R3,0                BACKTRACK POINTER                            
+         LA    RF,1(RF)            COUNT # CHARACTERS IN STRING                 
+         CLI   0(R3),DELIM         FIND START OF LAST STRING                    
+         BE    BE05                                                             
+         CLI   0(R3),COMMON                                                     
+         BE    BE05                                                             
+         CLI   0(R3),COMMON2                                                    
+         BE    BE05                                                             
+         BCT   RE,BE04                                                          
+         B     BENO                                                             
+*                                                                               
+BE05     LA    R3,1(R3)                                                         
+         BCT   RF,*+8                                                           
+         B     BENO                                                             
+         CLI   0(R3),C' '                                                       
+         BNE   *+8                                                              
+         B     BE05                                                             
+         LA    RE,KEY1L                                                         
+         CR    RF,RE                                                            
+         BNH   *+6                                                              
+         LR    RF,RE               CALCULATE OFFSET IN KEY TABLE                
+         MH    RE,EQUNUM                                                        
+         A     RE,AKEYTAB                                                       
+         C     RE,AKEYTABX                                                      
+         BNL   BEERR                                                            
+         MVC   0(KEY1L,RE),SPACES                                               
+         LR    R1,RE                                                            
+*                                                                               
+BE06     CLI   0(R3),X'A9'         CONVERT TO UPPER CASE                        
+         BH    BE07                COUNT # CHARACTERS IN STRING                 
+         CLI   0(R3),X'81'         FIND START OF LAST STRING                    
+         BL    BE07                                                             
+         OI    0(R3),X'40'                                                      
+*                                                                               
+BE07     MVC   0(1,RE),0(R3)       MOVE STRING TO KEY TABLE                     
+         LA    RE,1(RE)                                                         
+*                                                                               
+BE08     LA    R3,1(R3)                                                         
+         BCT   RF,BE06                                                          
+*                                                                               
+         CLC   0(KEY1L,R1),SPACES                                               
+         BNE   BEYES                                                            
+         XC    0(KEY1L,R1),0(R1)   SET BLANK KEY TO UNASSIGNED VALUE            
+         B     BEYES                                                            
+*                                                                               
+BEERR    MVI   ERROR,3                                                          
+         BAS   RE,ERRPRT                                                        
+         B     BENO                                                             
+*                                                                               
+BENO     B     NO                                                               
+*                                                                               
+BEYES    B     YES                                                              
+         EJECT                                                                  
+***********************************************************************         
+* GET KEY TABLE ENTRY FOR CURRENT EQUATE NUMBER AND BUILD SORT KEY    *         
+* SORT KEY HAS THREE LEVELS:                                          *         
+* SORTKEY1:  STRING EXTRACTED FROM ENTRY FOR ALPHABETIC SORT          *         
+* SORTKEY3:  EQUATE NUMBER OF ENTRY TO ORDER LIKE ENTRIES             *         
+* SORTKEY2:  LANGUAGE PRIORITY CODE WITHIN ENTRY, GIVEN VALUES;       *         
+* 0=NOTE, 1=US ENTRY IF IN US, 2=SORT LANG., ELSE LANGUAGE CHARACTER  *         
+***********************************************************************         
+         SPACE 1                                                                
+GETENTRY NTR1                                                                   
+*                                                                               
+         CLC   0(5,R2),SPACES      SEE IF EXTENDED LINE                         
+         BNE   GE01                IF SO USE LAST LANGUAGE/EQU#                 
+         OC    EQUNUM,EQUNUM       IF THERE WAS ONE                             
+         BZ    GENO                                                             
+         B     GE02                                                             
+*                                                                               
+GE01     BAS   RE,GETNUM           GET EQUATE # INTO EQUNUM                     
+         BNE   GENO                  ELSE INVALID NUMBER                        
+         BAS   RE,GETLANG          GET LANGUAGE CHARACTER INTO LANGSAVE         
+         BNE   GENO                  ELSE INVALID LANGUAGE                      
+*                                                                               
+GE02     MVC   SORTKEY2,LANGSAVE                                                
+         CLI   5(R2),C' '          CHECK IF COMMENT LINE                        
+         BNE   GE03                                                             
+         MVI   SORTKEY2,X'00'                                                   
+         B     GE04                                                             
+*                                                                               
+GE03     CLC   LANGSAVE,SORTCHAR   CHECK IF SORT LANGUAGE                       
+         BNE   GE04                                                             
+         MVI   SORTKEY2,X'02'                                                   
+*&&US                                                                           
+         CLI   4(R2),SYMBUSA       IF 'U' OR 'C'                                
+         BNE   GEUSA                 THEN PRIORITY IN SORT                      
+         B     GEUSB                                                            
+GEUSA    CLI   4(R2),SYMBCAN                                                    
+         BNE   GEUSX                                                            
+GEUSB    MVI   SORTKEY2,X'01'                                                   
+*                                                                               
+GEUSX    EQU   *                                                                
+*&&                                                                             
+*                                                                               
+GE04     LA    RE,KEY1L                                                         
+         MH    RE,EQUNUM                                                        
+         A     RE,AKEYTAB                                                       
+         C     RE,AKEYTABX                                                      
+         BNL   GEERR                                                            
+         XC    SORTKEY1,SORTKEY1                                                
+         MVC   SORTKEY1,0(RE)      MOVE A STRING                                
+         MVC   SORTKEY3,EQUNUM     SORT KEY 3 IS EQUATE NUMBER                  
+         B     GEYES                                                            
+*                                                                               
+GEERR    MVI   ERROR,3                                                          
+         BAS   RE,ERRPRT                                                        
+         B     BENO                                                             
+*                                                                               
+GENO     B     NO                                                               
+*                                                                               
+GEYES    B     YES                                                              
+         EJECT                                                                  
+***********************************************************************         
+* WRITE SORTED DATA DICTIONARY ENTRY LINE TO OUTPUT REPORT            *         
+***********************************************************************         
+         SPACE 1                                                                
+WRTREP   NTR1                                                                   
+         CLI   SORTKEY1,X'FF'      CHECK IF UNASSIGNED OR BLANK ENTRY           
+         BNE   WR00                                                             
+         TM    SWITCH1,SWIBLAN     TEST BLANK ENTRIES FOR PRINT                 
+         BZ    WRYES                                                            
+*                                                                               
+WR00     LA    R2,SORTDATA                                                      
+         BAS   RE,GETNUM           GET EQUATE NUMBER                            
+         BNE   WRYES                                                            
+         BAS   RE,GETLANG          GET LANGUAGE CODE                            
+         BNE   WRYES                                                            
+         CLC   FILTER,SPACES       IF TEXT FILTER REQUESTED                     
+         BE    WR03                                                             
+         BAS   RE,STRGFILT           FILTER SORT KEY TEXT                       
+         BNE   WRYES                                                            
+*                                                                               
+WR03     CLC   EQUNUM,OLDEQU       IF NEW EQUATE NUMBER                         
+         BE    WR02                                                             
+         CP    LINE,=P'50'           WRITE ENTRY HEADER                         
+         BL    *+10                                                             
+         ZAP   LINE,=P'99'                                                      
+         MVC   P(80),SPACES                                                     
+         MVI   P,C'*'                                                           
+         GOTO1 =V(PRINTER)                                                      
+         MVI   P,C'*'                                                           
+         MVC   P+6(9),=C'SORT KEY:'                                             
+         CLI   SORTKEY1,X'FF'                                                   
+         BNE   *+14                                                             
+         MVC   P+16(11),=C'BLANK ENTRY'                                         
+         B     *+10                                                             
+         MVC   P+16(20),SORTKEY1                                                
+*                                                                               
+WR01     MVC   P+40(7),=C'EQUATE:'                                              
+         CLC   EQUSNAME,SPACES                                                  
+         BE    WR01A                                                            
+         L     RF,AEQUTAB          GET ANY EQUATE NAME FROM TABLE               
+         SR    RE,RE                                                            
+         LH    RE,EQUNUM                                                        
+         SLL   RE,3                                                             
+         AR    RF,RE                                                            
+         C     RF,AEQUTABX                                                      
+         BNL   WR01A                                                            
+         OC    0(8,RF),0(RF)                                                    
+         BZ    WR01A                                                            
+         MVC   P+48(8),0(RF)                                                    
+         B     WR01B                                                            
+WR01A    EDIT  EQUNUM,(4,P+48),FILL=0,ZERO=NOBLANK                              
+WR01B    GOTO1 =V(PRINTER)                                                      
+         MVC   P(80),SPACES                                                     
+         MVI   P,C'*'                                                           
+         GOTO1 =V(PRINTER)                                                      
+*                                                                               
+WR02     OC    LANGBUFF,LANGBUFF   IF FILTER LANGUAGES REQUESTED                
+         BZ    WR04                                                             
+         BAS   RE,LANGFILT           FILTER ENTRY ON LANGUAGE                   
+         BNE   WRYES                                                            
+*                                                                               
+WR04     MVC   P(L'SORTDATA-2),SORTDATA                                         
+         CLI   5(R2),C' '          IF NOTE ENTRY                                
+         BNE   *+10                                                             
+         MVC   P(5),=C'*    '        OVERWRITE EQUATE NUMBER ETC.               
+         GOTO1 =V(PRINTER)                                                      
+         CLI   5(R2),C' '                                                       
+         BNE   WRYES                                                            
+         MVC   P(80),SPACES                                                     
+         MVI   P,C'*'                                                           
+         GOTO1 =V(PRINTER)                                                      
+         B     WRYES                                                            
+*                                                                               
+WRNO     B     NO                  EXIT ERROR                                   
+*                                                                               
+WRYES    B     YES                 EXIT OK                                      
+         EJECT                                                                  
+***********************************************************************         
+* GET EQUATE NUMBER AND SAVE BINARY VALUE IN WORK STORE               *         
+***********************************************************************         
+         SPACE 1                                                                
+GETNUM   NTR1                                                                   
+         MVC   OLDEQU,EQUNUM       SAVE OLD EQUATE NUMBER                       
+         SR    R3,R3               TO HOLD BINARY EQU NUMBER                    
+         SR    R4,R4               TO COUNT TOTAL NUMBER OF DIGITS              
+*                                                                               
+GNLP1    CLI   0(R2),C'0'          IF CHAR IN ('0'..'9')                        
+         BL    GNLP1X                THEN VALID                                 
+         CLI   0(R2),C'9'                                                       
+         BH    GNLP1X                                                           
+*                                                                               
+         NI    0(R2),X'0F'         CONVERT EBCDIC TO BINARY                     
+         SR    RE,RE                                                            
+         ICM   RE,1,0(R2)          LOAD SINGLE DIGIT                            
+         OI    0(R2),X'F0'         CONVERT BACK TO EBCDIC                       
+         MH    R3,=H'10'           NUM = NUM*10 + ORD(CHAR)                     
+         AR    R3,RE                                                            
+         LA    R4,1(R4)                                                         
+         LA    R2,1(R2)            BUMP POINTER                                 
+         CH    R4,=H'04'                                                        
+         BNH   GNLP1                                                            
+         B     GNNO                INVALID NUMBER                               
+*                                                                               
+GNLP1X   EQU   *                                                                
+         OR    R4,R4               "EXPECTING EQUATE NUMBER"                    
+         BZ    GNNO                IF # DIGIT < 1                               
+         OR    R3,R3                                                            
+         BZ    GNNO                INVALID NUMBER(I.E. 0000)                    
+         STH   R3,EQUNUM           SAVE BINARY EQU # VALUE                      
+         B     GNYES                                                            
+*                                                                               
+GNNO     B     NO                  EXIT ERROR                                   
+*                                                                               
+GNYES    B     YES                 EXIT OK                                      
+         EJECT                                                                  
+***********************************************************************         
+* GET LANGUAGE SYMBOL                                                 *         
+***********************************************************************         
+         SPACE 1                                                                
+GETLANG  NTR1                                                                   
+         CLI   4(R2),DELIM                                                      
+         BE    GLNO                DOES NOT CONTAIN LANGUAGE CHAR.              
+*                                                                               
+         LA    RE,SYMBLTAB         TEST VALIDITY OF LANGUAGE CHARACTER          
+         CLI   4(R2),SYMBQUE                                                    
+         BE    GLLP1X                                                           
+         CLI   4(R2),SYMBNOT                                                    
+         BE    GLLP1X                                                           
+GLLP1    CLI   0(RE),SYMBNOT                                                    
+         BE    GLNO                INVALID LANGUAGE CHAR.                       
+         CLC   4(1,R2),0(RE)                                                    
+         BE    GLLP1X                                                           
+         LA    RE,1(RE)                                                         
+         B     GLLP1                                                            
+*                                                                               
+GLLP1X   EQU   *                                                                
+         CLI   5(R2),DELIM                                                      
+         BE    GL01                                                             
+         CLI   5(R2),COMMON        IF '?' OR '<', PROCESS NORMALLY              
+         BE    GL01                                                             
+         CLI   5(R2),COMMON2                                                    
+         BE    GL01                                                             
+         CLI   5(R2),C' '          NOTE LINE                                    
+         BNE   GLNO                                                             
+*                                                                               
+GL01     MVC   LANGSAVE,4(R2)      SAVE LANGUAGE SYMBOL                         
+*                                                                               
+GLUS     EQU   *                                                                
+*&&US                                                                           
+         CLI   4(R2),SYMBUSA       IF 'U' OR 'C'                                
+         BNE   GLUSA                 THEN OVERWRITE PREV. ENTRY                 
+         MVI   LANGSAVE,SYMBENG                                                 
+         B     GLUSX                                                            
+GLUSA    CLI   4(R2),SYMBCAN                                                    
+         BNE   GLUSX                                                            
+         MVI   LANGSAVE,SYMBFRE                                                 
+         B     GLUSX                                                            
+*                                                                               
+GLUSX    EQU   *                                                                
+*&&                                                                             
+         B     GLYES                                                            
+*                                                                               
+GLNO     B     NO                  EXIT ERROR                                   
+*                                                                               
+GLYES    B     YES                 EXIT OK                                      
+         EJECT                                                                  
+***********************************************************************         
+* FILTER ENTRY LINE FROM LANGUAGE REQUEST BUFFER                      *         
+***********************************************************************         
+         SPACE 1                                                                
+LANGFILT NTR1                                                                   
+         LA    R1,LANGBUFF                                                      
+*                                                                               
+LFLP1    CLI   0(R1),0                                                          
+         BE    LF01                                                             
+         CLI   0(R1),C' '                                                       
+         BE    LFNO                                                             
+         CLC   0(1,R1),LANGSAVE    COMPARE LANGUAGE CHARACTER                   
+         BE    LFYES                                                            
+         B     LF01                                                             
+*                                                                               
+LF01     LA    R1,1(R1)                                                         
+         B     LFLP1                                                            
+*                                                                               
+LFNO     B     NO                                                               
+*                                                                               
+LFYES    B     YES                                                              
+***********************************************************************         
+* FILTER SORT KEY TEXT AGAINST STRING FILTER REQUEST OF VALUE EITHER; *         
+* EITHER 'STRING' FILTERS FROM START OF TEXT,                         *         
+* OR     '*STRING' SEARCH TEXT FOR 'STRING'                           *         
+***********************************************************************         
+         SPACE 1                                                                
+STRGFILT NTR1                                                                   
+         LA    R1,SORTKEY1         POINT TO SORT KEY STRING                     
+         SR    RF,RF                                                            
+         ICM   RF,1,FILTERL        LENGTH OF FILTER STRING                      
+         BZ    SFYES                                                            
+         LA    RE,FILTER                                                        
+         CLI   0(RE),C'*'          SEE IF SEARCH STRING                         
+         BNE   SF01                                                             
+         LA    RE,1(RE)                                                         
+         BCT   RF,SFLP1                                                         
+         B     SFYES                                                            
+*                                                                               
+SFLP1    CLC   0(1,RE),0(R1)                                                    
+         BE    SF01                                                             
+*                                                                               
+SFLP1A   LA    R1,1(R1)                                                         
+         LA    R0,SORTKEY1+L'SORTKEY1                                           
+         CR    R1,R0                                                            
+         BNL   SFNO                                                             
+         B     SFLP1                                                            
+*                                                                               
+SF01     BCTR  RF,0                                                             
+         EX    RF,*+8                                                           
+         B     *+10                                                             
+         CLC   0(0,RE),0(R1)       COMPARE STRING                               
+         BE    SFYES                                                            
+         LA    RF,1(RF)                                                         
+         CLI   FILTER,C'*'                                                      
+         BE    SFLP1A                                                           
+         B     SFNO                                                             
+*                                                                               
+SFNO     B     NO                  EXIT NOT FOUND                               
+*                                                                               
+SFYES    B     YES                 EXIT OK                                      
+         EJECT                                                                  
+***********************************************************************         
+*  READ LINE FROM PAN BOOK INTO BUFFER                                *         
+***********************************************************************         
+         SPACE 1                                                                
+GPANIC   NTR1                                                                   
+         GOTO1 =V(PANIC),DMCB,(X'80',=C'READ'),=C'PAN',PANNAME,LINEBUFF         
+         TM    DMCB+8,X'40'        DISK ERROR?                                  
+         BZ    *+6                                                              
+         DC    H'00'                                                            
+         TM    DMCB+8,X'10'        PAN BOOK IN LIBRARY?                         
+         BNZ   GPNO                                                             
+         B     GPYES                                                            
+*                                                                               
+GPNO     MVC   P,SPACES            PAN BOOK NOT FOUND                           
+         MVC   P,PANNAME                                                        
+         GOTO1 =V(PRINTER)                                                      
+         MVI   ERROR,0                                                          
+         BAS   RE,ERRPRT                                                        
+         B     NO                                                               
+*                                                                               
+GPYES    MVC   EOFFLAG,DMCB+8      PAN BOOK FOUND, SAVE EOF FLAG                
+         B     YES                                                              
+         SPACE 1                                                                
+***********************************************************************         
+*  PRINT THE CONTENTS OF A TABLE                                      *         
+***********************************************************************         
+         SPACE 1                                                                
+PRTTAB   NTR1                                                                   
+         TM    SWITCH1,SWITRAC     TEST TRACE LISTING REQUESTED                 
+         BZ    PRXIT                                                            
+         OC    COUNTERR,COUNTERR                                                
+         BNZ   PRXIT                                                            
+         ZAP   LINE,=P'75'                                                      
+         MVC   P(30),0(R2)         TITLE OF A TABLE                             
+         GOTO1 =V(PRINTER)                                                      
+*                                                                               
+PR10     MVC   P(80),0(R7)                                                      
+         GOTO1 =V(PRINTER)                                                      
+         XC    HEXBUFF,HEXBUFF     PRINT THE CONTENTS IN HEX                    
+         GOTO1 =V(HEXOUT),DMCB,(R7),HEXBUFF,80,=C'SEP'                          
+         OC    16(4,R1),16(R1)                                                  
+         BNZ   *+6                                                              
+         DC    H'0'                                                             
+         MVC   P(80),HEXBUFF                                                    
+         GOTO1 =V(PRINTER)                                                      
+         MVC   P(80),HEXBUFF+80                                                 
+         GOTO1 =V(PRINTER)                                                      
+         MVI   P,C' '                                                           
+         GOTO1 =V(PRINTER)                                                      
+*                                                                               
+         LA    RE,80                                                            
+         C     R7,ATABEND                                                       
+         BNL   PRXIT                                                            
+         LA    R7,1(R7)                                                         
+         BCT   RE,*-12                                                          
+         B     PR10                                                             
+*                                                                               
+PRXIT    B     XIT                                                              
+         EJECT                                                                  
+***********************************************************************         
+*  ENTABULATE CONTENTS OF DATA DICTIONARY EQUS PAN FILE               *         
+***********************************************************************         
+         SPACE 1                                                                
+DICTEQUS NTR1                                                                   
+*                                                                               
+DICT1    CLC   LINEBUFF+8(5),=C' EQU '    TEST EQU CARD                         
+         BNE   DICTYES                                                          
+         LA    RE,LINEBUFF+15      LOCATE EQUATED VALUE                         
+         SR    R1,R1               SET BLANK AS DELIMITER                       
+DICT1A   CLI   0(RE),C' '          GET EQUATE# DIGITS                           
+         BE    DICT1C              PROCESS EQUATE DIGITS                        
+         CLI   0(RE),C'+'          PROCESS SPECIAL ENTRY                        
+         BNE   DICT1B              GET NEXT DIGIT                               
+*                                                                               
+DICT1A1  CLC   3(6,RE),=C'#DISK '  TEST EQUATE FOR DISK ITEM                    
+         BE    DICT1A2                                                          
+         CLC   1(5,RE),=C'32768'                                                
+         BNE   *+12                                                             
+DICT1A2  L     R1,=F'32768'        SET +32768 AS DELIMITER                      
+         B     DICT1C                                                           
+*                                                                               
+DICT1A3  CLC   3(4,RE),=C'#COM'    TEST EQUATE FOR COMMON ITEM                  
+         BE    DICT1A4                                                          
+         CLC   3(4,RE),=C'#GEN'                                                 
+         BE    DICT1A4                                                          
+         CLC   1(5,RE),=C'16384'                                                
+         BNE   *+12                                                             
+DICT1A4  L     R1,=F'16384'        SET +16384 AS DELIMITER                      
+         B     DICT1C                                                           
+*                                                                               
+DICT1A5  CLC   3(6,RE),=C'#DISKC'  TEST EQUATE FOR DISK COMMON ITEM             
+         BE    DICT1A6                                                          
+         CLC   3(6,RE),=C'#DISKG'                                               
+         BE    DICT1A6                                                          
+         CLC   1(5,RE),=C'49152'                                                
+         BNE   *+12                                                             
+DICT1A6  L     R1,=F'49152'        SET +49152 AS DELIMITER                      
+         B     DICT1C                                                           
+*                                                                               
+         B     DICTYES                                                          
+DICT1B   LA    RE,1(RE)            BUMP POINTER                                 
+         B     DICT1A              GET NEXT DIGIT                               
+DICT1C   LA    RF,LINEBUFF+15                                                   
+         SR    RE,RF                                                            
+         BNP   DICTYES                                                          
+         BCTR  RE,0                                                             
+         MVC   DUB,=8C'0'          TEST IF NUMERIC                              
+         EX    RE,*+8                                                           
+         B     *+10                                                             
+         MVZ   DUB(0),LINEBUFF+15                                               
+         CLC   DUB,=8C'0'                                                       
+         BNE   DICTYES                                                          
+         EX    RE,*+8                                                           
+         B     *+10                                                             
+         PACK  DUB(8),LINEBUFF+15(0)                                            
+         CVB   R0,DUB                                                           
+         LTR   R1,R1               TEST IF SPECIAL ENTRY                        
+         BZ    DICT1C1                                                          
+         C     R1,=F'16384'        PROCESS GEN TYPE ENTRY                       
+         BE    DICT1C1                                                          
+         B     DICTYES             IGNORE DISK TYPE ENTRY                       
+DICT1C1  C     R0,=F'16384'        CHECK VALID VALUE                            
+         BNL   DICTYES                                                          
+*                                                                               
+DICT2    L     RF,AEQUTAB          STORE NAME IN EQUATE NAME TABLE              
+         SLL   R0,3                OFFSET 8*EQU#                                
+         AR    RF,R0                                                            
+         C     RF,AEQUTABX                                                      
+         BL    DICT2A                                                           
+         MVC   P,SPACES            REPORT TABLE OVERFLOW ERROR                  
+         MVC   P(10),PANNAME                                                    
+         MVC   P+20(15),=C'DICTIONARY FULL'                                     
+         GOTO1 =V(PRINTER)                                                      
+         B     DICTNO                                                           
+DICT2A   MVC   0(8,RF),LINEBUFF    SET EQUATE NAME                              
+         B     DICTYES                                                          
+*                                                                               
+DICTNO   B     NO                  EXIT ERROR                                   
+*                                                                               
+DICTYES  B     YES                 EXIT OK                                      
+         EJECT                                                                  
+***********************************************************************         
+* PRINT ERROR MESSAGE                                                 *         
+***********************************************************************         
+         SPACE 1                                                                
+ERRPRT   ST    RE,SAVERE                                                        
+         LA    RE,ERRTAB                                                        
+         SR    RF,RF                                                            
+         ICM   RF,1,ERROR                                                       
+         MH    RF,=H'40'                                                        
+         AR    RE,RF                                                            
+         MVC   P,SPACES                                                         
+         MVC   P+13(10),=C'*** ERROR '                                          
+         MVC   P+23(L'ERRMSG0),0(RE)                                            
+         GOTO1 =V(PRINTER)                                                      
+         MVI   ERROR,0                                                          
+         L     RE,SAVERE                                                        
+         BR    RE                                                               
+         SPACE 1                                                                
+***********************************************************************         
+*  PRINT DATA DICTIONARY LINE                                         *         
+***********************************************************************         
+         SPACE 1                                                                
+PRTLINE  DS    0H                                                               
+         MVC   P(L'LINEBUFF),LINEBUFF                                           
+         ST    RE,SAVERE                                                        
+         GOTO1 =V(PRINTER)                                                      
+         L     RE,SAVERE                                                        
+         BR    RE                                                               
+         SPACE 1                                                                
+*                                                                               
+YES      SR    RC,RC               RETURN CC EQUAL                              
+NO       LTR   RC,RC               RETURN CC NOT EQUAL                          
+XIT      XIT1                                                                   
+*                                                                               
+         EJECT                                                                  
+DUMPLIST DS    0F                                                               
+         DC    A(DDREPORT,65000)                                                
+         ORG   *-4                                                              
+         DC    X'80'                                                            
+         ORG                                                                    
+*                                                                               
+         LTORG                                                                  
+KEY1L    EQU   20                                                               
+KEY2L    EQU   1                                                                
+SORTCRD1 DC    CL35'SORT FIELDS=(1,20,A,22,2,A,21,1,A),'                        
+         DC    CL80'FORMAT=BI,WORK=1'                                           
+SORTCRD2 DC    CL80'RECORD TYPE=F,LENGTH=101'                                   
+         EJECT                                                                  
+* CARDTBL DEFINES JOB CONTROL INPUT PARAMETER CARDS                             
+* AL1    LENGTH OF CARD NAME                                                    
+* AL1    ACTION ROUTINE NUMBER                                                  
+* XL1    ACTION FLAGS                                                           
+* CL8    CARD NAME                                                              
+*                                                                               
+CARDTBL  DS    0CL14                                                            
+         DC    AL1(06,01),X'00',CL11'TERMS='                                    
+         DC    AL1(06,02),X'00',CL11'NOTES='                                    
+         DC    AL1(05,03),X'00',CL11'SORT='                                     
+         DC    AL1(05,04),X'00',CL11'LANG='                                     
+         DC    AL1(07,05),X'00',CL11'FILTER='                                   
+         DC    AL1(04,06),X'00',CL11'KEY='                                      
+         DC    AL1(07,07),X'00',CL11'BLANK=Y'                                   
+         DC    AL1(07,08),X'00',CL11'TRACE=Y'                                   
+         DC    AL1(05,09),X'00',CL11'EQUS='                                     
+CARDTBLX DC    AL1(00)                                                          
+CLENGTH  EQU   0                                                                
+CROUTINE EQU   1                                                                
+CFLAG    EQU   2                                                                
+CSTRING  EQU   3                                                                
+         EJECT                                                                  
+*                                                                               
+* WORKING STORAGE                                                               
+*                                                                               
+DMCB     DS    6F                                                               
+DUB      DS    D                                                                
+WORK     DS    CL17                                                             
+         DS    0H                                                               
+SAVERE   DS    A                   SAVE RE                                      
+LITPTR   DS    A                   LITERAL TABLE POINTER                        
+*                                                                               
+OLDMAXN  DC    H'0001'             VALID PREV. MAXNUM                           
+MAXNUM   DC    H'0001'             CURRENT HIGH EQU NUMBER                      
+LASTEQU  DC    H'0000'             LAST EQU NUMBER                              
+OLDEQU   DC    H'0000'             OLD EQU NUMBER                               
+EQUNUM   DC    H'0001'             CURRENT EQU NUMBER                           
+*                                                                               
+SYSCHAR  DC    C' '                                                             
+LANGSAVE DC    C' '                                                             
+SORTCHAR DC    C'E'                                                             
+*                                  DATA DICTIONARY SYNTAX CONTROLS              
+COMMON   EQU   C'?'                                                             
+COMMON2  EQU   C'<'                                                             
+DELIM    EQU   C'>'                DELIMETER                                    
+DELIM2   DC    CL2'>>'             INCLUDE DELIM AS A CHAR                      
+SPLITTER EQU   C':'                SPECIAL EQUATE NUMBER INDICATOR              
+ONEOFF   EQU   X'FE'               MASK TO TURN OFF X'01'                       
+TWOOFF   EQU   X'FD'               MASK TO TURN OFF X'02'                       
+END1     EQU   X'FE'               END OF TABLE MARKER                          
+END2     DC    XL2'FFFF'           END OF ADDRS OR LITERALS                     
+OLDLANG  DC    CL1'E'              CURR. LANG. CODE                             
+STRLEN   DC    XL1'00'             CURRENT STRING LENGTH                        
+PANNAME  DC    CL10' '             PAN FILE NAME                                
+TERMNAME DC    CL10' '             TERMS PAN DATA FILE NAME                     
+NOTENAME DC    CL10' '             NOTES PAN DATA FILE NAME                     
+EQUSNAME DC    CL10' '             EQUS PAN DATA FILE NAME                      
+*                                                                               
+FILTER   DC    CL20' '             STRING SEARCH FILTER BUFFER                  
+FILTERL  DC    XL1'00'               AND LENGTH OF CONTENTS                     
+*                                                                               
+LANGBUFF DC    XL10'00'            LANG. REQUESTS                               
+*                                  LANGUAGE CHARACTER TABLE                     
+SYMBLTAB DC    CL10'EUFCGISDX'                                                  
+SYMBLANG DC    CL1'E'              DEFAULT ENGLISH                              
+SYMBENG  EQU   C'E'                ENGLISH(UK OR USA)                           
+SYMBUSA  EQU   C'U'                ENGLISH(USA)                                 
+SYMBCAN  EQU   C'C'                FRENCH(CANADA)                               
+SYMBFRE  EQU   C'F'                FRENCH                                       
+SYMBGER  EQU   C'G'                GERMAN                                       
+SYMBITA  EQU   C'I'                ITALIAN                                      
+SYMBSPA  EQU   C'S'                SPANISH                                      
+SYMBDUT  EQU   C'D'                DUTCH                                        
+SYMBQUE  EQU   C'Q'                EQUATE SYMBOL                                
+SYMBNOT  EQU   C'X'                NOT USED                                     
+*                                  CONTROL ACTION INDICATORS                    
+SWITCH1  DC    XL1'00'             DEFAULT OFF                                  
+SWIBLAN  EQU   X'01'               IF ON THEN PRINT BLANK ENTRIES               
+SWITRAC  EQU   X'02'               IF ON THEN PRINT LITTAB & OBJTAB             
+SWIKEY   EQU   X'04'               IF ON THEN SORT KEY SHORT STRING             
+*                                                                               
+FLAGS    DC    XL1'00'             INTERNAL CONTROL FLAG                        
+FLAGSKIP EQU   X'01'               ON = SKIP CONTI. LINE                        
+FLAGNCON EQU   X'02'               ON = CANNOT HAVE CONTI. UPON ERROR           
+*                                  ADDRESSES OF INTERNAL DATA TABLES            
+AKEYTAB  DC    A(KEYTAB)           KEY TEXT TABLE                               
+AKEYTABX DC    A(KEYTABX)                                                       
+AEQUTAB  DC    A(EQUTAB)           EQUATE NAME TABLE                            
+AEQUTABX DC    A(EQUTABX)                                                       
+*                                                                               
+RETCODE  DC    XL1'00'             XBASE RETURN CODE                            
+EOFFLAG  DC    XL1'00'             PAN BOOK READ EOF FLAG                       
+*                                                                               
+ERROR    DC    XL1'00'             FLAG TO INDIATE INVALID INPUT                
+COUNTERR DC    XL1'00'             COUNTER OF COMPILATION ERRORS                
+ERRTAB   DS    0H                  ERROR REPORT STRINGS                         
+ERRMSG0  DC    CL40'DATASET NOT FOUND IN PAN LIBRARY'                           
+ERRMSG1  DC    CL40'INVALID CONTROL CARD INPUT'                                 
+ERRMSG2  DC    CL40'MISSING "TERMS" CONTROL CARD'                               
+ERRMSG3  DC    CL40'SORT KEY TABLE OVERFLOW'                                    
+*                                                                               
+HOLES    DC    XL3'010140'         AL1(1),AL1(1),C' '                           
+ADDR1    DS    A                   ADDR(# OF ENTRIES)                           
+ATABEND  DS    A                   ADDR TABLE END FOR PRINT OUT                 
+RELLC    DS    A                   RELATIVE LOCATION COUNTER                    
+*                                                                               
+LINEBUFF DS    CL80                                                             
+HEXBUFF  DS    CL160               TO STORE ALPHA DATA IN HEX                   
+OUTBUFF  DS    CL80                OBJECT LINE                                  
+*                                                                               
+DATASETN DS    CL80                PAN DATA SET NAME SAVE                       
+*                                                                               
+SORTREC  DS    0CL103              SORT RECORD                                  
+*                                  KEY PART                                     
+SORTKEY1 DS    CL20                TEXT EXTRACT FROM ENTRY STRING               
+SORTKEY2 DS    CL1                 LANGUAGE PRIORITY CODE                       
+SORTKEY3 DS    CL2                 ENTRY EQUATE NUMBER                          
+*                                  DATA PART                                    
+SORTDATA DS    CL80                DATA DICTIONARY ENTRY LINE                   
+         EJECT                                                                  
+       ++INCLUDE FASYSLST                                                       
+       ++INCLUDE FALANGTAB                                                      
+*                                                                               
+         DS    0H                                                               
+KEYTAB   DS    16384XL20'00'       SORT KEY TABLE                               
+KEYTABX  DS    0H                                                               
+*                                                                               
+         DS    0H                                                               
+EQUTAB   DS    16384XL8'00'        EQUATE NAME TABLE                            
+EQUTABX  DS    0H                                                               
+         EJECT                                                                  
+*                                                                               
+       ++INCLUDE FASYSLSTD                                                      
+       ++INCLUDE FALANG                                                         
+         EJECT                                                                  
+       ++INCLUDE DDDPRINT                                                       
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'004DDREPORT  07/24/06'                                      
+         END                                                                    

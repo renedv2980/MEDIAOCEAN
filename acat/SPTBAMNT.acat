@@ -1,0 +1,1019 @@
+*          DATA SET SPTBAMNT   AT LEVEL 040 AS OF 01/28/13                      
+*CATALP SPTBAMNT                                                                
+         SPACE 2                                                                
+***********************************************************************         
+*                                                                     *         
+* THIS SUBROUTINE ANALYZES SPOTPAK BUY RECORDS AND MAINTAINS A TABLE  *         
+* OF THE WEEKS OF ACTIVITY BY PRODUCT AND PARTNER. THIS DATA IS USED  *         
+* BY THE CALLING PROGRAM TO MAINTAIN THE TRAFFIC BUY ACTIVITY (TBA)   *         
+* RECORDS.                                                            *         
+*                                                                     *         
+* THE PROGRAM PROCESSES BUY RECORD ACTIVITY FROM THE CURRENT DATE     *         
+* FOR A TWO YEAR PERIOD. SUBSEQUENT DATES CAUSE AN ERROR.             *         
+* THE DATE TABLE IS CORE-RESIDENT IN THIS OTHERWISE RE-ENTRANT CODE.  *         
+*                                                                     *         
+* PARAMETER LIST IS +0  00  A(TBATABLE) FOR ACTIONS 1/2/3/4/5         *         
+*                                                                     *         
+*                   +4  00  A(BUYREC)   FOR ACTIONS 1/2/3             *         
+*                                       WHICH POST BUYREC ACTIVITY    *         
+*                                       TO THE TABLE                  *         
+*                   OR, 00  A(TBAREC)   FOR ACTION 4                  *         
+*                                       WHICH MERGES TABLE DATA       *         
+*                                       WITH AN EXISTING TBAREC       *         
+*                   OR, 00  A(TODAY)    FOR ACTION 5                  *         
+*                                       WHICH INITIALZES DATE TABLE   *         
+*                                                                     *         
+*                   +8  00  A(DATETAB)  FOR ACTION 4                  *         
+*                                       WHEN CALLED FROM SPTBAUPD     *         
+*                   OR, 00  000000      FOR ACTION 4                  *         
+*                                       WHEN CALLED FROM ELSEWHERE    *         
+*                                                                     *         
+* DETAILS OF THE TABLE STRUCTURE ARE IN A DSECT AT THE END OF THIS    *         
+* LISTING. SEVERAL PARAMETERS ARE REQUIRED IN THE TABLE.              *         
+*                                                                     *         
+***********************************************************************         
+*                                                                     *         
+*  LEV 16    AUG01/89 SET OFF ACTIVITY FLAGS FROM TBUYS               *         
+*  LEV 17    OCT10/90 SET ON MEDIA ACTIVITY FLAG IF TBA IS SET        *         
+*  LEV 18    JUN13/91 FIX BH TO BNL FOR CLC DATE TO LAST DATE         *         
+*  LEV 19    FEB14/97 LOOK FOR BB=5/10 COMMENTS, SET BIT IN BUY ACT   *         
+*  LEV 20    MAR07/97 MORE BB - IF CHANGE IN BB, FORCE ACTIVTY        *         
+*  LEV 23    SEP14/99 MESS WITH BUY ACT STUFF                         *         
+*  LEV 24    MAR29/00 MAKE WORKTAB LARGER - FROM 6 TO 12              *         
+*  LEV 25    OCT20/00 NO DUMP FOR NO PRD CODE IN CLIENT REC           *         
+*  LEV 37    DEC07/10 SEND AN EMAIL WHEN RECORD OVERFLOW              *         
+*  LEV 38 SM APR30/12 ADD NEW BILLOARD LENGTHS TO TRAF ACTIVITY RECS  *         
+*                    (CHANGE DUB TO MYELEM WHEN BUILDING ACTIV ELEM)  *         
+*  LEV 39 SMUR SEP/12 SET BB DATES TO PREVIOUS MONDAY IN BBTAB        *         
+*  LEV 40 SMUR JAN/13 SET TBAFLG AS PROCESSED IN UPD ROUTINE          *         
+*                                                                     *         
+***********************************************************************         
+         TITLE 'SPTBAMNE -- SPOTPAK TRAFFIC BUY ACTIVITY MAINTENANCE'           
+TBAMAINT CSECT                                                                  
+         ENTRY TBADATES                                                         
+         PRINT NOGEN                                                            
+         NMOD1 WORKX-WORKD,TBAMAINT                                             
+         USING WORKD,RC                                                         
+*                                                                               
+         L     R8,=V(CPRINT)                                                    
+         USING DPRINT,R8                                                        
+*                                                                               
+         MVC   SVPARS,0(R1)        SAVE CALLING PARAMETERS                      
+*                                                                               
+         L     RA,SVTABADR         GET TABLE ADDRESS                            
+         USING TBATABD,RA                                                       
+*                                                                               
+         CLI   TBAFLAG,X'FF'       TEST DATE TABLE INITIALIZED                  
+         BE    *+8                                                              
+         BAS   RE,INIT                                                          
+*                                                                               
+         MVI   TBAERR,TBANOACT     PRESET 'NO-ACTIVITY' FLAG                    
+*                                                                               
+         XC    BBFLAGS,BBFLAGS                                                  
+*        MVI   BBFLAG,0                                                         
+*        MVI   BBFLAG1,0                                                        
+*        MVI   BBFLAG2,0                                                        
+*                                                                               
+         CLI   TBAACTN,TBACOPY     TEST POST COPY                               
+         BE    BUY                                                              
+         CLI   TBAACTN,TBACHG      TEST POST CHANGE                             
+         BE    BUY                                                              
+         CLI   TBAACTN,TBAADD      TEST POST ADD                                
+         BE    BUY                                                              
+         CLI   TBAACTN,TBAUPD      TEST UPDATE TBAREC                           
+         BE    UPD                                                              
+         CLI   TBAACTN,TBAINIT     TEST INITIALIZATION ONLY                     
+         BE    EXIT                ALREADY DONE, SO LEAVE                       
+         DC    H'0'                INVALID ACTION                               
+*                                                                               
+NEQXIT   LTR   RB,RB               SET CC NOT EQUAL                             
+         B     EXIT                                                             
+*                                                                               
+EQXIT    CR    RB,RB               SET CC EQUAL                                 
+*                                                                               
+EXIT     XIT1                                                                   
+         EJECT                                                                  
+* SUBROUTINE TO INITIALIZE DATE TABLE *                                         
+*                                                                               
+INIT     NTR1                                                                   
+         L     R9,TBACOMFC                                                      
+         USING COMFACSD,R9                                                      
+*                                                                               
+         L     RF,SVTODAYA         A(TODAY'S DATE). . .                         
+         MVC   TBATODAY,0(RF)      . . . FROM TBAUPDT                           
+         GOTO1 CDATCON,DMCB,(3,TBATODAY),(0,WORK)                               
+         GOTO1 CGETDAY,DMCB,WORK,WORK+6                                         
+         CLI   0(R1),0             TEST DAY RETURNED                            
+         BNE   *+6                                                              
+         DC    H'0'                                                             
+         ZIC   R0,0(R1)            GET DAY NUMBER                               
+         BCTR  R0,0                GIVES DAYS TO MONDAY                         
+         LCR   R0,R0               SET TO BACK UP TO PREVIOUS MONDAY            
+         GOTO1 CADDAY,DMCB,WORK,WORK+6,(R0)                                     
+*                                                                               
+         LA    R4,TBADATES         POINT TO TABLE START                         
+         LA    R5,96               GENERATE 96 DATES MAXIMUM                    
+*                                                                               
+INIT4    GOTO1 CDATCON,DMCB,WORK+6,(2,(R4))                                     
+         MVC   LASTDATE,0(R4)      WHEN FINISHED, THIS WILL BE CORRECT          
+         LA    R0,7                                                             
+         MVC   WORK(6),WORK+6                                                   
+         GOTO1 CADDAY,DMCB,WORK,WORK+6,(R0)                                     
+         LA    R4,2(R4)                                                         
+         BCT   R5,INIT4                                                         
+*                                                                               
+         XC    0(2,R4),0(R4)       SET E-O-T FLAG                               
+         MVI   TBAFLAG,X'FF'       SET TABLE INITIALIZED FLAG                   
+*                                                                               
+         MVC   WORKLAB,=C'**WORK**'                                             
+         MVC   WRKLABEL,=C'*WORKTAB'                                            
+*                                                                               
+         B     EXIT                                                             
+*                                                                               
+TBADATES DC    XL200'00'           THESE FIELDS ARE INITIALIZED ONCE            
+TBAFLAG  DC    X'00'                ONLY AND ARE RE-ENTRANT                     
+TBATODAY DS    XL3                                                              
+LASTDATE DC    XL2'00'                                                          
+OVERSW   DC    X'00'               RECORD OVERFLOW SWITCH                       
+PATCH    B     *                                                                
+         B     *                                                                
+         B     *                                                                
+         B     *                                                                
+         B     *                                                                
+         B     *                                                                
+         B     *                                                                
+         B     *                                                                
+         B     *                                                                
+         B     *                                                                
+         B     *                                                                
+         B     *                                                                
+         EJECT                                                                  
+BUY      L     R2,SVRECADR         GET BUYREC ADDRESS                           
+         USING BUYRECD,R2                                                       
+*                                                                               
+         LA    R0,WORKTBSZ                                                      
+         LA    R5,WORKTAB                                                       
+         XC    0(256,R5),0(R5)                                                  
+         LA    R5,256(R5)                                                       
+         BCT   R0,*-10                                                          
+*                                                                               
+         MVC   LOBUYDT(4),=X'FFFF0000'                                          
+*                                                                               
+         CLI   BUYKPRD,X'FF'       TEST POL BUY                                 
+         BE    BUY10                                                            
+*                                                                               
+* NON-POL BUY - SEARCH FOR PIGGYBACK ELEMENT IF NEEDED *                        
+*                                                                               
+         XC    WORK,WORK                                                        
+         MVC   WORK(1),BUYKPRD     SET PRD CODE                                 
+         MVC   WORK+2(1),BDSEC     SET PRD SLN                                  
+         CLI   BDTIME,0            TEST PIGGYBACK                               
+         BE    BUY10               NO                                           
+*                                                                               
+         MVC   WORK+2(1),BDTIME    SET ACTIVE PRD SLN                           
+         LA    R2,BDELEM                                                        
+         DROP  R2                                                               
+         MVI   ELCODE,4                                                         
+         BAS   RE,NEXTEL                                                        
+         BE    *+6                                                              
+         DC    H'0'                                                             
+         MVC   WORK+1(1),2(R2)     SET PARTNER CODE                             
+         MVC   WORK+3(1),4(R2)     SET PARTNER SLN                              
+         MVC   FULL,WORK           AND SAVE                                     
+*                                                                               
+* GET PRODUCT CODES IN ALPHA SEQUENCE *                                         
+*                                                                               
+         MVC   DUB(1),WORK                                                      
+         LA    R1,DUB                                                           
+         BAS   RE,FINDPRD                                                       
+         MVC   DUB+4(1),WORK+1                                                  
+         LA    R1,DUB+4                                                         
+         BAS   RE,FINDPRD                                                       
+         CLC   DUB+1(3),DUB+5      COMPARE ALPHA CODES                          
+         BL    BUY10                ** AND SWITCH IF NEEDED                     
+         MVC   WORK(1),FULL+1      PRD2                                         
+         MVC   WORK+1(1),FULL      PRD1                                         
+         MVC   WORK+2(1),FULL+3    SLN2                                         
+         MVC   WORK+3(1),FULL+2    SLN1                                         
+*                                                                               
+BUY10    L     R2,SVRECADR         LOOK FOR COMMENTS ELEM WITH BB=              
+         LA    R2,24(,R2)                                                       
+         MVI   ELCODE,X'66'                                                     
+BUY12    BAS   RE,NEXTEL                                                        
+         BNE   BUY14                                                            
+*SM  *********************                                                      
+         CLC   =C'BB=',3(R2)                                                    
+         BNE   BUY12                                                            
+                                                                                
+         CLC   =C'BB=5',3(R2)                                                   
+         BNE   *+12                                                             
+         OI    BBFLAG,TBADTABF     X'08'                                        
+         B     BUY12                                                            
+         SPACE                                                                  
+         CLC   =C'BB=10',3(R2)                                                  
+         BNE   *+12                                                             
+         OI    BBFLAG,TBADTABT     X'04'                                        
+         B     BUY12                                                            
+                                                                                
+         LLC   RF,1(R2)            ELEM LEN                                     
+         SHI   RF,7                MINUS STATIC INFO  (EX LEN)                  
+                                                                                
+         LA    R1,BBTABLE1         BILLBOARD TABLE 1                            
+         LA    R0,BBTABLN1         NUM OF ENTRIES IN THE TABLE                  
+                                                                                
+         LA    RE,6(R2)            BB VALUE IN ELEM                             
+         LA    R3,BBFLAG1          FLAG TO UPDATE                               
+                                                                                
+         BAS   R4,FBB              FIND BB                                      
+         BE    BUY12               BB FOUND, GET NEXT ELEM                      
+                                                                                
+         LA    R1,BBTABLE2         BILLBOARD TABLE 2                            
+         LA    R0,BBTABLN2         NUM OF ENTRIES IN THE TABLE                  
+         LA    R3,BBFLAG2          FLAG TO UPDATE                               
+                                                                                
+         BAS   R4,FBB              FIND BB                                      
+         B     BUY12                                                            
+*SM  *******************                                                        
+         SPACE                                                                  
+BUY14    DS   0H                                                                
+         L     R2,SVRECADR         POINT TO BUYREC                              
+         USING BUYRECD,R2                                                       
+         LA    R2,BDELEM                                                        
+         LA    R4,TBADATES                                                      
+         DROP  R2                                                               
+*                                                                               
+BUY20    SR    R0,R0                                                            
+         ICM   R0,1,1(R2)                                                       
+         BNZ   *+6                                                              
+         DC    H'0'                BLOW UP ON ELEMENT LENGTH ZERO               
+         AR    R2,R0               NEXT BUY ELEMENT                             
+         CLI   0(R2),0                                                          
+         BE    BUY40                                                            
+         CLI   0(R2),6                                                          
+         BL    BUY20                                                            
+         CLI   0(R2),13                                                         
+         BH    BUY20                                                            
+         TM    6(R2),X'C0'         TEST MINUS SPOT OR SPOT IS MINUSED           
+         BNZ   BUY20                                                            
+         CLC   2(2,R2),TBADATES    TEST PRIOR TO TODAY                          
+         BL    BUY20                                                            
+         CLC   2(2,R2),LASTDATE    TEST WITHIN 96 WEEKS                         
+         BNL   BUY20                                                            
+*                                                                               
+BUY22    CLC   2(2,R2),2(R4)       COMPARE TO NEXT TABLE DATE                   
+         BL    BUY24               IF LOW, POST HERE                            
+         LA    R4,2(R4)            NEXT TABLE ENTRY                             
+         CLI   0(R4),0             TEST END OF DATE LIST                        
+         BNE   BUY22                                                            
+         DC    H'0'                WE'VE GONE BEYOND TABLE END                  
+*                                                                               
+BUY24    XC    WORK+4(12),WORK+4   CLEAR DATA AREA                              
+         CLI   0(R2),11            TEST POL ELEMENT                             
+         BL    BUY26               IT IS NOT A POL ELEMENT                      
+         CLI   1(R2),10            TEST UNALLOCATED                             
+         BNH   BUY20               IT IS UNALLOCATED -- IGNORE                  
+*                                                                               
+         XC    WORK(4),WORK        CLEAR PRDS/SLNS                              
+         MVC   WORK(1),10(R2)      MOVE PRD CODE                                
+         MVC   WORK+2(1),11(R2)    MOVE PRD SLN                                 
+*                                                                               
+         CLI   1(R2),14            TEST PIGGYBACK                               
+         BNH   BUY26               NO PIGGYBACK                                 
+         MVC   WORK+1(1),14(R2)    MOVE PARTNER PRD CODE                        
+         MVC   WORK+3(1),15(R2)    MOVE PARTNER SLN                             
+         MVC   FULL,WORK           AND SAVE                                     
+*                                                                               
+* GET PRODUCT CODES IN ALPHA SEQUENCE *                                         
+*                                                                               
+         MVC   DUB(1),WORK                                                      
+         LA    R1,DUB                                                           
+         BAS   RE,FINDPRD                                                       
+         MVC   DUB+4(1),WORK+1                                                  
+         LA    R1,DUB+4                                                         
+         BAS   RE,FINDPRD                                                       
+         CLC   DUB+1(3),DUB+5      COMPARE ALPHA CODES                          
+         BL    BUY26                ** AND SWITCH IF NEEDED                     
+         MVC   WORK(1),FULL+1      PRD1                                         
+         MVC   WORK+1(1),FULL      PRD2                                         
+         MVC   WORK+2(1),FULL+3    SLN2                                         
+         MVC   WORK+3(1),FULL+2    SLN1                                         
+*                                                                               
+BUY26    DS   0H                                                                
+         CLC   LOBUYDT,2(R2)       FIND LOWEST DATE IN BUY                      
+         BNH   *+10                                                             
+         MVC   LOBUYDT,2(R2)                                                    
+*                                                                               
+         CLC   HIBUYDT,2(R2)       FIND HIGHEST DATE IN BUY                     
+         BNL   *+10                                                             
+         MVC   HIBUYDT,2(R2)                                                    
+*                                                                               
+         LA    R1,TBADATES                                                      
+         LR    R0,R4                                                            
+         SR    R0,R1               GIVES DISPLACEMENT IN DATE TABLE             
+         SRL   R0,1                GIVES NUMBER OF WEEKS                        
+         SRDL  R0,3                DIVIDE BY 8 (8 WEEKS/BYTE)                   
+         LR    RF,R0               * GIVES DISPLACEMENT IN BYTES                
+         LA    RF,WORK+4(RF)       POINT TO BYTE                                
+         SPACE                                                                  
+         SRL   R1,29                                                            
+         IC    R1,BITTAB(R1)                                                    
+*        STC   R1,0(RF)            SET BIT IN APPROPRIATE SLOT                  
+         STC   R1,BYTE             SET BIT IN APPROPRIATE SLOT                  
+         OC    0(1,RF),BYTE                                                     
+*                                                                               
+         LA    R5,TBADATA          POINT TO TABLE                               
+         LH    R0,TBALEN           TABLE LENGTH                                 
+         CLI   TBAACTN,TBACHG      TEST 'CHANGE' POSTING                        
+         BNE   *+12                                                             
+         LA    R5,WORKTAB                                                       
+         LA    R0,WORKTABX-WORKTAB                                              
+*                                                                               
+         AR    R0,R5               POINT TO END OF TABLE                        
+         BCTR  R0,0                                                             
+*                                                                               
+BUY32    CLI   0(R5),0             TEST LAST ENTRY                              
+         BE    BUY34                                                            
+         CLC   0(4,R5),WORK        MATCH PRD1/PRD2/SLN1/SLN2                    
+         BE    BUY34                                                            
+         LA    R5,L'TBADATA(R5)    NEXT ENTRY                                   
+         CR    R5,R0               TEST PAST TABLE END                          
+         BL    BUY32                                                            
+         MVI   TBAERR,TBATABSZ     SET 'TABLE TOO SMALL'                        
+         B     EXIT                                                             
+*                                                                               
+BUY34    OC    0(16,R5),WORK       'OR' INTO TABLE                              
+         MVI   TBAERR,0            RESET 'NO-ACTIVITY' FLAG                     
+         B     BUY20                                                            
+*                                                                               
+         SPACE                                                                  
+BUY40    DS   0H                                                                
+         OC    BBFLAGS,BBFLAGS     IF BILLBOARDS                                
+         BZ    BUY44                NO                                          
+*                                                                               
+         CLI   TBAERR,0            WAS THERE ANY ACTIVITY                       
+         BNE   BUY44                NO                                          
+         SPACE                                                                  
+         BAS   RE,BTAB             POST TO BILLBOARD TABLE                      
+         MVI   TBAERR,0            RESET 'NO-ACTIVITY' FLAG                     
+*                                                                               
+BUY44    DS   0H                                                                
+         CLI   TBAACTN,TBACHG      TEST PROCESSING 'CHANGE' REC                 
+         BNE   EXIT                                                             
+*                                                                               
+* FOR CHANGE RECORD PROCESSING, MERGE WORKTAB WITH USER TABLE *                 
+*                                                                               
+         LA    R6,WORKTAB-16                                                    
+         B     BUY56                                                            
+         EJECT                                                                  
+* FIND TABLE ENTRY OR ADD NEW *                                                 
+*                                                                               
+BUY50    LA    R5,TBADATA                                                       
+         LH    R0,TBALEN                                                        
+         AR    R0,R5                                                            
+         BCTR  R0,0                                                             
+*                                                                               
+BUY52    CLI   0(R5),0             TEST LAST ENTRY                              
+         BE    BUY54                                                            
+         CLC   0(4,R5),0(R6)       MATCH PRD CODES/SLNS                         
+         BE    BUY54                                                            
+         LA    R5,L'TBADATA(R5)                                                 
+         CR    R5,R0               TEST PAST TABLE END                          
+         BL    BUY52                                                            
+         MVI   TBAERR,TBATABSZ                                                  
+         B     EXIT                                                             
+*                                                                               
+BUY54    MVC   0(4,R5),0(R6)       MOVE PRD CODES/SLNS                          
+*                                                                               
+         OC    BBFLAGS,BBFLAGS     WAS THERE A BILLBOARD                        
+         BZ    BUY55                NO                                          
+*                                                                               
+         OC    4(12,R5),4(R6)      FORCE ALL ON                                 
+         B     BUY56                                                            
+*                                                                               
+BUY55    DS    0H                                                               
+*        XC    4(12,R5),4(R6)      LEAVE ONLY NEW/DELETED ACTIVITY BITS         
+         NC    4(12,R5),4(R6)      FORCE OFF DELETED ACTIVITY BITS              
+         OC    4(12,R5),4(R6)      FORCE ON NEW ACTIVITY BITS                   
+         BZ    BUY56                                                            
+         MVI   TBAERR,0            RESET 'NO-ACTIVITY' FLAG                     
+*                                                                               
+BUY56    LA    R6,16(R6)                                                        
+         CLI   0(R6),0                                                          
+         BNE   BUY50                                                            
+*                                                                               
+* TEST FOR ACTIVE ENTRIES IN TABLE                                              
+*                                                                               
+         MVI   TBAERR,0            CLEAR ERROR FLAG                             
+         LA    R5,TBADATA                                                       
+         LH    R0,TBALEN                                                        
+         AR    R0,R5                                                            
+         BCTR  R0,0                                                             
+*                                                                               
+BUY58    CLI   0(R5),0             TEST LAST ENTRY                              
+         BE    BUY60                                                            
+         OC    4(12,R5),4(R5)      TEST ACTIVE ENTRY                            
+         BNZ   EXIT                                                             
+         LA    R5,L'TBADATA(R5)                                                 
+         CR    R5,R0                                                            
+         BL    BUY58                                                            
+*                                                                               
+BUY60    MVI   TBAERR,TBANOACT                                                  
+*                                                                               
+         B     EXIT                                                             
+*                                                                               
+BITTAB   DC    XL1'80,40,20,10,08,04,02,01'                                     
+*                                                                               
+*                                                                               
+FINDPRD  L     RF,TBAPRDS          GET PRODUCT LIST ADDRESS                     
+*                                                                               
+FINDPRD2 CLC   0(1,R1),3(RF)                                                    
+         BE    FINDPRD4                                                         
+         LA    RF,4(RF)                                                         
+         CLI   0(RF),C'A'                                                       
+         BNL   FINDPRD2                                                         
+         LA    RF,=C'***'                                                       
+*                                                                               
+FINDPRD4 MVC   1(3,R1),0(RF)                                                    
+         BR    RE                                                               
+                                                                                
+* FIND BILLBOARD IN TABLE                                                       
+FBB      EX    RF,CLCBB            MATCH ON BB LEN?                             
+         BE    FBB10                                                            
+                                                                                
+         LA    R1,BBTBLENT(R1)     BUMP TO NEXT ENTRY IN TABLE                  
+         BCT   R0,FBB                                                           
+         B     FBBNE                                                            
+                                                                                
+FBB10    OC    0(1,R3),3(R1)                                                    
+         CR    RB,RB               CC EQ                                        
+         BR    R4                                                               
+                                                                                
+FBBNE    LTR   RB,RB               CC NE                                        
+         BR    R4                                                               
+                                                                                
+CLCBB    CLC   0(0,R1),0(RE)       BB SECONDS LEN                               
+                                                                                
+*                                                                               
+* TABLE OF VALID BILLBOARDS (OLD AND NEW VALUES)                                
+*                                                                               
+         DS    0D                                                               
+BBTABLE1 DC    C'15 ',X'80'      TBABB15=X'80'                                  
+         DC    C'A15',X'08'      TBABBA15=X'08'                                 
+         DC    C'S15',X'01'      TBABBS15=X'01'                                 
+         DC    C'A10',X'04'      TBABBA10=X'04'                                 
+         DC    C'S10',X'40'      TBABBS10=X'40'                                 
+         DC    C'7  ',X'10'      TBABB7=X'10'                                   
+         DC    C'A7 ',X'02'      TBABBA7=X'02'                                  
+         DC    C'S7 ',X'20'      TBABBS7=X'20'                                  
+BBTABLN1  EQU   (*-BBTABLE1)/BBTBLENT                                           
+BBTBLENT  EQU   4                                                               
+*                                                                               
+         DS    0D                                                               
+BBTABLE2 DC    C'A5 ',X'80'      TBABBA5=X'80'                                  
+         DC    C'S5 ',X'40'      TBABBS5=X'40'                                  
+BBTABLN2  EQU   (*-BBTABLE2)/BBTBLENT                                           
+*                                                                               
+         EJECT                                                                  
+***************************************************************                 
+* SUBROUTINE TO POST TABLE ACTIVITY TO USER-PASSED TBA RECORD *                 
+***************************************************************                 
+*                                                                               
+*                                                                               
+UPD      L     R2,SVRECADR                                                      
+         USING TBARECD,R2                                                       
+*                                                                               
+         MVI   DATEFLAG,X'FF'                                                   
+         L     R7,SVDATADR                                                      
+         LTR   R7,R7                                                            
+         BNZ   *+8                                                              
+         MVI   DATEFLAG,0                                                       
+*                                                                               
+* REMOVE ALL ELEMENTS PRIOR TO THIS WEEK *                                      
+*                                                                               
+         LA    R2,24(R2)                                                        
+         MVI   ELCODE,5                                                         
+         BAS   RE,NEXTEL2                                                       
+         BNE   UPD10                                                            
+*                                                                               
+UPD2     CLC   2(2,R2),TBADATES                                                 
+         BNL   UPD10                                                            
+         XC    DMCB(24),DMCB                                                    
+*MN      GOTO1 TBARECUP,DMCB,SVRECADR,(R2)                                      
+         GOTO1 TBARECUP,DMCB,SVRECADR,(R2),(C'R',0)                             
+         CLI   8(R1),C'R'                                                       
+         BE    UPD5                                                             
+         L     R5,SVRECADR                                                      
+         CLC   20(2,R5),=C'SJ'                                                  
+         BE    UPD5                                                             
+         DC    H'0'                                                             
+UPD5     BAS   RE,NEXTEL2                                                       
+         BE    UPD2                                                             
+*                                                                               
+* FIND THE TABLE ENTRIES FOR THIS PRODUCT *                                     
+*                                                                               
+UPD10    LA    R5,TBADATA          POINT TO TABLE DATA                          
+*                                                                               
+UPD12    L     R2,SVRECADR                                                      
+         USING TBAKEY,R2                                                        
+         LR    R3,R7               NEXT NEW DATE TABLE ROW                      
+*                                                                               
+         CLC   0(1,R5),TBAKPRD     MATCH PRD1 CODE                              
+         BNE   UPD32                                                            
+         CLC   1(1,R5),TBAKPRD2    MATCH PRD2 CODE                              
+         BNE   UPD32                                                            
+         DROP  R2                                                               
+*                                                                               
+         OC    4(12,R5),4(R5)      TEST ANY WEEKS ACTIVE                        
+         BZ    UPD32               NO                                           
+*                                                                               
+         CLI   DATEFLAG,0          TEST NEW DATE TABLE IS PRESENT               
+         BE    UPD16                                                            
+         CLC   0(4,R5),0(R3)       TEST SAME PRDS/SLNS IN BOTH TABLES           
+         BE    *+6                                                              
+         DC    H'0'                                                             
+         LA    R3,4(R3)            POINT TO FIRST DATE IN TABLE                 
+         EJECT                                                                  
+* BUILD LIST OF ACTIVE WEEKS FROM TABLE *                                       
+*                                                                               
+UPD16    MVC   FULL+2(2),2(R5)     SAVE SLNS                                    
+*                                                                               
+         LA    RE,3(R5)            POINT TO ACTIVITY BYTE -1                    
+*                                                                               
+         LA    R0,WORKTBSZ         CLEAR WORK TABLE                             
+         LA    R1,WORKTAB                                                       
+         XC    0(256,R1),0(R1)                                                  
+         LA    R1,256(R1)                                                       
+         BCT   R0,*-10                                                          
+*                                                                               
+         LA    R1,WORKTAB                                                       
+         LA    R6,TBADATES         DATE LIST                                    
+         B     UPD26                                                            
+*                                                                               
+UPD20    EX    RF,UPDTEST          TEST THIS WEEK ACTIVE                        
+         BZ    UPD22                                                            
+         MVC   0(2,R1),0(R6)       MOVE DATE TO ACTIVE LIST                     
+         LA    R1,2(R1)            AND BUMP ACTIVE LIST POINTER                 
+*                                                                               
+UPD22    LA    R6,2(R6)            NEXT WEEK DATE                               
+         SRL   RF,1                NEXT WEEK IND                                
+         LTR   RF,RF                                                            
+         BNZ   UPD20                                                            
+         CLI   0(R6),0             TEST E-O-T                                   
+         BE    UPD30                                                            
+*                                                                               
+UPD26    LA    RE,1(RE)            NEXT ACTIVITY BYTE                           
+         LA    RF,X'80'            RESET WEEK IND BIT                           
+         CLI   0(RE),0             TEST ANY ACTIVITY IN BYTE                    
+         BNE   UPD20               YES - GO PROCESS                             
+         LA    R6,16(R6)           SKIP 8 WEEKS IN TABLE                        
+         CLI   0(R6),0             TEST E-O-T                                   
+         BNE   UPD26                                                            
+*                                                                               
+UPD30    BAS   RE,MERGE                                                         
+         OI    TBAFLG-TBADATA(R5),TBAPROC SET TABLE ENTRY PROCESSED             
+*                                                                               
+UPD32    LA    R5,L'TBADATA(R5)    NEXT TABLE ENTRY                             
+         LA    R7,196(R7)          NEXT NEW DATE TABLE ENTRY                    
+         CLI   0(R5),0             TEST E-O-T                                   
+         BNE   UPD12               NO                                           
+         EJECT                                                                  
+* DELETE OBSELETE ELEMENTS FROM TBA RECORD *                                    
+*                                                                               
+         L     R2,SVRECADR                                                      
+         LA    R2,24(R2)                                                        
+         MVI   ELCODE,5                                                         
+UPD40    BAS   RE,NEXTEL2          NEXT ELEMENT                                 
+         BNE   EXIT                                                             
+*                                                                               
+UPD44    TM    6(R2),X'01'         SEE IF MARK BIT IS ON                        
+         BO    UPD48               IT IS                                        
+         XC    DMCB(24),DMCB                                                    
+*MN      GOTO1 TBARECUP,DMCB,SVRECADR,(R2)   DELETE ELEMENT                     
+         GOTO1 TBARECUP,DMCB,SVRECADR,(R2),(C'R',0)                             
+         CLI   8(R1),C'R'                                                       
+         BE    UPD40                                                            
+         L     R5,SVRECADR                                                      
+         CLC   20(2,R5),=C'SJ'                                                  
+         BE    UPD40                                                            
+         DC    H'0'                                                             
+*MN      B     UPD40                                                            
+*                                                                               
+UPD48    NI    6(R2),X'FE'         RESET MARK BIT                               
+         BAS   RE,NEXTEL           NEXT ELEMENT                                 
+         BE    UPD44                                                            
+         B     EXIT                                                             
+*                                                                               
+UPDTEST  TM    0(RE),0 *EXECUTED*                                               
+         EJECT                                                                  
+* MERGE ACTIVE WEEK LIST WITH RECORD DATA *                                     
+*                                                                               
+MERGE    NTR1                                                                   
+         LA    R5,WORKTAB          START OF LIST                                
+         CLI   0(R5),0             TEST END OF TABLE                            
+         BE    MRG20                                                            
+         MVC   FULL(2),0(R5)       MOVE DATE TO LEFT OF SLNS                    
+         L     R2,SVRECADR                                                      
+         LA    R2,24(R2)                                                        
+         MVI   ELCODE,5                                                         
+         BAS   RE,NEXTEL2          FIRST DATE ELEMENT                           
+         BNE   MRG6                NO DATE ELEMENTS EXIST                       
+*                                                                               
+MRG2     MVC   FULL(2),0(R5)       MOVE DATE TO LEFT OF SLNS                    
+*                                                                               
+MRG4     CLI   0(R2),0             TEST END OF RECORD                           
+         BE    MRG6                YES - GO INSERT ELEMENT                      
+         CLC   FULL(4),2(R2)       TABLE DATE/SLN TO ELEM DATE/SLN              
+         BL    MRG6                ADD NEW ELEMENT                              
+         BE    MRG8                UPDATE OLD ELEMENT                           
+         BAS   RE,NEXTEL           NEXT ELEMENT                                 
+         BE    MRG4                                                             
+*                                                                               
+* NO ELEMENT THIS DATE/SLN IN RECORD - ADD NEW *                                
+*                                                                               
+MRG6     XC    MYELEM,MYELEM                                                    
+         MVI   MYELEM,5                                                         
+         MVI   MYELEM+1,9          ELEM LEN (WAS 7 NOW 9)                       
+         MVC   MYELEM+2(4),FULL    SET ACTIVITY WEEK DATE/SLNS                  
+         MVI   MYELEM+6,X'80'      SET ACTIVITY FLAG                            
+         SPACE                                                                  
+         LR    R6,R2                                                            
+         LA    R2,MYELEM                                                        
+         SPACE                                                                  
+         BAS   RE,SETB             SET ON BB FLAGS IF FOUND                     
+         LR    R2,R6                                                            
+         SPACE                                                                  
+         XC    DMCB(24),DMCB                                                    
+*MN      GOTO1 TBARECUP,DMCB,SVRECADR,MYELEM,(R2)                               
+         GOTO1 TBARECUP,DMCB,SVRECADR,MYELEM,(C'R',(R2))                        
+         CLI   8(R1),C'R'                                                       
+         BE    MRG7                                                             
+         L     R1,SVRECADR                                                      
+         CLC   20(2,R1),=C'SJ'                                                  
+         BE    MRG7                                                             
+*                                                                               
+*=================================================                              
+* PRINT AND SEND AN EMAIL FOR RECORD OVERFLOW                                   
+*=================================================                              
+         CLC   0(13,R1),MYKEY                                                   
+         BE    MRG7                                                             
+         MVC   MYKEY,0(R1)                                                      
+         MVC   P(9),=C'OVERFLOW '                                               
+         GOTO1 =V(HEXOUT),DMCB,SVRECADR,P+11,60,=C'TOG'                         
+         GOTO1 =V(PRINTER)                                                      
+*                                                                               
+         CLI   OVERSW,1                                                         
+         BE    MRG7                ONE EMAIL NOTIFICATION IS SUFFICIENT         
+*                                                                               
+         LA    R1,EMSG                                                          
+         MVC   0(L'AUTOMSG,R1),AUTOMSG                                          
+         MVC   EMSG+L'AUTOMSG(L'OVFMSG),OVFMSG                                  
+         OC    EMSG,SPACES                                                      
+         GOTO1 =V(DATAMGR),DMCB,=C'OPMSG',(L'AUTOMSG+L'OVFMSG,EMSG)             
+*                                                                               
+         MVI   OVERSW,1            EMAIL SENT                                   
+         B     MRG7                                                             
+*                                                                               
+MRG7     CLI   DATEFLAG,0          SEE IF NEW DATE TABLE IS PRESENT             
+         BE    MRG10                                                            
+         MVC   0(2,R3),MYELEM+2    MOVE DATE TO NEW DATE LIST                   
+         LA    R3,2(R3)                                                         
+         B     MRG10                                                            
+*                                                                               
+* UPDATE EXISTING ELEMENT IF NECESSARY *                                        
+                                                                                
+MRG8     BAS   RE,SETB             SET ON BB FLAGS IF FOUND                     
+         SPACE                                                                  
+         TM    6(R2),X'80'         TEST ACTIVITY BIT ON                         
+         BZ    MRG9                                                             
+         TM    6(R2),X'40'         TEST RESULT OF TBA FROM INSTR PGM            
+         BZ    MRG9                                                             
+         OI    6(R2),X'10'         SET ON MEDIA BUY ADDED BIT                   
+         SPACE                                                                  
+         B     MRG10                                                            
+         SPACE                                                                  
+MRG9     CLI   DATEFLAG,0          SEE IF NEW DATE TABLE IS PRESENT             
+         BE    MRG10                                                            
+         MVC   0(2,R3),2(R2)       MOVE DATE TO NEW DATE LIST                   
+         LA    R3,2(R3)                                                         
+*                                                                               
+MRG10    MVI   TBAERR,0            RESET 'NO-ACTIVITY' FLAG                     
+*                                                                               
+         OI    6(R2),X'01'         SET MARK BIT                                 
+         LA    R5,2(R5)            NEXT WEEK                                    
+         CLI   0(R5),0             TEST E-O-T                                   
+         BNE   MRG2                NO - PROCESS                                 
+*                                                                               
+* SEE IF NEW ACTIVITY ELEMENT IS NEEDED *                                       
+*                                                                               
+MRG20    CLI   TBAERR,0            TEST ANY ACTIVITY                            
+         BNE   EXIT                NO - EXIT                                    
+         L     R2,SVRECADR                                                      
+         LA    R2,24(R2)                                                        
+         MVI   ELCODE,X'F1'                                                     
+         BAS   RE,NEXTEL2          IS ELEMENT THERE                             
+         BE    EXIT                YES                                          
+*                                                                               
+* BUILD NEW ACTIVITY ELEMENT *                                                  
+*                                                                               
+         XC    WORK(20),WORK                                                    
+         MVI   WORK,X'F1'                                                       
+         MVI   WORK+1,20                                                        
+         MVC   WORK+2(3),TBATODAY  SET ADD DATE                                 
+         XC    DMCB(24),DMCB                                                    
+*MN      GOTO1 TBARECUP,DMCB,SVRECADR,WORK,(R2)                                 
+         GOTO1 TBARECUP,DMCB,SVRECADR,WORK,(C'R',(R2))                          
+         CLI   8(R1),C'R'                                                       
+         BE    EXIT                                                             
+         L     R5,SVRECADR                                                      
+         CLC   20(2,R5),=C'SJ'                                                  
+         BE    EXIT                                                             
+         DC    H'0'                                                             
+*MN      B     EXIT                                                             
+         EJECT                                                                  
+* BUILD TABLE OF BILLBOARDS                                                     
+         SPACE                                                                  
+BTAB     NTR1                                                                   
+         L     R2,SVRECADR         POINT TO BUYREC                              
+         USING BUYRECD,R2                                                       
+         L     R1,TBABBTAB                                                      
+         L     RF,0(R1)            GET TABLE SIZE                               
+         LA    RE,4(R1,RF)                                                      
+         ST    RE,BBTABEND                                                      
+         LA    R1,4(,R1)                                                        
+         L     RF,SVRECADR         POINT TO BUYREC                              
+         SPACE                                                                  
+         USING BBTABD,R1                                                        
+BTAB020  OC    BBTENT,BBTENT       EMPTY ENTRY                                  
+         BZ    BTAB040                                                          
+         CLC   BUYKAM(3),BBTAM     A/M & CLT                                    
+         BNE   BTAB024                                                          
+*        BE    *+6                                                              
+*        DC    H'0'                                                             
+         CLC   BUYMSTA,BBTMSTA                                                  
+         BNE   BTAB024                                                          
+*        BE    *+6                                                              
+*        DC    H'0'                                                             
+         CLC   BUYKEST,BBTEST                                                   
+         BNE   BTAB024                                                          
+         CLC   WORK(4),BBTPRD1     SAME PRD1/PRD2/SLN1/SLN2                     
+         BNE   BTAB024                                                          
+         CLC   LOBUYDT,BBTLODT     SEE IF OUTSIDE THIS ENTRY DATES              
+         BH    BTAB024                                                          
+         CLC   HIBUYDT,BBTHIDT                                                  
+         BL    BTAB024                                                          
+         SPACE                                                                  
+         CLC   LOBUYDT,BBTLODT     SEE IF LOWER START DATE                      
+         BH    *+10                                                             
+         MVC   BBTLODT,LOBUYDT                                                  
+         SPACE                                                                  
+         CLC   HIBUYDT,BBTHIDT                                                  
+         BL    *+10                                                             
+         MVC   BBTHIDT,HIBUYDT                                                  
+*                                                                               
+         OC    BBTFLAG,BBFLAG                                                   
+         OC    BBTFLAG1,BBFLAG1                                                 
+         OC    BBTFLAG2,BBFLAG2                                                 
+*                                                                               
+*        L     R3,TBABBTAB                                                      
+*        LA    R4,=CL20'BB TABLE CHA MNE'                                       
+*        L     R5,0(R3)                                                         
+*        LA    R3,4(,R3)                                                        
+*        GOTO1 =V(PRNTBL),DMCB,(20,(R4)),(R3),C'DUMP',(R5),=C'0D'               
+         SPACE                                                                  
+         B     EXIT                                                             
+         SPACE                                                                  
+BTAB024  LA    R1,BBTNEXT                                                       
+         C     R1,BBTABEND                                                      
+         BL    BTAB020                                                          
+         DC    H'0'                                                             
+         SPACE                                                                  
+BTAB040  DS   0H                                                                
+         MVC   BBTAM(3),BUYKAM                                                  
+         MVC   BBTMSTA,BUYMSTA                                                  
+         MVC   BBTEST,BUYKEST                                                   
+         MVC   BBTPRD1(4),WORK        PRD1/PRD2/SLN1/SLN2                       
+         MVC   BBTLODT,LOBUYDT     LO/HI BUY DATES                              
+         MVC   BBTHIDT,HIBUYDT                                                  
+         MVC   BBTFLAG(3),BBFLAGS                                               
+*        MVC   BBTFLAG1,BBFLAG1                                                 
+*        MVC   BBTFLAG2,BBFLAG2                                                 
+                                                                                
+*        L     R3,TBABBTAB                                                      
+*        LA    R4,=CL20'BB TABLE ADD MNE'                                       
+*        L     R5,0(R3)                                                         
+*        LA    R3,4(,R3)                                                        
+*        GOTO1 =V(PRNTBL),DMCB,(20,(R4)),(R3),C'DUMP',(R5),=C'0D'               
+         SPACE                                                                  
+         B     EXIT                                                             
+         DROP  R1,R2                                                            
+         EJECT                                                                  
+* SET BB FLAG IN ACTIVITY REC ELEM *                                            
+         SPACE                                                                  
+SETB     NTR1                                                                   
+         L     R4,TBABBTAB                                                      
+         L     RE,0(,R4)           GET TABLE SIZE                               
+         LA    RE,4(R4,RE)                                                      
+         ST    RE,BBTABEND                                                      
+         LA    R4,4(,R4)                                                        
+*                                                                               
+         BAS   RE,SETBDMON         SET BB DATES TO MONDAY                       
+*                                                                               
+         L     R5,SVRECADR                                                      
+         SPACE                                                                  
+         USING BBTABD,R4                                                        
+SETB020  OC    BBTENT,BBTENT       EMPTY ENTRY                                  
+         BZ    EXIT                                                             
+         CLC   BBTPRD1,10(R5)      SAME PRD1                                    
+         BNE   SETB024                                                          
+         CLC   BBTPRD2,12(R5)      SAME PRD2                                    
+         BNE   SETB024                                                          
+         CLC   BBTSLN1(2),4(R2)    SAME SLN1/2                                  
+         BNE   SETB024                                                          
+         CLC   BBTLODT,2(R2)       SEE IF OUTSIDE THIS ENTRY DATES              
+         BH    SETB024                                                          
+         CLC   BBTHIDT,2(R2)                                                    
+         BL    SETB024                                                          
+*                                                                               
+         OC    BBTFLAG1(2),BBTFLAG1  AND BBTFLAG2 ANY NEW BB LENS               
+         BZ    SETB022C                                                         
+         CLI   1(R2),9             NEW ELEM LEN?                                
+         BE    *+8                                                              
+         BAS   RE,BIGELEM          MAKE ELEM BIGGER                             
+                                                                                
+         LLC   RE,BBTFLAG1                                                      
+         EX    RE,SETBTM1                                                       
+         BO    SETB022                                                          
+         OC    7(1,R2),BBTFLAG1                                                 
+         OI    6(R2),X'01'         SET MARK BIT                                 
+                                                                                
+SETB022  LLC   RE,BBTFLAG2                                                      
+         EX    RE,SETBTM2                                                       
+         BO    SETB022C                                                         
+         OC    8(1,R2),BBTFLAG2                                                 
+         OI    6(R2),X'01'         SET MARK BIT                                 
+*                                                                               
+SETB022C LLC   RE,BBTFLAG                                                       
+         EX    RE,SETBTM                                                        
+         BO    EXIT                                                             
+         OC    6(1,R2),BBTFLAG                                                  
+         OI    6(R2),X'01'         SET MARK BIT                                 
+         B     EXIT                                                             
+                                                                                
+SETBTM   TM    6(R2),0                                                          
+SETBTM1  TM    7(R2),0                                                          
+SETBTM2  TM    8(R2),0                                                          
+                                                                                
+SETB024  LA    R4,BBTNEXT                                                       
+         C     R4,BBTABEND                                                      
+         BL    SETB020                                                          
+         B     EXIT                                                             
+         DROP  R4                                                               
+*                                                                               
+* SET BUY DATES IN BBTAB TO PREVOUS MONDAY IF NOT SO ALREADY                    
+*                                                                               
+SETBDMON NTR1                                                                   
+         L     R9,TBACOMFC                                                      
+         USING COMFACSD,R9                                                      
+*                                                                               
+         USING BBTABD,R4                                                        
+SETD10   OC    BBTENT,BBTENT       EMPTY ENTRY                                  
+         BZ    EXIT                                                             
+*                                                                               
+         GOTO1 CDATCON,DMCB,(2,BBTLODT),(0,WORK)                                
+         GOTO1 CGETDAY,(R1),(0,WORK),WORK+6                                     
+         CLC   WORK+6(3),=CL3' '                                                
+         BNE   *+6                                                              
+         DC    H'0'                                                             
+         ZIC   R0,DMCB             GET DAY NUMBER                               
+         CHI   R0,1                IF MONDAY                                    
+         BE    SETD30              THEN DONE                                    
+*                                                                               
+* CHANGE DATE TO PREV MONDAY                                                    
+*                                                                               
+         BCTR  R0,0                                                             
+         LNR   R0,R0                                                            
+         GOTO1 CADDAY,(R1),WORK,WORK,(R0)                                       
+         GOTO1 CDATCON,(R1),(0,WORK),(2,BBTLODT)                                
+*                                                                               
+SETD30   LA    R4,BBTNEXT                                                       
+         C     R4,BBTABEND                                                      
+         BL    SETD10                                                           
+         B     EXIT                                                             
+         DROP  R4                                                               
+         EJECT                                                                  
+NEXTEL   SR    R0,R0                                                            
+         ICM   R0,1,1(R2)                                                       
+         BNZ   *+6                                                              
+         DC    H'0'                                                             
+         AR    R2,R0                                                            
+*                                                                               
+NEXTEL2  CLI   0(R2),0                                                          
+         BE    NEXTELX                                                          
+         CLC   0(1,R2),ELCODE                                                   
+         BER   RE                                                               
+         CLI   0(R2),X'F1'         INSERT BEFORE ACTIVITY ELEM                  
+         BNE   NEXTEL                                                           
+*                                                                               
+NEXTELX  LTR   RE,RE               SET CC NOT EQ                                
+         BR    RE                                                               
+*                                                                               
+*============================================                                   
+* MAKE ELEM BIGGER FOR NEW BB LEN                                               
+* (DELETE OLD ELEM, ADD NEW BIGGER ELEM)                                        
+*============================================                                   
+*                                                                               
+BIGELEM  NTR1                                                                   
+         XC    MYELEM,MYELEM                                                    
+         MVC   MYELEM(7),0(R2)     SAVE ELEM INFO                               
+*                                                                               
+         GOTO1 TBARECUP,DMCB,SVRECADR,(R2)  REMOVE OLD ELEM                     
+*                                                                               
+         MVI   MYELEM+1,9          ADD BIGGER ELEM                              
+         GOTO1 TBARECUP,DMCB,SVRECADR,MYELEM,(C'R',(R2))                        
+         CLI   8(R1),C'R'                                                       
+         BE    BIGX                                                             
+         L     R1,SVRECADR                                                      
+         CLC   20(2,R1),=C'SJ'                                                  
+         BE    BIGX                                                             
+         DC    H'0'                                                             
+BIGX     B     EXIT                                                             
+*                                                                               
+AUTOMSG  DC    C'AUTONOTE*SMURN,MNAS:'                                          
+OVFMSG   DC    C'RECORD OVERFLOW '                                              
+*                                                                               
+         SPACE 5                                                                
+         LTORG                                                                  
+BBTABEND DS    A                                                                
+         EJECT                                                                  
+       ++INCLUDE SPTBATABD                                                      
+         EJECT                                                                  
+       ++INCLUDE SPTRTBAE                                                       
+         EJECT                                                                  
+       ++INCLUDE DDDPRINT                                                       
+         EJECT                                                                  
+WORKD    DSECT                                                                  
+*                                                                               
+DUB      DS    D                                                                
+FULL     DS    F                                                                
+HALF     DS    H                                                                
+BYTE     DS    X                                                                
+ELCODE   DS    X                                                                
+DATEFLAG DS    X                                                                
+                                                                                
+BBFLAGS  DS    0XL3                                                             
+BBFLAG   DS    X                   CURRENT REC                                  
+BBFLAG1  DS    X                                                                
+BBFLAG2  DS    X                                                                
+*                                                                               
+MYKEY    DS    XL13                                                             
+*                                                                               
+         DS    0A                                                               
+SVPARS   DS    0XL12                                                            
+SVTABADR DS    A                                                                
+SVRECADR DS    A                                                                
+         ORG   *-4                                                              
+SVTODAYA DS    A                                                                
+SVDATADR DS    A                                                                
+*                                                                               
+LOBUYDT  DS    H                                                                
+HIBUYDT  DS    H                                                                
+*                                                                               
+DMCB     DS    6F                                                               
+WORKLAB  DS    CL8                                                              
+WORK     DS    CL64                                                             
+EMSG     DS    CL80                ERROR MESSAGE                                
+         ORG   EMSG                                                             
+MYELEM   DS    CL9                                                              
+         ORG                                                                    
+*                                                                               
+WRKLABEL DS    CL8                                                              
+WORKTAB  DS    12XL256                                                          
+WORKTABX DS    0C                                                               
+WORKTBSZ EQU   12                                                               
+*                                                                               
+WORKX    EQU   *                                                                
+         SPACE                                                                  
+BBTABD   DSECT                                                                  
+BBTENT   DS    0XL20                                                            
+BBTAM    DS    XL1                                                              
+BBTCLT   DS    XL2                                                              
+BBTMSTA  DS    XL5                                                              
+BBTEST   DS    XL1                                                              
+BBTPRD1  DS    XL1                                                              
+BBTPRD2  DS    XL1                                                              
+BBTSLN1  DS    XL1                                                              
+BBTSLN2  DS    XL1                                                              
+BBTLODT  DS    XL2                                                              
+BBTHIDT  DS    XL2                                                              
+BBTFLAG  DS    XL1                                                              
+BBTFLAG1 DS    XL1                                                              
+BBTFLAG2 DS    XL1                                                              
+BBTNEXT  EQU   *                                                                
+         EJECT                                                                  
+BUYRECD  DSECT                                                                  
+       ++INCLUDE SPGENBUY                                                       
+         SPACE 2                                                                
+       ++INCLUDE DDCOMFACS                                                      
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'040SPTBAMNT  01/28/13'                                      
+         END                                                                    

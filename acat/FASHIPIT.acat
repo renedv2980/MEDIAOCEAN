@@ -1,0 +1,515 @@
+*          DATA SET FASHIPIT   AT LEVEL 004 AS OF 03/13/11                      
+*CATALP SHIPIT                                                                  
+         TITLE 'FACPAK INTERFACE TO COMPRESSION/STRUCTURED WRITES'              
+         PRINT NOGEN                                                            
+SHIPIT   CSECT                                                                  
+         NMOD1 WORKL,*SHIPIT*,CLEAR=YES                                         
+         USING WORKD,RC                                                         
+         ST    RD,SAVERD                                                        
+         LTR   R1,R1               SPECIAL CALL FROM ABEND                      
+         BZ    EXITOK                                                           
+*                                                                               
+         MVC   PARMS,0(R1)                                                      
+         MVC   PFLAG,PARMS         SAVE FLAG FOR PARMS                          
+         MVI   PARMS,0                                                          
+         BRAS  RE,INIT             INITIALISE VARIABLES                         
+         BNE   EXITL                                                            
+*                                                                               
+         GOTO1 APROTOFF                                                         
+         ICM   RA,15,ASHIP                                                      
+         USING BTSAVED,RA          RA=A(SAVED STORAGE)                          
+         ICM   R9,15,AUTL                                                       
+         USING UTLD,R9             R9=A(UTL)                                    
+         BRAS  RE,MOVEIT           MOVE THIS INFORMATION TO DATASPACE           
+         BE    XMOD                CAN ACCEPT ANOTHER SCREEN                    
+*                                                                               
+         BRAS  RE,ZIPIT            COMPRESS SCREENS IN BUFFER                   
+         BRAS  RE,WAIT             WAIT UNTIL POSTED FROM PKZIP                 
+         BRAS  RE,BLDTBUF          BUILD TBUFF                                  
+*                                                                               
+         XC    BTDISP,BTDISP       RESET DISPLACEMENT                           
+         XC    BTANTRY,BTANTRY     RESET A(ENTRY)                               
+         CLI   *,255               SET CC LOW FOR NO MORE DATA                  
+         B     XMOD                                                             
+         EJECT                                                                  
+***********************************************************************         
+* INITIALISATION CODE                                                 *         
+***********************************************************************         
+INIT     NTR1  ,                                                                
+         ICM   RF,15,ASSB                                                       
+         USING SSBD,RF                                                          
+         MVC   TASKING,SSBMTIND                                                 
+         CLI   SSBZSTAT,0          INITIALISED?                                 
+         BE    EXITL               NO - EXIT                                    
+         CLI   SSBZSTAT,SSBZSDED   ABENDED?                                     
+         BE    EXITL               YES - EXIT                                   
+*                                                                               
+         L     RF,SSBTKADR                                                      
+         USING TCBD,RF                                                          
+         ST    RF,MYTCB                                                         
+         MVC   ATWA,TCBTWA         GET STUFF FROM TCB                           
+         MVC   AUTL,TCBUTL                                                      
+         MVC   AWRK,TCBWRKA                                                     
+         MVC   AZIPBUFF,TCBAZIP                                                 
+         MVC   BUFF24,TCBTBUFF                                                  
+         MVC   BUFF31,TCBRBUFF                                                  
+*                                                                               
+         L     RF,VCOMFACS         SELF MODIFYING - NEED PROTECT OFF            
+         USING COMFACSD,RF                                                      
+         MVC   APROTON,CPROTON                                                  
+         MVC   APROTOFF,CPROTOFF                                                
+         DROP  RF                                                               
+*                                                                               
+         XC    MYTIOB,MYTIOB       EXTRACT TIOB                                 
+         ICM   RF,15,AWRK                                                       
+         CLC   =CL4'MNTR',0(RF)    MONITOR W/S                                  
+         BNE   *+10                NO                                           
+         MVC   MYTIOB,72(RF)       TIOB IS FIRST ITEM IN W/S                    
+*                                                                               
+         GOTO1 APROTOFF                                                         
+*                                                                               
+         ICM   R9,15,AUTL                                                       
+         OI    TTYPE2,TTYPE2SC+TTYPE2CH                                         
+         TM    TSTAT8,TST8RSLV     RESOLVED TTSCCNT?                            
+         BO    *+12                YES                                          
+         MVI   TTSCCNT,TTSCCNTQ                                                 
+         OI    TSTAT8,TST8RSLV     YOU JUST DID                                 
+*                                                                               
+         TM    PFLAG,SHIPFEND      LAST TIME CALL?                              
+         BZ    *+10                NO                                           
+         XC    TTSCCNT,TTSCCNT     CLEAR CONVERSATION COUNTER                   
+*                                                                               
+         OC    TTSCCNT,TTSCCNT     END OF THIS CONVERSATION?                    
+         BNZ   *+12                NO                                           
+         NI    TTYPE2,255-TTYPE2CH RESET BRACKET                                
+         NI    TSTAT8,255-TST8RSLV                                              
+*                                                                               
+         GOTO1 APROTON                                                          
+*                                                                               
+         ICM   RF,15,ASIDFLD       ALREADY HAVE ASID?                           
+         BNZ   EXITOK              YES                                          
+*                                                                               
+         GOTO1 APROTOFF                                                         
+         EXTRACT ASIDFLD,'S',FIELDS=(ASID)                                      
+         GOTO1 APROTON                                                          
+         B     EXITOK                                                           
+         EJECT                                                                  
+***********************************************************************         
+* TRANSLATE AND MOVE INFORMATION FROM TBUFF TO COMPRESSION BUFFER     *         
+* OUTPUT IS TRANSLATED USING TO3270 INTO 24 BIT BUFFER IN TCB         *         
+* IT COMES OUT AS AL2(LENGTH),XL??(TRANSLATED OUTPUT)                 *         
+* IT IS THEN STACKED INTO TCB ZIP BUFFER AS A LINKED LIST             *         
+* THIS REPEATS UNTIL ZIP BUFFER IS FULL OR THERE IS NO MORE DATA      *         
+***********************************************************************         
+MOVEIT   NTR1  ,                                                                
+         LHI   R1,64               DISP TO FIRST FIELD IN TWA                   
+         A     R1,ATWA                                                          
+         XR    RF,RF                                                            
+         USING FHD,R1                                                           
+MVE02    ICM   RF,1,FHLN           END OF SCREEN                                
+         BZ    MVE04               YES                                          
+         TM    FHAT,FHATPR                                                      
+         BO    *+8                                                              
+         OI    FHOI,FHOITR         HAVE TO TRANSMIT ALL FIELDS TO STOP          
+         BXH   R1,RF,MVE02         NASTY LITTLE STEREO PROBLEM                  
+         DROP  R1                                                               
+*                                                                               
+MVE04    GOTO1 VTO3270,PLIST,ATWA,BUFF24,(R9),MYTIOB                            
+*                                                                               
+         SAM31 ,                                                                
+         ICM   R2,15,AZIPBUFF      GET A(ZIP BUFFER)                            
+         USING ZIPHDRD,R2                                                       
+         MVI   ZIPACTN,ZIPACMP     ALWAYS COMPRESSING                           
+         OI    ZIPFDETL,ZIPDBIG    USE BEST COMPRESSION                         
+         L     RF,=A(ZIPBLENQ)                                                  
+         TM    PFLAG,SHIPFNGC                                                   
+         BZ    *+8                                                              
+         L     RF,=A(TBUFFXL)                                                   
+         TM    PFLAG,SHIPFVGC                                                   
+         BZ    *+8                                                              
+         L     RF,=A(ZIPBLENG)                                                  
+         ST    RF,BTMAX                                                         
+*                                                                               
+         ICM   RE,15,BUFF24                                                     
+         AHI   RE,-2               RE = AL2(OUTPUT LEN),X(OUTPUT)               
+*                                                                               
+         LH    R1,0(RE)            R1=A(TRANSLATED LENGTH OF SCREEN)            
+         AHI   R1,2                + LENGTH ITSELF                              
+         BCTR  R1,0                - ETX AT END                                 
+         STH   R1,0(RE)            = NEW LENGTH                                 
+*                                                                               
+         A     R1,BTDISP                                                        
+         ST    R1,FULL             FULL = NEXT DISPLACEMENT IN BUFFER           
+*                                                                               
+         LA    R0,ZIPLENQ(R2)                                                   
+         A     R0,BTDISP           R0 = MOVE TO ADDRESS                         
+         LH    R1,0(RE)                                                         
+         LR    RF,R1                                                            
+         MVCL  R0,RE               COPY TRANSLATED OUTPUT TO BLOCK              
+*                                                                               
+         MVC   BTDISP,FULL         SET NEW DISPLACEMENT                         
+         MVC   ZIPULEN,FULL        SET UNCOMPRESSED LENGTH                      
+*                                                                               
+         OC    TTSCCNT,TTSCCNT     END OF THIS CONVERSATION?                    
+         BZ    EXITL               YES - COMPRESS                               
+*                                                                               
+         ICM   RF,15,BTDISP        CAN WE FIT ANOTHER SCREEN?                   
+         AHI   RF,TBUFFL                                                        
+         C     RF,BTMAX                                                         
+         BL    EXITOK                                                           
+         B     EXITL               NO  - COMPRESS                               
+         DROP  R2                                                               
+         EJECT                                                                  
+***********************************************************************         
+* CALL PKZIP TO COMPRESS BUFFER IN DATASPACE                          *         
+***********************************************************************         
+ZIPIT    NTR1  ,                                                                
+         SAM31 ,                                                                
+         ICM   R2,15,AZIPBUFF      GET A(ZIP BUFFER)                            
+         USING ZIPHDRD,R2                                                       
+         OC    ZIPULEN,ZIPULEN     ZIPULEN MUST NOT BE ZERO                     
+         BNZ   *+6                                                              
+         DC    H'0'                                                             
+*                                                                               
+         L     RF,MYTCB                                                         
+         LA    RF,TCBZECB-TCBD(RF)                                              
+         XC    0(4,RF),0(RF)       CLEAR ZIP ECB IN TASK                        
+         STCM  RF,15,ZIPECB        SET A(COMPLETION ECB)                        
+         XC    ZIPTIME,ZIPTIME                                                  
+         MVI   ZIPSTAT,ZIPSNEW     SET NEW WORK (DO THIS LAST)                  
+         SAM24 ,                                                                
+         DROP  R2                                                               
+*                                                                               
+         L     R2,ASSB                                                          
+         USING SSBD,R2                                                          
+         XR    R5,R5                                                            
+         ICM   R5,3,SSBZASID       GET ASCB FOR THE PKZIP IMAGE                 
+         LOCASCB ASID=(R5)                                                      
+         LTR   RF,RF               ASCB RETURNED IN R1 OK?                      
+         BZ    ZIPIT02             NO                                           
+*                                                                               
+         LA    R0,NOZIPFND         NO ZIP - CAN'T CONTINUE                      
+         BRAS  RE,OUTMESS                                                       
+         BRAS  RE,FREEME                                                        
+         MVI   SSBZSTAT,SSBZSDED   SET IMAGE ABENDED (SO NO MORE POSTS)         
+         DC    H'0'                NO ZIP IMAGE TO POST                         
+*                                                                               
+ZIPIT02  LR    R4,R1               SET ASCB IN R4                               
+         ICM   R3,15,SSBZECB                                                    
+         POST (R3),99,ASCB=(R4),LINKAGE=SYSTEM,ECBKEY=8,MF=(E,POSTLF)           
+         LTR   RF,RF                                                            
+         BZ    EXITOK              GOOD RETURN IS RF=ZERO                       
+*                                                                               
+         CHI   RF,4                INDICATES ASYNCHRONOUS POST                  
+         BNE   ZIPIT04                                                          
+         LA    R0,RC4              FLAG SO AND CONTINUE - ERRET WILL            
+         BRAS  RE,OUTMESS          HANDLE ANY PROBLEMS                          
+         B     EXITOK                                                           
+*                                                                               
+ZIPIT04  CHI   RF,8                INDICATES ASYNCHRONOUS POST                  
+         BNE   ZIPIT06                                                          
+         LA    R0,RC8              FLAG SO AND CONTINUE                         
+         BRAS  RE,OUTMESS          ERRET WILL NOT BE CALLED - NEED              
+         B     EXITOK              TO MAKE SURE ZIP IS OK                       
+*                                                                               
+ZIPIT06  LA    R0,RCWHAT                                                        
+         BRAS  RE,OUTMESS                                                       
+         BRAS  RE,FREEME                                                        
+         MVI   SSBZSTAT,SSBZSDED   SET IMAGE ABENDED (SO NO MORE POSTS)         
+         DC    H'0'                NO ZIP IMAGE TO POST                         
+         DROP  R2                                                               
+*                                                                               
+POSTLF   POST  ERRET=UNZIPPED,ECBKEY=YES,MF=L                                   
+         EJECT                                                                  
+***********************************************************************         
+* OUTPUT MESSAGES TO CONSOLE                                          *         
+* NTRY: R0 = A(MESSAGE)                                               *         
+***********************************************************************         
+OUTMESS  NTR1  ,                                                                
+         GOTO1 VDMOD000,PLIST,VWCTYPE,(R0),MSGL,C'LVL1'                         
+         B     EXITOK                                                           
+         EJECT                                                                  
+***********************************************************************         
+* CLEAR ZIP BUFFER FROM SYSTEM ON PROBLEM                             *         
+***********************************************************************         
+FREEME   NTR1  ,                                                                
+         SAM31 ,                                                                
+         L     R2,AZIPBUFF         GET A(MY HEADER)                             
+         USING ZIPHDRD,R2                                                       
+         XC    0(ZIPLENQ,R2),0(R2)  CLEAR ME FROM THE SYSTEM                    
+         B     EXITOK                                                           
+         DROP  R2                                                               
+         EJECT                                                                  
+***********************************************************************         
+* SET WAIT UNTIL POSTED                                               *         
+***********************************************************************         
+WAIT     NTR1  ,                                                                
+         L     RF,MYTCB                                                         
+         LA    R1,TCBZECB-TCBD(RF)                                              
+         CLI   TASKING,0           MULTITASKING?                                
+         BE    WAIT02              NO                                           
+         ICM   RF,15,VADWAIT       ADWAIT DEFINED?                              
+         BZ    WAIT02              NO                                           
+         BASSM RE,RF                                                            
+         B     EXITOK                                                           
+*                                                                               
+WAIT02   WAIT  ECB=(1)             DO A REAL WAIT                               
+         B     EXITOK                                                           
+         EJECT                                                                  
+***********************************************************************         
+* BUILD OUTPUT BUFFER IN STRUCTURED FIELD FORMAT                      *         
+***********************************************************************         
+BLDTBUF  NTR1  ,                                                                
+         SAM31 ,                                                                
+*                                                                               
+         L     R4,AZIPBUFF                                                      
+         USING ZIPHDRD,R4                                                       
+         CLI   ZIPSTAT,ZIPSERR     TEST FOR ZIP ERROR                           
+         BNE   *+6                                                              
+         DC    H'0'                ERROR WITH ZIP - CANT SEND BUFFER            
+*                                                                               
+         CLI   ZIPSTAT,ZIPSDON     DID WE ACTUALLY FINISH ZIPPING?              
+         BE    *+6                 YES                                          
+         DC    H'0'                                                             
+         MVI   ZIPSTAT,0           MAKE SURE NEXT TIME THROUGH NO MATCH         
+*                                                                               
+         L     R2,BUFF31                                                        
+         MVI   0(R2),WSF           SET WRITE STRUCTURED FIELD                   
+         LA    R2,1(R2)                                                         
+         ST    R2,OVERALL          MOVE INSERT DATA INTO FIELD                  
+         MVC   0(INSERTLN,R2),INSERTD  SET INSERT                               
+         LA    R2,INSERTLN(R2)     R2 IS LENGTH OF THIS ELEMENT                 
+*                                                                               
+         L     R1,ZIPCLEN          COMPRESSED DATA LEN + OVERHEAD               
+         AHI   R1,STRDATA-STREAMD                                               
+         STCM  R1,3,0(R2)          SET LENGTH OF ELEMENT                        
+         LA    R2,2(R2)            GO PAST LENGTH                               
+         USING STREAMD,R2                                                       
+*                                                                               
+         XC    STRSEQN,STRSEQN     FIX THIS FOR CONVERSE                        
+         TM    PFLAG,SHIPFEND      LAST TIME CALL                               
+         BZ    *+8                                                              
+         OI    STRSEQN,STRLAST                                                  
+         TM    PFLAG,SHIPFFST      FRST TIME CALL                               
+         BZ    *+8                                                              
+         OI    STRSEQN,STRFRST                                                  
+         OC    TTSCCNT,TTSCCNT     LAST IN BRACKET                              
+         BNZ   *+8                                                              
+         OI    STRSEQN,STRBRKT                                                  
+*                                                                               
+         L     R1,ZIPCLEN          COMPRESSED LENGTH OF DATA                    
+         AHI   R1,STRDATA-STREL                                                 
+         STCM  R1,3,STRLEN                                                      
+         LH    R1,BTFRAME                                                       
+         LA    R1,1(R1)                                                         
+         STH   R1,BTFRAME                                                       
+         STCM  R1,3,STRSEQ         SET SEQUENCE NUMBERS                         
+*                                                                               
+         TM    PFLAG,SHIPFEND      LAST TIME CALL                               
+         BZ    *+10                                                             
+         XC    BTFRAME,BTFRAME     RESET FRAME NUMBER                           
+*                                                                               
+         MVI   STRFLAG1,STF1ZIP+STF13270                                        
+         XC    STRFLAG2,STRFLAG2                                                
+         XC    STRFLAG3,STRFLAG3                                                
+         XC    STRFLAG4,STRFLAG4                                                
+*                                                                               
+         LA    R0,ZIPLENQ(R4)                                                   
+         L     R1,ZIPCLEN                                                       
+         LA    RE,STRDATA                                                       
+         LR    RF,R1                                                            
+         MVCL  RE,R0                   COPY IN COMPRESSED DATA                  
+*                                                                               
+         LA    R2,STRDATA                                                       
+         A     R2,ZIPCLEN              GO ON TO NEXT ELEMENT AREA               
+         XC    0(4,R2),0(R2)                                                    
+*                                                                               
+         LR    R1,R2                                                            
+         L     RF,OVERALL                                                       
+         SR    R1,RF                                                            
+         STCM  R1,3,0(RF)                                                       
+*                                                                               
+         L     RE,BUFF31                                                        
+         SR    R2,RE                 R2 HAS DATA LEN                            
+         AHI   RE,-8                 BACK UP TO HEADER                          
+         STH   R2,6(RE)              SET MESSAGE LENGTH                         
+*                                                                               
+         XC    ZIPACTN,ZIPACTN                                                  
+         XC    ZIPSTAT,ZIPSTAT                                                  
+         XC    ZIPULEN,ZIPULEN                                                  
+         XC    ZIPCLEN,ZIPCLEN                                                  
+         XC    ZIPFDETL,ZIPFDETL                                                
+         XC    ZIPCRC,ZIPCRC                                                    
+*                                                                               
+BLDTBUFX B     EXITOK                                                           
+         DROP  R4                                                               
+         EJECT                                                                  
+***********************************************************************         
+* EXIT POINTS  AND USEFUL ROUTINES                                    *         
+***********************************************************************         
+EXITOK   CR    RB,RB               SET CC EQUAL                                 
+         B     EXIT                                                             
+*                                                                               
+EXITL    CLI   *,255               SET CC LOW                                   
+         B     EXIT                                                             
+*                                                                               
+XMOD     IPM   R4                                                               
+         GOTO1 APROTON                                                          
+         SPM   R4                                                               
+         L     RD,SAVERD                                                        
+         B     EXIT                                                             
+*                                                                               
+EXIT     XIT1  ,                                                                
+         EJECT                                                                  
+***********************************************************************         
+* LITERALS AND CONSTANTS                                              *         
+***********************************************************************         
+WSF      EQU   X'F3'               WSF                                          
+*                                                                               
+ASIDFLD  DC    D'0'                                                             
+*                                                                               
+ARZERO   DC    16F'0'                                                           
+ASSB     DC    V(SSB)                                                           
+VCOMFACS DC    V(SYSFAC0)                                                       
+VDMOD000 DC    V(DMOD000)                                                       
+VWCTYPE  DC    V(WCTYPE)                                                        
+VTO3270  DC    V(TO3270)                                                        
+VADWAIT  DC    V(ADWAIT)                                                        
+*                                                                               
+INSERTD  DC    AL2(0)                                                           
+         DC    X'D04704C08061'                                                  
+INSERTLN EQU   *-INSERTD                                                        
+*                                                                               
+MSGL     EQU   50                                                               
+NOZIPFND DC    CL(MSGL)'No ZIP Images found - Please check immediately'         
+RC4      DC    CL(MSGL)'WARNING - Post macro returned RC=4'                     
+RC8      DC    CL(MSGL)'WARNING - Post macro returned RC=8 - check ZIP'         
+RCWHAT   DC    CL(MSGL)'ERROR - INVALID POST RETURN - ZIP PROBLEM'              
+*                                                                               
+         LTORG                                                                  
+         EJECT                                                                  
+***********************************************************************         
+* ZIP ADDRESS SPACED IS NOT THERE - CLEAR ENTRY SOMEHOW               *         
+***********************************************************************         
+UNZIPPED BASR  RB,0                                                             
+         AHI   RB,-2                                                            
+         USING UNZIPPED,RB                                                      
+         LR    R3,RE               SAVE RETURN ADDRESS                          
+         WTO   'ZIP POST FAILURE - PLEASE CHECK'                                
+         L     R2,=V(SSB)                                                       
+         USING SSBD,R2                                                          
+         MVI   SSBZSTAT,SSBZSDED   SET IMAGE ABENDED (SO NO MORE POSTS)         
+         LR    RE,R3                                                            
+         BR    RE                                                               
+*                                                                               
+         LTORG                                                                  
+         DROP  R2,RB                                                            
+         EJECT                                                                  
+***********************************************************************         
+* USEFUL DSECTS                                                       *         
+***********************************************************************         
+STREAMD  DSECT                                                                  
+STRSEQN  DS    XL1                 CONVERSATION SEQUENCE NUMBER                 
+STRLAST  EQU   X'80'               LAST OF CONVERSATION                         
+STRBRKT  EQU   X'40'               LAST OF BRACKET                              
+STRFRST  EQU   X'20'               FRST OF CONVERSATION                         
+*                                                                               
+STREL    DS    0X              *** REPEATED ELEMENTS                            
+STRLEN   DS    XL2                 LENGTH OF THIS ELEMENT                       
+STRSEQ   DS    XL2                 SEQUENCE NUMBER OF THIS ELEMENT              
+STRFLAG1 DS    X                   FLAG BYTE 1                                  
+STF1ZIP  EQU   X'80'               DATA HAS BEEN ZIPPED                         
+STF13270 EQU   X'40'               DATA HAS 3270 TRANSLATION                    
+STFSOFF  EQU   X'20'               DATA HAS SOFT FIELD TRANSLATION              
+STF110   EQU   X'10'               UNDEFINED                                    
+STF108   EQU   X'08'               UNDEFINED                                    
+STF104   EQU   X'04'               UNDEFINED                                    
+STF102   EQU   X'02'               UNDEFINED                                    
+STF101   EQU   X'01'               UNDEFINED                                    
+STRFLAG2 DS    X                   FLAG BYTE 2                                  
+STRFLAG3 DS    X                   FLAG BYTE 3                                  
+STRFLAG4 DS    X                   FLAG BYTE 4                                  
+STRDATA  DS    0X              *** DATA STARTS HERE                             
+         EJECT                                                                  
+***********************************************************************         
+* WORKING STORAGE                                                     *         
+***********************************************************************         
+WORKD    DSECT                                                                  
+DUB      DS    D                                                                
+SAVERD   DS    A                                                                
+CALLR1   DS    A                   A(CALLERS R1)                                
+MYTCB    DS    A                                                                
+FULL     DS    A                                                                
+*                                                                               
+PARMS    DS    0XL(SHIPLEN)                                                     
+ASHIP    DS    A                   A(MY STORAGE)                                
+         DS    3A                                                               
+*                                                                               
+ATWA     DS    A                   A(TWA)                                       
+AUTL     DS    A                   A(UTL)                                       
+AWRK     DS    A                   A(TCBWRK)                                    
+APROTON  DS    A                   A(PROTON)                                    
+APROTOFF DS    A                   A(PROTOFF)                                   
+AZIPBUFF DS    A                   A(ZIP BUFFER)                                
+BUFF31   DS    A                   31-BIT TBUFF                                 
+BUFF24   DS    A                   24-BIT TBUFF                                 
+*                                                                               
+PLIST    DS    6F                                                               
+AFSTZIP  DS    A                   A(FIRST ZIP IMAGE FOUND)                     
+OVERALL  DS    A                                                                
+MYTIOB   DS    XL16                TIOB FROM MONITOR W/S                        
+POSTNUM  DS    X                   COUNT OF POSTS                               
+TASKING  DS    X                   SSBMTIND                                     
+COUNT    DS    X                   TTSCCNT                                      
+PFLAG    DS    X                   FIRST BYTE OF PARAMS                         
+WORKL    EQU   *-WORKD                                                          
+*                                                                               
+ZIPLOGD  DSECT                                                                  
+ZLTCNT   DS    F                                                                
+ZLINQ    DS    F                                                                
+ZLQAVE   DS    F                                                                
+ZLQMAX   DS    F                                                                
+         EJECT                                                                  
+***********************************************************************         
+* OTHER INCLUDED DSECTS                                               *         
+***********************************************************************         
+                                                                                
+* FASHIPBLK                                                                     
+         PRINT OFF                                                              
+       ++INCLUDE FASHIPBLK                                                      
+         PRINT ON                                                               
+* DDCOMFACS                                                                     
+         PRINT OFF                                                              
+       ++INCLUDE DDCOMFACS                                                      
+         PRINT ON                                                               
+* DDFH                                                                          
+         PRINT OFF                                                              
+       ++INCLUDE DDFH                                                           
+         PRINT ON                                                               
+* FASSB                                                                         
+         PRINT OFF                                                              
+       ++INCLUDE FASSB                                                          
+         PRINT ON                                                               
+* FAUTL                                                                         
+         PRINT OFF                                                              
+       ++INCLUDE FAUTL                                                          
+         PRINT ON                                                               
+* FATCB                                                                         
+         PRINT OFF                                                              
+       ++INCLUDE FATCB                                                          
+         PRINT ON                                                               
+* FATABSD                                                                       
+         PRINT OFF                                                              
+       ++INCLUDE FATABSD                                                        
+         PRINT ON                                                               
+* DDZIPBLK                                                                      
+         PRINT OFF                                                              
+       ++INCLUDE DDZIPBLK                                                       
+         PRINT ON                                                               
+*DDZIPWRKD                                                                      
+         PRINT OFF                                                              
+       ++INCLUDE DDZIPWRKD                                                      
+         PRINT ON                                                               
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'004FASHIPIT  03/13/11'                                      
+         END                                                                    

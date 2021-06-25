@@ -1,0 +1,433 @@
+*          DATA SET NENETPOSIO AT LEVEL 003 AS OF 05/01/02                      
+*HIPO******************************************************************         
+*  NUMBER:                                                            *         
+*  TITLE: NETPOSIO                                                    *         
+*                                                                     *         
+*  COMMENTS: NETIO GETS A UNIT AND FILLS IN THE NETBLOCK. THIS        *         
+*            ROUTINE POST PROCESSES THE UNIT AND MAY "SPLIT" IT       *         
+*            INTO SEVERAL FAKE UNITS. THUS, FOR EXAMPLE, EACH                   
+*            BILLING ELEMENT CAN BE THOUGHT OF AS A SEPERATE RECORD             
+*                                                                     *         
+*                                                                     *         
+*  INPUTS:   (ARG 1) NETBLOCK - AFTER BEING FILLED IN BY NETIO                  
+*            (ARG 2) NETPOSBLK - BLOCK USED AS I/O AREA FOR THIS                
+*                                ROUTINE                                        
+*                                                                               
+*            NBAIO - POINTS TO UNIT RECORD                                      
+*                                                                               
+*  OUTPUTS:  NETPOSBLK                                                *         
+*                                                                     *         
+*  LOCALS:                                                            *         
+*                                                                     *         
+*                                                                     *         
+*                                                                     *         
+*                                                                     *         
+*                                                                     *         
+*ENDHIPO***************************************************************         
+*                                                                               
+*CATALP NETPOSIO                                                                
+         TITLE 'NETPOSIO - POST I/O CONTROLLER FOR NETWORK'                     
+NETPOSIO CSECT                                                                  
+         PRINT NOGEN                                                            
+         NMOD1 100,**NTPI**,R9,RR=RA                                            
+         USING NETIOD,RC                                                        
+         ST    RA,RELO                                                          
+         L     RA,0(R1)            USER PASSES A(NEBLOCK)                       
+         L     R8,4(R1)               AND A(POSBLK)                             
+         USING NEBLOCKD,RA                                                      
+         USING NEPOSBLK,R8                                                      
+         CLI   NPINIT,0                                                         
+         BNE   *+8                                                              
+         BAS   RE,INIT                                                          
+         LM    R0,R7,NPGOR07       RESTORE GENERAL REGISTERS                    
+         BAS   RE,PROCUN                                                        
+         XMOD1                                                                  
+         EJECT                                                                  
+*              INITIALIZATION ROUTINES                                          
+         SPACE 3                                                                
+INIT     NTR1                      INITIALIZE NPBLOCK                           
+         MVC   NPSELID-8(8),=C'**SELS**'                                        
+*                                                                               
+INITXIT  B     XIT                                                              
+         EJECT                                                                  
+*              INITIALIZE FOR REQUEST - AGENCY DETAILS                          
+         SPACE 3                                                                
+*                                                                               
+**** PROCESS SUBUNITS                                                           
+PROCUN   NTR1                                                                   
+         CLI   NPSEQ,C'A'          FOR ACCOUNTING SEQUENCE                      
+         BE    ACCSEQ                                                           
+         DC    H'0'BADTL           NO OTHER SEQS RIGHT NOW                      
+*                                                                               
+*                                                                               
+ACCSEQ   EQU   *                                                                
+         XC    NPACBLK(NPACLEN),NPACBLK INITIALIZE ACCOUNT TOTALS               
+         TM    NBUNITST,X'42'                                                   
+         BNZ   ACCS2                                                            
+{        MVC   NPACASS,NBASSIGN                                                 
+         L     R0,NPACASS                                                       
+         BAS   RE,FINDNET                                                       
+         ST    R0,NPACNASS         NET                                          
+         MVC   NPACACT,NBACTUAL                                                 
+         L     R0,NPACACT                                                       
+         BAS   RE,FINDNET                                                       
+         ST    R0,NPACNACT         NET                                          
+         MVC   NPACINT,NBINTEG                                                  
+         L     R0,NPACINT                                                       
+         BAS   RE,FINDNET                                                       
+         ST    R0,NPACNINT         NET                                          
+*                                                                               
+ACCS2    CLI   NPASSFLG,0          IF NPASSFLG = 0 USE ACTUAL                   
+         BE    USEACT                                                           
+*                                  ASSIGNED                                     
+USEASS   OC    NBASSIGN,NBASSIGN   IF ASSIGNED = 0 AND OVERRIDE OFF,            
+         BNZ   UAS2                  THEN USE ACTUAL                            
+         TM    NBUNITST,X'08'                                                   
+         BZ    USEACT                                                           
+         MVI   NPCOSFLG,1                                                       
+UAS2     MVC   NPACCOST,NPACASS        USE ASSIGNED                             
+         MVC   NPACNCOS,NPACNASS                                                
+         B     ACCS6                                                            
+*                                                                               
+USEACT   TM    NBUNITST,X'20'          CHECK FOR COST OVERRIDE                  
+         BZ    UAC2                                                             
+         MVI   NPCOSFLG,1                                                       
+UAC2     MVC   NPACCOST,NPACACT        USE ASSIGNED                             
+         MVC   NPACNCOS,NPACNACT                                                
+         B     ACCS6                                                            
+*                                                                               
+         USING NURECD,R6                                                        
+ACCS6    L     R6,NBAIO                                                         
+         LA    R6,NUMAINEL         GET FIRST ELEMENT                            
+         USING NUMAINEL,R6                                                      
+         MVI   ELCODE,X'12'        PAY ELEMENT                                  
+         BAS   RE,NEXTEL           ONLY ACCEPT UNIT IF HAS A PAY ELEM           
+*                                                                               
+*                                                                               
+         EJECT                                                                  
+*              ROUTINES TO HANDLE UNITS USING ACTUAL KEYS                       
+*              NBSEQ='D' - PROCESSES ALL NETWORKS IN ONE PASS                   
+*              NBSEQ='N' AND NBSELNET=0 - PROCESS NETWORKS                      
+*                           ONE AT A TIME                                       
+UNBYDATE MVC   NUKDATE,NBCMPSTR    WITH DATE                                    
+         BAS   RE,HIGH                                                          
+         B     UD6                                                              
+         SPACE 1                                                                
+UD4      BAS   RE,SEQ                                                           
+         SPACE 1                                                                
+UD6      CLC   KEY(4),KEYSAVE      CHECK C/B                                    
+         BNE   NOMORUN                                                          
+         CLC   NUKDATE,NBCMPEND    CHECK WITHIN DATE RANGE                      
+         BH    NOMORUN                                                          
+         CLI   NBEFFNET,0          IF PROCESS NETS ONE AT A TIME                
+         BE    UD8                                                              
+         CLC   NBEFFNET,NUKNET        CHECK MATCH                               
+         BNE   UD4                                                              
+         SPACE 1                                                                
+UD8      ZIC   R1,NUKEST           POSSIBLE ESTIMATE FILTER                     
+         LA    R2,NBESTMSK                                                      
+         BAS   RE,TESTMASK                                                      
+         BNE   UD4                                                              
+         CLI   NBSELPRG,0          POSSIBLE PROGRAM FILTER                      
+         BE    UD9                                                              
+         CLC   NBSELPRG,NUKPROG                                                 
+         BNE   UD4                                                              
+         SPACE 1                                                                
+UD9      CLI   NBSELDP,0           POSSIBLE DAYPART FILTER                      
+         BE    UD10                                                             
+         CLC   NBSELDP,NUKDP                                                    
+         BNE   UD4                                                              
+UD10     CLI   NBSELSUB,0          POSSIBLE SUB-CODE FILTER                     
+         BE    UD12                                                             
+         CLC   NBSELSUB,NUKSUB                                                  
+         BNE   UD4                                                              
+UD12     DS    0H                                                               
+         B     UDGETREC                                                         
+*                                                                               
+UDGETREC BAS   RE,GETREC                                                        
+         BAS   RE,UNITFILT         FILTER STATUS & PRODUCT                      
+         BNE   UD4                                                              
+         MVI   NBMODE,NBPROCUN                                                  
+         MVI   BRNCHNUM,BMUBDNXT                                                
+         BAS   RE,GO                                                            
+BRUBDNXT EQU   *                                                                
+         LA    R4,KEY              RESET R4 IN CASE BLOCK MOVED                 
+         B     UD4                                                              
+*                                                                               
+NOMORUN  OC    NBSELNET,NBSELNET   DONE IF NETWORK SELECTED                     
+         BNZ   QE2                                                              
+         CLI   NBSEQ,C'D'          DONE IF NETS PROCESSED TOGETHER              
+         BE    QE2                                                              
+         B     NEXTNET             OTHERWISE GET NEXT NETWORK                   
+         EJECT                                                                  
+*              ROUTINE TO HANDLE UNITS BY PROGRAM WITHIN NETWORK                
+*                                                                               
+*                                  (USES DAY-TIME PASSIVE KEY)                  
+UDTCHECK NTR1                      CHECKS IF UNIT IS TO BE SELECTED             
+         LA    R4,KEY              RESTORE IN CASE IT CHANGED                   
+         CLC   NUKDDATE,NBCMPSTR   DATE FILTER                                  
+         BL    NO                                                               
+         CLC   NUKDDATE,NBCMPEND                                                
+         BH    NO                                                               
+         ZIC   R1,NUKDEST          ESTIMATE FILTER                              
+         LA    R2,NBESTMSK                                                      
+         BAS   RE,TESTMASK                                                      
+         BNE   NO                                                               
+         CLI   NBSELSUB,0          SUB-CODE FILTER                              
+         BE    UDT14                                                            
+         CLC   NBSELSUB,NUKDSUB                                                 
+         BNE   NO                                                               
+UDT14    DS    0H                                                               
+         OC    NBSELPRG,NBSELPRG    PROG FILTER                                 
+         BZ    UDT16                                                            
+         CLC   NBSELPRG,NUKDPROG                                                
+         BNE   NO                                                               
+UDT16    DS    0H                                                               
+         B     UDTGTREC                                                         
+*                                                                               
+UDTGTREC BAS   RE,GETREC                                                        
+         CLI   NBSELDP,0           DAYPART FILTER                               
+         BE    UDT50                                                            
+         L     R6,NBAIO                                                         
+         CLC   NBSELDP,NUKDP-NUKEY(R6)                                          
+         BNE   NO                                                               
+UDT50    BAS   RE,UNITFILT         RECORD FILTERS                               
+         BNE   NO                                                               
+         B     YES                 PASSED ALL TESTS                             
+         EJECT                                                                  
+*                                                                               
+*          DATA SET NEMED2D    AT LEVEL 093 AS OF 01/16/85                      
+*                                                                               
+FINDNET  SRDA  R0,32               PREPARE MULTIPLICAND                         
+         M     R0,=F'8500'                                                      
+         SLDA  R0,1                DOUBLE FOR ROUNDING                          
+         D     R0,=F'10000'                                                     
+         LTR   R1,R1                                                            
+         BM    *+8                                                              
+         AH    R1,=H'1'                                                         
+         SRA   R1,1                                                             
+         LR    R0,R1               REPLACE COST WITH NET                        
+         BR    RE                                                               
+         EJECT                                                                  
+*                                                                               
+         EJECT                                                                  
+*              FILTERS ON UNIT RECORDS                                          
+         SPACE 1                                                                
+UNITFILT NTR1                                                                   
+         USING NUMAINEL,R6                                                      
+         L     R6,NBAIO                                                         
+         MVI   ELCODE,X'01'                                                     
+         BAS   RE,GETEL                                                         
+         CLI   NBSELPAK,0                                                       
+         BNE   UF3                                                              
+         CLI   NBSELPST,C'L'       FILTER LOCKED PACKAGES ONLY                  
+         BNE   UF2                                                              
+         TM    NUPACKST,X'20'                                                   
+         BNO   NO                                                               
+         B     UF4                                                              
+         SPACE 1                                                                
+UF2      CLI   NBSELPST,C'B'       FILTER UNLOCKED PACKAGES                     
+         BE    UF4                                                              
+         TM    NUPACKST,X'20'                                                   
+         BO    NO                                                               
+         B     UF4                                                              
+         SPACE 1                                                                
+UF3      CLC   NBSELPAK,NUPACK     FILTER SELECTED PACKAGE                      
+         BNE   NO                                                               
+         CLI   NBSELPST,C'B'       TEST FOR BOTH LCKED/UNLKD                    
+         BE    UF4                 YES-TAKE UNIT                                
+         CLI   NBSELPST,C'L'       TEST FOR LOCKED ONLY                         
+         BNE   UF3A                NO                                           
+         TM    NUPACKST,X'20'      YES-NOW TEST FOR LOCKED PACKAGE              
+         BNO   NO                                                               
+         B     UF4                                                              
+         SPACE 1                                                                
+UF3A     TM    NUPACKST,X'20'      TEST FOR LOCKED PACKAGE                      
+         BO    NO                  DEFAULT IS TO EXCLUDE LOCKED                 
+         SPACE 1                                                                
+UF4      ZIC   R1,NUPRD            ALLOCATED PRODUCT                            
+         LTR   R1,R1                                                            
+         BNZ   *+8                                                              
+         LA    R1,255                                                           
+         LA    R2,NBPRDMSK                                                      
+         BAS   RE,TESTMASK         MAY BE FILTERING                             
+         BE    UF6                                                              
+         CLI   NUPRD2,0            TRY SECOND PRODUCT                           
+         BE    NO                                                               
+         ZIC   R1,NUPRD2                                                        
+         BAS   RE,TESTMASK                                                      
+         BNE   NO                                                               
+         SPACE 1                                                                
+UF6      LA    R2,NUPRFILT         PROGRAM TYPE FILTERS                         
+         LA    R3,NBSELPFL                                                      
+         LA    R0,3                                                             
+         SPACE 1                                                                
+UF8      CLI   0(R3),0             NOT SPECIFIED                                
+         BE    UF12                                                             
+         CLI   0(R3),C'*'          WILD CARD                                    
+         BE    UF12                                                             
+         TM    0(R3),X'40'                                                      
+         BNO   UF10                                                             
+         CLC   0(1,R2),0(R3)       FILTER                                       
+         BE    UF12                                                             
+         B     NO                                                               
+         SPACE 1                                                                
+UF10     CLC   0(1,R2),0(R3)       NEGATIVE FILTER                              
+         BE    NO                                                               
+         SPACE 1                                                                
+UF12     LA    R2,1(R2)                                                         
+         LA    R3,1(R3)                                                         
+         BCT   R0,UF8                                                           
+*                                                                               
+UF14     CLI   NBUSER+13,C'Y'      FILTER PRE-EMPTS                             
+         BNE   UF16                  IF PROFILE SET                             
+         TM    NUUNITST,X'40'                                                   
+         BO    NO                                                               
+*                                                                               
+UF16     CLI   NBSELUOP,0          UNIT SELECTION OPTION                        
+         BE    UF20                                                             
+         CLI   NBSELUOP,C'E'       ONLY RETURN ESTIMATES                        
+         BNE   UF18               NO GOOD IF A PFB OR MAKEGOOD                  
+         TM    NUUNITST,X'05'                                                   
+         BZ    UF18                                                             
+         B     NO                                                               
+UF18     CLI   NBSELUOP,C'A'       ONLY RETURN ACTUALS                          
+         BNE   UF20                 NO GOOD IF A MISSED SPOT                    
+         TM    NUUNITST,X'42'           OR PREEMPT                              
+         BZ    UF20                                                             
+         B     NO                                                               
+*                                                                               
+UF20     CLI   NBSELFLT,0          ACCOUNTING FILTERS                           
+         BE    UF22                                                             
+         LR    R2,R6               SAVE A(MAINEL) IN R2                         
+         CLI   NBSELFLT,1          1=ONLY RETURN PAID                           
+         BE    UFPAID                                                           
+         CLI   NBSELFLT,2          2=ONLY RETUN UNPAID                          
+         BE    UFUNPAID                                                         
+         CLI   NBSELFLT,3          3=ONLY RETURN BILLED                         
+         BE    UFBILL                                                           
+         CLI   NBSELFLT,4          4=ONLY RETURN UNBILLED                       
+         BE    UFUNBILL                                                         
+         DC    H'0'                BAD SELFLT FIELD                             
+*                                                                               
+UF22     B     UFXIT                                                            
+*                                                                               
+UFPAID   MVI   ELCODE,X'12'        PAY ELEMENT                                  
+         BAS   RE,NEXTEL           ONLY ACCEPT UNIT IF HAS A PAY ELEM           
+         BE    UFBPOK                                                           
+         B     NO                                                               
+UFUNPAID TM    NUUNITST,X'42'      IF A PRE-EMPT OR MISSED                      
+         BZ    UFBPOK                IF PAY ELEMENTS EXIST, ACCEPT IT           
+         MVI   ELCODE,X'12'                                                     
+         BAS   RE,NEXTEL                                                        
+         BE    UFBPOK                                                           
+         B     NO                                                               
+UFBILL   MVI   ELCODE,X'10'        BILL ELEMENT                                 
+         BAS   RE,NEXTEL           ONLY ACCEPT IF UNIT HAS A BILL ELEM          
+         BE    UFBPOK                                                           
+         B     NO                                                               
+UFUNBILL TM    NUUNITST,X'42'      IF A PRE-EMPT OR MISSED                      
+         BZ    UFBPOK                IF BIL ELEMENTS EXIST, ACCEPT IT           
+         MVI   ELCODE,X'10'                                                     
+         BAS   RE,NEXTEL                                                        
+         BE    UFBPOK                                                           
+         B     NO                                                               
+*                                                                               
+UFBPOK   LR    R6,R2               RESTORE R6                                   
+         XC    ELCODE,ELCODE       RESET ELCODE                                 
+UFXIT    B     YES                                                              
+*                                                                               
+         DROP  R6                                                               
+         EJECT                                                                  
+*              REQUEST END                                                      
+         SPACE 3                                                                
+QE2      CLI   NBSEQ,C'X'           FOR X SEQUENCE                              
+         BNE   QE3                                                              
+         OC    NBADTL,NBADTL                                                    
+         BZ    QE3                                                              
+         L     R2,NBADTL            FIND CURRENT IN DATELIST                    
+QDL1     CLC   0(4,R2),NBCMPSTR                                                 
+         BE    QDL2                                                             
+         LA    R2,4(R2)                                                         
+         B     QDL1                                                             
+QDL2     LA    R2,4(R2)            GET DATE SET AFTER THIS ONE                  
+         CLI   0(R2),0                                                          
+         BE    QE3                                                              
+         MVC   NBCMPSTR(4),0(R2)                                                
+         B     DOU1                                                             
+*                                                                               
+QE3      MVI   NBFILE,C'S'                                                      
+         CLC   NBSELCLI,=C'ALL'    DO WE NEED TO HANDLE ANOTHER CLIENT          
+         BE    QVALCLI             YES GO BACK FOR NEXT. REVALIDATE             
+*                                                                               
+QE4      OC    NBSELAGY,NBSELAGY   DO WE NEED TO HANDLE ANOTHER AGY             
+         BNZ   QE6                                                              
+         XC    NBEFFCLI,NBEFFCLI   IF SO, START EFFCLI AT 0                     
+         B     QVALAGY                                                          
+QE6      MVI   NBMODE,NBREQLST                                                  
+         MVI   BRNCHNUM,BMENDIT                                                 
+         BAS   RE,GO                                                            
+BRENDIT  EQU   *                                                                
+         MVI   NPINIT,0                                                         
+         B     XIT                                                              
+         SPACE 3                                                                
+*              ROUTINES  TO CONTROL GOING TO MODULE                             
+*              GOERR - NBRETURN IS STILL SET TO LAST ENTRY                      
+         SPACE 3                                                                
+GO       STM   R0,R7,NPGOR07       SAVE GENERAL REGS                            
+         CLI   NBTRCOPT,C'Y'       OPTION TO TRACE                              
+         BNE   XITGO                                                            
+         LA    R1,MODETAB                                                       
+         SPACE 1                                                                
+GO2      CLC   0(1,R1),NBMODE                                                   
+         BE    GO4                                                              
+         LA    R1,16(R1)                                                        
+         CLI   0(R1),X'FF'                                                      
+         BNE   GO2                                                              
+         SPACE 1                                                                
+GO4      MVI   P,C' '                                                           
+         MVC   P+1(131),P                                                       
+         MVC   P(18),=C'GO TO USER MODE = '                                     
+         MVC   P+18(15),1(R1)                                                   
+         GOTO1 NBPRINT,DMCB,PFILL,=C'BL02'                                      
+*                                                                               
+XITGO    CLI   NBSELMOD,0          CK TRAP MODE                                 
+         BE    XIT                                                              
+         CLI   NBERROR,0           EXIT NO MATTER WHAT IF ERROR                 
+         BNE   XIT                                                              
+         CLI   NBMODE,NBREQLST     EXIT IF LAST ONE                             
+         BE    XIT                                                              
+         CLC   NBMODE,NBSELMOD                                                  
+         BNE   NTIOSTRT            LOOP TIL NBMODE=NBSELMOD                     
+         B     XIT                                                              
+         EJECT                                                                  
+*              DSECT FOR MODULE                                                 
+         SPACE 3                                                                
+NETIOD   DSECT                                                                  
+DUB      DS    D                                                                
+WORK     DS    CL64                                                             
+DMCB     DS    6F                                                               
+DMWORK   DS    CL96                                                             
+RELO     DS    A                                                                
+FILE     DS    CL8                                                              
+COMMAND  DS    CL8                                                              
+PFILL    DS    C                                                                
+P        DS    CL132                                                            
+PARAS    DS    6F                                                               
+BRNCHNUM DS    CL1                 NUMBER OF PLACE TO RETURN TO.                
+ELCODE   DS    CL1                                                              
+BITTEST  DS    CL1                                                              
+FIRSTSW  DS    CL1                                                              
+PROGSW   DS    CL1                                                              
+NETSW    DS    CL1                                                              
+HOLDEFLT DS    CL1                 HOLDS EST FILTER FOR ANDING                  
+*                                                                               
+         EJECT                                                                  
+       ++INCLUDE NEGENUNIT                                                      
+         EJECT                                                                  
+NEBLOCKD DSECT                                                                  
+       ++INCLUDE NETBLOCKD                                                      
+         SPACE 1                                                                
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'003NENETPOSIO05/01/02'                                      
+         END                                                                    

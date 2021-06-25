@@ -1,0 +1,286 @@
+*          DATA SET ACPADDLE   AT LEVEL 010 AS OF 05/04/12                      
+*CATALP PADDLE                                                                  
+PADDLE   TITLE '- PASSIVE POINTERS ADD AND DELETE'                              
+                                                                                
+***********************************************************************         
+* PARMS                                                                         
+* -----                                                                         
+* NTRY - P1: BYTE 0: C'A' ADD PASSIVE POINTERS                                  
+*                    C'B' RETURN A LIST OF PASSIVE POINTERS                     
+*                    C'D' DELETE PASSIVE POINTERS                               
+*            BYTE 1-3: A(ACCMST RECORD)                                         
+*      - P2: BYTE 0: C'K' KEEP PRIME POINTER, OPTIONAL FOR 'DELETE'             
+*                    C'A' ADD PRIME POINTER, OPTIONAL FOR 'ADD'                 
+*          : BYTE 1-3: A(CPTRBLK)                                               
+*      - P3: A(DISK ADDRESS), REQUIRED FOR 'ADD'                                
+*      - P4: A(PPAREA), REQUIRED FOR 'BUILD', OPTIONAL FOR 'DELETE'             
+*      - P5: A(COMFACS)                                                         
+*      - P6: BYTE 0: X'FF' IF PASSING A(SEARCH BLOCK)                           
+*      - P6: BYTE 1-3: A(SEARCH BLOCK)                                          
+*                                                                               
+***********************************************************************         
+* MAINTAINS ALL PASSIVE POINTERS ASSOCIATED WITH AN ACCOUNT FILE RECORD         
+*                                                                               
+* BUILD A LIST OF PASSIVE POINTERS:                                             
+* --------------------------------                                              
+* CALL PADDLE WITH AN ACTION  OF 'B', MUST PROVIDE A(PPAREA).                   
+*                                                                               
+* ADDING AN ACCMST RECORD:                                                      
+* -----------------------                                                       
+* CALL PADDLE WITH ACTION OF 'A' AFTER THE RECORD IS ADDED.                     
+*                                                                               
+* DELETING AN ACCMST RECORD:                                                    
+* --------------------------                                                    
+* CALL PADDLE WITH AN ACTION OF 'D'.                                            
+* IF P4 SET, PADDLE WILL DELETE THE LIST OF PASSIVES SUPPLIED.                  
+* IF P4 NOT SET, PADDLE WILL BUILD A LIST OF PASSIVES BASED ON THE              
+* RECORD SUPPLIED AND THEN DELETE THEM.                                         
+*                                                                               
+* CHANGING AN ACCMST RECORD:                                                    
+* -------------------------                                                     
+* CALL PADDLE WITH AN ACTION OF 'D' *BEFORE* THE RECORD IS CHANGED.             
+* UPDATE THE ACCMST RECORD, THEN CALL PADDLE AGAIN WITH ACTION OF 'A'.          
+*                                                                               
+***********************************************************************         
+* JFOS 003 08MAR06 - NEW PARM TO KEEP PRIME PTR IF DELETING                     
+* JFOS 004 25APR06 - NEW PARM TO ADD PRIME PTR IF ADDING                        
+* NSHE 005 19JUN06 - ENSURE DISK ADDRESS PASSED TO ACLDCPTR                     
+* JFOS 006 21SEP06 - <1049665> INCREASE PPAREA FROM 20 TO 100 ENTRIES           
+* TKLU 007 19AUG08 - SRCHEXEC CALL - PASS COMFACS ADDRESSES IF ONLINE           
+* NSHE 008 14OCT08 - <BR13145D> INCREASE SIZE OF PASSIVE AREA                   
+* JFOS 009 22OCT08 - <BR13207D> DON'T CLEAR CALLER'S PPAREA                     
+                                                                                
+PADDLE   CSECT                                                                  
+         PRINT NOGEN                                                            
+         NMOD1 WORKL,**PADL**,CLEAR=YES,RR=RE                                   
+         USING WORKD,RC            RC=A(LOCAL W/S)                              
+         ST    RE,RELO                                                          
+         MVC   PACTION,0(R1)       SAVE ACTION                                  
+         CLI   4(R1),KPRIME        TEST KEEP PRIME POINTER (FOR DELETE)         
+         BNE   *+8                                                              
+         OI    PADIND,PADIKPR                                                   
+         CLI   4(R1),APRIME        TEST ADD PRIME POINTER (FOR ADD)             
+         BNE   *+8                                                              
+         OI    PADIND,PADIAPR                                                   
+                                                                                
+         SR    RF,RF                                                            
+         ICM   RF,7,1(R1)                                                       
+         BNZ   *+6                                                              
+         DC    H'0'                A(ACCMST RECORD) MISSING                     
+         ST    RF,AREC                                                          
+                                                                                
+         SR    RF,RF                                                            
+         ICM   RF,15,4(R1)                                                      
+         BNZ   *+6                                                              
+         DC    H'0'                A(CPTRBLK) MISSING                           
+         ST    RF,ACPTRBLK                                                      
+                                                                                
+         SR    RF,RF                                                            
+         ICM   RF,15,16(R1)                                                     
+         BNZ   *+6                                                              
+         DC    H'0'                A(COMFACS) MISSING                           
+         ST    RF,VCOMFACS                                                      
+         L     RF,CDATAMGR-COMFACSD(RF)                                         
+         ST    RF,VDATAMGR         V(DATAMGR)                                   
+                                                                                
+         SR    RF,RF                                                            
+         ICM   RF,15,8(R1)         A(DISK ADDRESS)                              
+         BZ    *+10                                                             
+         MVC   DA,0(RF)                                                         
+                                                                                
+         SR    RF,RF                                                            
+         ICM   RF,15,12(R1)        A(PPAREA) - OPTIONAL                         
+         BZ    *+12                                                             
+         OI    PADIND,PADIUSA      SET CALLER PROVIDED PPAREA                   
+         B     *+8                                                              
+         LA    RF,PPAREA           ELSE USE LOCAL AREA                          
+         ST    RF,APPAREA                                                       
+                                                                                
+         CLI   20(R1),X'FF'        TEST CALLER PROVIDED SEARCHD                 
+         BNE   *+10                                                             
+         MVC   ASEARCHD,20(R1)                                                  
+                                                                                
+         L     RF,=V(LDCPTR)                                                    
+         A     RF,RELO                                                          
+         ST    RF,VLDCPTR          V(ACLDCPTR)                                  
+                                                                                
+*                                  SAVE CALLER'S I/O SEQUENCE                   
+         GOTO1 VDATAMGR,DMCB,DMKEY,ACCDIR,SIOKEY,SIOKEY                         
+                                                                                
+         TM    PADIND,PADIUSA      TEST CALLER PROVIDED PPAREA                  
+         BZ    INIT02                                                           
+         CLI   PACTION,DEL         TEST DELETE CALL                             
+         BE    INIT06                                                           
+         B     INIT04                                                           
+INIT02   L     R0,APPAREA          ELSE CLEAR OUR PPAREA                        
+         LHI   R1,PPAREAL                                                       
+         SR    RE,RE                                                            
+         SR    RF,RF                                                            
+         MVCL  R0,RE                                                            
+*                                  BUILD LIST OF PASSIVE POINTERS               
+INIT04   GOTO1 VLDCPTR,DMCB,(X'FF',AREC),APPAREA,ACPTRBLK,0,DA,        +        
+               VCOMFACS,ASEARCHD                                                
+                                                                                
+*                                  HANDLE THE ACTION:                           
+INIT06   CLI   PACTION,BUILD       BUILD                                        
+         BNE   INIT08                                                           
+         TM    PADIND,PADIUSA      CALLER MUST PROVIDE A(PPAREA)                
+         BNZ   *+6                                                              
+         DC    H'0'                NO - ERROR                                   
+         B     GOX                 FINISHED                                     
+                                                                                
+INIT08   CLI   PACTION,ADD         ADD                                          
+         BNE   INIT10                                                           
+         OC    DA,DA               TEST DISK ADDRESS SET                        
+         BNZ   *+6                                                              
+         DC    H'0'                NO - ERROR                                   
+         LA    RF,PADD                                                          
+         B     GO                                                               
+                                                                                
+INIT10   CLI   PACTION,DEL         DELETE                                       
+         BNE   INIT12                                                           
+         LA    RF,PDEL                                                          
+         B     GO                                                               
+                                                                                
+INIT12   DC    H'0'                UNKNOWN ACTION                               
+                                                                                
+GO       BASR  RE,RF                                                            
+                                                                                
+GOX      GOTO1 VDATAMGR,DMCB,DMKEY,ACCDIR,PKEY,PKEY                             
+         CLC   SIOKEY,PKEY         TEST CALLER'S I/O SEQUENCE BROKEN            
+         BE    EXIT                                                             
+*                                  YES - RESTORE IT                             
+         GOTO1 VDATAMGR,DMCB,(X'08',DMREAD),ACCDIR,SIOKEY,SIOKEY                
+                                                                                
+EXIT     XIT1  ,                                                                
+*                                                                               
+***********************************************************************         
+* DELETE PRIME AND ALL PASSIVE POINTERS IN PPAREA                     *         
+***********************************************************************         
+                                                                                
+PDEL     NTR1  ,                                                                
+         L     R3,APPAREA                                                       
+         CLI   0(R3),0                                                          
+         BH    *+6                                                              
+         DC    H'0'                AREA IS EMPTY - ERROR                        
+         TM    PADIND,PADIKPR      TEST USER WANTS TO KEEP PRIME PTR            
+         BZ    PDEL02                                                           
+         AHI   R3,ACCKLEN          SKIP OVER IT                                 
+PDEL02   CLI   0(R3),X'FF'         TEST END OF PASSIVES                         
+         BE    PDELX                                                            
+         XC    PKEY,PKEY                                                        
+PP       USING ACCRECD,PKEY                                                     
+         MVC   PP.ACCKEY,0(R3)                                                  
+         GOTO1 VDATAMGR,DMCB,DMRDHI,ACCDIR,PP.ACCKEY,PP.ACCKEY                  
+         CLC   PP.ACCKEY,0(R3)                                                  
+         BNE   PDEL04              PASSIVE NOT FOUND                            
+         OI    PP.ACCKSTA,X'80'    MARK DELETED                                 
+         GOTO1 VDATAMGR,DMCB,DMWRT,ACCDIR,PP.ACCKEY,PP.ACCKEY                   
+         BE    *+6                                                              
+         DC    H'0'                WRITE FAILED                                 
+PDEL04   AHI   R3,ACCKLEN          GET NEXT                                     
+         B     PDEL02                                                           
+                                                                                
+PDELX    B     EXIT                                                             
+         EJECT                                                                  
+***********************************************************************         
+* ADD ALL PASSIVE POINTERS IN PPAREA                                  *         
+***********************************************************************         
+                                                                                
+PADD     NTR1  ,                                                                
+         L     R3,APPAREA                                                       
+         TM    PADIND,PADIAPR      TEST USER WANTS TO ADD PRIME PTR NOW         
+         BNZ   *+8                 YES                                          
+         AHI   R3,ACCKLEN          ELSE SKIP 1ST ENTRY = PRIME POINTER          
+DATA     USING ACCRECD,R2                                                       
+         L     R2,AREC                                                          
+PAD02    CLI   0(R3),X'FF'         TEST END OF PASSIVES                         
+         BE    PADX                                                             
+         XC    PKEY,PKEY           READ FOR PASSIVE                             
+PP       USING ACCRECD,PKEY                                                     
+         MVC   PP.ACCKEY,0(R3)                                                  
+         GOTO1 VDATAMGR,DMCB,(X'08',DMRDHI),ACCDIR,PP.ACCKEY,PP.ACCKEY          
+         LA    RF,DMWRT            GOING TO WRITE                               
+         CLC   PP.ACCKEY,0(R3)     TEST PASSIVE ALREADY EXISTS                  
+         BE    PAD04               YES                                          
+         LA    RF,DMADD            ELSE GOING TO ADD...                         
+         MVC   PP.ACCKEY,0(R3)        ...SO REFRESH KEY                         
+PAD04    MVC   PP.ACCKSTA,L'ACCKEY(R3)                                          
+         MVC   PP.ACCKDA,DA        DISK ADDRESS                                 
+         GOTO1 VDATAMGR,DMCB,(RF),ACCDIR,PP.ACCKEY,PP.ACCKEY  ADD/WRITE         
+         BE    *+6                                                              
+         DC    H'0'                ADD/WRITE FAILED                             
+         AHI   R3,ACCKLEN                                                       
+         B     PAD02               NEXT                                         
+                                                                                
+PADX     B     EXIT                                                             
+         EJECT                                                                  
+***********************************************************************         
+* CONSTANTS, EQUATES, LITERAL POOL                                    *         
+***********************************************************************         
+                                                                                
+ACCDIR   DC    C'ACCDIR '                                                       
+ACCMST   DC    C'ACCMST '                                                       
+ACCARC   DC    C'ACCARC '                                                       
+DMRDHI   DC    C'DMRDHI '                                                       
+DMREAD   DC    C'DMREAD '                                                       
+DMRSEQ   DC    C'DMRSEQ '                                                       
+DMWRT    DC    C'DMWRT  '                                                       
+DMADD    DC    C'DMADD  '                                                       
+DMGETR   DC    C'GETREC '                                                       
+DMPUTR   DC    C'PUTREC '                                                       
+DMADDR   DC    C'ADDREC '                                                       
+DMKEY    DC    C'DMKEY '                                                        
+                                                                                
+ADD      EQU   C'A'                                                             
+BUILD    EQU   C'B'                                                             
+DEL      EQU   C'D'                                                             
+KPRIME   EQU   C'K'                                                             
+APRIME   EQU   C'A'                                                             
+                                                                                
+PPAREAL  EQU   (ACCKLEN*600)                                                    
+                                                                                
+         LTORG                                                                  
+         EJECT                                                                  
+***********************************************************************         
+* WORKING STORAGE                                                     *         
+***********************************************************************         
+         SPACE 1                                                                
+WORKD    DSECT                                                                  
+VDATAMGR DS    V                                                                
+VCOMFACS DS    V                                                                
+VLDCPTR  DS    V                                                                
+AREC     DS    A                                                                
+DMCB     DS    6A                                                               
+RELO     DS    A                                                                
+APPAREA  DS    A                                                                
+ASEARCHD DS    A                                                                
+ACPTRBLK DS    A                                                                
+DA       DS    XL4                                                              
+DMWK     DS    XL96                                                             
+PKEY     DS    XL64                                                             
+SIOKEY   DS    XL64                                                             
+PACTION  DS    CL1                                                              
+PADIND   DS    XL1                                                              
+PADIUSA  EQU   X'80'               USER SUPPLIED PPAREA                         
+PADIKPR  EQU   X'40'               USER WANTS PRIME POINTER KEPT                
+PADIAPR  EQU   X'20'               USER WANTS PRIME POINTER ADDED               
+PPAREA   DS    XL(PPAREAL)                                                      
+WORKL    EQU   *-WORKD                                                          
+         EJECT                                                                  
+***********************************************************************         
+* INCLUDES                                                            *         
+***********************************************************************         
+                                                                                
+                                                                                
+* ACGENFILE                                                                     
+         PRINT OFF                                                              
+       ++INCLUDE ACGENFILE                                                      
+         PRINT ON                                                               
+* DDCOMFACS                                                                     
+         PRINT OFF                                                              
+       ++INCLUDE DDCOMFACS                                                      
+         PRINT ON                                                               
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'010ACPADDLE  05/04/12'                                      
+         END                                                                    

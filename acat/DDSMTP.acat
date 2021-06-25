@@ -1,0 +1,1162 @@
+*          DATA SET DDSMTP     AT LEVEL 031 AS OF 06/26/20                      
+*&&      SET   TR=N                                                             
+*CATALP SMTP                                                                    
+SMTP     TITLE 'SMTP INTERFACE'                                                 
+SMTP     CSECT                                                                  
+         PRINT NOGEN                                                            
+         NMOD1 WORKL,**SMTP**                                                   
+         USING WORKD,RC            RC=A(LOCAL WORKING STORAGE)                  
+         LARL  RA,COMMON                                                        
+         USING COMMON,RA           RA=COMMON STORAGE                            
+         SAM31                                                                  
+         LR    R2,R1                                                            
+         USING SMTPD,R2            R2=A(PARAMETER LIST)                         
+         USING ATCD,ATC            EMULATED ATC                                 
+         USING SYSFACD,SYSFAC      EMULATED SYSFAC                              
+                                                                                
+         CLI   SMTPACTN,SMTPAINI   INITIALIZE (ATTACH JESMAIL)                  
+         BE    INIT                                                             
+         CLI   SMTPACTN,SMTPASLL   SET LINE LENGTH=LONG FOR 160 CHAR            
+         BE    SETLONG                 OTHERWISE REG=80 CHAR                    
+         CLI   SMTPACTN,SMTPAMXF   SET MAX EMAIL WARNING OFF                    
+         BE    SMAXOFF                                                          
+         CLI   SMTPACTN,SMTPAATT   SET EMAIL AS ATTACHMENT                      
+         BE    SETATTM                                                          
+         CLI   SMTPACTN,SMTPHTAT   SET EMAIL AS HTML ATTACHMENT                 
+         BE    SETATTH                                                          
+         CLI   SMTPACTN,SMTPHTMH   SET EMAIL WITH HTML HEADER                   
+         BE    SETHTMH                                                          
+         CLI   SMTPACTN,SMTPTXTH   SET EMAIL WITH TEXT HEADER                   
+         BE    SETTXTH                                                          
+         CLI   SMTPACTN,SMTPAFRM   OVERRIDE FROM ADDRESS BY CNTRY/COMPY         
+         BE    OFROM                                                            
+         CLI   SMTPACTN,SMTPAFR2   OVERRIDE FROM ADDRESS BY ANYTHING            
+         BE    OFROMW                                                           
+         CLI   SMTPACTN,SMTPARPY   OVERRIDE REPLY-TO ADDRESS                    
+         BE    OREPLYTO                                                         
+         CLI   SMTPACTN,SMTPAPRS   DEFINE RECIPIENT AND SUBJECT TEXT            
+         BE    PUTRS                                                            
+         CLI   SMTPACTN,SMTPATCS   RECIPIENT+CC+BCC+SUBJECT                     
+         BE    PUTRS                                                            
+         CLI   SMTPACTN,SMTPAPTL   PUT LINE OF BODY TEXT                        
+         BE    PUTTL                                                            
+         CLI   SMTPACTN,SMTPCNCL   CANCEL WORK AND CLOSE DOWN                   
+         BE    CNCL                                                             
+         CLI   SMTPACTN,SMTPASND   SEND E-MAIL                                  
+         BE    SEND                                                             
+         CLI   SMTPACTN,SMTPAEND   CLOSE DOWN (DETACH JESMAIL)                  
+         BE    DONE                                                             
+         DC    H'0'                                                             
+         EJECT                                                                  
+***********************************************************************         
+* INITIALIZATION - ATTACH JESMAIL TASK AND SET STATUS TO READY        *         
+***********************************************************************         
+INIT     CLI   STATUS,STATINIT     STATUS MUST BE INITIAL                       
+         JNE   *+2                                                              
+*&&US                                                                           
+         ICM   RF,15,=V(MASTC)                                                  
+         BZ    INIT001             Zero if online                               
+         CLI   SETONCE,YES         Only do for first INIT call                  
+         JE    INIT001                                                          
+         USING MASTD,RF                                                         
+         L     RF,MCAEXTRA                                                      
+         USING MCEXTRA,RF                                                       
+         XR    R9,R9                                                            
+         ICM   R9,3,MCMAXEML       MAXEMAIL=           (Max 5000)               
+         JZ    *+8                 Don't support zero                           
+         ST    R9,EMAILMAX         Set new value                                
+         MVI   SETONCE,YES         Only do for first INIT call                  
+         DROP  RF                                                               
+*&&                                                                             
+INIT001  DS    0H                                                               
+*&&UK                                                                           
+         CLC   MVSNAME,SPACES      JOB SPECIFIC MAX EMAIL CODE                  
+         JNE   INIT010                                                          
+*                                                                               
+         LA    R9,FULL             GET JOB NAME INTO MVSNAME                    
+         EXTRACT (9),FIELDS=TIOT                                                
+         L     R9,FULL                                                          
+         MVC   MVSNAME,0(R9)                                                    
+                                                                                
+**********************************************************************          
+* Match job name in JOBMAX table to set email count max                         
+**********************************************************************          
+         LA    R1,JOBMAX                                                        
+INIT002  LA    R0,8                FIND SPECIAL MAX FOR THIS JOB                
+         LA    RF,MVSNAME                                                       
+INIT004  CLI   0(R1),C'*'          WILD CARD                                    
+         JE    INIT006                                                          
+         CLC   0(1,RF),0(R1)       OR CHR MATCH                                 
+         JE    INIT006                                                          
+*                                                                               
+         AR    R1,R0               NEXT JOBMAX ENTRY                            
+         LA    R1,4(R1)                                                         
+         CLC   0(8,R1),=C'EOT*EOT*'                                             
+         JNE   INIT002                                                          
+         DC    H'0'                                                             
+*                                                                               
+INIT006  LA    R1,1(R1)            NEXT CHR                                     
+         LA    RF,1(RF)                                                         
+         JCT   R0,INIT004                                                       
+         MVC   EMAILMAX,0(R1)      USE THIS VALUE                               
+*&&                                                                             
+INIT010  MVI   STATUS,STATREDY     SET STATUS AS READY                          
+*&&TR*&& WTO   'SMTP init'                                                      
+                                                                                
+         MVI   TEXTLONG,NO                                                      
+         MVI   ATTFILE,NO                                                       
+         MVI   HEADER,NO                                                        
+         MVC   REPLYTO,SPACES                                                   
+         MVC   FROMWHO,SPACES                                                   
+         MVI   FROMCPNY,0                                                       
+         MVI   FROMCTRY,0                                                       
+         CLI   ONLINE,NO           Was this set?                                
+         BE    INIT10              Yes                                          
+         MVI   ONLINE,YES          Might be but okay to do again                
+         MVC   MAXLINES,=AL2(MAXLNON)    Max on-line                            
+         LARL  RF,TEXT                                                          
+         ST    RF,@TEXT                                                         
+         ST    RF,ATCTEXT          Passed to attched task                       
+         LARL  RF,TEXTEND                                                       
+         ST    RF,@TEXTEND                                                      
+*                                                                               
+         USING SSBD,RF                                                          
+         ICM   RF,15,VSSB                                                       
+         BZ    INIT08                                                           
+         CLC   SSOCNTL,NULLS       On-line?                                     
+         BNE   INIT20              Yes                                          
+INIT08   MVC   @TEXT,NULLS         No, so clear first time                      
+         MVC   @TEXTEND,NULLS                                                   
+         DROP  RF                                                               
+*                                                                               
+INIT10   MVC   MAXLINES,=AL2(MAXLNOFF)  Max off-line                            
+         L     R3,=A(BUFFQ)                                                     
+         MVI   ONLINE,NO                                                        
+         CLC   @TEXT,NULLS                                                      
+         BNE   EXIT                                                             
+                                                                                
+INIT12   STORAGE OBTAIN,LENGTH=(R3),BNDRY=PAGE,COND=YES,LOC=31                  
+         LTR   RF,RF                                                            
+         JNZ   *+2                 Error                                        
+         ST    R1,@TEXT                                                         
+         ST    R1,ATCTEXT          Passed to attched task                       
+         XR    RF,RF                                                            
+         ICM   RF,3,MAXLINES                                                    
+         MHI   RF,L'TEXT                                                        
+         A     RF,@TEXT                                                         
+         ST    RF,@TEXTEND                                                      
+*&&TR*&& WTO   'Obtained storage'                                               
+         B     EXIT                                                             
+*                                                                               
+INIT20   SAM24                                                                  
+         DC    H'00'               No longer supported on-line                  
+         ICM   RE,7,SMTPAPHS       TEST PHASE NAME OVERRIDE GIVEN               
+         BZ    *+10                                                             
+         MVC   JESMAIL,0(RE)       YES - USE OVERRIDE PHASE NAME                
+         LA    R3,JESMAIL                                                       
+         LA    R4,ATCOSECB                                                      
+         ATTACH EPLOC=(R3),PARAM=ATC,ECB=(R4),SZERO=Y                           
+         ST    R1,ATCOSTCB                                                      
+         CLI   ATCSTAT1,ATCSATCH   TEST JESMAIL ATTACHED                        
+         BNE   *-4                                                              
+*&&TR*&& WTO   'JESMAIL attached'                                               
+         B     EXIT                                                             
+         EJECT                                                                  
+***********************************************************************         
+* SET LONG LINE LENGTH (160 CHAR)                                     *         
+***********************************************************************         
+SETLONG  CLI   STATUS,STATREDY     MUST HAVE READY STATUS                       
+         BE    SETL20                                                           
+         CLI   STATUS,STATOPEN          OR   OPEN  STATUS                       
+         BE    SETL20                                                           
+         DC    H'0'                                                             
+SETL20   MVI   TEXTLONG,YES                                                     
+         B     EXIT                                                             
+         EJECT                                                                  
+***********************************************************************         
+* SET MAX EMAIL WARNING OFF                                           *         
+***********************************************************************         
+SMAXOFF  MVI   MAXCHK,NO                                                        
+         B     EXIT                                                             
+         EJECT                                                                  
+***********************************************************************         
+* SET EMAIL AS ATTACHMENT                                             *         
+***********************************************************************         
+SETATTM  CLI   STATUS,STATREDY     MUST HAVE READY STATUS                       
+         BE    *+6                                                              
+         DC    H'0'                                                             
+         MVI   ATTFILE,YES         PUT TEXT AS ATTACHMENT OF EMAIL              
+         B     EXIT                                                             
+*                                                                               
+SETATTH  CLI   STATUS,STATREDY     MUST HAVE READY STATUS                       
+         BE    *+6                                                              
+         DC    H'0'                                                             
+         MVI   ATTFILE,C'H'        PUT HTML AS ATTACHMENT OF EMAIL              
+         B     EXIT                                                             
+         EJECT                                                                  
+***********************************************************************         
+* SET EMAIL WITH A HEADER                                             *         
+***********************************************************************         
+SETHTMH  CLI   STATUS,STATREDY     MUST HAVE READY STATUS                       
+         BE    *+6                                                              
+         DC    H'0'                                                             
+         MVI   HEADER,C'H'         SET WITH HTML HEADER                         
+         B     EXIT                                                             
+*                                                                               
+SETTXTH  CLI   STATUS,STATREDY     MUST HAVE READY STATUS                       
+         BE    *+6                                                              
+         DC    H'0'                                                             
+         MVI   HEADER,C'T'         SET WITH TEXT HEADER                         
+         B     EXIT                                                             
+         EJECT                                                                  
+***********************************************************************         
+* OVERRIDE FROM ADDRESS (OPTIONAL)                                    *         
+***********************************************************************         
+                                                                                
+OFROM    CLI   STATUS,STATREDY     MUST HAVE READY STATUS                       
+         BE    *+6                                                              
+         DC    H'0'                                                             
+                                                                                
+         CLI   SMTPFCPO+2,FROMNCMQ-1 COPY COMPANY AND COUNTRY IF IN             
+         BH    *+10                RANGE (ZERO BASED)                           
+         MVC   FROMCPNY,SMTPFCPO+2 EITHER MAY BE ZERO                           
+         CLI   SMTPFCTR,FROMNCTQ-1 DEFAULT IS ZERO IF VALUE TOO HIGH            
+         BH    *+10                                                             
+         MVC   FROMCTRY,SMTPFCTR                                                
+                                                                                
+         B     EXIT                                                             
+         EJECT                                                                  
+***********************************************************************         
+* OVERRIDE FROM ADDRESS (OPTIONAL)                                    *         
+***********************************************************************         
+                                                                                
+OFROMW   CLI   STATUS,STATREDY     MUST HAVE READY STATUS                       
+         BE    *+6                                                              
+         DC    H'0'                                                             
+                                                                                
+         LARL  R3,FROMWHO                                                       
+         MVC   0(L'FROM,R3),FROM                                                
+         SR    R4,R4               BUILD REPLY-TO TEXT LINE                     
+         ICM   R4,7,SMTPAFRW                                                    
+         BZ    OFMWX                                                            
+         SR    RE,RE                                                            
+         ICM   RE,1,SMTPLFRW                                                    
+         BZ    OFMWX                                                            
+         CHI   RE,L'TEXT-L'FROM-L'DDSMAIL                                       
+         BNH   *+6                                                              
+         DC    H'0'                REPLY-TO TOO LONG                            
+                                                                                
+         BCTR  RE,0                                                             
+         EX    RE,*+8                                                           
+         B     *+10                                                             
+         MVC   L'FROM(0,R3),0(R4)                                               
+         LA    R3,L'FROM(RE,R3)       R3->LAST CHAR                             
+                                                                                
+OFMW20   LA    R5,0(RE,R4)                                                      
+         CLI   0(R5),C'@'          TEST EMBEDDED DESTINATION NODE               
+         BE    OFMWX                                                            
+         BCT   RE,OFMW20                                                        
+                                                                                
+         CLI   0(R3),C' '          BACKUP TO LAST NON-BLANK CHAR                
+         BNE   *+10                                                             
+         BCTR  R3,0                                                             
+         B     *-10                                                             
+         MVC   1(L'DDSMAIL-1,R3),DDSMAIL     SKIP '>'                           
+                                                                                
+OFMWX    B     EXIT                                                             
+         EJECT                                                                  
+***********************************************************************         
+* OVERRIDE REPLY-TO ADDRESS (OPTIONAL)                                *         
+***********************************************************************         
+                                                                                
+OREPLYTO CLI   STATUS,STATREDY     MUST HAVE READY STATUS                       
+         BE    *+6                                                              
+         DC    H'0'                                                             
+                                                                                
+         LARL  R3,REPLYTO                                                       
+         MVC   0(L'RPLY_TO,R3),RPLY_TO                                          
+         SR    R4,R4               BUILD REPLY-TO TEXT LINE                     
+         ICM   R4,7,SMTPARYT                                                    
+         BZ    ORPYX                                                            
+         SR    RE,RE                                                            
+         ICM   RE,1,SMTPLRYT                                                    
+         BZ    ORPYX                                                            
+         CHI   RE,L'TEXT-L'RPLY_TO-L'DDSMAIL                                    
+         BNH   *+6                                                              
+         DC    H'0'                REPLY-TO TOO LONG                            
+                                                                                
+         BCTR  RE,0                                                             
+         EX    RE,*+8                                                           
+         B     *+10                                                             
+         MVC   L'RPLY_TO(0,R3),0(R4)                                            
+         LA    R3,L'RPLY_TO(RE,R3)    R3->LAST CHAR                             
+                                                                                
+ORPY20   LA    R5,0(RE,R4)                                                      
+         CLI   0(R5),C'@'          TEST EMBEDDED DESTINATION NODE               
+         BE    ORPYX                                                            
+         BCT   RE,ORPY20                                                        
+                                                                                
+         CLI   0(R3),C' '          BACKUP TO LAST NON-BLANK CHAR                
+         BNE   *+10                                                             
+         BCTR  R3,0                                                             
+         B     *-10                                                             
+         MVC   1(L'DDSMAIL-1,R3),DDSMAIL     SKIP '>'                           
+                                                                                
+ORPYX    B     EXIT                                                             
+         EJECT                                                                  
+***********************************************************************         
+* PUT RECIPIENT AND SUBJECT TO TEXT BUFFER AND SET STATUS TO OPEN     *         
+***********************************************************************         
+                                                                                
+PUTRS    CLI   STATUS,STATREDY     MUST HAVE READY STATUS                       
+         BE    *+6                                                              
+         DC    H'0'                                                             
+         MVI   STATUS,STATOPEN     SET STATUS AS OPEN                           
+                                                                                
+         CLI   ONLINE,YES                                                       
+         BE    PUTRS30                                                          
+                                                                                
+         L     RE,EMAILCNT                                                      
+         AHI   RE,1                                                             
+         ST    RE,EMAILCNT                                                      
+         CLI   MAXCHK,NO                                                        
+         BE    PUTRS30                                                          
+                                                                                
+         C     RE,EMAILMAX                                                      
+         BL    PUTRS30                                                          
+         LARL  R3,MSG1H                                                         
+         CVD   RE,DUB                                                           
+         OI    DUB+7,X'0F'                                                      
+         UNPK  MSG1NUM-MSG1H(8,R3),DUB                                          
+         LA    R4,REPLY                                                         
+         LA    R5,REPLYECB                                                      
+PUTRS20  XC    REPLYECB,REPLYECB                                                
+         XC    REPLY,REPLY                                                      
+         WTOR  TEXT=((R3),(R4),L'REPLY,(R5))                                    
+         WAIT  ECB=(R5)                                                         
+                                                                                
+         CLC   =C'EOJ',REPLY       EOJ?                                         
+         JE    *+2                                                              
+         CLC   =C'CON',REPLY       Accept CON for CONTINUE                      
+         BNE   PUTRS20                                                          
+         L     RE,EMAILMAX                                                      
+         AHI   RE,MAXEMLQ                                                       
+         ST    RE,EMAILMAX         INCREASE MAX EMAIL BY MAXEMLQ                
+                                                                                
+PUTRS30  DS    0H                                                               
+*&&TR*&& WTO   'SMTP put heading'                                               
+         XR    RE,RE               LOCATE REQUIRED 'FROM ADDRESS'               
+         IC    RE,FROMCPNY                                                      
+         MHI   RE,FROMNCTQ                                                      
+         XR    RF,RF                                                            
+         IC    RF,FROMCTRY                                                      
+         AR    RE,RF                                                            
+         SLL   RE,1                                                             
+         A     RE,AFROMTAB                                                      
+         AH    RE,0(,RE)                                                        
+         ST    RE,AFROMENT                                                      
+                                                                                
+         L     R3,@TEXT            Address of text buffer                       
+         MVC   0(L'TEXT,R3),SPACES                                              
+         MVC   0(L'HELO,R3),HELO                                                
+         GOTOR TEXTNEXT                                                         
+                                                                                
+         MVC   0(L'MAILFROM,R3),MAILFROM                                        
+         MVI   L'MAILFROM(R3),C'<'                                              
+         XR    RF,RF                                                            
+         L     RE,AFROMENT                                                      
+         IC    RF,0(,RE)                                                        
+         EX    RF,*+8                                                           
+         B     *+10                                                             
+         MVC   L'MAILFROM+1(0,R3),1(RE)                                         
+         LA    RF,L'MAILFROM+1(R3,RF)                                           
+         MVI   1(RF),C'>'                                                       
+         GOTOR TEXTNEXT                                                         
+                                                                                
+         XR    R4,R4                                                            
+         ICM   R4,7,SMTPAWHO       R4=A(RECIPIENT LIST)                         
+         MVI   FLAG,0                                                           
+         MVI   FLAG2,0                                                          
+         CLI   SMTPACTN,SMTPATCS                                                
+         BNE   PUTRS40                                                          
+         MVI   FLAG2,2             NEED TO CHECK CC AND BCC LIST                
+                                                                                
+PUTRS40  LR    R5,R4                                                            
+         NI    FLAG,X'FF'-X'40'                                                 
+PUTRS42  CLI   0(R5),C','          TEST SEPARATOR                               
+         BE    PUTRS47                                                          
+         CLI   0(R5),C':'          TEST END OF LIST                             
+         BE    PUTRS45                                                          
+         CLI   0(R5),C' '          AND ALTERNATE END OF LIST                    
+         BE    PUTRS45                                                          
+         CLI   0(R5),C'@'          TEST EMBEDDED DESTINATION NODE               
+         BNE   *+8                                                              
+         OI    FLAG,X'40'                                                       
+         AHI   R5,1                                                             
+         B     PUTRS42                                                          
+*                                                                               
+PUTRS45  OI    FLAG,X'80'          SET LIST TERMINATOR FOUND                    
+PUTRS47  SR    R5,R4                                                            
+         BP    *+6                                                              
+         DC    H'0'                                                             
+         BCTR  R5,0                                                             
+         MVC   0(L'RCPTTO,R3),RCPTTO                                            
+         EX    R5,*+8                                                           
+         B     *+10                                                             
+         MVC   L'RCPTTO(0,R3),0(R4)                                             
+         LA    RF,1+L'RCPTTO(R5,R3)                                             
+         TM    FLAG,X'40'          TEST EMBEDDED DESTINATION NODE               
+         BZ    *+12                                                             
+         MVI   0(RF),C'>'                                                       
+         B     *+10                                                             
+         MVC   0(L'DDSMAIL,RF),DDSMAIL                                          
+         GOTOR TEXTNEXT                                                         
+         TM    FLAG,X'80'          TEST LIST TERMINATOR FOUND                   
+         BNZ   *+12                                                             
+         LA    R4,2(R5,R4)         NO - BUMP TO NEXT AND GO AGAIN               
+         B     PUTRS40                                                          
+                                                                                
+         CLI   FLAG2,0             NO CC/BCC LIST                               
+         BE    PUTRS49                                                          
+                                                                                
+         CLI   FLAG2,1                                                          
+         BE    PUTRS48                                                          
+         XR    R4,R4                                                            
+         ICM   R4,7,SMTPACC        R4=A(CC LIST)                                
+         BZ    PUTRS48                                                          
+         MVI   FLAG,0                                                           
+         MVI   FLAG2,1                                                          
+         B     PUTRS40                                                          
+                                                                                
+PUTRS48  XR    R4,R4                                                            
+         ICM   R4,7,SMTPABCC       R4=A(BCC LIST)                               
+         BZ    PUTRS49                                                          
+         MVI   FLAG,0                                                           
+         MVI   FLAG2,0                                                          
+         B     PUTRS40                                                          
+                                                                                
+PUTRS49  MVC   0(L'DATA,R3),DATA                                                
+         GOTOR TEXTNEXT                                                         
+                                                                                
+         CLC   FROMWHO,SPACES      ANY FROMWHO OVERRIDE?                        
+         BE    PUTRS51             NO                                           
+         MVC   0(L'FROMWHO,R3),FROMWHO                                          
+         GOTOR TEXTNEXT                                                         
+         B     PUTRS57                                                          
+                                                                                
+PUTRS51  MVC   0(L'FROM,R3),FROM                                                
+         XR    RF,RF                                                            
+         L     RE,AFROMENT         LOOK UP CNTRY/COMPANY EMAIL                  
+         IC    RF,0(,RE)                                                        
+         EX    RF,*+8                                                           
+         B     *+10                                                             
+         MVC   L'FROM(0,R3),1(RE)                                               
+         GOTOR TEXTNEXT                                                         
+                                                                                
+PUTRS57  XR    R4,R4                                                            
+         ICM   R4,7,SMTPAWHO       R4=A(RECIPIENT LIST)                         
+         MVI   FLAG,0                                                           
+                                                                                
+PUTRS60  LR    R5,R4                                                            
+         NI    FLAG,X'FF'-X'40'                                                 
+PUTRS63  CLI   0(R5),C','          TEST SEPARATOR                               
+         BE    PUTRS67                                                          
+         CLI   0(R5),C':'          TEST END OF LIST                             
+         BE    PUTRS65                                                          
+         CLI   0(R5),C' '          AND ALTERNATE END OF LIST                    
+         BE    PUTRS65                                                          
+         CLI   0(R5),C'@'          TEST EMBEDDED DESTINATION NODE               
+         BNE   *+8                                                              
+         OI    FLAG,X'40'                                                       
+         AHI   R5,1                                                             
+         B     PUTRS63                                                          
+                                                                                
+PUTRS65  OI    FLAG,X'80'          SET LIST TERMINATOR FOUND                    
+PUTRS67  SR    R5,R4                                                            
+         BP    *+6                                                              
+         DC    H'0'                                                             
+         BCTR  R5,0                                                             
+         MVC   0(L'TO,R3),TO                                                    
+         EX    R5,*+8                                                           
+         B     *+10                                                             
+         MVC   L'TO(0,R3),0(R4)                                                 
+         LA    RF,1+L'TO(R5,R3)                                                 
+         TM    FLAG,X'40'          TEST EMBEDDED DESTINATION NODE               
+         BO    *+10                                                             
+         MVC   0(L'DDSMAIL-1,RF),DDSMAIL                                        
+         GOTOR TEXTNEXT                                                         
+         TM    FLAG,X'80'          TEST LIST TERMINATOR FOUND                   
+         BNZ   PUTRS69                                                          
+         LA    R4,2(R5,R4)         NO - BUMP TO NEXT AND GO AGAIN               
+         B     PUTRS60                                                          
+PUTRS69  DS    0H                                                               
+                                                                                
+         CLI   SMTPACTN,SMTPATCS   NEED TO CHECK CC AND BCC LIST                
+         BNE   PUTRS180                                                         
+         XR    R4,R4                                                            
+         ICM   R4,7,SMTPACC        R4=A(CC LIST)                                
+         BZ    PUTRS79                                                          
+         MVI   FLAG,0                                                           
+                                                                                
+PUTRS70  LR    R5,R4                                                            
+         NI    FLAG,X'FF'-X'40'                                                 
+PUTRS73  CLI   0(R5),C','          TEST SEPARATOR                               
+         BE    PUTRS77                                                          
+         CLI   0(R5),C':'          TEST END OF LIST                             
+         BE    PUTRS75                                                          
+         CLI   0(R5),C' '          AND ALTERNATE END OF LIST                    
+         BE    PUTRS75                                                          
+         CLI   0(R5),C'@'          TEST EMBEDDED DESTINATION NODE               
+         BNE   *+8                                                              
+         OI    FLAG,X'40'                                                       
+         AHI   R5,1                                                             
+         B     PUTRS73                                                          
+                                                                                
+PUTRS75  OI    FLAG,X'80'          SET LIST TERMINATOR FOUND                    
+PUTRS77  SR    R5,R4                                                            
+         BP    *+6                                                              
+         DC    H'0'                                                             
+         BCTR  R5,0                                                             
+         MVC   0(L'CC,R3),CC                                                    
+         EX    R5,*+8                                                           
+         B     *+10                                                             
+         MVC   L'CC(0,R3),0(R4)                                                 
+         LA    RF,1+L'CC(R5,R3)                                                 
+         TM    FLAG,X'40'          TEST EMBEDDED DESTINATION NODE               
+         BO    *+10                                                             
+         MVC   0(L'DDSMAIL-1,RF),DDSMAIL                                        
+         GOTOR TEXTNEXT                                                         
+         TM    FLAG,X'80'          TEST LIST TERMINATOR FOUND                   
+         BNZ   PUTRS79                                                          
+         LA    R4,2(R5,R4)         NO - BUMP TO NEXT AND GO AGAIN               
+         B     PUTRS70                                                          
+PUTRS79  DS    0H                                                               
+                                                                                
+         CLI   SMTPACTN,SMTPATCS   NEED TO CHECK CC AND BCC LIST                
+         BNE   PUTRS180                                                         
+         XR    R4,R4                                                            
+         ICM   R4,7,SMTPABCC       R4=A(BCC LIST)                               
+         BZ    PUTRS89                                                          
+         MVI   FLAG,0                                                           
+                                                                                
+PUTRS80  LR    R5,R4                                                            
+         NI    FLAG,X'FF'-X'40'                                                 
+PUTRS83  CLI   0(R5),C','          TEST SEPARATOR                               
+         BE    PUTRS87                                                          
+         CLI   0(R5),C':'          TEST END OF LIST                             
+         BE    PUTRS85                                                          
+         CLI   0(R5),C' '          AND ALTERNATE END OF LIST                    
+         BE    PUTRS85                                                          
+         CLI   0(R5),C'@'          TEST EMBEDDED DESTINATION NODE               
+         BNE   *+8                                                              
+         OI    FLAG,X'40'                                                       
+         AHI   R5,1                                                             
+         B     PUTRS83                                                          
+                                                                                
+PUTRS85  OI    FLAG,X'80'          SET LIST TERMINATOR FOUND                    
+PUTRS87  SR    R5,R4                                                            
+         BP    *+6                                                              
+         DC    H'0'                                                             
+         BCTR  R5,0                                                             
+         MVC   0(L'BCC,R3),BCC                                                  
+         EX    R5,*+8                                                           
+         B     *+10                                                             
+         MVC   L'BCC(0,R3),0(R4)                                                
+         LA    RF,1+L'BCC(R5,R3)                                                
+         TM    FLAG,X'40'          TEST EMBEDDED DESTINATION NODE               
+         BO    *+10                                                             
+         MVC   0(L'DDSMAIL-1,RF),DDSMAIL                                        
+         GOTOR TEXTNEXT                                                         
+         TM    FLAG,X'80'          TEST LIST TERMINATOR FOUND                   
+         BNZ   PUTRS89                                                          
+         LA    R4,2(R5,R4)         NO - BUMP TO NEXT AND GO AGAIN               
+         B     PUTRS80                                                          
+PUTRS89  DS    0H                                                               
+                                                                                
+PUTRS180 CLC   REPLYTO,SPACES                                                   
+         BE    PUTRS183                                                         
+         MVC   0(L'REPLYTO,R3),REPLYTO                                          
+         GOTOR TEXTNEXT                                                         
+         B     PUTRS183                                                         
+                                                                                
+PUTRS183 MVC   0(L'SUBJECT,R3),SUBJECT                                          
+         SR    R4,R4               BUILD SUBJECT TEXT LINE                      
+         ICM   R4,7,SMTPASUB                                                    
+         BZ    PUTRS185                                                         
+         SR    RE,RE                                                            
+         ICM   RE,1,SMTPLSUB                                                    
+         BZ    PUTRS185                                                         
+         CHI   RE,L'TEXT-L'SUBJECT                                              
+         BNH   *+8                                                              
+         LHI   RE,L'TEXT-L'SUBJECT                                              
+         BCTR  RE,0                                                             
+         EX    RE,*+8                                                           
+         B     *+10                                                             
+         MVC   L'SUBJECT(0,R3),0(R4)                                            
+         B     PUTRS190                                                         
+                                                                                
+PUTRS185 MVC   L'SUBJECT(L'NOSUB,R3),NOSUB                                      
+                                                                                
+PUTRS190 GOTOR TEXTNEXT                                                         
+         CLI   HEADER,C'H'         HTML HEADER                                  
+         BE    PUTRS195                                                         
+         CLI   HEADER,C'T'         TEXT HEADER                                  
+         BE    PUTRS192                                                         
+         CLI   ATTFILE,NO          ATTACHMENT?                                  
+         BE    PUTRSXIT                                                         
+         MVC   0(L'MIMEVER1,R3),MIMEVER1                                        
+         GOTOR TEXTNEXT                                                         
+         MVC   0(CTYPMIXQ,R3),CTYPMIX                                           
+         GOTOR TEXTNEXT                                                         
+         MVC   0(L'SIMBRY,R3),SIMBRY                                            
+         GOTOR TEXTNEXT                                                         
+*                               ***BODY OF EMAIL CAN BE PUT HERE***             
+         GOTOR TEXTNEXT                                                         
+         MVC   0(L'SIMBRY,R3),SIMBRY                                            
+         GOTOR TEXTNEXT                                                         
+*                               ***BODY OF EMAIL CAN BE PUT HERE***             
+         CLI   ATTFILE,C'H'                                                     
+         BE    PUTRS195                                                         
+PUTRS192 MVC   0(L'CTYPPLN,R3),CTYPPLN   ATTACHMENT FROM HERE ON                
+         B     PUTRS199                                                         
+*                                                                               
+PUTRS195 MVC   0(L'CTYPHTML,R3),CTYPHTML  ATTACHMENT FROM HERE ON               
+PUTRS199 GOTOR TEXTNEXT                                                         
+         CLI   HEADER,C'H'         HTML HEADER                                  
+         BE    PUTRSXIT                                                         
+         CLI   HEADER,C'T'         TEXT HEADER                                  
+         BE    PUTRSXIT                                                         
+*                               ***BODY OF EMAIL CAN BE PUT HERE***             
+         MVC   0(L'CDISATT,R3),CDISATT                                          
+         GOTOR TEXTNEXT                                                         
+*                                                                               
+PUTRSXIT B     EXIT                                                             
+         EJECT ,                                                                
+***********************************************************************         
+* PUT E-MAIL TEXT LINE TO BUFFER AND SET STATUS TO SENDING TEXT       *         
+***********************************************************************         
+                                                                                
+PUTTL    L     R3,ATEXT                                                         
+         XR    R4,R4                                                            
+         ICM   R4,7,SMTPATXT                                                    
+                                                                                
+         CLI   STATUS,STATTEXT     Last status must be text                     
+         BE    PUTTL02                                                          
+         CLI   STATUS,STATOPEN     or open                                      
+         BE    *+6                                                              
+         DC    H'0'                                                             
+         MVI   STATUS,STATTEXT     SET STATUS AS TEXT                           
+                                                                                
+*&&UK                                                                           
+         MVC   DMCB(L'MIMEVER),0(R4)   SEE IF MIME-VERSION: IN 1ST LINE         
+         OC    DMCB(L'MIMEVER),SPACES  (COULD BE MIXED/LOWER CASE)              
+         CLC   DMCB(L'MIMEVER),MIMEVER                                          
+         BE    PUTTL02                                                          
+*&&                                                                             
+         GOTOR TEXTNEXT            LEAVE A BLANK LINE IF NOT                    
+                                                                                
+PUTTL02  MVC   0(L'TEXT,R3),0(R4)  ADD TEXT LINE TO BUFFER                      
+*&&TR*&& WTO   'SMTP put body'                                                  
+         GOTOR TEXTNXTL                                                         
+         B     EXIT                                                             
+         EJECT                                                                  
+***********************************************************************         
+* SEND SMTP E-MAIL VIA JESMAIL AND SET STATUS TO READY                *         
+***********************************************************************         
+                                                                                
+CNCL     DS    0H                                                               
+*&&TR*&& WTO   'SMTP cancel email'                                              
+         CLI   STATUS,STATREDY     NOTHING TO CANCEL YET?                       
+         BE    EXIT                                                             
+                                                                                
+SEND     DS    0H                                                               
+         ICM   RF,15,=V(MASTC)                                                  
+         BZ    SEND03                                                           
+         TM    MCAGCOPT-MASTD(RF),MCAGCUAT                                      
+         BZ    SEND03                                                           
+         MVI   STATUS,STATREDY     RESET STATUS TO READY                        
+         B     EXIT                                                             
+*                                                                               
+SEND03   DS    0H                                                               
+         CLI   STATUS,STATOPEN     LAST STATUS MUST BE OPEN                     
+         BE    *+8                                                              
+         CLI   STATUS,STATTEXT     OR TEXT                                      
+         BE    *+6                                                              
+         DC    H'0'                                                             
+         MVI   STATUS,STATREDY     RESET STATUS TO READY                        
+         CLI   SMTPACTN,SMTPCNCL   Cancel work and close down                   
+         BE    EXIT                                                             
+                                                                                
+*&&TR*&& WTO   'SMTP send it out'                                               
+         L     R3,ATEXT                                                         
+         CLI   ATTFILE,NO          ATTACHMENT?                                  
+         BE    SEND05                                                           
+         MVC   0(L'SIMBRYX,R3),SIMBRYX                                          
+         GOTOR TEXTNEXT                                                         
+SEND05   MVC   0(L'END,R3),END     SET TERMINATOR                               
+         GOTOR TEXTNEXT                                                         
+         MVC   0(L'QUIT,R3),QUIT   SET QUIT                                     
+         GOTOR TEXTNEXT                                                         
+         MVI   0(R3),EOB           SET END OF BUFFER                            
+                                                                                
+         USING SSBD,RF                                                          
+         CLI   ONLINE,YES                                                       
+         BNE   SEND10              No                                           
+         L     RF,VSSB                                                          
+         MVC   SAVESTAT,SSBSTAT1                                                
+         MVI   SSBSTAT1,0          OFFLINE SSBSTAT1 CAN BE X'FF'                
+         NI    ECB,X'FF'-(POSTED)                                               
+         POST  ATCECB              POST JESMAIL ECB COMPLETE                    
+         LA    R1,ECB                                                           
+         WAIT  ECB=(1)             WAIT FOR JESMAIL COMPLETION                  
+                                                                                
+         USING SSBD,RF                                                          
+         L     RF,VSSB                                                          
+         MVC   SSBSTAT1,SAVESTAT                                                
+         B     EXIT                                                             
+         EJECT ,                                                                
+***********************************************************************         
+* Off-line just write out file                                                  
+***********************************************************************         
+         USING IFGRPL,R2           R2=A(RPL FOR INTERNAL READER)                
+SEND10   BRAS  RE,DYNALLOC                                                      
+         OPEN  SMTPF               OPEN INTERNAL READER                         
+*&&TR*&& WTO   'SMTP opened'                                                    
+         LA    R2,SMTPRPL                                                       
+         L     R3,ATCOTHER              R3=A(CARD DECK - FF MARKS END)          
+         CLC   =CL10'*SMTPMAIL*',0(R3)  ONLINE VAR-LENGTH FORMAT?               
+         BNE   SEND40                   NO - FIXED LENGTH ARRAY                 
+*                                       ONLINE VAR-LENGTH FORMAT                
+         AHI   R3,10                                                            
+SEND20   CLC   0(2,R3),=X'FFFF'                                                 
+         BE    SEND60                                                           
+*                                                                               
+         MVC   RECORD,SPACES                                                    
+         SR    R4,R4                                                            
+         ICM   R4,3,0(R3)          LENGTH OF TEXT                               
+*                                                                               
+         LHI   RE,L'RECORD         USER SMALLER LENGTH (REC OR TEXT)            
+         CR    R4,RE                                                            
+         BH    *+6                                                              
+         LR    RE,R4                                                            
+*                                                                               
+         BCTR  RE,0                -1                                           
+         EX    RE,*+8                                                           
+         B     *+10                                                             
+         MVC   RECORD(0),2(R3)                                                  
+*                                                                               
+         SAM24                                                                  
+         PUT   RPL=(2)                                                          
+         SAM31                                                                  
+         AR    R3,R4               BUMP TO NEXT LINE                            
+         AHI   R3,2                +2 BYTES LENGTH FIELD                        
+         B     SEND20                                                           
+*                                  FIXED LENGTH ARRAY                           
+SEND40   CLI   0(R3),X'FF'                                                      
+         BE    SEND60                                                           
+         MVC   RECORD(L'TEXT),0(R3)                                             
+         SAM24                                                                  
+         PUT   RPL=(2)                                                          
+         SAM31                                                                  
+         AHI   R3,L'TEXT                                                        
+         B     SEND40                                                           
+*                                                                               
+SEND60   SAM24                                                                  
+         ENDREQ RPL=(2)                                                         
+         CLOSE SMTPF               CLOSE INTERNAL READER                        
+*&&TR*&& WTO   'SMTP close'                                                     
+         B     EXIT                                                             
+         DROP  RF                                                               
+         EJECT                                                                  
+***********************************************************************         
+* CLOSE DOWN - DETACH JESMAIL TASK AND SET STATUS TO INITIAL          *         
+***********************************************************************         
+                                                                                
+DONE     CLI   STATUS,STATREDY     LAST STATUS MUST BE READY                    
+         BE    *+6                                                              
+         DC    H'0'                                                             
+         MVI   STATUS,STATINIT     SET STATUS TO INITIAL                        
+*&&TR*&& WTO   'SMTP done'                                                      
+                                                                                
+         CLI   ONLINE,YES                                                       
+         BNE   DONE10                                                           
+         USING SSBD,RF                                                          
+         L     RF,VSSB                                                          
+         MVC   SAVESTAT,SSBSTAT1                                                
+         OI    SSBSTAT1,SSBSEOJ                                                 
+         POST  ATCECB                                                           
+         LA    R1,ATCOSTCB                                                      
+         DETACH (1),STAE=NO                                                     
+         L     RF,VSSB                                                          
+         MVC   SSBSTAT1,SAVESTAT                                                
+*&&TR*&& WTO   'JESEMAIL detached'                                              
+         B     DONE90                                                           
+*                                                                               
+DONE10   DS    0H                                                               
+*&&TR*&& WTO   'Release storage'                                                
+         L     R3,=A(BUFFQ)                                                     
+         L     R1,@TEXT                                                         
+         STORAGE RELEASE,LENGTH=(R3),ADDR=(R1),COND=YES                         
+         LTR   RF,RF                                                            
+         JNZ   *+2                                                              
+*                                                                               
+DONE90   XC    @TEXT,@TEXT                                                      
+         XC    @TEXTEND,@TEXTEND                                                
+         B     EXIT                                                             
+         DROP  RF                                                               
+         EJECT                                                                  
+***********************************************************************         
+* BUMP TEXT BUFFER POINTER AND TEST FOR OVERFLOW                      *         
+***********************************************************************         
+                                                                                
+TEXTNXTL DS    0H                                                               
+         CLI   TEXTLONG,YES                                                     
+         BE    TEXTNEXT                   FOR REG LENGTH                        
+         MVC   80(L'TEXT-80,R3),SPACES    SPACES OUT AFTER BYTE#80              
+TEXTNEXT AHI   R3,L'TEXT                                                        
+         C     R3,@TEXTEND                                                      
+         BNH   *+6                                                              
+         DC    H'0'                                                             
+         ST    R3,ATEXT                                                         
+         MVC   0(L'TEXT,R3),SPACES                                              
+         BR    RE                                                               
+         EJECT ,                                                                
+***********************************************************************         
+* DYNALLOC SMTP01 WRITER CLASS FOR SYSOUT                             *         
+***********************************************************************         
+DYNALLOC NTR1  ,                                                                
+*&&TR*&& WTO   'SMTP dynamiac allocation'                                       
+         SAM24                                                                  
+*&&UK*&& MVC   SMTPSVR,=CL8'TCPSMTP'                                            
+*&&US                                                                           
+         MVC   SMTPSVR,=CL8'SMTP01' SY1 aka TSO1                                
+         L     R1,X'10'(,R0)                                                    
+         USING CVT,R1                                                           
+         L     R1,CVTSMCA                                                       
+         USING SMCABASE,R1                                                      
+         CLC   =C'SYA',SMCASID      SY7 aka TSO7                                
+         BNE   *+10                 No                                          
+         MVC   SMTPSVR,=CL8'SMTP07'                                             
+*&&                                                                             
+         LA    R1,RBLK             SET UP REQ BLK POINTER                       
+         ST    R1,ARBLK                                                         
+         OI    ARBLK,X'80'                                                      
+         MVI   RBLKLEN,20          SET UP REQ BLK LEN                           
+         MVI   RBLKVERB,1          SET ALLOCATE BY DSN VERB CODE                
+         LA    R1,ATXT2                                                         
+         ST    R1,RBLKATXT         SET POINTER TO TEXT POINTER LIST             
+*                                                                               
+         LA    R1,TXTDD            SET UP POINTER TO DDNAME TEXT                
+         ST    R1,ATXTDD                                                        
+         MVC   0(2,R1),=X'0001'    SET DDNAME TEXT CODE                         
+         MVC   2(2,R1),=X'0001'                                                 
+         MVC   4(2,R1),=AL2(4)     SET LEN IN DDNAME TEXT HEADER                
+         MVC   6(8,R1),=CL8'SMTP  '                                             
+*                                                                               
+         LA    R1,TXTSYSO          SET UP POINTER TO SYSOUT TEXT                
+         ST    R1,ATXTSYSO                                                      
+         MVC   0(2,R1),=X'0018'    SET SYSOUT TEXT CODE                         
+         MVC   2(2,R1),=X'0001'                                                 
+         MVC   4(2,R1),=X'0001'                                                 
+*&&US*&& MVI   6(R1),C'T'                                                       
+*&&UK*&& MVI   6(R1),C'A'                                                       
+*                                                                               
+         LA    R1,TXTWRT           SET UP POINTER TO WRITER NAME                
+         ST    R1,ATXTWRT                                                       
+         MVC   0(2,R1),=X'0019'    SET WRITER NAME                              
+         MVC   2(2,R1),=X'0001'                                                 
+         MVC   4(2,R1),=X'0008'                                                 
+         MVC   6(8,R1),SMTPSVR                                                  
+**********************************************************************          
+* AH3 (removed as of Sepember 16, 2013. This will redirect via JES3  *          
+* Not needed, we want mail to go locally now, not to send specifily  *          
+* to network node name.                                              *          
+**********************************************************************          
+*        LA    R1,TXTDEST          SET UP POINTER TO SYSOUT DEST                
+*        ST    R1,ATXTDEST                                                      
+*        MVC   0(2,R1),=X'0058'                                                 
+*        MVC   2(2,R1),=X'0001'                                                 
+*        MVC   4(2,R1),=X'0006'                                                 
+*        MVC   6(6,R1),=CL6'DDNMVS' network node name                           
+*                                                                               
+         LA    R1,TXTCLSE          FREE=CLOSE                                   
+         ST    R1,ATXTCLSE                                                      
+         MVC   0(2,R1),=X'001C'                                                 
+         MVC   2(2,R1),=X'0000'                                                 
+         MVC   4(2,R1),=X'0000'                                                 
+*                                                                               
+         OI    ATXTSX,X'80'        SET END OF LIST                              
+         LA    R1,ARBLK                                                         
+         DYNALLOC                                                               
+         LTR   RF,RF               TEST FOR ERRORS                              
+         BZ    DYNX                NO                                           
+         L     R2,RBLKERR                                                       
+         DC    H'00'                                                            
+*                                                                               
+DYNX     J     EXIT                                                             
+         EJECT ,                                                                
+***********************************************************************         
+* Exit                                                                          
+***********************************************************************         
+COMMON   DS    0H                                                               
+EXIT     XIT1  ,                                                                
+         EJECT ,                                                                
+         LTORG                                                                  
+***********************************************************************         
+* EQUATES and variables                                                         
+***********************************************************************         
+EOB      EQU   X'FF'               END OF TEXT BUFFER INDICATOR                 
+POSTED   EQU   X'40'               POSTED ECB BIT                               
+                                                                                
+K        EQU   1024                                                             
+YES      EQU   C'Y'                                                             
+NO       EQU   C'N'                                                             
+BUFFQ    EQU   6*K*K               6 Meg (high core)                            
+MAXLNOFF EQU   (BUFFQ/L'TEXT)                                                   
+MAXLNON  EQU   200                                                              
+MAXLINES DS    H                                                                
+*                                                                               
+ONLINE   DC    AL1(0)                                                           
+ATTFILE  DC    AL1(NO)             C'Y'-SEND EMAIL AS ATTACHMENT                
+HEADER   DC    AL1(NO)             C'H/T' TO SET HEADER                         
+TEXTLONG DC    AL1(NO)             C'Y'-USE 160 CHAR PER LINE                   
+MAXCHK   DC    AL1(YES)            C'N'-DON'T CHECK EMAIL MAX                   
+*                                                                               
+EMAILCNT DC    F'0'                                                             
+EMAILMAX DC    AL4(MAXEMLQ)                                                     
+MAXEMLQ  EQU   1000                                                             
+SETONCE  DC    AL1(NO)             Has it be set once?                          
+*                                                                               
+         DS    0H                  Has to be on 1/2 word boundry                
+MSG1H    DC    AL2(MSG1X-MSG1)                                                  
+MSG1     DC    C'This job is about to send email # '                            
+MSG1NUM  DC    CL8' '                                                           
+         DC    C' - Reply CONTINUE or EOJ'                                      
+MSG1X    EQU   *                                                                
+                                                                                
+STATUS   DC    AL1(STATINIT)       ** CURRENT STATUS **                         
+STATINIT EQU   0                   INITIAL                                      
+STATREDY EQU   1                   READY TO SEND NEW E-MAIL                     
+STATOPEN EQU   2                   RECIPIENT AND SUBJECT TEXT DEFINED           
+STATTEXT EQU   3                   TEXT DEFINED                                 
+                                                                                
+FROMCPNY DC    AL1(0)              COMPANY FOR 'FROM ADDRESS'                   
+FROMCTRY DC    AL1(0)              COUNTRY FOR 'FROM ADDRESS'                   
+AFROMTAB DC    A(FROMTAB)                                                       
+AFROMENT DC    A(0)                                                             
+FROMWHO  DC    CL(L'RECORD)' '                                                  
+REPLYTO  DC    CL(L'RECORD)' '                                                  
+                                                                                
+ATEXT    DC    A(0)                A(NEXT TEXT ENTRY)                           
+@TEXT    DC    A(0)                TEXT area to use                             
+@TEXTEND DC    A(0)                A(END OF TEXT BUFFER)                        
+                                                                                
+SPACES   DC    CL(L'RECORD)' '                                                  
+NULLS    DC    30X'00'                                                          
+JESMAIL  DC    C'JESMAIL '         DEFAULT JESMAIL PHASE NAME                   
+MVSNAME  DC    C'        '                                                      
+                                                                                
+**&&US                                                                          
+HELO     DC    C'HELO DDNMVS'                                                   
+DDSMAIL  DC    C'@mediaocean.com>'                                              
+**&&                                                                            
+*&&UK                                                                           
+*ELO     DC    C'HELO DDLMVS'                                                   
+*DSMAIL  DC    C'@DDS.co.uk>'                                                   
+*&&                                                                             
+MAILFROM DC    C'MAIL FROM: '                                                   
+RCPTTO   DC    C'RCPT TO: <'                                                    
+NOSUB    DC    C'No Subject'                                                    
+DATA     DC    C'DATA'                                                          
+FROM     DC    C'FROM: '                                                        
+TO       DC    C'TO: '                                                          
+CC       DC    C'CC: '                                                          
+BCC      DC    C'BCC: '                                                         
+SUBJECT  DC    C'SUBJECT: '                                                     
+RPLY_TO  DC    C'REPLY-TO: '                                                    
+MIMEVER  DC    C'MIME-VERSION:'                                                 
+MIMEVER1 DC    C'MIME-VERSION: 1.0'                                             
+CTYPMIX  DS    0C                                                               
+         DC    C'CONTENT-TYPE: MULTIPART/MIXEDED',X'5E'                         
+         DC    C' BOUNDARY="SIMPLE BOUNDARY"'                                   
+CTYPMIXQ EQU   *-CTYPMIX                                                        
+CTYPPLN  DC    C'CONTENT-TYPE: TEXT/PLAIN'                                      
+CTYPHTML DC    C'CONTENT-TYPE: TEXT/HTML'                                       
+CDISATT  DC    C'CONTENT-DISPOSITION: ATTACHMENT',X'5E'                         
+SIMBRY   DC    C'--SIMPLE BOUNDARY'                                             
+SIMBRYX  DC    C'--SIMPLE BOUNDARY--'                                           
+END      DC    C'.'                                                             
+QUIT     DC    C'QUIT'                                                          
+                                                                                
+         DS    0D                                                               
+         DC    C'***ATC*****ATC*****ATC*****ATC**'                              
+ATC      DC    (ATCLQ)X'00'        ** FACPAK ATC EMULATION **                   
+         ORG   ATC+(ATCTYPE-ATCD)                                               
+         DC    AL1(ATCTSMTP)                                                    
+         ORG   ATC+(ATCARECB-ATCD)                                              
+         DC    A(ECB)                                                           
+         ORG   ATC+(ATCOTHER-ATCD)                                              
+ATCTEXT  DC    A(0)                                                             
+         ORG   ATC+(ATCSYSFC-ATCD)                                              
+         DC    A(SYSFAC)                                                        
+         ORG                                                                    
+                                                                                
+ECB      DC    F'0'                SMTP COMPLETION ECB                          
+                                                                                
+SYSFAC   DS    0D                  ** FACPAK SYSFAC EMULATION **                
+         DC    (SYSFACLQ)X'00'                                                  
+         ORG   SYSFAC+(VSSB-SYSFACD)                                            
+         DC    V(SSB)                                                           
+         ORG                                                                    
+                                                                                
+                                                                                
+FROMTAB  DS    0Y                                                               
+FROMTAB0 DC    Y(CMP0CTY0-*,CMP0CTY1-*,CMP0CTY2-*,CMP0CTY3-*)                   
+         DC    Y(CMP0CTY4-*,CMP0CTY5-*,CMP0CTY6-*,CMP0CTY7-*)                   
+         DC    Y(CMP0CTY8-*,CMP0CTY9-*)                                         
+FROMNCTQ EQU   (*-FROMTAB)/2       NUMBER OF COUNTRIES                          
+FROMTAB1 DC    Y(CMP1CTY0-*,CMP1CTY1-*,CMP1CTY2-*,CMP1CTY3-*)                   
+         DC    Y(CMP1CTY4-*,CMP1CTY5-*,CMP1CTY6-*,CMP1CTY7-*)                   
+         DC    Y(CMP1CTY8-*,CMP1CTY9-*)                                         
+FROMNCMQ EQU   ((*-FROMTAB)/2)/FROMNCTQ NUMBER OF COMPANIES                     
+*&&UK                                                                           
+CMP0CTY0 EQU   CMP0CTY1                                                         
+CMP1CTY0 EQU   CMP1CTY1                                                         
+*&&                                                                             
+*&&US                                                                           
+CMP0CTY0 EQU   CMP0CTY2                                                         
+CMP1CTY0 EQU   CMP1CTY2                                                         
+*&&                                                                             
+*                        0123456789012345678901234567890123456789               
+CMP0CTY1 DC    AL1(26),C'DoNotReply@mediaocean.co.uk'                           
+CMP0CTY2 DC    AL1(24),C'DoNotReply@mediaocean.com'                             
+CMP0CTY3 DC    AL1(23),C'DoNotReply@mediaocean.de'                              
+CMP0CTY4 DC    AL1(23),C'DoNotReply@mediaocean.fr'                              
+CMP0CTY5 EQU   CMP0CTY0                                                         
+CMP0CTY6 EQU   CMP0CTY0                                                         
+CMP0CTY7 EQU   CMP0CTY0                                                         
+CMP0CTY8 DC    AL1(30),C'DoNotReply@mediaoceanCanada.com'                       
+CMP0CTY9 DC    AL1(23),C'DoNotReply@mediaocean.ie'                              
+*MP0CTY1 DC    AL1(19),C'DoNotReply@DDS.co.uk'                                  
+*MP0CTY2 DC    AL1(25),C'DoNotReply@DonovanData.com'                            
+*MP0CTY3 DC    AL1(16),C'DoNotReply@DDS.de'                                     
+*MP0CTY4 DC    AL1(16),C'DoNotReply@DDS.fr'                                     
+*MP0CTY8 DC    AL1(23),C'DoNotReply@DDSCanada.com'                              
+*MP0CTY9 DC    AL1(16),C'DoNotReply@DDS.ie'                                     
+*                        0123456789012345678901234567890123456789               
+CMP1CTY1 DC    AL1(29),C'notifications@brandocean.co.uk'                        
+CMP1CTY2 DC    AL1(26),C'notifications@brandocean.us'                           
+CMP1CTY3 DC    AL1(26),C'notifications@brandocean.de'                           
+CMP1CTY4 DC    AL1(26),C'notifications@brandocean.fr'                           
+CMP1CTY5 EQU   CMP1CTY0                                                         
+CMP1CTY6 EQU   CMP1CTY0                                                         
+CMP1CTY7 EQU   CMP1CTY0                                                         
+CMP1CTY8 DC    AL1(26),C'notifications@brandocean.ca'                           
+CMP1CTY9 DC    AL1(26),C'notifications@brandocean.ie'                           
+         EJECT ,                                                                
+JOBMAX   DC    C'ACIARM  ',AL4(2000)                                            
+         DC    C'********',AL4(1000)                                            
+         DC    C'EOT*EOT*',AL4(0000)                                            
+         EJECT ,                                                                
+***********************************************************************         
+* Area for dynalloc allocation                                                  
+***********************************************************************         
+ARBLK    DS    A                   REQUEST BLOCK POINTER                        
+RBLK     DS    0XL20               REQUEST BLOCK                                
+RBLKLEN  DS    XL1                                                              
+RBLKVERB DS    XL1                                                              
+         DS    XL2                                                              
+RBLKERR  DS    XL2                                                              
+RBLKINFO DS    XL2                                                              
+RBLKATXT DS    A                                                                
+         DS    XL4                                                              
+RBLKFLAG DS    XL4                                                              
+*                                                                               
+ATXT2    DS    0A                  TEXT BLOCK POINTERS FOR DISP=SHR             
+ATXTDD   DS    A                                                                
+ATXTSYSO DS    A                                                                
+ATXTWRT  DS    A                                                                
+ATXTDEST DS    A                                                                
+ATXTCLSE DS    A                                                                
+         ORG   *-4                                                              
+ATXTSX   DS    A                   LAST TEXT BLOCK POINTER FOR SYSOUT           
+         ORG                                                                    
+*                                                                               
+TXTDD    DS    XL6,CL8             TEXT BLOCK DDNAME        0001                
+TXTSYSO  DS    XL6,XL1             TEXT BLOCK SYSOUT=T      0018                
+TXTWRT   DS    XL6,CL8             TEXT BLOCK SYSOUT WRITER 0042                
+TXTDEST  DS    XL6,CL8             TEXT BLOCK SYSOUT DEST   0058                
+TXTCLSE  DS    XL6                 TEXT BLOCK FREE=CLOSE    0042                
+         EJECT ,                                                                
+***********************************************************************         
+* DCBS AND ADCONS                                                     *         
+***********************************************************************         
+         DS    0D                                                               
+         DC    CL16'SMTPACB=SMTPACB='                                           
+SMTPF    ACB   AM=VSAM,MACRF=(ADR,SEQ,OUT),DDNAME=SMTP                          
+*                                                                               
+         DS    0D                                                               
+         DC    CL16'SMTPRPL=SMTPRPL='                                           
+SMTPRPL  RPL   ACB=SMTPF,OPTCD=(ADR,SEQ,SYN,NUP),RECLEN=160,           +        
+               AREA=RECORD,AREALEN=160                                          
+*                                                                               
+         DS    0D                                                               
+         DC    CL16'RECORD=>RECORD=>'                                           
+RECORD   DC    CL160' '                                                         
+         EJECT ,                                                                
+TEXT     DC    (MAXLNON)CL160' '   SMTP TEXT BUFFER                             
+TEXTEND  EQU   *                                                                
+         EJECT  ,                                                               
+***********************************************************************         
+* Working storage                                                               
+***********************************************************************         
+WORKD    DSECT ,                   ** LOCAL WORKING STORAGE **                  
+DMCB     DS    6F                                                               
+FLAG     DS    X                                                                
+FLAG2    DS    X                                                                
+SAVESTAT DS    XL(L'SSBSTAT1)                                                   
+DUB      DS    D                                                                
+FULL     DS    F                                                                
+REPLYECB DS    F                                                                
+REPLY    DS    CL8                                                              
+SMTPSVR  DS    CL8                                                              
+WORKL    EQU   *-WORKD                                                          
+                                                                                
+       ++INCLUDE DDSMTPD                                                        
+         EJECT                                                                  
+* For CPU INFO call                                                             
+       ++INCLUDE DDCPUD                                                         
+         EJECT                                                                  
+* Language / country                                                            
+       ++INCLUDE DDLANGEQUS                                                     
+         EJECT                                                                  
+* FAATC                                                                         
+         PRINT OFF                                                              
+       ++INCLUDE FAATC                                                          
+ATCLQ    EQU   *-ATCD                                                           
+         PRINT ON                                                               
+                                                                                
+* FASYSFAC                                                                      
+         PRINT OFF                                                              
+       ++INCLUDE FASYSFAC                                                       
+SYSFACLQ EQU   *-SYSFACD                                                        
+         PRINT ON                                                               
+                                                                                
+* FASSB                                                                         
+         PRINT OFF                                                              
+       ++INCLUDE FASSB                                                          
+         ORG   SSBD                                                             
+       ++INCLUDE FASSBOFF                                                       
+         PRINT ON                                                               
+*                                                                               
+       ++INCLUDE DDMASTD                                                        
+*                                                                               
+         CVT   DSECT=YES                                                        
+         IFGRPL                                                                 
+         IEFZB4D0                                                               
+         IEFZB4D2                                                               
+         IEESMCA                                                                
+                                                                                
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'031DDSMTP    06/26/20'                                      
+         END                                                                    

@@ -1,0 +1,806 @@
+*          DATA SET DDSMFOUT   AT LEVEL 009 AS OF 05/20/19                      
+*PROCESS USING(WARN(15))                                                        
+*CATALP SMFOUT                                                                  
+*&&NOP   SET   N                                                                
+         TITLE 'SMFOUT - OUTPUT DDS SMF RECORDS'                                
+***********************************************************************         
+* XL4 DDS RECORD TYPE - RETURN ZERO IF VALID SMF REC OUTPUT           *         
+*                       SET ON X'80' TO SUPRESS WRITING OF SMFREC     *         
+* AL4 A(RECORD) - MOST RECORDS START WITH LENGTH IN 1ST TWO BYTES     *         
+***********************************************************************         
+         PRINT NOGEN                                                            
+SMFOUT   RSECT                                                                  
+         NMOD1 WORKS-WORKD,*SMFOUT*,RA                                          
+         USING WORKD,RC                                                         
+         SAM24                                                                  
+         ST    R1,APARM                                                         
+         MVC   PARM,0(R1)          EXTRACT PARAMETER LIST                       
+         MVI   WRTFLG,0                                                         
+         CLI   PARM,X'80'          TEST IF CALLER ONLY WANTS TO TEST            
+         BNE   *+12                                                             
+         OI    WRTFLG,X'80'        SET DO-NOT-WRITE FLAG                        
+         MVI   PARM,0                                                           
+         LA    RE,SMFREC                                                        
+         ST    RE,ASMFREC          SET A(SMFREC) AS FIRST W/S ITEM              
+                                                                                
+SMF1     L     RE,=A(TYPTABX)      VALIDATE RECORD TYPE                         
+         XC    DUB(4),DUB                                                       
+         MVC   DUB+3(1),0(RE)      DUB=MAX VALUE OF RECORD TYPE                 
+         ICM   R3,15,RECTYP                                                     
+         BNP   SMFERR1                                                          
+         C     R3,DUB                                                           
+         BH    SMFERR1                                                          
+         MHI   R3,L'TYPTAB                                                      
+         LA    R3,TYPTAB(R3)       R3=A(RECORD TYPE TABLE ENTRY)                
+         USING TYPTABD,R3                                                       
+         CLI   TYPNUM,0            NOT SUPPORTED HERE IF ZERO ENTRY             
+         BE    SMFERR1                                                          
+         TM    TYPFLG,TYPFNOUT     TEST IF NOT OUTPUTTING THIS TYPE             
+         BZ    *+8                                                              
+         OI    WRTFLG,X'40'        SET SUPPRESS WRITE FLAG                      
+                                                                                
+SMF2     SR    R4,R4               VALIDATE RECORD LENGTH                       
+         ICM   R4,7,RECADR+1       R4=A(RECORD)                                 
+         LH    R5,TYPMIN           R5=L'RECORD                                  
+         TM    TYPFLG,TYPFNRL      TEST NO RECORD LENGTH REQUIRED               
+         BO    SMF3                                                             
+         ICM   R5,3,0(R4)          GET RECORD LENGTH FROM RECORD                
+         CLM   R5,3,TYPMIN         TEST MIN LEN                                 
+         BL    SMFERR2                                                          
+         CLM   R5,3,TYPMAX         TEST MAX LEN                                 
+         BH    SMFERR2                                                          
+                                                                                
+SMF3     L     RE,4(RD)            GET LINK BACK                                
+         TM    TYPFLG,TYPFBIG      TEST IF BIG RECORD                           
+         BZ    *+12                                                             
+         AHI   RD,WORKX-WORKD      ADD EXTRA WORKING STORAGE                    
+         ST    RE,4(RD)            SET LINK BACK                                
+         ST    RE,SAVELINK         SAVE LINK BACK                               
+                                                                                
+SMF6     MVC   SMFIHDR,SMFHDRV     BUILD SMF HEADER IN MY WORK AREA             
+         TIME  BIN                                                              
+         MVC   SMFIRTY,TYPRTY      RECORD TYPE                                  
+         STCM  R0,15,SMFITME       TIME IN BINARY 1/100 SECOND                  
+         STCM  R1,15,SMFIDTE       DATE IN PACKED JULIAN 0CYYDDD+               
+         MVC   SMFISSI,TYPSSI      SUBSYSTEM ID                                 
+         MVC   SMFISTY,TYPSTY      SUBTYPE                                      
+*                                                                               
+         BAS   R9,GETMVS           GET MVS DATA                                 
+*                                                                               
+         LA    R1,SMFDHDR-SMFREC   GET OFFSET/LENGTH OF DDS HEADER              
+         STCM  R1,3,SMFDHDRO                                                    
+         LA    R1,SMFDHDRX-SMFDHDR                                              
+         STCM  R1,3,SMFDHDRL                                                    
+         LA    R1,SMFDATA-SMFREC   GET OFFSET OF DDS DATA                       
+         STCM  R1,3,SMFDATAO                                                    
+         XC    SMFDATAL,SMFDATAL   SET LENGTH OF DDS DATA TO ZERO               
+*                                                                               
+         MVC   SMFDHDR,JOBINFO     SET STANDARD JOB INFO HEADER                 
+                                                                                
+SMF7     SR    RF,RF               RF=A(ROUTINE TO PROCESS DATA)                
+         ICM   RF,7,TYPARTN                                                     
+         BR    RF                                                               
+                                                                                
+SMFWRT   LA    R4,SMFREC           WRITE SMF REC BUILT IN W/S                   
+         LH    R5,0(R4)                                                         
+         CHI   R5,SMFIHDRL         ERROR IF SHORTER THAN MIN REC LEN            
+         BL    SMFERR2                                                          
+         LHI   R0,WORKS-SMFREC     GET MAX SHORT REC LEN                        
+         TM    TYPFLG,TYPFBIG                                                   
+         BZ    *+8                                                              
+         LHI   R0,WORKX-SMFREC     GET MAX LONG REC LEN                         
+         CR    R5,R0                                                            
+         BNH   SMFWRT1                                                          
+         MVC   4(4,RD),SAVELINK    RESTORE LINK BACK ADDR AT 4(RD)              
+         B     SMFERR2                                                          
+                                                                                
+SMFWRT1  EQU   *                                                                
+         ICM   RF,15,=V(SSB)                                                    
+         JZ    SMFWRT2                                                          
+         USING SSOOFFD,RF                                                       
+         CLC   SSOCNTL,=H'0'       ARE WE ONLINE?                               
+         JNE   SMFWRT2             YES: WE CAN'T BE RUNNING UNDER IDF           
+         DROP  RF                                                               
+*                                                                               
+         CSVQUERY INEPNAME=ASMIDF  RUNNING UNDER IDF?                           
+         CIJE  RF,0,SMFX           IF SO, DON'T ATTEMPT TO WRITE RECORD         
+                                                                                
+SMFWRT2  EQU   *                                                                
+         SR    RF,RF               CLEAR RETURN CODE                            
+         TM    WRTFLG,X'C0'                                                     
+         BNZ   SMFX                EXIT IF DO-NOT-WRITE FLAG SET                
+                                                                                
+SMFGO    SMFWTM (R4)                                                            
+         B     SMFX                RF=RETURN CODE FROM SMFWTM MACRO             
+                                                                                
+SMFERR1  LA    RF,1                X'01' INVALID RECORD TYPE                    
+         B     SMFX                                                             
+SMFERR2  LA    RF,2                X'02' INVALID RECORD LENGTH                  
+         B     SMFX                                                             
+SMFERR08 EQU   *                   X'08' LEN IN RDW LESS THAN 18                
+SMFERR16 EQU   *                   X'10' SMF NOT ACTIVE                         
+SMFERR20 EQU   *                   X'14' SUPRESSED BY EXIT ROUT IEFU83          
+SMFERR24 EQU   *                   X'18' DATA WAS LOST                          
+SMFERR36 EQU   *                   X'24' RECORD NOT BEING RECORDED              
+SMFERR40 EQU   *                   X'28' SHORTAGE OF BUFFERS                    
+SMFERR44 EQU   *                   X'2C' SMF COULDNT ESTABLISH RECOVERY         
+                                                                                
+SMFX     L     R1,APARM            RF=RETURN CODE                               
+         ST    RF,0(R1)                                                         
+         LTR   RF,RF               EXIT WITH CC EQL IF ALL OK                   
+         XMOD1 1                                                                
+                                                                                
+***********************************************************************         
+* USE LOW CORE TO GET VARIOUS MVS CONTROL BLOCKS FOR JOB NAME ETC               
+***********************************************************************         
+GETMVS   L     R6,X'10'(,R0)       GET CVT                                      
+         USING CVTMAP,R6                                                        
+         L     R6,CVTSMCA          GET SMCA                                     
+         MVC   SMFISID,SMCASID-SMCABASE(R6)                                     
+         OI    SMFIFLG,X'12'       SET VS2 SYSTEM                               
+*                                                                               
+         L     R6,PSATOLD-PSA(,R0) GET CURRENT TCB                              
+         USING TCB,R6                                                           
+         L     R7,TCBTIO           GET ADDRESS OF TIOT                          
+         USING TIOT1,R7                                                         
+         MVC   JOBNAME,TIOCNJOB    GET THE JOBNAME FROM TIOT                    
+         MVC   JOBSTEP,TIOCSTEP    GET THE STEP/PROC NAME FROM TIOT             
+*                                                                               
+         SAM31                                                                  
+         LA    R7,JOBJES                                                        
+         IAZXJSAB READ,WORKID=(R7) ACCOMODATE ASCH ENVIRONMENTS                 
+         SAM24                                                                  
+         DROP  R6,R7                                                            
+*                                                                               
+         L     R7,=V(SSB)          USE SSB TO FIND MASTC                        
+         USING SSOOFFD,R7                                                       
+         CLC   SSOCNTL,=H'0'       ARE WE ONLINE?                               
+         JNE   GETMVS99            YES: NOT A MONSOON THEN                      
+         L     R7,SSOMASTC                                                      
+         USING MASTD,R7                                                         
+         ICM   RF,15,MCVDMGR       IS DMGR THERE                                
+         JZ    GETMVS99            NO: NOT A MONSOON EITHER                     
+         XC    DMCB(24),DMCB       CALL LOCKSPC VIA DMGR GET DTDSOON            
+         MVC   DMCB+4(4),=AL4(DTDSOON)                                          
+         OI    DMCB+4,X'20'                                                     
+         GOTO1 (RF),DMCB,=C'LOCKSPC',,WORK                                      
+         ICM   RF,15,8(R1)                                                      
+         JZ    *+2                                                              
+         SR    R2,R2                                                            
+         ICM   R2,7,61(RF)         A(DTDSOON)                                   
+         ICM   R6,15,12(RF)        A(END-1)                                     
+         DROP  R7                                                               
+*                                                                               
+         LA    R7,FULL             EXTRACT ASID                                 
+         EXTRACT (7),FIELDS=ASID                                                
+         MVC   ASID,FULL+2                                                      
+*                                                                               
+         L     R7,=V(SSB)                                                       
+         USING SSOOFFD,R7                                                       
+         LAM   AR2,AR2,SSOTBLET                                                 
+         DROP  R7                                                               
+*                                                                               
+         SAC   512                                                              
+         USING MONSOOND,R2                                                      
+GETMVS10 CLC   MONSASID,ASID       LOOK FOR ASID IN MONSOON TABLE               
+         JE    GETMVS20                                                         
+         AHI   R2,MONSNLGQ                                                      
+         CR    R2,R6               EOT                                          
+         JL    GETMVS10                                                         
+         J     GETMVS99            NOT FOUND THEN NOT A MONSOON                 
+*                                                                               
+GETMVS20 MVC   JOBJES,MONSJNUM     REPLACE JOBJES WITH MONSJNUM                 
+*                                                                               
+GETMVS99 EQU   *                                                                
+                                                                                
+**********************************************************************          
+* UPDATE LOG STATS FOR RUNNER AND BATCH CONTROLLERS                             
+**********************************************************************          
+LOGUPDT  SAM31                                                                  
+         L     R7,=V(SSB)                                                       
+         USING SSOOFFD,R7                                                       
+         OC    SSOTBLET,SSOTBLET                                                
+         JZ    LOGUPDX                                                          
+         XR    R2,R2                                                            
+         LAM   AR2,AR2,SSOTBLET                                                 
+         SAC   512                                                              
+         ICM   R2,15,TABSSTAT-TABSADDR(R2)                                      
+         JZ    LOGUPDX                                                          
+*                                                                               
+         CLC   RECTYP,=A(SMFRUNNR) RUNNER SMF RECORD (10)                       
+         JNE   LOGUPD50                                                         
+         USING RUNSMFD,R4                                                       
+         CHHSI RUNSRLEN,RUNSMFL    MATCH LENGTH                                 
+         JNE   LOGUPDX             NOT A SMF RECORD WE WANT                     
+         CLI   RUNSSMFT,RUNSSRUN   MAKE SURE RUNNER SMF                         
+         JNE   LOGUPDX             NOT WHAT IT IS SO EXIT                       
+*                                  POINT TO RUNNER STATS TABLE IN               
+         A     R2,=A(DSSLOGRN-DSSLOGD) TABS DATA SPACES                         
+         XR    R0,R0                                                            
+*                                                                               
+         ICM   R7,15,SSOMASTC      GET MASTC                                    
+         JZ    LOGUPD11                                                         
+         USING MASTD,R7                                                         
+         ICM   RF,15,MCUTL                                                      
+         JZ    LOGUPD11                                                         
+         DROP  R7                                                               
+*                                                                               
+         LLC   R0,4(RF)            GET SE#                                      
+LOGUPD11 SLL   R0,6                                                             
+         AR    R2,R0               INDEX TO SE SYSTEM                           
+*                                                                               
+         USING DSLLOGD,R2                                                       
+         LA    RF,DSLTRANS                                                      
+         LA    R1,1                                                             
+         BRAS  RE,LOGCUPD          BUMP TRANSACTION COUNT                       
+*                                                                               
+         ICM   R0,15,RUNSATIM                                                   
+         ICM   R1,15,RUNSSTIM                                                   
+         ICM   RE,15,RUNSETIM                                                   
+         SR    RE,R1                                                            
+         ST    RE,FULL             FULL = ELAPSED TUS                           
+         SR    R1,R0                                                            
+*                                                                               
+         LA    RF,DSLQUEUE                                                      
+         BRAS  RE,LOGCUPD          BUMP QUEUE TIME                              
+*                                                                               
+         L     R1,FULL                                                          
+         LA    RF,DSLTIME                                                       
+         BRAS  RE,LOGCUPD          BUMP TRANSACTION TIME                        
+*                                                                               
+         ICM   R1,15,RUNSCPUX                                                   
+         LA    RF,DSLCPU                                                        
+         BRAS  RE,LOGCUPD          BUMP CPU                                     
+*                                                                               
+         ICM   R1,15,RUNSSIOS                                                   
+         LA    RF,DSLIOS                                                        
+         BRAS  RE,LOGCUPD          BUMP I/O                                     
+         J     LOGUPDX                                                          
+*                                                                               
+LOGUPD50 CLC   RECTYP,=A(SMFRQACN)      JOB ACCOUNTING   (09)                   
+         JNE   LOGUPDX                                                          
+         A     R2,=A(DSSLOGSO-DSSLOGD)  SOON TABLES                             
+         XR    R0,R0                                                            
+*                                                                               
+         ICM   R7,15,SSOMASTC-SSOOFF(R7)                                        
+         JZ    LOGUPD51                                                         
+*                                                                               
+         USING MASTD,R7                                                         
+         ICM   RF,15,MCUTL                                                      
+         JZ    LOGUPD51                                                         
+                                                                                
+         LLC   R0,4(RF)            GET SE# FROM UTL+4                           
+LOGUPD51 SLL   R0,6                                                             
+         AR    R2,R0               INDEX TO SE SYSTEM                           
+         L     R5,0(R4)                                                         
+         USING SMFJACCD,R5                                                      
+*                                                                               
+         USING DSLLOGD,R2                                                       
+         LA    RF,DSLTRANS                                                      
+         LA    R1,1                                                             
+         BRAS  RE,LOGCUPD          BUMP TRANSACTION COUNT                       
+*                                                                               
+         XR    R0,R0                                                            
+         ICM   R1,15,SMFJSSUT                                                   
+         JZ    LOGUPD52                                                         
+         M     R0,TUMSEC                                                        
+         ST    R1,FULL             FULL=SUB TIME TUS                            
+         XR    R0,R0                                                            
+         ICM   R1,15,SMFJRSTT                                                   
+         M     R0,TUMSEC           R1=START TIME TUS                            
+         S     R1,FULL             R1=WAIT TIME TUS                             
+LOGUPD52 LA    RF,DSLQUEUE                                                      
+         BRAS  RE,LOGCUPD                                                       
+*                                                                               
+         XR    R0,R0                                                            
+         ICM   R1,15,SMFJRELT                                                   
+         M     R0,TUMSEC                                                        
+         LA    RF,DSLTIME                                                       
+         BRAS  RE,LOGCUPD                                                       
+*                                                                               
+         XR    R0,R0                                                            
+         ICM   R1,15,MCREQTCB                                                   
+         M     R0,TUMSEC                                                        
+         LA    RF,DSLCPU                                                        
+         BRAS  RE,LOGCUPD                                                       
+*                                                                               
+         ICM   R1,15,SMFJRSIO                                                   
+         LA    RF,DSLIOS                                                        
+         BRAS  RE,LOGCUPD                                                       
+*                                                                               
+         ICM   R1,15,SMFJRPAG                                                   
+         LA    RF,DSLPAGES                                                      
+         BRAS  RE,LOGCUPD                                                       
+*                                                                               
+         ICM   R1,15,SMFJRLIN                                                   
+         LA    RF,DSLLINES                                                      
+         BRAS  RE,LOGCUPD                                                       
+         J     LOGUPDX                                                          
+*                                                                               
+LOGCUPD  ST    R2,SAVER2           SAVE R2 VALUE                                
+         LR    R2,RF               RF POINTS TO COUNTER                         
+         LA    RF,7                USE RF AS LOOP COUNT                         
+                                                                                
+LOGCUP1  L     R0,0(,R2)                                                        
+         AR    R1,R0               UPDATE COUNT                                 
+         CS    R0,R1,0(R2)                                                      
+         JE    *+8                                                              
+         JCT   RF,LOGCUP1          LOOP UP TO 7 IF CS FAILS                     
+         L     R2,SAVER2                                                        
+         BR    RE                  RESTORE R2 AND EXIT                          
+*                                                                               
+LOGUPDX  LAM   AR2,AR2,=F'0'                                                    
+         SAM24                                                                  
+         SAC   0                                                                
+         BR    R9                                                               
+*                                                                               
+TUMSEC   DC    F'384'              384                                          
+         DROP  R2,R4,R5,R7         DSLLOGD,RUNSMFD,SMFJACCD,MASTD               
+                                                                                
+***********************************************************************         
+* REQUEST ACCOUNTING STATISTICS. CALLED BY DDMASTER                             
+* WAS SVC 247-6.TYPE 1.USER DATA PASSED IS A(MASTC)                             
+***********************************************************************         
+         USING MASTD,R4                                                         
+REQACC   MVC   SMF1SYS,MCSYSTEM    REQUEST JOB ACCOUNTING FROM V(MASTC)         
+         MVC   SMF1PROG,MCPROG                                                  
+         MVC   SMF1AGYA,MCUSER                                                  
+         MVC   SMF1MED,MCMEDIA                                                  
+         MVC   SMF1REQN,MCREQNO                                                 
+         MVC   SMF1SEGN,MCSEGNO                                                 
+*                                                                               
+         L     R0,MCREQTCB         MASTC NOW HAS TCB TIME IN 1/100 SECS         
+         SRDL  R0,32                                                            
+         D     R0,=F'100'                                                       
+         STCM  R1,15,SMF1RTCB      OUTPUT AS SECS TO BE COMPATIBLE              
+         MVC   SMF1RLPS,MCREQLPS                                                
+         MVC   SMF1RSIO,MCREQSIO                                                
+         MVC   SMF1RPAG,MCREQPAG                                                
+         MVC   SMF1RLIN,MCREQLIN                                                
+*                                                                               
+         MVC   SMF1REMO,MCREMOTE                                                
+         MVC   SMF1PQK,MCREMPQK                                                 
+         MVC   SMF1OVSY,MCOVSYS                                                 
+         MVC   SMF1POWC,MCIDPOWC                                                
+         MVI   SMF1SEN,0                                                        
+         ICM   RF,15,MCUTL                                                      
+         BZ    *+10                                                             
+         MVC   SMF1SEN(1),4(RF)                                                 
+*                                                                               
+         MVC   SMF1ORIG,MCORIGID   NEW DATA FOR USER ID AND PERSON ID           
+         MVC   SMF1DEST,MCDESTID                                                
+         MVC   SMF1AGYP,MCRHSAGP                                                
+         MVC   SMF1PIDN,MCRHPSWD                                                
+         L     RE,MCAEXTRA                                                      
+         MVC   SMF1PID,MCPID-MCEXTRA(RE)                                        
+*                                                                               
+         LA    R5,SMF1ACCX-SMF1ACC                                              
+         STH   R5,SMFDATAL         SET REC LEN IN DDS MAP                       
+         LH    R0,SMFILEN                                                       
+         AR    R0,R5                                                            
+         STH   R0,SMFILEN          SET REC LEN IN SMF HEADER                    
+         B     SMFWRT                                                           
+         DROP  R4                                                               
+                                                                                
+***********************************************************************         
+* REQUEST CARD IMAGE. CALLED BY DDMASTER                                        
+* WAS SVC 247-10.TYPE 2.USER DATA IS SINGLE REQUEST CARD CL80                   
+***********************************************************************         
+REQCRD   STH   R5,SMFDATAL         SET FIXED REC LEN=80 IN DDS MAP              
+         EX    R5,*+8                                                           
+         B     *+10                                                             
+         MVC   SMFDATA(0),0(R4)    MOVE REQUEST CARD TO DDS DATA AREA           
+         LH    R0,SMFILEN                                                       
+         AR    R0,R5                                                            
+         STH   R0,SMFILEN          SET REC LEN IN SMF HEADER                    
+         B     SMFWRT                                                           
+                                                                                
+***********************************************************************         
+* ENQUEUE EXCEPTIONS FROM DMENQDEQ/DMENQCTL                                     
+* WAS SVC 247-13.TYPE 3.USER DATA HAS INCLUSIVE LEN IN 1ST TWO BYTES            
+***********************************************************************         
+QDQ      STH   R5,SMFDATAL         SET REC LEN IN DDS MAP                       
+         EX    R5,*+8                                                           
+         B     *+10                                                             
+         MVC   SMFDATA(0),0(R4)    MOVE UNCHANGED TO DDS DATA AREA              
+         LH    R0,SMFILEN                                                       
+         AR    R0,R5                                                            
+         STH   R0,SMFILEN          SET REC LEN IN SMF HEADER                    
+         B     SMFWRT                                                           
+                                                                                
+***********************************************************************         
+* START OF SOON PROCESSING FROM MONSOON                                         
+* WAS SVC 247-14.TYPE 4.USER DATA HAS EXCLUSIVE LEN IN 1ST TWO BYTES            
+***********************************************************************         
+SOONS    STH   R5,SMFDATAL         SET REC LEN IN DDS MAP                       
+         EX    R5,*+8                                                           
+         B     *+10                                                             
+         MVC   SMFDATA(0),2(R4)    MOVE WITHOUT LEN TO DDS DATA AREA            
+         LH    R0,SMFILEN                                                       
+         AR    R0,R5                                                            
+         STH   R0,SMFILEN          SET REC LEN IN SMF HEADER                    
+         B     SMFWRT                                                           
+                                                                                
+***********************************************************************         
+* END OF SOON PROCESSING FROM MONSOON. PASSES XL2(04),XL4(ECB)                  
+* WAS SVC 247-15.TYPE 5.USER DATA HAS EXCLUSIVE LEN IN 1ST TWO BYTES            
+***********************************************************************         
+SOONE    B     SOONS               SAME AS SOON START                           
+                                                                                
+***********************************************************************         
+* DARE EVENT RECORDS FROM DDDARERCV AND DDDARESND                               
+* WAS SVC 247-22.TYPE 6.USER DATA HAS INCLUSIVE LEN IN 1ST TWO BYTES            
+***********************************************************************         
+DARE     STH   R5,SMFDATAL         SET REC LEN IN DDS MAP                       
+         EX    R5,*+8                                                           
+         B     *+10                                                             
+         MVC   SMFDATA(0),2(R4)    MOVE WITHOUT LEN TO DDS DATA AREA            
+         LH    R0,SMFILEN                                                       
+         AR    R0,R5                                                            
+         STH   R0,SMFILEN          SET REC LEN IN SMF HEADER                    
+         B     SMFWRT                                                           
+                                                                                
+***********************************************************************         
+* OLD FILE BALANCING RECORD FROM ACTRACK                                        
+* WAS SVC 247-23.TYPE 7.USER DATA HAS INCLUSIVE LEN IN 1ST TWO BYTES            
+***********************************************************************         
+FILOLD   B     UTIL                SAME AS UTILITY RECORD                       
+                                                                                
+***********************************************************************         
+* UTILITY/UNIVERSAL RECORD                                                      
+* WAS SVC 247-16.TYPE 8.USER DATA HAS INCLUSIVE LEN IN 1ST TWO BYTES            
+***********************************************************************         
+UTIL     AHI   R5,-2               SET REC LEN IN DDS MAP                       
+         STH   R5,SMFDATAL                                                      
+         EX    R5,*+8                                                           
+         B     *+10                                                             
+         MVC   SMFDATA(0),2(R4)    MOVE WITHOUT LEN TO DDS DATA AREA            
+         LH    R0,SMFILEN                                                       
+         AR    R0,R5                                                            
+         STH   R0,SMFILEN          SET REC LEN IN SMF HEADER                    
+         B     SMFWRT                                                           
+                                                                                
+***********************************************************************         
+* RUNNER STATISTICS RECORD FROM DDRUNNER                                        
+* WAS SVC 247-31.TYPE 10.USER DATA HAS INCLUSIVE LEN IN 1ST TWO BYTES           
+***********************************************************************         
+RUNNER   AHI   R5,-2               SET REC LEN IN DDS MAP                       
+         STH   R5,SMFDATAL                                                      
+         EX    R5,*+8                                                           
+         B     *+10                                                             
+         MVC   SMFDATA(0),2(R4)    MOVE WITHOUT LEN TO DDS DATA AREA            
+         ICM   RE,15,=V(SSB)                                                    
+         BZ    RUNNER1                                                          
+         USING SSOOFFD,RE                                                       
+         LA    RF,SMFDATA(R5)      ADD ON SSB PERF1 DATA                        
+         MVC   0(L'SSOPERF1,RF),SSOPERF1                                        
+         AHI   R5,L'SSOPERF1                                                    
+         LA    RF,L'SSOPERF1(RF)   ADD ON SSB PERF2 DATA                        
+         MVC   0(L'SSOPERF2,RF),SSOPERF2                                        
+         AHI   R5,L'SSOPERF2                                                    
+         STH   R5,SMFDATAL         SET NEW RECORD LEN IN DDS MAP                
+RUNNER1  LH    R0,SMFILEN                                                       
+         AR    R0,R5                                                            
+         STH   R0,SMFILEN          SET REC LEN IN SMF HEADER                    
+         B     SMFWRT                                                           
+         DROP  RE                                                               
+                                                                                
+***********************************************************************         
+* NEW REQUEST ACCOUNTING RECORD.                                                
+* WAS SVC 247-25.TYPE 9.USER DATA HAS FOUR PARAMS.                              
+* P1=A(REQUEST STATS) WITH INCLUSIVE LENGTH IN 1ST TWO BYTES                    
+* P2=A(REQUEST CARDS) WITH INCLUSIVE LENGTH IN 1ST TWO BYTES                    
+* P3=A(MCREMOTE)      XL80 FIXED LENGTH AREA                                    
+* P4=A(MCARC)         CL72 FIXED LENGTH AREA                                    
+***********************************************************************         
+REQACN   MVC   SMF4HDR,JOBINFO     SET DDS JOB INFO IN 4-ITEM HDR               
+         LA    RE,SMF4HDR-SMFREC   SET OFFSET/LENGTH OF 4-ITEM HDR              
+         STH   RE,SMFDHDRO                                                      
+         LHI   RE,L'SMF4HDR                                                     
+         STH   RE,SMFDHDRL                                                      
+         LA    R7,SMFREC           R7=A(START OF SMFREC)                        
+         LA    R8,SMF4DATA         R8=A(NEXT DATA ITEM IN SMFREC)               
+*                                                                               
+REQA1    XC    SMFDATAO(4),SMFDATAO                                             
+         SR    R6,R6               R6=A(1ST DATA ITEM) REQ STATS                
+         ICM   R6,7,1(R4)                                                       
+         BZ    REQA2                                                            
+         LH    R5,0(R6)            R5=L'1ST DATA ITEM                           
+         AHI   R5,-2                                                            
+         BM    REQA2                                                            
+         EX    R5,*+8              MOVE TO SMFREC WITHOUT LEN                   
+         B     *+10                                                             
+         MVC   0(0,R8),2(R6)                                                    
+         LR    RF,R8                                                            
+         SR    RF,R7                                                            
+         STH   RF,SMFDATAO         SET OFFSET/LENGTH OF 1ST DATA ITEM           
+         STH   R5,SMFDATAL                                                      
+         AR    R8,R5               BUMP TO NEXT LOCATION IN SMFREC              
+*                                                                               
+REQA2    XC    SMFDAT2O(4),SMFDAT2O                                             
+         SR    R6,R6               R6=A(2ST DATA ITEM) REQ CARDS                
+         ICM   R6,7,5(R4)                                                       
+         BZ    REQA3                                                            
+         LH    R5,0(R6)            R5=L'2ND DATA ITEM                           
+         AHI   R5,-2                                                            
+         BM    REQA3                                                            
+         LR    R0,R8               MOVE TO SMFREC WITHOUT LEN                   
+         LR    R1,R5                                                            
+         LA    RE,2(R6)                                                         
+         LR    RF,R5                                                            
+         MVCL  R0,RE                                                            
+         LR    RF,R8                                                            
+         SR    RF,R7                                                            
+         STH   RF,SMFDAT2O         SET OFFSET/LENGTH OF 2ND DATA ITEM           
+         STH   R5,SMFDAT2L                                                      
+         AR    R8,R5               BUMP TO NEXT LOCATION IN SMFREC              
+*                                                                               
+REQA3    XC    SMFDAT3O(4),SMFDAT3O                                             
+         SR    R6,R6               R6=A(3RD DATA ITEM) MCREMOTE DATA            
+         ICM   R6,7,9(R4)                                                       
+         BZ    REQA4                                                            
+         LHI   R5,L'MCREMOTE       R5=L'3RD DATA ITEM                           
+         EX    R5,*+8              MOVE TO SMFREC WITHOUT LEN                   
+         B     *+10                                                             
+         MVC   0(0,R8),0(R6)                                                    
+         LR    RF,R8                                                            
+         SR    RF,R7                                                            
+         STH   RF,SMFDAT3O         SET OFFSET/LENGTH OF 3RD DATA ITEM           
+         STH   R5,SMFDAT3L                                                      
+         AR    R8,R5               BUMP TO NEXT LOCATION IN SMFREC              
+*                                                                               
+REQA4    XC    SMFDAT4O(4),SMFDAT4O                                             
+         SR    R6,R6               R6=A(4TH DATA ITEM) ARC=CARD                 
+         ICM   R6,7,13(R4)                                                      
+         BZ    REQA5                                                            
+         LHI   R5,L'MCARC          R5=L'4TH DATA ITEM                           
+         EX    R5,*+8              MOVE TO SMFREC WITHOUT LEN                   
+         B     *+10                                                             
+         MVC   0(0,R8),0(R6)                                                    
+         LR    RF,R8                                                            
+         SR    RF,R7                                                            
+         STH   RF,SMFDAT4O         SET OFFSET/LENGTH OF 3RD DATA ITEM           
+         STH   R5,SMFDAT4L                                                      
+         AR    R8,R5               BUMP TO NEXT LOCATION IN SMFREC              
+*                                                                               
+REQA5    LR    RF,R8               SET TOTAL REC LEN IN IBM HEADER              
+         SR    RF,R7                                                            
+         STH   RF,SMFILEN                                                       
+         B     SMFWRT                                                           
+                                                                                
+***********************************************************************         
+* FILE BALANCING RECORD FROM LOAD/DUMPS - 11=COUNTS - 12=MONEY                  
+* USER DATA HAS INCLUSIVE LEN IN 1ST TWO BYTES                                  
+***********************************************************************         
+FILBAL   AHI   R5,-2               SET REC LEN IN DDS MAP                       
+         STH   R5,SMFDATAL                                                      
+         EX    R5,*+8                                                           
+         B     *+10                                                             
+         MVC   SMFDATA(0),2(R4)    MOVE WITHOUT LEN TO DDS DATA AREA            
+         LH    R0,SMFILEN                                                       
+         AR    R0,R5                                                            
+         STH   R0,SMFILEN          SET REC LEN IN SMF HEADER                    
+         B     SMFWRT                                                           
+                                                                                
+***********************************************************************         
+* CROSSFILE ACTIVITY - 03=CROSS-AGENCY ACTIVITY                                 
+***********************************************************************         
+CROSSF   B     FILBAL              CROSS FILE                                   
+                                                                                
+***********************************************************************         
+* ACTIVITY METRICS - 04=LOGON 05=CONNECT 06=TASK                                
+***********************************************************************         
+METRIC   B     FILBAL              ACTIVITY METRICS                             
+                                                                                
+***********************************************************************         
+* EXTRACTS PROCESSING                                                           
+* TYPE 250                                                                      
+***********************************************************************         
+XTRACT   B     FILBAL              SAME AS FILBAL                               
+                                                                                
+***********************************************************************         
+* LITERALS,CONSTANTS,AND TABLES                                                 
+***********************************************************************         
+         LTORG                                                                  
+                                                                                
+ASMIDF   DC    CL8'ASMIDF'         DEBUGGER EXECUTABLE NAME                     
+                                                                                
+SMFHDRV  DC    AL2(SMFDATA-SMFREC),AL2(0)                                       
+         DC    X'C0',X'00',XL8'00',CL8' ',XL2'00'                               
+                                                                                
+***********************************************************************         
+* TABLE OF VALID DDS ACTION TYPES SUPPORTED                                     
+* ENTRY FOR EACH EXISTING DDS SVC 247                                           
+***********************************************************************         
+         DS    0F                                                               
+TYPTAB   DS    0XL16                                                            
+         DC    AL1(00,000),H'000,000',C'    ',AL2(00),X'00',AL3(0)              
+         DC    AL1(01,247),H'004,004',C'    ',AL2(01),X'80',AL3(REQACC)         
+         DC    AL1(02,247),H'080,080',C'    ',AL2(02),X'80',AL3(REQCRD)         
+         DC    AL1(03,247),H'036,036',C'    ',AL2(03),X'00',AL3(QDQ)            
+         DC    AL1(04,247),H'010,010',C'    ',AL2(04),X'00',AL3(SOONS)          
+         DC    AL1(05,247),H'004,004',C'    ',AL2(05),X'00',AL3(SOONE)          
+         DC    AL1(06,247),H'002,192',C'    ',AL2(06),X'00',AL3(DARE)           
+         DC    AL1(07,247),H'002,192',C'    ',AL2(07),X'00',AL3(FILOLD)         
+         DC    AL1(08,247),H'002,192',C'    ',AL2(08),X'00',AL3(UTIL)           
+         DC    AL1(09,247),H'016,016',C'    ',AL2(09),X'81',AL3(REQACN)         
+         DC    AL1(10,247),H'002,192',C'    ',AL2(10),X'00',AL3(RUNNER)         
+*                                                                               
+         DC    AL1(11,248),H'002,200',C'    ',AL2(01),X'00',AL3(FILBAL)         
+         DC    AL1(12,248),H'002,200',C'    ',AL2(02),X'00',AL3(FILBAL)         
+         DC    AL1(13,248),H'002,200',C'    ',AL2(03),X'00',AL3(CROSSF)         
+*                                                                               
+**NOTE   DC    AL1(  ,249),          ,       ,AL1(01) FACPAK LOG DETAIL         
+         DC    AL1(14,249),H'002,100',C'    ',AL2(04),X'00',AL3(METRIC)         
+         DC    AL1(15,249),H'002,100',C'    ',AL2(05),X'00',AL3(METRIC)         
+         DC    AL1(16,249),H'002,100',C'    ',AL2(06),X'00',AL3(METRIC)         
+*                                                                               
+* SMF RECORDS FOR EXTRACTS                                                      
+         DC    AL1(17,250),H'002,200',C'    ',AL2(01),X'00',AL3(XTRACT)         
+         DC    AL1(18,250),H'002,200',C'    ',AL2(02),X'00',AL3(XTRACT)         
+*                                                                               
+TYPTABX  EQU   *-L'TYPTAB                                                       
+*                                                                               
+SMFRQACC EQU   01                                                               
+SMFRQCRD EQU   02                                                               
+SMFQDQ   EQU   03                                                               
+SMFSOONS EQU   04                                                               
+SMFSOONE EQU   05                                                               
+SMFDARE  EQU   06                                                               
+SMFFIOLD EQU   07                                                               
+SMFUTIL  EQU   08                                                               
+SMFRQACN EQU   09                                                               
+SMFRUNNR EQU   10                                                               
+SMFFIBAL EQU   01                                                               
+SMFFIBA2 EQU   02                                                               
+SMFCROSF EQU   03                                                               
+SMFMETR4 EQU   04                                                               
+SMFMETR5 EQU   05                                                               
+SMFMETR6 EQU   06                                                               
+SMFEXTR1 EQU   01                                                               
+SMFEXTR2 EQU   02                                                               
+                                                                                
+TYPTABD  DSECT                                                                  
+TYPENTRY DS    0XL16               ENTRY TO DEFINE VALID DDS TYPE               
+TYPNUM   DS    XL1                 DDS RECORD TYPE                              
+TYPRTY   DS    XL1                 SMF RECORD TYPE                              
+TYPMIN   DS    XL2                 MIN RECORD LENGTH OR FIXED LEN               
+TYPMAX   DS    XL2                 MAX RECORD LENGTH                            
+TYPSSI   DS    CL4                 SMF SUBSYSTEM ID                             
+TYPSTY   DS    XL2                 SMF SUBTYPE                                  
+TYPFLG   DS    XL1                 FLAG BYTE                                    
+TYPFNRL  EQU   X'80'               NO LEN IN 1ST TWO BYTES - USE TYPMIN         
+TYPFNOUT EQU   X'40'               DO NOT OUTPUT THIS RECORD TYPE               
+TYPFBIG  EQU   X'01'               BIG RECORD - NEEDS LARGE W/S                 
+TYPARTN  DS    AL3                 A(SUBROUTINE TO BUILD SMFREC)                
+                                                                                
+WORKD    DSECT                                                                  
+ASMFREC  DS    A                   1ST WORD - A(SMF RECORD IN W/S)              
+APARM    DS    A                   A(PARAMETER LIST)                            
+DUB      DS    D                                                                
+FULL     DS    F                                                                
+HALF     DS    H                                                                
+ASID     DS    H                                                                
+SAVERE   DS    F                                                                
+SAVER2   DS    F                                                                
+DMCB     DS    6F                                                               
+WORK     DS    CL64                                                             
+WRTFLG   DS    X                   FLAG BYTE                                    
+         DS    XL3                 N/D                                          
+SAVELINK DS    F                   SAVE LINK BACK ADDR FROM 4(RD)               
+*                                                                               
+PARM     DS    0XL8                PARAMETER LIST                               
+RECTYP   DS    XL4                 RECORD TYPE - IF X'80' BIT ON TEST           
+RECADR   DS    AL4                 RECORD ADDRESS                               
+*                                                                               
+JOBINFO  DS    0CL32               JOB INFO FOR DDS HEADER                      
+JOBNAME  DS    CL8                 JOB NAME                                     
+JOBSTEP  DS    CL16                STEP/PROC NAME                               
+JOBJES   DS    CL8                 JES NAME                                     
+*                                                                               
+SMFREC   DS    0D                  SMF RECORD                                   
+SMFIHDR  DS    0XL24               IBM RECORD HEADER WITH SUBTYPES              
+SMFILEN  DS    XL2                 LENGTH INCLUDING THIS FIELD                  
+SMFISEG  DS    XL2                 SEGMENT DESCRIPTOR (SET TO ZERO)             
+SMFIFLG  DS    XL1                 FLAGS 80=SUBSYSTEM,40=SUBTYPE FORMAT         
+SMFIRTY  DS    AL1                 RECORD TYPE                                  
+SMFITME  DS    XL4                 TIME IN 1/100 SEC                            
+SMFIDTE  DS    PL4                 DATE P'0CYYMMMF'                             
+SMFISID  DS    CL4                 SYSTEM ID                                    
+SMFISSI  DS    CL4                 SUBSYSTEM ID                                 
+SMFISTY  DS    XL2                 SUBTYPE                                      
+SMFIHDRL EQU   *-SMFIHDR                                                        
+SMFIHDRX EQU   *                                                                
+*                                                                               
+SMFDMAP  DS    0XL8                MAP OF DDS RECORD DATA                       
+SMFDHDRO DS    XL2                 OFFSET TO DDS HEADER                         
+SMFDHDRL DS    XL2                 LENGTH OF DDS HEADER                         
+SMFDATAO DS    XL2                 OFFSET TO DDS DATA 1 AREA                    
+SMFDATAL DS    XL2                 LENGTH OF DDS DATA 1 AREA                    
+SMFDMAPX EQU   *                                                                
+*                                                                               
+SMFDHDR  DS    0CL32               DDS HEADER                                   
+SMFDJOB  DS    CL8                 JOB NAME                                     
+SMFDSTEP DS    CL16                STEP/PROC NAME                               
+SMFDJES  DS    CL8                 JES NAME                                     
+SMFDHDRX EQU   *                                                                
+*                                                                               
+SMFDATA  DS    XL192               DDS DATA AREA FOR SHORT MAXREC=256           
+SMFDATAX EQU   *                                                                
+*                                                                               
+         ORG   SMFDMAPX                                                         
+SMFDAT2O DS    XL2                 OFFSET TO DDS DATA 2 AREA                    
+SMFDAT2L DS    XL2                 LENGTH OF DDS DATA 2 AREA                    
+SMFDAT3O DS    XL2                 OFFSET TO DDS DATA 3 AREA                    
+SMFDAT3L DS    XL2                 LENGTH OF DDS DATA 3 AREA                    
+SMFDAT4O DS    XL2                 OFFSET TO DDS DATA 4 AREA                    
+SMFDAT4L DS    XL2                 LENGTH OF DDS DATA 4 AREA                    
+*                                                                               
+SMF4HDR  DS    0CL32               DDS HEADER FOR 4-ITEM RECORD                 
+SMF4JOB  DS    CL8                 JOB NAME                                     
+SMF4STEP DS    CL16                STEP/PROC NAME                               
+SMF4JES  DS    CL8                 JES NAME                                     
+*                                                                               
+SMF4DATA EQU   *                   START OF DATA AREA FOR 4-ITEM RECORD         
+*                                                                               
+         ORG   SMFDATA                                                          
+SMF1ACC  DS    0CL142              JOB ACCOUNTING DATA FOR REQUEST              
+SMF1SYS  DS    CL2                 SYSTEM                                       
+SMF1PROG DS    CL2                 PROGRAM                                      
+SMF1AGYA DS    CL2                 AGENCY ALPHA ID                              
+SMF1MED  DS    CL1                 MEDIA                                        
+SMF1REQN DS    PL3                 CURRENT REQUEST NUMBER                       
+SMF1SEGN DS    PL3                 CURRENT SEGMENT NUMBER                       
+SMF1RTCB DS    XL4                 CPU TIME IN SECS                             
+SMF1RLPS DS    XL4                 ELAPSED TIME IN 1/100 SEC                    
+SMF1RSIO DS    XL4                 START I/OS                                   
+SMF1RPAG DS    XL4                 PAGES PRINTED                                
+SMF1RLIN DS    XL4                 LINES PRINTED                                
+SMF1REMO DS    XL80                PQ REMOTED                                   
+SMF1PQK  DS    XL7                 PQ REPORT KEY                                
+SMF1OVSY DS    XL1                 SYSTEM OVERLAY NUMBER                        
+SMF1POWC DS    CL4                 POWER CODE                                   
+SMF1SEN  DS    XL1                 SYSTEM SE NUMBER FROM UTL+4                  
+SMF1ORIG DS    XL2                 ORIGIN ID NUMBER                             
+SMF1DEST DS    XL2                 DESTINATION ID NUM                           
+SMF1AGYP DS    CL2                 SECURITY AGENCY ALPHA                        
+SMF1PIDN DS    XL2                 PERSON NUMBER                                
+SMF1PID  DS    CL8                 PERSON ID                                    
+SMF1ACCX EQU   *                                                                
+*                                                                               
+         ORG   SMFDATAX                                                         
+WORKS    DS    0D                  END OF SHORT WORKING STORAGE                 
+*                                                                               
+SMFDATAE DS    1792X               DDS DATA AREA EXTENSION MAXREC=2048          
+SMFMAXL  EQU   *-SMFREC            MAX LENGTH OF SMFREC                         
+WORKX    DS    0D                  END OF LONG WORKING STORAGE                  
+                                                                                
+*DDMASTD                                                                        
+       ++INCLUDE DDMASTD                                                        
+                                                                                
+*FASSBOFF                                                                       
+SSOOFFD  DSECT                                                                  
+       ++INCLUDE FASSBOFF                                                       
+       ++INCLUDE FATABSDEQU                                                     
+       ++INCLUDE FATABSD                                                        
+       ++INCLUDE FATABSJOB                                                      
+       ++INCLUDE DMSPACED                                                       
+       ++INCLUDE DMDSHDR                                                        
+       ++INCLUDE FAADRREC                                                       
+       ++INCLUDE DDSMFJACC                                                      
+       ++INCLUDE DDRUNSMFD                                                      
+                                                                                
+         CVT     DSECT=YES                                                      
+         IAZJSAB DSECT=YES                                                      
+         IEESMCA                                                                
+         IEFTIOT1                                                               
+         IEZJSCB                                                                
+         IHAASCB                                                                
+         IHAASSB                                                                
+         IHAPSA                                                                 
+         IHASTCB                                                                
+         IKJTCB                                                                 
+                                                                                
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'009DDSMFOUT  05/20/19'                                      
+         END                                                                    

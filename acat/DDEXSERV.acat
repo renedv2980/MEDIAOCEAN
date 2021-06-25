@@ -1,0 +1,2271 @@
+*          DATA SET DDEXSERV   AT LEVEL 002 AS OF 05/16/16                      
+*CATALP EXSERV                                                                  
+         TITLE 'EXSERV - EXTRACT SYSTEM CONTROL FILE SERVICES'                  
+**********************************************************************          
+* EXSERV -                                                           *          
+*   SQL EXTRACT CONTROL FACILITY                                     *          
+* PARAMETERS:                                                        *          
+*           P1 = A(EXSERVD - CONTROL BLOCK)                          *          
+*           P2 = A(RETURN CODE)                                      *          
+**********************************************************************          
+         PRINT NOGEN                                                            
+EXSERV   CSECT                                                                  
+         NMOD1 WORKX-WORKD,*EXSERV*,CLEAR=YES,RA,R9,RR=RE                       
+         USING WORKD,RC                                                         
+         ST    R1,APARM                                                         
+         ST    RE,RELO                                                          
+         B     INIT                                                             
+                                                                                
+**********************************************************************          
+* INITIALISATION                                                     *          
+**********************************************************************          
+INIT     MVC   PARM,0(R1)          SAVE INPUT PARAMETER LIST                    
+*                                  GET THE CURRENT MVS DATE/TIME                
+         GOTO1 =V(DATCON),DMCB,(5,0),(2,TODAY2)                                 
+*                                  GET THE CURRENT MVS DATE/TIME                
+         LA    R2,100                                                           
+INIT001  XR    R0,R0               R0 = TIME                                    
+         XR    R1,R1               R1 = DATE                                    
+         TIME                                                                   
+         LTR   R0,R0                                                            
+         BNZ   INIT002                                                          
+         BCT   R2,INIT001          AVOID THE ZERO HOUR                          
+         DC    H'00'               THIS SHOULD NEVER HAPPEN                     
+*                                                                               
+INIT002  ST    R0,MVSTIME                                                       
+*                                                                               
+         ICM   R7,15,AEXSERVC      R7=A(EXSERV PARAMETER BLOCK)                 
+         JZ    *+2                                                              
+         USING EXSERVD,R7                                                       
+*                                  GET DTF ADDRESS OF GENDIR                    
+         OC    AGENDIR,AGENDIR                                                  
+         BNZ   INIT010                                                          
+         GOTO1 VDATAMGR,DMCB,=C'DTFADR',GENDIR                                  
+         ICM   RF,15,12(R1)                                                     
+         JZ    *+2                                                              
+         LA    RF,0(RF)                                                         
+         ST    RF,AGENDIR                                                       
+*                                                                               
+INIT010  EQU   *                                                                
+         ICM   RF,15,AEXTCTBL      INITIALISE TABLE IF FIRST TIME               
+         BNZ   INIT020                                                          
+         L     RF,=A(EXTCTBL)                                                   
+         ST    RF,AEXTCTBL                                                      
+         ST    RF,AEXTCTBX                                                      
+         ICM   RF,15,=AL4(EXTCTBLM)                                             
+         ST    RF,EXTCTBSZ                                                      
+*                                                                               
+INIT020  EQU   *                                                                
+*                                  GET ACTION CODE                              
+         CLC   EXSACTN,=AL4(EXSAINXQ)                                           
+         BE    PROCINX             INITIALISE ENTRIES IN EXTTAB                 
+*                                  GET ACTION CODE                              
+         CLC   EXSACTN,=AL4(EXSARECQ)                                           
+         BE    PROCREC             RECOVER ON RESTART                           
+*                                  GET ACTION CODE                              
+         CLC   EXSACTN,=AL4(EXSAUPXQ)                                           
+         BE    PROCUPX             UPDATE ENTRIES IN EXTTAB                     
+*                                                                               
+         CLC   EXSACTN,=AL4(EXSARTSQ)                                           
+         BE    PROCRTS             RETURN FILE READY TO SEND DATA               
+*                                                                               
+         CLC   EXSACTN,=AL4(EXSASRCQ)                                           
+         BE    PROCSRC             SET FILE RECOMMIT STATUS                     
+*                                                                               
+         CLC   EXSACTN,=AL4(EXSARCOQ)                                           
+         BE    PROCRCO             RETURN RECOMMIT FILE DATA                    
+*                                                                               
+         CLC   EXSACTN,=AL4(EXSARCAQ)                                           
+         BE    PROCRCA             RECOMMIT FILE MESSAGE ACKNOWLEDGE            
+*                                                                               
+         CLC   EXSACTN,=AL4(EXSANOTQ)                                           
+         BE    PROCNOT             NOTIFIED FILE READY TO SEND                  
+*                                                                               
+         CLC   EXSACTN,=AL4(EXSARCVQ)                                           
+         BE    PROCRCV             RECEIVED FILE                                
+*                                                                               
+         CLC   EXSACTN,=AL4(EXSACOMQ)                                           
+         BE    PROCCOM             COMMITTED FILE                               
+*                                                                               
+         CLC   EXSACTN,=AL4(EXSARESQ)                                           
+         BE    PROCRES             RESEND FILE                                  
+*                                                                               
+         CLC   EXSACTN,=AL4(EXSACMDQ)                                           
+         BE    PROCCMD             COMMAND LINE CONTROL                         
+*                                                                               
+         DC    H'0'                UNKNOWN ACTION CODE                          
+*                                                                               
+EXIT     L     R1,APARM            EXIT WITH UPDATED PARAMETER LIST             
+         MVC   0(L'PARM,R1),PARM                                                
+         XMOD1 1                                                                
+         EJECT                                                                  
+**********************************************************************          
+* PROCESS TO INSERT ESSID ENTRIES INTO EXTRACT CONTROL TABLE         *          
+* BY READING XTRANSFER - ESS SERVER TRANSFER CONTROL RECORDS         *          
+* EXSEID = ESS ID NAME                                               *          
+**********************************************************************          
+PROCINX  EQU   *                                                                
+         LA    R5,IO               READ HIGH FOR FIRST XSERVER PASSIVE          
+         USING GXTRD,R5                                                         
+         XC    GXKEY,GXKEY         CLEAR RECORD KEY                             
+         MVI   GXKREC,GXSKRECQ     SET ESS SERVER CONTROL RECORD TYPE           
+         MVC   GXSKEID,EXSEID                                                   
+*                                  READ HIGH FOR FIRST (WITH FLUSH)             
+         GOTO1 VDATAMGR,DMCB,(X'24',DMRDHI),GENDIR,(R5),(R5),0                  
+         TM    DMCB+8,X'FF'-X'80'                                               
+         BZ    PINX020                                                          
+         DC    H'0'                                                             
+*                                  READ SEQ FOR NEXT (WITH FLUSH)               
+PINX010  EQU   *                                                                
+         GOTO1 VDATAMGR,DMCB,(X'24',DMRSEQ),GENDIR,0,(R5),0                     
+         TM    DMCB+8,X'FF'-X'80'                                               
+         BZ    PINX020                                                          
+         DC    H'0'                DATAMANAGER RETURN NOT 0 OR EOF              
+*                                                                               
+PINX020  CLI   DMCB+8,0                                                         
+         BNE   PINX200                                                          
+         CLI   GXKREC,GXSKRECQ     CHECK KEY VALUES                             
+         BNE   PINX200                                                          
+         CLC   GXSKEID,EXSEID      PICK OUT ALL XTRANSFER RECORDS               
+         BNE   PINX200               FOR THIS ESSID                             
+         OC    GXSKAPID,GXSKAPID     JUMPING OVER XAPPLICATION RECORDS          
+         BZ    PINX030                                                          
+         B     PINX010                                                          
+*                                                                               
+PINX030  MVC   GENDA,GXDDA         SAVE DISK ADDRESS AND GET RECORD             
+*                                  GETREC WITH FLUSH                            
+         GOTO1 VDATAMGR,DMCB,(X'24',GETREC),GENFIL,GENDA,(R5),DMWORK            
+         CLI   8(R1),0                                                          
+         BE    *+6                                                              
+         DC    H'0'                CAN'T FIND RECORD                            
+         LA    R4,GXFIRST(R5)      PROCESS ELEMENT DATA                         
+*                                                                               
+PINX100  CLI   0(R4),0             SEARCH FOR TRANSFER CONTROL ELEMENT          
+         BNE   *+6                                                              
+         DC    H'00'                                                            
+         CLI   0(R4),GXSTELQ                                                    
+         BE    PINX120                                                          
+PINX110  SR    RF,RF                                                            
+         IC    RF,1(R4)                                                         
+         AR    R4,RF                                                            
+         B     PINX100                                                          
+*                                                                               
+         USING GXSTEL,R4                                                        
+PINX120  EQU   *                   EXTRACT DATA INTO EXSERVD BLOCK              
+         XC    WORK,WORK                                                        
+         LA    R2,WORK                                                          
+         USING EXTCTBLD,R2                                                      
+         MVC   EXTCEID,GXSKEID                                                  
+         MVC   EXTCAGY,GXSKAGY                                                  
+         MVC   EXTCSYS,GXSKSYS                                                  
+         MVC   EXTCSUB,GXSKSUB                                                  
+         MVC   EXTCCRFN,GXSTCRFN                                                
+         MVC   EXTCNOFN,GXSTNOFN                                                
+         MVC   EXTCREFN,GXSTREFN                                                
+         MVC   EXTCCOFN,GXSTCOFN                                                
+         MVC   EXTCFCOD,GXSTFCOD                                                
+         MVC   EXTCFTIM,GXSTFTIM                                                
+         MVC   EXTCMODE,GXSTMODE                                                
+         MVC   EXTCNODT(2),TODAY2                                               
+         MVC   EXTCNODT+2(4),MVSTIME                                            
+         MVC   EXTCREDT(2),TODAY2                                               
+         MVC   EXTCREDT+2(4),MVSTIME                                            
+         MVI   EXTCRCNT,0                                                       
+*                                                                               
+         GOTO1 VBINSRCH,DMCB,(1,WORK),AEXTCTBL,EXTCTBEN,               +        
+               EXTCTBLQ,EXTCKEYQ,EXTCTBSZ                                       
+         OC    DMCB,DMCB                                                        
+         BZ    PINXERR1            EXTCTBL NOT LARGE ENOUGH                     
+         TM    DMCB,X'01'          CHECK DUPLICATE TABLE ENTRY                  
+         BZ    PINXERR2                                                         
+         MVC   EXTCTBEN,DMCB+8                                                  
+         L     RF,AEXTCTBX                                                      
+         LA    RF,EXTCTBLQ(RF)                                                  
+         ST    RF,AEXTCTBX                                                      
+*                                                                               
+         B     PINX010                                                          
+*                                                                               
+PINX200  EQU   *                                                                
+         B     PINXOK                                                           
+*                                  PROCESS ERROR 1                              
+PINXERR1 EQU   *                                                                
+         ICM   RE,15,ARETCODE                                                   
+         BNZ   *+6                                                              
+         DC    H'0'                                                             
+         MVI   0(RE),EXSEIN1Q      SET RETURN CODE TO ERROR                     
+         B     RETURN                AND EXIT                                   
+*                                  PROCESS ERROR 2                              
+PINXERR2 EQU   *                                                                
+         ICM   RE,15,ARETCODE                                                   
+         BNZ   *+6                                                              
+         DC    H'0'                                                             
+         MVI   0(RE),EXSEIN2Q      SET RETURN CODE TO ERROR                     
+         B     RETURN                AND EXIT                                   
+*                                                                               
+PINXOK   EQU   *                   OK EXIT                                      
+         ICM   RE,15,ARETCODE                                                   
+         BNZ   *+6                                                              
+         DC    H'0'                                                             
+         MVI   0(RE),EXSROKQ       SET RETURN CODE TO OK                        
+         B     RETURN                AND EXIT                                   
+         DROP  R2,R4,R5                                                         
+         EJECT                                                                  
+**********************************************************************          
+* PROCESS TO RECOVER ON RESTART. UPDATE TRANSFER CONTROL TABLE       *          
+* TO RESEND NOTIFICATION IF FILE RECEIVED MESSAGE OUTSTANDING        *          
+* EXSEID = ESS ID NAME                                               *          
+**********************************************************************          
+PROCREC  EQU   *                                                                
+         XC    WORK,WORK                                                        
+         LA    R2,WORK                                                          
+         USING EXTCTBLD,R2                                                      
+         MVC   EXTCEID,EXSEID                                                   
+*                                                                               
+         GOTO1 VBINSRCH,DMCB,(2,WORK),AEXTCTBL,EXTCTBEN,               +        
+               EXTCTBLQ,EXTCKEYQ,EXTCTBSZ                                       
+         BZ    PRECERR1                                                         
+         TM    DMCB,X'01'          CHECK DUPLICATE TABLE ENTRY                  
+         BO    PREC200                                                          
+         L     R2,DMCB                                                          
+*                                                                               
+PREC010  CLC   EXSEID,EXTCEID                                                   
+         BNE   PREC200                                                          
+         MVC   EXSAGY,EXTCAGY                                                   
+         MVC   EXSSYS,EXTCSYS                                                   
+         MVC   EXSSUB,EXTCSUB                                                   
+         CLC   EXTCNOFN,EXTCREFN                                                
+         BE    PREC100                                                          
+         CLC   EXTCNOFN,EXTCREFN                                                
+         BL    PREC100                                                          
+         MVC   EXTCNOFN,EXTCREFN                                                
+         LA    RF,1                                                             
+         CLC   EXTCNOFN,=XL2'FFFF'                                              
+         BE    *+12                                                             
+         ICM   RF,3,EXTCNOFN                                                    
+         LA    RF,1(RF)                                                         
+         STCM  RF,3,EXSFNUM                                                     
+         XC    EXSCON,EXSCON                                                    
+         MVC   EXSACTN,=AL4(EXSARESQ)                                           
+*                                                                               
+         BAS   RE,UPXCREC          UPDATE EXTRACT CONTROL RECORDS               
+         BNE   PRECERRU            EXIT IF ERROR                                
+*                                                                               
+PREC100  LA    R2,EXTCTBLQ(R2)                                                  
+         B     PREC010                                                          
+*                                                                               
+PREC200  EQU   *                                                                
+         B     PRECOK                                                           
+*                                  PROCESS ERROR 1                              
+PRECERR1 EQU   *                                                                
+         ICM   RE,15,ARETCODE                                                   
+         BNZ   *+6                                                              
+         DC    H'0'                                                             
+         MVI   0(RE),EXSERE1Q      SET RETURN CODE TO ERROR                     
+         B     RETURN                AND EXIT                                   
+*                                  PROCESS ERROR 2                              
+PRECERR2 EQU   *                                                                
+         ICM   RE,15,ARETCODE                                                   
+         BNZ   *+6                                                              
+         DC    H'0'                                                             
+         MVI   0(RE),EXSERE2Q      SET RETURN CODE TO ERROR                     
+         B     RETURN                AND EXIT                                   
+*                                  PROCESS ERROR 1                              
+PRECERRU EQU   *                                                                
+         B     RETURN              EXIT (RETCODE ALREADY SET)                   
+*                                                                               
+PRECOK   EQU   *                   OK EXIT                                      
+         ICM   RE,15,ARETCODE                                                   
+         BNZ   *+6                                                              
+         DC    H'0'                                                             
+         MVI   0(RE),EXSROKQ       SET RETURN CODE TO OK                        
+         B     RETURN                AND EXIT                                   
+         DROP  R2                                                               
+         EJECT                                                                  
+**********************************************************************          
+* PROCESS TO UPDATE ENTRIES IN EXTRACT CONTROL TABLE FROM CURRENT    *          
+* VALUES IN ALL XTRANSFER CONTROL RECORDS                            *          
+**********************************************************************          
+PROCUPX  EQU   *                                                                
+         MVI   FILEFLAG,EXSRNOQ                                                 
+         LA    R5,IO               READ HIGH FOR FIRST XSERVER PASSIVE          
+         USING GXTRD,R5                                                         
+         XC    GXKEY,GXKEY         CLEAR RECORD KEY                             
+         MVI   GXKREC,GXSKRECQ     SET ESS SERVER CONTROL RECORD TYPE           
+*                                  READ HIGH WITH FLUSH                         
+         GOTO1 VDATAMGR,DMCB,(X'24',DMRDHI),GENDIR,(R5),(R5),0                  
+         TM    DMCB+8,X'FF'-X'80'                                               
+         BZ    PUPX020                                                          
+         DC    H'0'                                                             
+*                                  READ SEQN WITH FLUSH                         
+PUPX010  GOTO1 VDATAMGR,DMCB,(X'24',DMRSEQ),GENDIR,0,(R5),0                     
+         TM    DMCB+8,X'FF'-X'80'                                               
+         BZ    PUPX020                                                          
+         DC    H'0'                DATAMANAGER RETURN NOT 0 OR EOF              
+*                                                                               
+PUPX020  CLI   DMCB+8,0                                                         
+         BNE   PUPX200                                                          
+         CLI   GXKREC,GXSKRECQ     CHECK KEY VALUES                             
+         BNE   PUPX200                                                          
+         OC    GXSKAPID,GXSKAPID                                                
+         BZ    PUPX030                                                          
+         B     PUPX010                                                          
+*                                                                               
+PUPX030  MVC   GENDA,GXDDA                                                      
+*                                  GETREC WITH FLUSH                            
+         GOTO1 VDATAMGR,DMCB,(X'24',GETREC),GENFIL,GENDA,(R5),DMWORK            
+         CLI   8(R1),0                                                          
+         BE    *+6                                                              
+         DC    H'0'                CAN'T FIND RECORD                            
+         LA    R4,GXFIRST(R5)      PROCESS ELEMENT DATA                         
+*                                                                               
+PUPX100  CLI   0(R4),0             SEARCH FOR TRANSFER CONTROL ELEMENT          
+         BNE   *+6                                                              
+         DC    H'00'                                                            
+         CLI   0(R4),GXSTELQ                                                    
+         BE    PUPX120                                                          
+PUPX110  SR    RF,RF                                                            
+         IC    RF,1(R4)                                                         
+         AR    R4,RF                                                            
+         B     PUPX100                                                          
+*                                                                               
+         USING GXSTEL,R4                                                        
+PUPX120  EQU   *                   EXTRACT TRANSFER CONTROL DATA                
+         CLC   GXSTCRFN,GXSTNOFN                                                
+         BE    *+8                                                              
+         MVI   FILEFLAG,EXSROKQ    FLAG IF FILE AWAITING TRANSFER               
+         LA    R2,WORK             AND UPDATE EXTRACT CONTROL TABLE             
+         USING EXTCTBLD,R2                                                      
+         MVC   EXTCEID,GXSKEID                                                  
+         MVC   EXTCAGY,GXSKAGY                                                  
+         MVC   EXTCSYS,GXSKSYS                                                  
+         MVC   EXTCSUB,GXSKSUB                                                  
+*                                  SEARCH FOR EXISTING TABLE ENTRY              
+         GOTO1 VBINSRCH,DMCB,WORK,AEXTCTBL,EXTCTBEN,                   +        
+               EXTCTBLQ,EXTCKEYQ,EXTCTBSZ                                       
+         TM    DMCB,X'01'          ENTRY NOT FOUND - IGNORE                     
+         BO    PUPX130                                                          
+         L     R2,DMCB             A(RECORD IN TABLE)                           
+*                                  UPDATE EXISTING ENTRY VALUES                 
+         MVC   EXTCCRFN,GXSTCRFN                                                
+         MVC   EXTCNOFN,GXSTNOFN                                                
+         MVC   EXTCREFN,GXSTREFN                                                
+         MVC   EXTCCOFN,GXSTCOFN                                                
+         CLI   EXTCFCOD,C'N'                                                    
+         BE    *+10                                                             
+         MVC   EXTCFCOD,GXSTFCOD                                                
+         MVC   EXTCFTIM,GXSTFTIM                                                
+         MVC   EXTCMODE,GXSTMODE                                                
+         B     PUPX010                                                          
+*                                                                               
+PUPX130  EQU   *                   ADD NEW ENTRY ??                             
+         B     PUPX010                                                          
+         MVC   EXTCEID,GXSKEID                                                  
+         MVC   EXTCAGY,GXSKAGY                                                  
+         MVC   EXTCSYS,GXSKSYS                                                  
+         MVC   EXTCSUB,GXSKSUB                                                  
+         MVC   EXTCCRFN,GXSTCRFN                                                
+         MVC   EXTCNOFN,GXSTNOFN                                                
+         MVC   EXTCREFN,GXSTREFN                                                
+         MVC   EXTCCOFN,GXSTCOFN                                                
+         MVC   EXTCFCOD,GXSTFCOD                                                
+         MVC   EXTCFTIM,GXSTFTIM                                                
+         MVC   EXTCMODE,GXSTMODE                                                
+         GOTO1 VBINSRCH,DMCB,(1,WORK),AEXTCTBL,EXTCTBEN,               +        
+               EXTCTBLQ,EXTCKEYQ,EXTCTBSZ                                       
+         OC    DMCB,DMCB                                                        
+         BZ    PUPXERR             EXTCTBL NOT LARGE ENOUGH                     
+         TM    DMCB,X'01'          CHECK DUPLICATE TABLE ENTRY                  
+         BZ    PUPXERR                                                          
+         MVC   EXTCTBEN,DMCB+8                                                  
+         L     RF,AEXTCTBX                                                      
+         LA    RF,EXTCTBLQ(RF)                                                  
+         ST    RF,AEXTCTBX                                                      
+*                                                                               
+         B     PUPX010                                                          
+*                                                                               
+PUPX200  EQU   *                                                                
+         B     PUPXOK                                                           
+*                                  PROCESS ERROR                                
+PUPXERR  EQU   *                                                                
+         ICM   RE,15,ARETCODE                                                   
+         BNZ   *+6                                                              
+         DC    H'0'                                                             
+         MVI   0(RE),EXSEUP1Q      SET RETURN CODE TO ERROR                     
+         B     RETURN                AND EXIT                                   
+*                                                                               
+PUPXOK   EQU   *                   OK EXIT                                      
+         ICM   RE,15,ARETCODE                                                   
+         BNZ   *+6                                                              
+         DC    H'0'                                                             
+         MVC   0(1,RE),FILEFLAG    SET RETURN CODE TO FILEFLAG VALUE            
+         B     RETURN                AND EXIT                                   
+         DROP  R2,R4,R5                                                         
+         EJECT                                                                  
+**********************************************************************          
+* PROCESS TO RETURN DATA FOR SQL EXTRACT FILES THAT ARE AWAITING     *          
+* TRANSFER TO ESS                                                    *          
+* EXSEID = ESS ID NAME                                               *          
+**********************************************************************          
+         USING EXTCTBLD,R2                                                      
+PROCRTS  EQU   *                                                                
+         LA    R2,WORK                                                          
+         XC    WORK,WORK                                                        
+         MVC   EXTCEID,EXSEID                                                   
+*                                  SEARCH FOR EXISTING TABLE ENTRY              
+         GOTO1 VBINSRCH,DMCB,(2,WORK),AEXTCTBL,EXTCTBEN,               +        
+               EXTCTBLQ,EXTCKEYQ,EXTCTBSZ                                       
+         TM    DMCB,X'01'                                                       
+         BO    PRTSEND                                                          
+         L     R2,DMCB             A(RECORD IN TABLE)                           
+         MVI   TWOPASSF,FIRSPASS   SET TWO PASS FLAG TO FIRST PASS              
+*                                                                               
+PRTS010  CLC   EXTCEID,EXSEID                                                   
+         BNE   PRTS022                                                          
+*                                                                               
+         TM    EXTCFLG1,EXTCFSNQ   TEST FILE WAS SENDING TO THIS ESS            
+         BZ    PRTS011                                                          
+         CLI   TWOPASSF,FIRSPASS   TEST TWO PASS FLAG FIRST PASS                
+         BE    PRTS020                                                          
+         NI    EXTCFLG1,X'FF'-EXTCFSNQ CLEAR FILE WAS SENDING FLAG              
+*                                                                               
+PRTS011  EQU   *                                                                
+         CLI   EXTCSNUM,0          TEST FILE SEND ESS SESSION NUMBER            
+         BE    *+14                                                             
+         CLC   EXTCSNUM,EXSSNUM                                                 
+         BNE   PRTS020                                                          
+         CLI   EXTCFCOD,C'N'       DONT NOTIFY IF FREQ. UPDT. CODE=N            
+         BE    PRTS020                                                          
+         CLC   EXTCCRFN,EXTCNOFN   ONLY NOTIFY IF NEW FILES CREATED             
+         BE    PRTS012                                                          
+         CLI   EXSSIM,C'Y'         NOTIFY IF SEND IMMEDIATE FLAG=Y              
+         BE    PRTS030               ELSE                                       
+         CLC   EXTCNOFN,EXTCREFN   NOTIFY IF LAST RECEIVED                      
+         BE    PRTS030               OR FALLEN BEHIND                           
+         BNH   PRTS030                                                          
+         CLC   EXTCNOFN,EXTCCOFN   NOTIFY IF LAST COMMITTED                     
+         BNH   PRTS030                                                          
+         B     PRTS014                                                          
+*                                                                               
+PRTS012  CLC   EXTCNOFN,EXTCREFN                                                
+         BE    PRTS020                                                          
+*                                                                               
+PRTS014  BAS   RE,CHECKRAT         CHECK RECEIVE ACKNOWLEDGE TIMEOUT            
+         BE    PRTS030                                                          
+*                                                                               
+PRTS020  LA    R2,EXTCTBLQ(R2)                                                  
+         STCM  R2,15,AEXTCNXT                                                   
+         C     R2,AEXTCTBX                                                      
+         BNL   PRTS022                                                          
+         B     PRTS010                                                          
+*                                                                               
+PRTS022  EQU   *                                                                
+         CLI   TWOPASSF,FIRSPASS   TEST TWO PASS FLAG FIRST PASS                
+         BNE   PRTSEND                                                          
+         MVI   TWOPASSF,SECNPASS   SET TWO PASS FLAG TO SECOND PASS             
+         LA    R2,WORK                                                          
+         XC    WORK,WORK                                                        
+         MVC   EXTCEID,EXSEID                                                   
+*                                  SEARCH FOR EXISTING TABLE ENTRY              
+         GOTO1 VBINSRCH,DMCB,(2,WORK),AEXTCTBL,EXTCTBEN,               +        
+               EXTCTBLQ,EXTCKEYQ,EXTCTBSZ                                       
+         TM    DMCB,X'01'                                                       
+         BO    PRTSEND                                                          
+         L     R2,DMCB             A(RECORD IN TABLE)                           
+         B     PRTS010                                                          
+*                                                                               
+PRTS030  EQU   *                                                                
+         LA    R5,IO               READ FOR XFILE TRANSFER PASSIVE              
+         USING GXTRD,R5                                                         
+         XC    GXKEY,GXKEY         CLEAR RECORD KEY                             
+         MVI   GXKREC,GXSFRECQ     SET UP KEY VALUES                            
+         MVC   GXSFEID,EXTCEID                                                  
+         MVC   GXSFAGY,EXTCAGY                                                  
+         MVC   GXSFSYS,EXTCSYS                                                  
+         MVC   GXSFSUB,EXTCSUB                                                  
+         MVC   DUB(2),EXTCNOFN                                                  
+         LA    RF,1                                                             
+         CLC   DUB(2),=XL2'FFFF'                                                
+         BE    *+12                                                             
+         ICM   RF,3,DUB                                                         
+         LA    RF,1(RF)                                                         
+         STCM  RF,3,DUB                                                         
+         MVC   GXSFFNUM,DUB                                                     
+         MVC   EXSFNUM,GXSFFNUM                                                 
+         L     RF,AGENDIR                                                       
+         USING ISDTF,RF                                                         
+         XC    ISPDDA(12),ISPDDA                                                
+         DROP  RF                                                               
+*                                  READ WITH FLUSH                              
+         GOTO1 VDATAMGR,DMCB,(X'24',DMREAD),GENDIR,(R5),(R5),0                  
+         CLI   8(R1),X'00'                                                      
+         BNE   PRTSERR1                                                         
+*                                                                               
+         CLI   GXDSTAT,0           CHECK STATUS OK??                            
+         BNE   PRTS020                                                          
+*                                  GET XFILE RECORD WITH FLUSH                  
+         MVC   GENDA,GXDDA                                                      
+         GOTO1 VDATAMGR,DMCB,(X'24',GETREC),GENFIL,GENDA,(R5),DMWORK            
+         CLI   8(R1),X'00'                                                      
+         BE    *+6                                                              
+         DC    H'00'                                                            
+*                                                                               
+         LA    R4,GXFIRST(R5)      PROCESS ELEMENT DATA                         
+*                                                                               
+PRTS100  CLI   0(R4),0             SEARCH FOR FILE TRANSFER ELEMENT             
+         BE    PRTSOK                AND FILE DEFINITION ELEMENT                
+         CLI   0(R4),GXFTELQ                                                    
+         BE    PRTS120                                                          
+         CLI   0(R4),GXFDELQ                                                    
+         BE    PRTS130                                                          
+         CLI   0(R4),GXGNELQ                                                    
+         BE    PRTS140                                                          
+PRTS110  SR    RF,RF                                                            
+         IC    RF,1(R4)                                                         
+         AR    R4,RF                                                            
+         B     PRTS100                                                          
+*                                                                               
+         USING GXFTEL,R4                                                        
+PRTS120  EQU   *                   PROCESS FILE TRANSFER ELEMENT DATA           
+         CLC   GXFTEID,EXSEID                                                   
+         BNE   PRTS110                                                          
+         MVC   EXSLOAD,GXFTLOAD                                                 
+         CLI   EXSLOAD,0           TEST IF FILE RELOAD CONTROL IS ON            
+         BE    *+10                                                             
+         MVC   EXTCRLFN,EXSFNUM    SAVE FILE NUMBER OF LAST RELOAD FILE         
+         ICM   RF,15,EXSDATA                                                    
+         BZ    PRTS110                                                          
+         SR    R1,R1                                                            
+         IC    R1,GXFTELL                                                       
+         BCTR  R1,0                                                             
+         EX    R1,*+8                                                           
+         B     *+10                                                             
+         MVC   0(0,RF),GXFTEL                                                   
+         B     PRTS110                                                          
+         DROP  R4                                                               
+*                                                                               
+         USING GXFDEL,R4                                                        
+PRTS130  EQU   *                   PROCESS FILE DEFINITION ELEMENT DATA         
+         MVC   EXSAGY,GXFDAGY                                                   
+         MVC   EXSSYS,GXFDSYS                                                   
+         MVC   EXSSUB,GXFDSUB                                                   
+         MVC   EXSDSN,GXFDDSN                                                   
+         MVC   EXSRNM,GXFDRNM                                                   
+         MVC   EXSBNM,GXFDBNM                                                   
+         MVC   EXSMTO,GXFDMTO                                                   
+         MVC   EXSMOD,GXFDMOD                                                   
+         B     PRTS110                                                          
+         DROP  R4                                                               
+*                                                                               
+         USING GXGNEL,R4                                                        
+PRTS140  EQU   *                   GET FILE GENERATION NUMBER                   
+         MVC   EXSGNUM,GXGNNUM                                                  
+         B     PRTS110                                                          
+         DROP  R4                                                               
+*                                                                               
+PRTSEND  EQU   *                                                                
+         ICM   RE,15,ARETCODE                                                   
+         BNZ   *+6                                                              
+         DC    H'0'                                                             
+         MVI   0(RE),EXSRNOQ       SET RETURN CODE TO ENTRY NOT FOUND           
+         B     RETURN                                                           
+*                                  PROCESS ERROR                                
+PRTSERR1 EQU   *                                                                
+         MVC   EXSAGY,EXTCAGY                                                   
+         MVC   EXSSYS,EXTCSYS                                                   
+         MVC   EXSSUB,EXTCSUB                                                   
+         MVI   EXTCFCOD,C'N'       DISSABLE NOTIFY FOR SUB SYSTEM               
+         ICM   RE,15,ARETCODE                                                   
+         BNZ   *+6                                                              
+         DC    H'0'                                                             
+         MVI   0(RE),EXSERT1Q      SET RETURN CODE TO ERROR                     
+         B     RETURN                AND EXIT                                   
+*                                                                               
+PRTSOK   EQU   *                   OK EXIT                                      
+         OI    EXTCFLG1,EXTCFSNQ   SET FILE SENDING FLAG                        
+         MVC   EXTCSNUM,EXSSNUM    SET FILE SEND ESS SESSION NUMBER             
+         ICM   RE,15,ARETCODE                                                   
+         BNZ   *+6                                                              
+         DC    H'0'                                                             
+         MVI   0(RE),EXSROKQ       SET RETURN CODE TO ENTRY FOUND               
+         B     RETURN                                                           
+         DROP  R2,R5                                                            
+         EJECT                                                                  
+**********************************************************************          
+* PROCESS TO SET RECOMMIT FILE STATUS IN TRANSFER CONTROL TABLE      *          
+* EXSEID = ESS ID NAME                                               *          
+**********************************************************************          
+PROCSRC  EQU   *                                                                
+         XC    WORK,WORK                                                        
+         LA    R2,WORK                                                          
+         USING EXTCTBLD,R2                                                      
+         MVC   EXTCEID,EXSEID                                                   
+*                                                                               
+         GOTO1 VBINSRCH,DMCB,(2,WORK),AEXTCTBL,EXTCTBEN,               +        
+               EXTCTBLQ,EXTCKEYQ,EXTCTBSZ                                       
+         TM    DMCB,X'01'          CHECK ENTRY FOUND                            
+         BO    PSRC200                                                          
+         L     R2,DMCB                                                          
+*                                                                               
+PSRC010  CLC   EXSEID,EXTCEID                                                   
+         BNE   PSRC200                                                          
+         LA    R5,IO               READ XSERVER FILE PASSIVE                    
+         USING GXTRD,R5                                                         
+         XC    GXKEY,GXKEY         CLEAR RECORD KEY                             
+         MVI   GXKREC,GXSFRECQ                                                  
+         MVC   GXSFEID,EXTCEID                                                  
+         MVC   GXSFAGY,EXTCAGY                                                  
+         MVC   GXSFSYS,EXTCSYS                                                  
+         MVC   GXSFSUB,EXTCSUB                                                  
+         MVC   GXSFFNUM,EXTCCOFN                                                
+*                                  READ WITH FLUSH                              
+         GOTO1 VDATAMGR,DMCB,(X'24',DMREAD),GENDIR,(R5),(R5),0                  
+         CLI   8(R1),X'00'                                                      
+         BNE   PSRC050                                                          
+*                                  GET XFILE RECORD WITH FLUSH                  
+         MVC   GENDA,GXDDA                                                      
+         GOTO1 VDATAMGR,DMCB,(X'24',GETREC),GENFIL,GENDA,(R5),DMWORK            
+         CLI   8(R1),X'00'                                                      
+         BE    *+6                                                              
+         DC    H'0'                                                             
+*                                                                               
+         LA    R4,GXFIRST(R5)      PROCESS ELEMENT DATA                         
+*                                                                               
+PSRC020  CLI   0(R4),0                                                          
+         BNE   *+6                                                              
+         DC    H'0'                                                             
+         CLI   0(R4),GXFTELQ       FIND FILE TRANSMISSION ELEMENT               
+         BE    PSRC040                                                          
+PSRC030  SR    RF,RF                                                            
+         IC    RF,1(R4)                                                         
+         AR    R4,RF                                                            
+         B     PSRC020                                                          
+*                                                                               
+         USING GXFTEL,R4                                                        
+PSRC040  EQU   *                                                                
+         CLC   GXFTEID,EXTCEID                                                  
+         BNE   PSRC030                                                          
+         CLC   GXFTRCO,=CL6'000000'                                             
+         BNE   PSRC042                                                          
+         CLC   EXTCREFN,EXTCCOFN                                                
+         BE    PSRC100                                                          
+         B     PSRC050                                                          
+PSRC042  OI    EXTCFLG1,EXTCFCOQ                                                
+         B     PSRC100                                                          
+         DROP  R4                                                               
+*                                                                               
+PSRC050  LA    R5,IO               READ XSERVER FILE PASSIVE                    
+         USING GXTRD,R5                                                         
+         XC    GXKEY,GXKEY         CLEAR RECORD KEY                             
+         MVI   GXKREC,GXSFRECQ                                                  
+         MVC   GXSFEID,EXTCEID                                                  
+         MVC   GXSFAGY,EXTCAGY                                                  
+         MVC   GXSFSYS,EXTCSYS                                                  
+         MVC   GXSFSUB,EXTCSUB                                                  
+         LA    RF,1                                                             
+         CLC   EXTCCOFN,=XL2'FFFF'                                              
+         BE    *+12                                                             
+         ICM   RF,3,EXTCCOFN                                                    
+         LA    RF,1(RF)                                                         
+         STCM  RF,3,GXSFFNUM                                                    
+*                                  READ WITH FLUSH                              
+         GOTO1 VDATAMGR,DMCB,(X'24',DMREAD),GENDIR,(R5),(R5),0                  
+         CLI   8(R1),X'00'                                                      
+         BNE   PSRC100                                                          
+*                                  GET XFILE RECORD WITH FLUSH                  
+         MVC   GENDA,GXDDA                                                      
+         GOTO1 VDATAMGR,DMCB,(X'24',GETREC),GENFIL,GENDA,(R5),DMWORK            
+         CLI   8(R1),X'00'                                                      
+         BE    *+6                                                              
+         DC    H'0'                                                             
+*                                                                               
+         LA    R4,GXFIRST(R5)      PROCESS ELEMENT DATA                         
+*                                                                               
+PSRC060  CLI   0(R4),0                                                          
+         BNE   *+6                                                              
+         DC    H'0'                                                             
+         CLI   0(R4),GXFTELQ       FIND FILE TRANSMISSION ELEMENT               
+         BE    PSRC080                                                          
+PSRC070  SR    RF,RF                                                            
+         IC    RF,1(R4)                                                         
+         AR    R4,RF                                                            
+         B     PSRC060                                                          
+*                                                                               
+         USING GXFTEL,R4                                                        
+PSRC080  EQU   *                                                                
+         CLC   GXFTEID,EXTCEID                                                  
+         BNE   PSRC070                                                          
+         CLC   GXFTRCO,=CL6'000000'                                             
+         BE    PSRC100                                                          
+         OI    EXTCFLG1,EXTCFCOQ                                                
+         B     PSRC100                                                          
+         DROP  R4                                                               
+*                                                                               
+PSRC100  LA    R2,EXTCTBLQ(R2)                                                  
+         B     PSRC010                                                          
+*                                                                               
+PSRC200  EQU   *                                                                
+         B     PSRCOK                                                           
+*                                                                               
+PSRCOK   EQU   *                   OK EXIT                                      
+         ICM   RE,15,ARETCODE                                                   
+         BNZ   *+6                                                              
+         DC    H'0'                                                             
+         MVI   0(RE),EXSROKQ       SET RETURN CODE TO OK                        
+         B     RETURN                AND EXIT                                   
+         DROP  R2                                                               
+         EJECT                                                                  
+**********************************************************************          
+* PROCESS TO RETURN DATA FOR SQL EXTRACT FILES THAT ARE AWAITING     *          
+* RECOMMIT TO ESS                                                    *          
+* EXSEID = ESS ID NAME                                               *          
+**********************************************************************          
+         USING EXTCTBLD,R2                                                      
+PROCRCO  EQU   *                                                                
+         LA    R2,WORK                                                          
+         XC    WORK,WORK                                                        
+         MVC   EXTCEID,EXSEID                                                   
+*                                  SEARCH FOR EXISTING TABLE ENTRY              
+         GOTO1 VBINSRCH,DMCB,(2,WORK),AEXTCTBL,EXTCTBEN,               +        
+               EXTCTBLQ,EXTCKEYQ,EXTCTBSZ                                       
+         TM    DMCB,X'01'                                                       
+         BO    PRCOEND                                                          
+         L     R2,DMCB             A(RECORD IN TABLE)                           
+*                                                                               
+PRCO010  CLC   EXTCEID,EXSEID                                                   
+         BNE   PRCOEND                                                          
+*                                                                               
+         TM    EXTCFLG1,EXTCFCOQ   TEST IF RECOMMIT REQUESTED                   
+         BZ    PRCO020                                                          
+         B     PRCO030                                                          
+*                                                                               
+PRCO020  LA    R2,EXTCTBLQ(R2)                                                  
+         STCM  R2,15,AEXTCNXT                                                   
+         C     R2,AEXTCTBX                                                      
+         BNL   PRCOEND                                                          
+         B     PRCO010                                                          
+*                                                                               
+PRCO030  LA    R5,IO               READ FOR XFILE TRANSFER PASSIVE              
+         USING GXTRD,R5                                                         
+         XC    GXKEY,GXKEY         CLEAR RECORD KEY                             
+         MVI   GXKREC,GXSFRECQ     SET UP KEY VALUES                            
+         MVC   GXSFEID,EXTCEID                                                  
+         MVC   GXSFAGY,EXTCAGY                                                  
+         MVC   GXSFSYS,EXTCSYS                                                  
+         MVC   GXSFSUB,EXTCSUB                                                  
+         MVC   GXSFFNUM,EXTCCOFN                                                
+         MVC   EXSFNUM,GXSFFNUM                                                 
+         L     RF,AGENDIR                                                       
+         USING ISDTF,RF                                                         
+         XC    ISPDDA(12),ISPDDA                                                
+         DROP  RF                                                               
+*                                  READ HIGH WITH FLUSH                         
+         GOTO1 VDATAMGR,DMCB,(X'24',DMRDHI),GENDIR,(R5),(R5),0                  
+         CLI   8(R1),X'00'                                                      
+         BNE   PRCOERR1                                                         
+         CLI   GXKREC,GXSFRECQ     CHECK KEY VALUES                             
+         BNE   PRCOERR1                                                         
+         CLC   GXSFEID,EXTCEID                                                  
+         BNE   PRCOERR1                                                         
+         CLC   GXSFAGY,EXTCAGY                                                  
+         BNE   PRCOERR1                                                         
+         CLC   GXSFSYS,EXTCSYS                                                  
+         BNE   PRCOERR1                                                         
+         CLC   GXSFSUB,EXTCSUB                                                  
+         BNE   PRCOERR1                                                         
+         MVC   EXSFNUM,GXSFFNUM                                                 
+*                                  GET XFILE RECORD WITH FLUSH                  
+         MVC   GENDA,GXDDA                                                      
+         GOTO1 VDATAMGR,DMCB,(X'24',GETREC),GENFIL,GENDA,(R5),DMWORK            
+         CLI   8(R1),X'00'                                                      
+         BE    *+6                                                              
+         DC    H'00'                                                            
+*                                                                               
+         LA    R4,GXFIRST(R5)      PROCESS ELEMENT DATA                         
+*                                                                               
+PRCO100  CLI   0(R4),0             SEARCH FOR FILE TRANSFER ELEMENT             
+         BE    PRCOOK                AND FILE DEFINITION ELEMENT                
+         CLI   0(R4),GXFTELQ                                                    
+         BE    PRCO120                                                          
+         CLI   0(R4),GXFDELQ                                                    
+         BE    PRCO130                                                          
+         CLI   0(R4),GXGNELQ                                                    
+         BE    PRCO140                                                          
+PRCO110  SR    RF,RF                                                            
+         IC    RF,1(R4)                                                         
+         AR    R4,RF                                                            
+         B     PRCO100                                                          
+*                                                                               
+         USING GXFTEL,R4                                                        
+PRCO120  EQU   *                   PROCESS FILE TRANSFER ELEMENT DATA           
+         CLC   GXFTEID,EXSEID                                                   
+         BNE   PRCO110                                                          
+         MVC   EXSLOAD,GXFTLOAD                                                 
+         ICM   RF,15,EXSDATA                                                    
+         BZ    PRCO110                                                          
+         SR    R1,R1                                                            
+         IC    R1,GXFTELL                                                       
+         BCTR  R1,0                                                             
+         EX    R1,*+8                                                           
+         B     *+10                                                             
+         MVC   0(0,RF),GXFTEL                                                   
+         B     PRCO110                                                          
+         DROP  R4                                                               
+*                                                                               
+         USING GXFDEL,R4                                                        
+PRCO130  EQU   *                   PROCESS FILE DEFINITION ELEMENT DATA         
+         MVC   EXSAGY,GXFDAGY                                                   
+         MVC   EXSSYS,GXFDSYS                                                   
+         MVC   EXSSUB,GXFDSUB                                                   
+         MVC   EXSDSN,GXFDDSN                                                   
+         MVC   EXSRNM,GXFDRNM                                                   
+         MVC   EXSBNM,GXFDBNM                                                   
+         MVC   EXSMTO,GXFDMTO                                                   
+         MVC   EXSMOD,GXFDMOD                                                   
+         B     PRCO110                                                          
+         DROP  R4                                                               
+*                                                                               
+         USING GXGNEL,R4                                                        
+PRCO140  EQU   *                   GET FILE GENERATION NUMBER                   
+         MVC   EXSGNUM,GXGNNUM                                                  
+         B     PRCO110                                                          
+         DROP  R4                                                               
+*                                                                               
+PRCOEND  EQU   *                                                                
+         ICM   RE,15,ARETCODE                                                   
+         BNZ   *+6                                                              
+         DC    H'0'                                                             
+         MVI   0(RE),EXSRNOQ       SET RETURN CODE TO ENTRY NOT FOUND           
+         B     RETURN                                                           
+*                                  PROCESS ERROR                                
+PRCOERR1 EQU   *                                                                
+         MVC   EXSAGY,EXTCAGY                                                   
+         MVC   EXSSYS,EXTCSYS                                                   
+         MVC   EXSSUB,EXTCSUB                                                   
+         MVI   EXTCFCOD,C'N'       DISSABLE NOTIFY FOR SUB SYSTEM               
+         ICM   RE,15,ARETCODE                                                   
+         BNZ   *+6                                                              
+         DC    H'0'                                                             
+         MVI   0(RE),EXSERO1Q      SET RETURN CODE TO ERROR                     
+         B     RETURN                AND EXIT                                   
+*                                                                               
+PRCOOK   EQU   *                   OK EXIT                                      
+         ICM   RE,15,ARETCODE                                                   
+         BNZ   *+6                                                              
+         DC    H'0'                                                             
+         MVI   0(RE),EXSROKQ       SET RETURN CODE TO ENTRY FOUND               
+         B     RETURN                                                           
+         DROP  R2,R5                                                            
+         EJECT                                                                  
+**********************************************************************          
+* PROCESS TO ACKNOWLEDGE FILE RECOMMIT MESSAGE HAS BEEN SENT TO ESS  *          
+* FILE DEFINED BY KEY DATA:                                          *          
+* EXSEID = ESS ID NAME                                               *          
+* EXSAGY = AGENCY ALPHA ID                                           *          
+* EXSSYS = SYSTEM CODE                                               *          
+* EXSSUB = SUB SYSTEM CODE                                           *          
+**********************************************************************          
+PROCRCA  EQU   *                                                                
+*                                                                               
+         XC    WORK,WORK                                                        
+         LA    R2,WORK                                                          
+         USING EXTCTBLD,R2                                                      
+         MVC   EXTCEID,EXSEID                                                   
+         MVC   EXTCAGY,EXSAGY                                                   
+         MVC   EXTCSYS,EXSSYS                                                   
+         MVC   EXTCSUB,EXSSUB                                                   
+         GOTO1 VBINSRCH,DMCB,WORK,AEXTCTBL,EXTCTBEN,                   +        
+               EXTCTBLQ,EXTCKEYQ,0                                              
+         TM    DMCB,X'01'                                                       
+         BNZ   PRCAERR1                                                         
+         L     R2,DMCB             A(RECORD IN TABLE)                           
+         NI    EXTCFLG1,X'FF'-EXTCFCOQ                                          
+         B     PRCAOK                                                           
+*                                  PROCESS ERROR                                
+PRCAERR1 EQU   *                                                                
+         ICM   RE,15,ARETCODE                                                   
+         BNZ   *+6                                                              
+         DC    H'0'                                                             
+         MVI   0(RE),EXSERA1Q      SET RETURN CODE TO ERROR                     
+         B     RETURN                AND EXIT                                   
+*                                                                               
+PRCAOK   EQU   *                   OK EXIT                                      
+         ICM   RE,15,ARETCODE                                                   
+         BNZ   *+6                                                              
+         DC    H'0'                                                             
+         MVI   0(RE),EXSROKQ       SET RETURN CODE TO OK                        
+         B     RETURN                                                           
+         DROP  R2                                                               
+         EJECT                                                                  
+**********************************************************************          
+* PROCESS TO ACKNOWLEDGE FILE READY TO SEND NOTIFICATION SENT TO ESS *          
+* FILE DEFINED BY KEY DATA:                                          *          
+* EXSEID = ESS ID NAME                                               *          
+* EXSAGY = AGENCY ALPHA ID                                           *          
+* EXSSYS = SYSTEM CODE                                               *          
+* EXSSUB = SUB SYSTEM CODE                                           *          
+**********************************************************************          
+PROCNOT  EQU   *                                                                
+*                                                                               
+         XC    WORK,WORK                                                        
+         LA    R2,WORK                                                          
+         USING EXTCTBLD,R2                                                      
+         MVC   EXTCEID,EXSEID                                                   
+         MVC   EXTCAGY,EXSAGY                                                   
+         MVC   EXTCSYS,EXSSYS                                                   
+         MVC   EXTCSUB,EXSSUB                                                   
+         GOTO1 VBINSRCH,DMCB,WORK,AEXTCTBL,EXTCTBEN,                   +        
+               EXTCTBLQ,EXTCKEYQ,0                                              
+         TM    DMCB,X'01'                                                       
+         BNZ   PNOTERR1                                                         
+         L     R2,DMCB             A(RECORD IN TABLE)                           
+         CLI   EXSCON,EXSCOKQ                                                   
+         BNE   PNOT010                                                          
+         MVC   EXTCNOFN,EXSFNUM                                                 
+*                                                                               
+PNOT010  EQU   *                                                                
+         NI    EXTCFLG1,X'FF'-EXTCFCOQ   CLEAR ANY RECOMMIT FLAG                
+         MVI   EXTCSNUM,0          CLEAR FILE SEND ESS SESSION NUMBER           
+         MVC   EXTCNODT(2),TODAY2  SAVE NOTIFY DATE/TIME                        
+         MVC   EXTCNODT+2(4),MVSTIME                                            
+         BAS   RE,UPXCREC          UPDATE EXTRACT CONTROL RECORDS               
+         BNE   PNOTERRU                                                         
+         B     PNOTOK                                                           
+*                                  PROCESS ERROR                                
+PNOTERR1 EQU   *                                                                
+         ICM   RE,15,ARETCODE                                                   
+         BNZ   *+6                                                              
+         DC    H'0'                                                             
+         MVI   0(RE),EXSENO1Q      SET RETURN CODE TO ERROR                     
+         B     RETURN                AND EXIT                                   
+*                                  PROCESS UPDATE ERROR                         
+PNOTERRU EQU   *                                                                
+         B     RETURN              EXIT RETURN CODE ALREADY SET                 
+*                                                                               
+PNOTOK   EQU   *                   OK EXIT                                      
+*        CLC   EXSCON,=CL6'000999' TEST FOR NOTIFIED AND ALREADY                
+*        BNE   *+14                  RECEIVED CONDITION CODE                    
+*        MVC   EXSACTN,=AL4(EXSARCVQ)                                           
+*        B     PROCRCV                                                          
+         ICM   RE,15,ARETCODE                                                   
+         BNZ   *+6                                                              
+         DC    H'0'                                                             
+         MVI   0(RE),EXSROKQ       SET RETURN CODE TO OK                        
+         B     RETURN                                                           
+         DROP  R2                                                               
+         EJECT                                                                  
+**********************************************************************          
+* PROCESS TO ACKNOWLEDGE FILE RECEIVED BY ESS VIA FTP                *          
+* FILE DEFINED BY KEY DATA:                                          *          
+* EXSEID = ESS ID NAME                                               *          
+* EXSAGY = AGENCY ALPHA ID                                           *          
+* EXSSYS = SYSTEM CODE                                               *          
+* EXSSUB = SUB SYSTEM CODE                                           *          
+**********************************************************************          
+PROCRCV  EQU   *                                                                
+*                                                                               
+         XC    WORK,WORK                                                        
+         LA    R2,WORK                                                          
+         USING EXTCTBLD,R2                                                      
+         MVC   EXTCEID,EXSEID                                                   
+         MVC   EXTCAGY,EXSAGY                                                   
+         MVC   EXTCSYS,EXSSYS                                                   
+         MVC   EXTCSUB,EXSSUB                                                   
+         GOTO1 VBINSRCH,DMCB,WORK,AEXTCTBL,EXTCTBEN,                   +        
+               EXTCTBLQ,EXTCKEYQ,0                                              
+         TM    DMCB,X'01'                                                       
+         BNZ   PRCVERR1                                                         
+         L     R2,DMCB             A(RECORD IN TABLE)                           
+         CLC   EXTCREFN,EXSFNUM                                                 
+         BE    PRCV012                                                          
+         CLI   EXSCON,EXSCOKQ                                                   
+         BNE   PRCV012                                                          
+         OC    EXSCON,EXSCON       TEST FOR OK CONDITION CODE                   
+         BZ    PRCV010                                                          
+         CLC   EXSCON,=CL6'000000'                                              
+         BE    PRCV010                                                          
+         CLC   EXSCON,=CL6'000999'                                              
+         BE    PRCV010                                                          
+         MVI   EXSCON,C'1'         FORCE ERROR STATE IF NON ZERO CODE           
+         B     PRCV012                                                          
+PRCV010  EQU   *                                                                
+         MVC   EXTCREFN,EXSFNUM                                                 
+*                                                                               
+PRCV012  EQU   *                                                                
+         MVC   EXTCREDT(2),TODAY2  SAVE RECEIVE DATE/TIME                       
+         MVC   EXTCREDT+2(4),MVSTIME                                            
+         BAS   RE,UPXCREC          UPDATE EXTRACT CONTROL RECORDS               
+         BNE   PRCVERRU                                                         
+*                                  PROCESS CONDITON CODE REQUIRING              
+*                                  RESEND OF FILE                               
+         OC    EXSCON,EXSCON                                                    
+         BZ    PRCV020                                                          
+         CLC   EXSCON,=CL6'000000'                                              
+         BE    PRCV020                                                          
+         CLC   EXSCON,=CL6'000999' TEST FOR NOTIFIED AND ALREADY                
+         BE    PRCV020                                                          
+         CLC   EXTCRLFN,EXSFNUM                                                 
+         BNL   PRCVERR1                                                         
+         ZIC   RF,EXTCRCNT         TEST RESEND COUNT NOT EXCEEDED MAX           
+         CHI   RF,EXTCRCMQ                                                      
+         BNL   PRCVOK                                                           
+         LA    RF,1(RF)                                                         
+         STC   RF,EXTCRCNT                                                      
+         OI    EXTCFLG1,EXTCFSNQ   FORCE PROCRST TO DO TWOPASS ON ESS           
+         MVI   RELFLAG,0           PROCESS RESEND WITHOUT RELOAD                
+         MVC   EXSACTN,=AL4(EXSARESQ)                                           
+         B     PROCRES                                                          
+*                                                                               
+PRCV020  EQU   *                                                                
+         MVI   EXTCRCNT,0                                                       
+         B     PRCVOK                                                           
+*                                  PROCESS ERROR                                
+PRCVERR1 EQU   *                                                                
+         MVI   EXTCRCNT,0                                                       
+         ICM   RE,15,ARETCODE                                                   
+         BNZ   *+6                                                              
+         DC    H'0'                                                             
+         MVI   0(RE),EXSERC1Q      SET RETURN CODE TO ERROR                     
+         B     RETURN                AND EXIT                                   
+*                                  PROCESS UPDATE ERROR                         
+PRCVERRU EQU   *                                                                
+         MVI   EXTCRCNT,0                                                       
+         B     RETURN              EXIT RETURN CODE ALREADY SET                 
+*                                                                               
+PRCVOK   EQU   *                   OK EXIT                                      
+         ICM   RE,15,ARETCODE                                                   
+         BNZ   *+6                                                              
+         DC    H'0'                                                             
+         MVI   0(RE),EXSROKQ       SET RETURN CODE TO OK                        
+         B     RETURN                                                           
+         DROP  R2                                                               
+         EJECT                                                                  
+**********************************************************************          
+* PROCESS TO ACKNOWLEDGE FILE COMMITTED TO REMOTE DATA BASE          *          
+* FILE DEFINED BY KEY DATA:                                          *          
+* EXSEID = ESS ID NAME                                               *          
+* EXSAGY = AGENCY ALPHA ID                                           *          
+* EXSSYS = SYSTEM CODE                                               *          
+* EXSSUB = SUB SYSTEM CODE                                           *          
+**********************************************************************          
+PROCCOM  EQU   *                                                                
+         XC    WORK,WORK                                                        
+         LA    R2,WORK                                                          
+         USING EXTCTBLD,R2                                                      
+         MVC   EXTCEID,EXSEID                                                   
+         MVC   EXTCAGY,EXSAGY                                                   
+         MVC   EXTCSYS,EXSSYS                                                   
+         MVC   EXTCSUB,EXSSUB                                                   
+         GOTO1 VBINSRCH,DMCB,WORK,AEXTCTBL,EXTCTBEN,                   +        
+               EXTCTBLQ,EXTCKEYQ,0                                              
+         TM    DMCB,X'01'                                                       
+         BNZ   PCOMERR1                                                         
+         L     R2,DMCB             A(RECORD IN TABLE)                           
+         CLC   EXTCCOFN,EXSFNUM                                                 
+         BE    PCOM010             OK IF EQUAL                                  
+         CLI   EXSCON,EXSCOKQ                                                   
+         BNE   PCOM010                                                          
+         MVC   EXTCCOFN,EXSFNUM                                                 
+*                                                                               
+PCOM010  EQU   *                                                                
+         BAS   RE,UPXCREC          UPDATE EXTRACT CONTROL RECORDS               
+         BNE   PCOMERRU                                                         
+         CLC   EXSCON,=CL6'002020' TEST FOR RESEND COMMIT FILE                  
+         BNE   PCOMOK                                                           
+         CLC   EXTCRLFN,EXSFNUM                                                 
+         BNL   PCOMERR2                                                         
+         MVC   EXSACTN,=AL4(EXSARESQ)                                           
+         B     PROCRES                                                          
+*                                  PROCESS ERROR                                
+PCOMERR1 EQU   *                                                                
+         ICM   RE,15,ARETCODE                                                   
+         BNZ   *+6                                                              
+         DC    H'0'                                                             
+         MVI   0(RE),EXSECO1Q      SET RETURN CODE TO ERROR                     
+         B     RETURN                AND EXIT                                   
+*                                  PROCESS ERROR                                
+PCOMERR2 EQU   *                                                                
+         ICM   RE,15,ARETCODE                                                   
+         BNZ   *+6                                                              
+         DC    H'0'                                                             
+         MVI   0(RE),EXSECO2Q      SET RETURN CODE TO ERROR                     
+         B     RETURN                AND EXIT                                   
+*                                  PROCESS UPDATE ERROR                         
+PCOMERRU EQU   *                                                                
+         B     RETURN              EXIT RETURN CODE ALREADY SET                 
+*                                                                               
+PCOMOK   EQU   *                   OK EXIT                                      
+         ICM   RE,15,ARETCODE                                                   
+         BNZ   *+6                                                              
+         DC    H'0'                                                             
+         MVI   0(RE),EXSROKQ       SET RETURN CODE TO OK                        
+         B     RETURN                                                           
+         DROP  R2                                                               
+         EJECT                                                                  
+**********************************************************************          
+* PROCESS RESEND FILE MESSAGE - RESET FILE TRANSFER CONTROL TABLE    *          
+* FILE DEFINED BY KEY DATA:                                          *          
+* EXSEID = ESS ID NAME                                               *          
+* EXSAGY = AGENCY ALPHA ID                                           *          
+* EXSSYS = SYSTEM CODE                                               *          
+* EXSSUB = SUB SYSTEM CODE                                           *          
+* EXSFNUM = FILE SEQUENCE NUMBER                                    *           
+**********************************************************************          
+PROCRES  EQU   *                                                                
+         XC    WORK,WORK                                                        
+         LA    R2,WORK                                                          
+         USING EXTCTBLD,R2                                                      
+         MVC   EXTCEID,EXSEID                                                   
+         MVC   EXTCAGY,EXSAGY                                                   
+         MVC   EXTCSYS,EXSSYS                                                   
+         MVC   EXTCSUB,EXSSUB                                                   
+         GOTO1 VBINSRCH,DMCB,WORK,AEXTCTBL,EXTCTBEN,                   +        
+               EXTCTBLQ,EXTCKEYQ,0                                              
+         TM    DMCB,X'01'                                                       
+         BNZ   PRESERR1                                                         
+         L     R2,DMCB             A(RECORD IN TABLE)                           
+         SR    RF,RF                                                            
+         ICM   RF,3,EXSFNUM                                                     
+         BNZ   *+6                                                              
+         DC    H'0'                                                             
+         CLM   RF,3,EXTCNOFN                                                    
+* ??     BE    *+6                                                              
+* ??     DC    H'0'                                                             
+         BCTR  RF,0                                                             
+         STCM  RF,3,EXTCNOFN                                                    
+*                                                                               
+PRES010  EQU   *                                                                
+         BAS   RE,UPXCREC          UPDATE EXTRACT CONTROL RECORDS               
+         BNE   PRESERRU                                                         
+         B     PRESOK                                                           
+*                                  PROCESS ERROR                                
+PRESERR1 EQU   *                                                                
+         ICM   RE,15,ARETCODE                                                   
+         BNZ   *+6                                                              
+         DC    H'0'                                                             
+         MVI   0(RE),EXSERS1Q      SET RETURN CODE TO ERROR                     
+         B     RETURN                AND EXIT                                   
+*                                  PROCESS UPDATE ERROR                         
+PRESERRU EQU   *                                                                
+         B     RETURN              EXIT REURN CODE ALREADY SET                  
+*                                                                               
+PRESOK   EQU   *                   OK EXIT                                      
+         ICM   RE,15,ARETCODE                                                   
+         BNZ   *+6                                                              
+         DC    H'0'                                                             
+         MVI   0(RE),EXSROKQ       SET RETURN CODE TO OK                        
+         B     RETURN                                                           
+         DROP  R2                                                               
+         EJECT                                                                  
+**********************************************************************          
+* UPDATE EXTRACT SYSTEM CONTROL RECORDS                              *          
+* R2=A(EXTCTBL ENTRY)                                                *          
+* R3=A(XATCB ENTRY)                                                  *          
+**********************************************************************          
+UPXCREC  NTR1                                                                   
+         BAS   RE,ENQCTRL          ENQUEUE CONTROL SYSTEM                       
+         USING EXTCTBLD,R2                                                      
+         LA    R5,IO               READ XSERVER PASSIVE                         
+         USING GXTRD,R5                                                         
+         XC    GXKEY,GXKEY         CLEAR RECORD KEY                             
+         MVI   GXKREC,GXSFRECQ                                                  
+         MVC   GXSFEID,EXTCEID                                                  
+         MVC   GXSFAGY,EXTCAGY                                                  
+         MVC   GXSFSYS,EXTCSYS                                                  
+         MVC   GXSFSUB,EXTCSUB                                                  
+         CLI   EXSCON,EXSCOKQ                                                   
+         BNE   UXCR010                                                          
+         CLC   EXSACTN,=AL4(EXSARCVQ)                                           
+         BE    UXCR012                                                          
+         CLC   EXSACTN,=AL4(EXSACOMQ)                                           
+         BE    UXCR014                                                          
+         CLC   EXSACTN,=AL4(EXSANOTQ)                                           
+         BE    UXCR016                                                          
+         CLC   EXSACTN,=AL4(EXSARESQ)                                           
+         BE    UXCR018                                                          
+         LA    R0,20                                                            
+         B     UXCRERR                                                          
+*                                                                               
+UXCR010  CLC   EXSACTN,=AL4(EXSARESQ)                                           
+         BE    UXCR018                                                          
+         MVC   GXSFFNUM,EXSFNUM                                                 
+         B     UXCR020                                                          
+UXCR012  MVC   GXSFFNUM,EXTCREFN                                                
+         B     UXCR020                                                          
+UXCR014  MVC   GXSFFNUM,EXTCCOFN                                                
+         B     UXCR020                                                          
+UXCR016  MVC   GXSFFNUM,EXTCNOFN                                                
+         B     UXCR020                                                          
+UXCR018  MVC   GXSFFNUM,EXSFNUM                                                 
+         B     UXCR020                                                          
+*                                  READ WITH FLUSH FOR UPDATE                   
+UXCR020  GOTO1 VDATAMGR,DMCB,(X'A4',DMREAD),GENDIR,(R5),(R5),0                  
+         CLI   8(R1),X'00'                                                      
+         BE    UXCR030                                                          
+         LA    R0,1                                                             
+         B     UXCRERR                                                          
+*                                                                               
+UXCR030  CLI   EXSCON,EXSCOKQ                                                   
+         BNE   UXCR040                                                          
+         CLC   EXSACTN,=AL4(EXSARCVQ)                                           
+         BE    UXCR042                                                          
+         CLC   EXSACTN,=AL4(EXSACOMQ)                                           
+         BE    UXCR044                                                          
+         CLC   EXSACTN,=AL4(EXSANOTQ)                                           
+         BE    UXCR046                                                          
+         CLC   EXSACTN,=AL4(EXSARESQ)                                           
+         BE    UXCR048                                                          
+         LA    R0,20                                                            
+         B     UXCRERR                                                          
+*                                                                               
+UXCR040  EQU   *                                                                
+         CLC   EXSACTN,=AL4(EXSARESQ)                                           
+         BE    UXCR048                                                          
+         OI    GXDCTL,GXFTERR                                                   
+         B     UXCR100                                                          
+*                                                                               
+UXCR042  EQU   *                                                                
+         OI    GXDCTL,GXFTRCV                                                   
+         B     UXCR100                                                          
+*                                                                               
+UXCR044  EQU   *                                                                
+         OI    GXDCTL,GXFTCOM                                                   
+         B     UXCR100                                                          
+*                                                                               
+UXCR046  EQU   *                                                                
+         OI    GXDCTL,GXFTRES                                                   
+         B     UXCR100                                                          
+*                                                                               
+UXCR048  EQU   *                                                                
+         OI    GXDCTL,0                                                         
+         B     UXCR100                                                          
+*                                                                               
+UXCR100  MVC   CTLSAVE,GXDCTL                                                   
+         GOTO1 VDATAMGR,DMCB,DMWRT,GENDIR,(R5),(R5),0                           
+         CLI   8(R1),X'00'                                                      
+         BE    *+12                                                             
+         LA    R0,3                                                             
+         B     UXCRERR                                                          
+*                                  GET XFILE RECORD WITH FLUSH                  
+         MVC   GENDA,GXDDA                                                      
+         GOTO1 VDATAMGR,DMCB,(X'24',GETREC),GENFIL,GENDA,(R5),DMWORK            
+         CLI   8(R1),X'00'                                                      
+         BE    *+12                                                             
+         LA    R0,4                                                             
+         B     UXCRERR                                                          
+*                                                                               
+         LA    R4,GXFIRST(R5)      PROCESS ELEMENT DATA                         
+*                                                                               
+UXCR120  CLI   0(R4),0                                                          
+         BE    UXCR180                                                          
+         CLI   0(R4),GXFTELQ       FIND FILE TRANSMISSION ELEMENT               
+         BE    UXCR140                                                          
+         CLI   0(R4),GXGNELQ       FIND FILE GENERATION NUMBER ELEMENT          
+         BE    UXCR160                                                          
+         CLI   0(R4),GXFDELQ       FIND FILE DEFINITION ELEMENT                 
+         BE    UXCR170                                                          
+UXCR130  SR    RF,RF                                                            
+         IC    RF,1(R4)                                                         
+         AR    R4,RF                                                            
+         B     UXCR120                                                          
+*                                                                               
+         USING GXFTEL,R4                                                        
+UXCR140  EQU   *                                                                
+         CLC   GXFTEID,EXTCEID                                                  
+         BNE   UXCR130                                                          
+         MVC   GXFTCTL,CTLSAVE                                                  
+         CLC   EXSACTN,=AL4(EXSARCVQ)                                           
+         BE    UXCR142                                                          
+         CLC   EXSACTN,=AL4(EXSACOMQ)                                           
+         BE    UXCR144                                                          
+         CLC   EXSACTN,=AL4(EXSANOTQ)                                           
+         BE    UXCR146                                                          
+         CLC   EXSACTN,=AL4(EXSARESQ)                                           
+         BE    UXCR148                                                          
+         LA    R0,20                                                            
+         B     UXCRERR                                                          
+*                                                                               
+UXCR142  MVC   GXFTDRE,TODAY2                                                   
+         MVC   GXFTTRE,MVSTIME                                                  
+         CLC   EXSCON,=CL6'000999' TEST FOR NOTIFIED AND ALREADY                
+         BE    *+14                  RECEIVED CONDITION CODE                    
+         MVC   GXFTRRE,EXSCON                                                   
+         B     *+10                                                             
+         MVC   GXFTRRE,=CL6'000000' OVERRIDE WITH OK CONDITION CODE             
+         B     UXCR130                                                          
+*                                                                               
+UXCR144  EQU   *                                                                
+         MVI   COMFLAG,C'Y'                                                     
+         LA    R3,GXFTSLST                                                      
+         USING GXFTSLST,R3                                                      
+         LR    RF,R4                                                            
+         SR    R1,R1                                                            
+         IC    R1,GXFTELL                                                       
+         AR    RF,R1                                                            
+UXCR144A CR    RF,R3                                                            
+         BNH   UXCR144C                                                         
+         CLC   GXFTSKEY,EXSSKEY                                                 
+         BNE   UXCR144B                                                         
+         MVC   GXFTDSCO,TODAY2                                                  
+         MVC   GXFTTSCO,MVSTIME                                                 
+         MVC   GXFTRSCO,EXSCON                                                  
+UXCR144B CLC   GXFTRSCO,=CL6'000000'                                            
+         BE    *+8                                                              
+         MVI   COMFLAG,C'N'                                                     
+         LA    R3,GXFTSLQ(R3)                                                   
+         B     UXCR144A                                                         
+         DROP  R3                                                               
+UXCR144C CLI   COMFLAG,C'Y'                                                     
+         BNE   UXCR145                                                          
+         MVC   GXFTDCO,TODAY2                                                   
+         MVC   GXFTTCO,MVSTIME                                                  
+         MVC   GXFTRCO,EXSCON                                                   
+*                                                                               
+UXCR145  EQU   *                                                                
+         OC    GXFTRNO,GXFTRNO                                                  
+         BNZ   UXCR145A                                                         
+         MVC   GXFTDNO,TODAY2                                                   
+         MVC   GXFTTNO,MVSTIME                                                  
+         MVC   GXFTRNO,=CL6'000100' OVERRIDE WITH SPECIAL COMMIT CODE           
+UXCR145A EQU   *                                                                
+         OC    GXFTRRE,GXFTRRE                                                  
+         BNZ   UXCR130                                                          
+         MVC   GXFTDRE,TODAY2                                                   
+         MVC   GXFTTRE,MVSTIME                                                  
+         MVC   GXFTRRE,=CL6'000100' OVERRIDE WITH SPECIAL COMMIT CODE           
+         B     UXCR130                                                          
+*                                                                               
+UXCR146  MVC   GXFTDNO,TODAY2                                                   
+         MVC   GXFTTNO,MVSTIME                                                  
+         CLC   EXSCON,=CL6'000999' TEST FOR NOTIFIED AND ALREADY                
+         BE    *+14                  RECEIVED CONDITION CODE                    
+         MVC   GXFTRNO,EXSCON                                                   
+         B     *+10                                                             
+         MVC   GXFTRNO,=CL6'000000' OVERRIDE WITH OK CONDITION CODE             
+         CLI   GXFTRNO+(L'GXFTRNO-1),C'0'                                       
+         BNE   UXCR130                                                          
+         ZIC   RF,EXTCRCNT                                                      
+         STC   RF,GXFTRNO+(L'GXFTRNO-1)                                         
+         OI    GXFTRNO+(L'GXFTRNO-1),X'F0'                                      
+         B     UXCR130                                                          
+*                                                                               
+UXCR148  XC    GXFTDRE,GXFTDRE                                                  
+         XC    GXFTTRE,GXFTTRE                                                  
+         XC    GXFTRRE,GXFTRRE                                                  
+         XC    GXFTDNO,GXFTDNO                                                  
+         XC    GXFTTNO,GXFTTNO                                                  
+         XC    GXFTRNO,GXFTRNO                                                  
+         CLI   RELFLAG,0                                                        
+         BE    UXCR130                                                          
+         MVC   GXFTLOAD,RELFLAG                                                 
+         MVI   RELFLAG,0                                                        
+         B     UXCR130                                                          
+         DROP  R4                                                               
+*                                                                               
+         USING GXGNEL,R4                                                        
+UXCR160  EQU   *                   GET FILE GENERATION NUMBER                   
+         MVC   EXSGNUM,GXGNNUM                                                  
+         B     UXCR130                                                          
+         DROP  R4                                                               
+*                                                                               
+         USING GXFDEL,R4                                                        
+UXCR170  EQU   *                   GET FILE DEFINITION ELEMENT                  
+         MVI   EXSFLG1,0                                                        
+         CLI   GXFDELL,GXFDELOQ                                                 
+         BE    UXCR130                                                          
+         MVC   EXSFLG1,GXFDFLG1                                                 
+         B     UXCR130                                                          
+         DROP  R4                                                               
+*                                  UPDATE RECORD                                
+UXCR180  GOTO1 VDATAMGR,DMCB,PUTREC,GENFIL,GENDA,(R5),DMWORK                    
+         CLI   8(R1),0                                                          
+         BE    *+12                                                             
+         LA    R0,6                                                             
+         B     UXCRERR                                                          
+*                                                                               
+UXCR200  LA    R5,IO               READ XTRANSFER RECORD                        
+         USING GXTRD,R5                                                         
+         XC    GXKEY,GXKEY         CLEAR RECORD KEY                             
+         MVI   GXKREC,GXSKRECQ                                                  
+         MVC   GXSKEID,EXTCEID                                                  
+         MVC   GXSKAGY,EXTCAGY                                                  
+         MVC   GXSKSYS,EXTCSYS                                                  
+         MVC   GXSKSUB,EXTCSUB                                                  
+*                                  READ FOR UPDATE WITH FLUSH                   
+         GOTO1 VDATAMGR,DMCB,(X'A4',DMREAD),GENDIR,(R5),(R5),0                  
+         CLI   8(R1),X'00'                                                      
+         BE    UXCR210                                                          
+         LA    R0,11                                                            
+         B     UXCRERR                                                          
+*                                                                               
+UXCR210  MVC   GENDA,GXDDA                                                      
+*                                  GETREC WITH FLUSH                            
+         GOTO1 VDATAMGR,DMCB,(X'24',GETREC),GENFIL,GENDA,(R5),DMWORK            
+         CLI   8(R1),X'00'                                                      
+         BE    *+12                                                             
+         LA    R0,12                                                            
+         B     UXCRERR                                                          
+*                                                                               
+         LA    R4,GXFIRST(R5)      PROCESS ELEMENT DATA                         
+*                                                                               
+UXCR220  CLI   0(R4),0                                                          
+         BNE   *+12                                                             
+         LA    R0,13                                                            
+         B     UXCRERR                                                          
+         CLI   0(R4),GXSTELQ       FIND ELEMENT                                 
+         BE    UXCR240                                                          
+UXCR230  SR    RF,RF                                                            
+         IC    RF,1(R4)                                                         
+         AR    R4,RF                                                            
+         B     UXCR220                                                          
+*                                                                               
+         USING GXSTEL,R4                                                        
+UXCR240  EQU   *                                                                
+         MVC   EXTCCRFN,GXSTCRFN                                                
+*                                  EXIT IF ERROR MESSAGE                        
+         CLI   EXSCON,EXSCOKQ                                                   
+         BNE   UXCR241                                                          
+         CLC   EXSACTN,=AL4(EXSARCVQ)                                           
+         BE    UXCR242                                                          
+         CLC   EXSACTN,=AL4(EXSACOMQ)                                           
+         BE    UXCR244                                                          
+         CLC   EXSACTN,=AL4(EXSANOTQ)                                           
+         BE    UXCR246                                                          
+         CLC   EXSACTN,=AL4(EXSARESQ)                                           
+         BE    UXCR248                                                          
+         LA    R0,20                                                            
+         B     UXCRERR                                                          
+*                                                                               
+UXCR241  CLC   EXSACTN,=AL4(EXSARESQ)                                           
+         BE    UXCR248                                                          
+         MVC   EXTCNOFN,GXSTNOFN                                                
+         MVC   EXTCREFN,GXSTREFN                                                
+         MVC   EXTCCOFN,GXSTCOFN                                                
+         B     UXCR250                                                          
+UXCR242  MVC   GXSTREFN,EXTCREFN                                                
+         CLC   GXSTREFN,GXSTNOFN                                                
+         BNL   *+10                                                             
+         MVC   GXSTNOFN,EXTCREFN                                                
+         MVC   EXTCNOFN,GXSTNOFN                                                
+         B     UXCR250                                                          
+UXCR244  MVC   EXTCNOFN,GXSTNOFN                                                
+         CLC   GXSTNOFN,EXTCCOFN                                                
+         BH    UXCR244A                                                         
+         MVC   EXTCNOFN,EXTCCOFN                                                
+         MVC   GXSTNOFN,EXTCCOFN                                                
+UXCR244A CLC   GXSTREFN,EXTCCOFN                                                
+         BH    UXCR244B                                                         
+         MVC   GXSTREFN,EXTCCOFN                                                
+         MVC   EXTCREFN,EXTCCOFN                                                
+UXCR244B EQU   *                                                                
+         CLC   GXSTCOFN,=XL2'FFFF'        IF COMMIT#=X'FFFF'                    
+         BE    UXCR245                    YES-ALWAYS UPD COMMIT#                
+         CLC   GXSTCOFN,EXTCCOFN                                                
+         BH    UXCR250                                                          
+UXCR245  CLI   COMFLAG,C'Y'                                                     
+         BNE   UXCR250                                                          
+         MVC   GXSTCOFN,EXTCCOFN                                                
+         B     UXCR250                                                          
+UXCR246  MVC   GXSTNOFN,EXTCNOFN                                                
+         MVC   EXTCREFN,GXSTREFN                                                
+         MVC   EXTCCOFN,GXSTCOFN                                                
+         B     UXCR250                                                          
+UXCR248  MVC   GXSTNOFN,EXTCNOFN                                                
+         MVC   EXTCREFN,GXSTREFN                                                
+         MVC   EXTCCOFN,GXSTCOFN                                                
+         B     UXCR250                                                          
+         DROP  R4                                                               
+*                                  UPDATE RECORD                                
+UXCR250  GOTO1 VDATAMGR,DMCB,PUTREC,GENFIL,GENDA,(R5),DMWORK                    
+         CLI   8(R1),0                                                          
+         BE    *+12                                                             
+         LA    R0,14                                                            
+         B     UXCRERR                                                          
+         B     UXCRX                                                            
+*                                                                               
+UXCRERR  EQU   *                   EXIT WITH ERROR                              
+         BAS   RE,DEQCTRL          DEQUEUE CONTROL SYSTEM                       
+* ??     GOTO1 VDATAMGR,DMCB,DMCLSE,=C'FILES',,IO                               
+         LR    RF,R0                                                            
+         ICM   RE,15,ARETCODE                                                   
+         BNZ   *+6                                                              
+         DC    H'0'                                                             
+         LA    RF,EXSEUPXQ(RF)                                                  
+         STC   RF,0(RE)            SET RETURN CODE TO ERROR                     
+         B     UXCRNO                                                           
+*                                                                               
+UXCRX    EQU   *                   EXIT NO ERROR                                
+         BAS   RE,DEQCTRL          DEQUEUE CONTROL SYSTEM                       
+         B     UXCROK                                                           
+*                                                                               
+UXCRNO   B     NO                                                               
+UXCROK   B     YES                                                              
+         DROP  R2,R5                                                            
+         EJECT                                                                  
+**********************************************************************          
+* CHECK RECEIVE ACKNOWLEDGEMENT TIME OUT                             *          
+* R2=A(EXTCTBL ENTRY)                                                *          
+* RETUNR CC .EQ. IF TIMEOUT OCCURRED                                 *          
+**********************************************************************          
+         USING EXTCTBLD,R2                                                      
+CHECKRAT NTR1                                                                   
+         OC    EXTCNODT,EXTCNODT                                                
+         BZ    CRATNO                                                           
+         CLC   EXTCNODT(2),TODAY2                                               
+         BNE   CRATNO                                                           
+         GOTO1 TIMEDIFF,DMCB,MVSTIME,EXTCNODT+2,WORK                            
+         CLC   WORK(4),TIMEOUTQ                                                 
+         BL    CRATNO                                                           
+         ICM   RF,3,EXTCNOFN       RESEND FILE IF TIMEOUT                       
+         BZ    CRATNO                                                           
+         BCTR  RF,0                                                             
+         STCM  RF,3,EXTCNOFN                                                    
+         MVC   EXSEID,EXTCEID                                                   
+         MVC   EXSAGY,EXTCAGY                                                   
+         MVC   EXSSYS,EXTCSYS                                                   
+         MVC   EXSSUB,EXTCSUB                                                   
+         LA    RF,1                                                             
+         CLC   EXTCNOFN,=XL2'FFFF'                                              
+         BE    *+12                                                             
+         ICM   RF,3,EXTCNOFN                                                    
+         LA    RF,1(RF)                                                         
+         STCM  RF,3,EXSFNUM                                                     
+         XC    EXSCON,EXSCON                                                    
+         MVC   EXSACTN,=AL4(EXSARESQ)                                           
+*                                                                               
+         BAS   RE,UPXCREC          UPDATE EXTRACT CONTROL RECORDS               
+         BNE   CRATNO                                                           
+         B     CRATOK                                                           
+*                                                                               
+CRATNO   B     NO                                                               
+CRATOK   B     YES                                                              
+         DROP  R2                                                               
+         EJECT                                                                  
+***********************************************************************         
+* SUBTRACT TIME IN P2 HHMMSSTH FORMAT FROM TIME IN P1 HHMMSSTH FORMAT,*         
+* RESULT IN P3, HHMMSSTH FORMAT                                       *         
+***********************************************************************         
+TIMEDIFF NTR1                                                                   
+         LM    R2,R4,0(R1)                                                      
+         L     RF,0(R3)                                                         
+         SRL   RF,20                                                            
+         XC    DUB,DUB                                                          
+         ST    RF,DUB+4                                                         
+         OI    DUB+7,X'0F'                                                      
+         CVB   RF,DUB                                                           
+         SR    RE,RE                                                            
+         M     RE,=F'360000'                                                    
+         ST    RF,0(R4)                                                         
+         L     RF,0(R3)                                                         
+         SLL   RF,8                                                             
+         SRL   RF,20                                                            
+         ST    RF,DUB+4                                                         
+         OI    DUB+7,X'0F'                                                      
+         CVB   RF,DUB                                                           
+         MH    RF,=H'6000'                                                      
+         A     RF,0(R4)                                                         
+         ST    RF,0(R4)                                                         
+         L     RF,0(R3)                                                         
+         SLL   RF,16                                                            
+         SRL   RF,12                                                            
+         ST    RF,DUB+4                                                         
+         OI    DUB+7,X'0F'                                                      
+         CVB   RF,DUB                                                           
+         A     RF,0(R4)                                                         
+*                                                                               
+         LR    R5,RF                                                            
+         L     RF,0(R2)                                                         
+         SRL   RF,20                                                            
+         XC    DUB,DUB                                                          
+         ST    RF,DUB+4                                                         
+         OI    DUB+7,X'0F'                                                      
+         CVB   RF,DUB                                                           
+         SR    RE,RE                                                            
+         M     RE,=F'360000'                                                    
+         ST    RF,0(R4)                                                         
+         L     RF,0(R2)                                                         
+         SLL   RF,8                                                             
+         SRL   RF,20                                                            
+         ST    RF,DUB+4                                                         
+         OI    DUB+7,X'0F'                                                      
+         CVB   RF,DUB                                                           
+         MH    RF,=H'6000'                                                      
+         A     RF,0(R4)                                                         
+         ST    RF,0(R4)                                                         
+         L     RF,0(R2)                                                         
+         SLL   RF,16                                                            
+         SRL   RF,12                                                            
+         ST    RF,DUB+4                                                         
+         OI    DUB+7,X'0F'                                                      
+         CVB   RF,DUB                                                           
+         A     RF,0(R4)                                                         
+         SR    RF,R5                                                            
+*                                                                               
+         SR    R0,R0                                                            
+*                                                                               
+         SR    RE,RE                                                            
+         D     RE,=F'100'                                                       
+         CVD   RE,DUB                                                           
+         L     RE,DUB+4                                                         
+         SRL   RE,4                                                             
+         OR    R0,RE                                                            
+*                                                                               
+         SR    RE,RE                                                            
+         D     RE,=F'60'                                                        
+         CVD   RE,DUB                                                           
+         L     RE,DUB+4                                                         
+         SRL   RE,4                                                             
+         SLL   RE,8                                                             
+         OR    R0,RE                                                            
+*                                                                               
+         SR    RE,RE                                                            
+         D     RE,=F'60'                                                        
+         CVD   RE,DUB                                                           
+         L     RE,DUB+4                                                         
+         SRL   RE,4                                                             
+         SLL   RE,16                                                            
+         OR    R0,RE                                                            
+*                                                                               
+         SR    RE,RE                                                            
+         D     RE,=F'60'                                                        
+         CVD   RE,DUB                                                           
+         L     RE,DUB+4                                                         
+         SRL   RE,4                                                             
+         SLL   RE,24                                                            
+         OR    R0,RE                                                            
+*                                                                               
+         ST    R0,0(R4)                                                         
+         B     TDIFOK                                                           
+*                                                                               
+TDIFNO   B     NO                                                               
+TDIFOK   B     YES                                                              
+         EJECT                                                                  
+**********************************************************************          
+* PROCESS COMMAND LINE CONTROL                                       *          
+**********************************************************************          
+PROCCMD  EQU   *                                                                
+         ICM   R6,15,EXSCLINE                                                   
+         ICM   R3,15,EXSCERRM                                                   
+         GOTO1 VSCANNER,DMCB,(C'C',(R6)),(10,BLOCKI)                            
+         CLI   4(R1),6                                                          
+         BL    PCMDER01                                                         
+         MVC   FLDNUM,4(R1)                                                     
+         LA    R2,BLOCKI                                                        
+         CLI   0(R2),7                                                          
+         BNE   PCMDER02                                                         
+         CLC   12(7,R2),=CL7'EXTRACT'                                           
+         BNE   PCMDER02                                                         
+         LA    R2,L'BLOCKI(R2)                                                  
+         MVC   COMMAND,SPACES                                                   
+         SR    RF,RF                                                            
+         ICM   RF,1,0(R2)                                                       
+         BCTR  RF,0                                                             
+         EX    RF,*+8                                                           
+         B     *+10                                                             
+         MVC   COMMAND(0),12(R2)                                                
+         LA    R2,L'BLOCKI(R2)                                                  
+         CLI   0(R2),8                                                          
+         BNE   PCMDER03                                                         
+         CLC   12(3,R2),=CL3'ESS'                                               
+         BNE   PCMDER03                                                         
+         GOTO1 VNUMVAL,DMCB,15(R2),(0,5)                                        
+         CLI   DMCB,0                                                           
+         BNE   PCMDER03            NOT NUMERIC                                  
+         L     R1,DMCB+4                                                        
+         STCM  R1,3,EXSENUM                                                     
+         MVC   EXSEID,12(R2)                                                    
+         LA    R2,L'BLOCKI(R2)                                                  
+         CLI   0(R2),2                                                          
+         BNE   PCMDER04                                                         
+         MVC   EXSAGY,12(R2)                                                    
+         LA    R2,L'BLOCKI(R2)                                                  
+*                                                                               
+         USING SYSLSTD,RE                                                       
+         L     RE,=A(SYSLST)       CHECK IN TABLE OF VALID SYSTEMS              
+         LA    RE,6(RE)                                                         
+         LA    RE,SYSLLEN(RE)      GO PAST SERVICE SYSTEM ENTRY                 
+         ZIC   RF,0(R2)                                                         
+         BCTR  RF,0                                                             
+PCMD100  CLI   SYSLNUM,0                                                        
+         BE    PCMD102                                                          
+         EX    RF,*+8                                                           
+         B     *+10                                                             
+         CLC   12(0,R2),SYSLNAME                                                
+         BE    PCMD110                                                          
+         LA    RE,SYSLLEN(RE)                                                   
+         B     PCMD100                                                          
+*                                                                               
+PCMD102  L     RE,=A(SYSLEX)       CHECK IN EXTENDED SYSTEM TABLE               
+         LA    RE,6(RE)                                                         
+         LA    RE,SYSLLEN(RE)      GO PAST SERVICE SYSTEM ENTRY                 
+         ZIC   RF,0(R2)                                                         
+         BCTR  RF,0                                                             
+PCMD104  CLI   SYSLNUM,0                                                        
+         BE    PCMDER05                                                         
+         EX    RF,*+8                                                           
+         B     *+10                                                             
+         CLC   12(0,R2),SYSLNAME                                                
+         BE    PCMD110                                                          
+         LA    RE,SYSLLEN(RE)                                                   
+         B     PCMD104                                                          
+*                                                                               
+PCMD110  MVC   EXSSYS,SYSLNUM      SET SYSTEM NUMBER FROM LIST                  
+         LA    R2,L'BLOCKI(R2)                                                  
+         USING SUBLSTD,RE                                                       
+         L     RE,=A(SUBLST)       CHECK IN TABLE OF VALID SUB SYSTEMS          
+         LA    RE,6(RE)                                                         
+         ZIC   RF,0(R2)                                                         
+         BCTR  RF,0                                                             
+PCMD120  CLI   SUBLNUM,0                                                        
+         BE    PCMDER06                                                         
+         EX    RF,*+8                                                           
+         B     *+10                                                             
+         CLC   12(0,R2),SUBLNAME                                                
+         BE    PCMD130                                                          
+         LA    RE,SUBLLEN(RE)                                                   
+         B     PCMD120                                                          
+*                                                                               
+PCMD130  MVC   EXSSUB,SUBLNUM      SET SYSTEM NUMBER FROM LIST                  
+         CLI   FLDNUM,6                                                         
+         BE    PCMD140                                                          
+         CLI   FLDNUM,7                                                         
+         BNE   PCMDER01                                                         
+         LA    R2,L'BLOCKI(R2)                                                  
+         CLI   0(R2),5                                                          
+         BH    PCMDER08                                                         
+         GOTO1 VNUMVAL,DMCB,12(R2),(2,0)                                        
+         CLI   DMCB,0                                                           
+         BNE   PCMDER08            NOT NUMERIC                                  
+         L     R1,DMCB+4                                                        
+         STCM  R1,3,EXSFNUM                                                     
+*                                                                               
+PCMD140  CLC   =C'SEND',COMMAND                                                 
+         BE    PCMDSND                                                          
+         CLC   =C'COMMIT',COMMAND                                               
+         BE    PCMDCOM                                                          
+         CLC   =C'STOP',COMMAND                                                 
+         BE    PCMDSTP                                                          
+         CLC   =C'START',COMMAND                                                
+         BE    PCMDSTA                                                          
+         CLC   =C'STATUS',COMMAND                                               
+         BE    PCMDSUS                                                          
+         B     PCMDER07                                                         
+*                                                                               
+PCMDSND  EQU   *                   PROCESS COMMAND - SEND THIS FILE             
+         MVI   RELFLAG,C'1'        SET RELOAD FLAG                              
+         XC    WORK,WORK                                                        
+         LA    R2,WORK                                                          
+         USING EXTCTBLD,R2                                                      
+         MVC   EXTCEID,EXSEID                                                   
+         MVC   EXTCAGY,EXSAGY                                                   
+         MVC   EXTCSYS,EXSSYS                                                   
+         MVC   EXTCSUB,EXSSUB                                                   
+         GOTO1 VBINSRCH,DMCB,WORK,AEXTCTBL,EXTCTBEN,                   +        
+               EXTCTBLQ,EXTCKEYQ,0                                              
+         TM    DMCB,X'01'                                                       
+         BNZ   PCMDER20                                                         
+         L     R2,DMCB             A(RECORD IN TABLE)                           
+         CLI   FLDNUM,7                                                         
+         BE    PCSN010                                                          
+         SR    RF,RF               RESEND LAST FILE RECEIVED                    
+         ICM   RF,3,EXTCREFN                                                    
+         CLM   RF,3,=XL2'0001'                                                  
+         BNH   PCMDER20                                                         
+         STCM  RF,3,EXSFNUM                                                     
+         BCTR  RF,0                                                             
+         STCM  RF,3,EXTCNOFN                                                    
+         B     PCSN020                                                          
+*                                                                               
+PCSN010  CLC   EXTCCRFN,EXSFNUM    SEND THIS FILE NUMBER                        
+         BL    PCMDER22                                                         
+         CLC   EXTCREFN,EXSFNUM                                                 
+         BH    PCMDER22                                                         
+         SR    RF,RF                                                            
+         ICM   RF,3,EXSFNUM                                                     
+         BCTR  RF,0                                                             
+         STCM  RF,3,EXTCNOFN                                                    
+         STCM  RF,3,EXTCREFN                                                    
+*                                                                               
+PCSN020  MVC   EXSACTN,=AL4(EXSARESQ)                                           
+         BAS   RE,UPXCREC          UPDATE EXTRACT CONTROL RECORDS               
+         BNE   PCMDER21                                                         
+         B     PCMDEND                                                          
+*                                                                               
+PCMDCOM  EQU   *                   PROCESS COMMAND - COMMIT THIS FILE           
+         XC    WORK,WORK                                                        
+         LA    R2,WORK                                                          
+         USING EXTCTBLD,R2                                                      
+         MVC   EXTCEID,EXSEID                                                   
+         MVC   EXTCAGY,EXSAGY                                                   
+         MVC   EXTCSYS,EXSSYS                                                   
+         MVC   EXTCSUB,EXSSUB                                                   
+         GOTO1 VBINSRCH,DMCB,WORK,AEXTCTBL,EXTCTBEN,                   +        
+               EXTCTBLQ,EXTCKEYQ,0                                              
+         TM    DMCB,X'01'                                                       
+         BNZ   PCMDER50                                                         
+         L     R2,DMCB             A(RECORD IN TABLE)                           
+         OI    EXTCFLG1,EXTCFCOQ                                                
+         B     PCMDEND                                                          
+*                                                                               
+PCMDSTP  EQU   *                   PROCESS COMMAND - STOP ESS TRANSFER          
+         MVI   FREQCODE,C'N'                                                    
+         B     PCMDFCO                                                          
+*                                                                               
+PCMDSTA  EQU   *                   PROCESS COMMAND - START ESS TRANSFER         
+         MVI   FREQCODE,0                                                       
+         B     PCMDFCO                                                          
+*                                                                               
+PCMDFCO  EQU   *                   UPDATE TRANSFER FREQUENCY CONTROL            
+         XC    WORK,WORK                                                        
+         LA    R2,WORK                                                          
+         USING EXTCTBLD,R2                                                      
+         MVC   EXTCEID,EXSEID                                                   
+         MVC   EXTCAGY,EXSAGY                                                   
+         MVC   EXTCSYS,EXSSYS                                                   
+         MVC   EXTCSUB,EXSSUB                                                   
+         GOTO1 VBINSRCH,DMCB,WORK,AEXTCTBL,EXTCTBEN,                   +        
+               EXTCTBLQ,EXTCKEYQ,0                                              
+         TM    DMCB,X'01'                                                       
+         BNZ   PCMDER30                                                         
+         L     R2,DMCB             A(RECORD IN TABLE)                           
+         CLC   EXTCFCOD,FREQCODE                                                
+         BE    PCMDEND                                                          
+         MVC   EXTCFCOD,FREQCODE                                                
+         BAS   RE,ENQCTRL          UPDATE EXTRACT CONTROL RECORDS               
+         LA    R5,IO               READ XTRANSFER RECORD                        
+         USING GXTRD,R5                                                         
+         XC    GXKEY,GXKEY         CLEAR RECORD KEY                             
+         MVI   GXKREC,GXSKRECQ                                                  
+         MVC   GXSKEID,EXTCEID                                                  
+         MVC   GXSKAGY,EXTCAGY                                                  
+         MVC   GXSKSYS,EXTCSYS                                                  
+         MVC   GXSKSUB,EXTCSUB                                                  
+*                                  READ FOR UPDATE WITH FLUSH                   
+         GOTO1 VDATAMGR,DMCB,(X'A4',DMREAD),GENDIR,(R5),(R5),0                  
+         CLI   8(R1),X'00'                                                      
+         BE    *+12                                                             
+         LA    R0,11                                                            
+         B     PCFCUERR                                                         
+         MVC   GENDA,GXDDA                                                      
+*                                  GETREC WITH FLUSH                            
+         GOTO1 VDATAMGR,DMCB,(X'24',GETREC),GENFIL,GENDA,(R5),DMWORK            
+         CLI   8(R1),X'00'                                                      
+         BE    *+12                                                             
+         LA    R0,12                                                            
+         B     PCFCUERR                                                         
+*                                                                               
+         LA    R4,GXFIRST(R5)      PROCESS ELEMENT DATA                         
+*                                                                               
+PCFC010  CLI   0(R4),0                                                          
+         BNE   *+12                                                             
+         LA    R0,13                                                            
+         B     PCFCUERR                                                         
+         CLI   0(R4),GXSTELQ       FIND ELEMENT                                 
+         BE    PCFC030                                                          
+PCFC020  SR    RF,RF                                                            
+         IC    RF,1(R4)                                                         
+         AR    R4,RF                                                            
+         B     PCFC010                                                          
+*                                                                               
+         USING GXSTEL,R4                                                        
+PCFC030  EQU   *                                                                
+         MVC   GXSTFCOD,EXTCFCOD                                                
+         B     PCFC040                                                          
+         DROP  R4                                                               
+*                                  UPDATE RECORD                                
+PCFC040  GOTO1 VDATAMGR,DMCB,PUTREC,GENFIL,GENDA,(R5),DMWORK                    
+         CLI   8(R1),0                                                          
+         BE    *+12                                                             
+         LA    R0,14                                                            
+         B     PCFCUERR                                                         
+         B     PCFCOK                                                           
+*                                                                               
+PCFCUERR EQU   *                   EXIT WITH ERROR                              
+         BAS   RE,DEQCTRL          DEQUEUE CONTROL SYSTEM                       
+         LR    RF,R0                                                            
+         ICM   RE,15,ARETCODE                                                   
+         BNZ   *+6                                                              
+         DC    H'0'                                                             
+         LA    RF,EXSEUPXQ(RF)                                                  
+         STC   RF,0(RE)            SET RETURN CODE TO ERROR                     
+         B     PCMDER31                                                         
+*                                                                               
+PCFCOK   EQU   *                   EXIT NO ERROR                                
+         BAS   RE,DEQCTRL          DEQUEUE CONTROL SYSTEM                       
+         B     PCMDEND                                                          
+         DROP  R5                                                               
+*                                                                               
+PCMDSUS  EQU   *                   PROCESS COMMAND - STATUS                     
+         XC    WORK,WORK                                                        
+         LA    R2,WORK                                                          
+         USING EXTCTBLD,R2                                                      
+         MVC   EXTCEID,EXSEID                                                   
+         MVC   EXTCAGY,EXSAGY                                                   
+         MVC   EXTCSYS,EXSSYS                                                   
+         MVC   EXTCSUB,EXSSUB                                                   
+         GOTO1 VBINSRCH,DMCB,WORK,AEXTCTBL,EXTCTBEN,                   +        
+               EXTCTBLQ,EXTCKEYQ,0                                              
+         TM    DMCB,X'01'                                                       
+         BNZ   PCMDER40                                                         
+         L     R2,DMCB             A(RECORD IN TABLE)                           
+         CLI   FLDNUM,7                                                         
+         BE    PCSU010                                                          
+         MVC   0(80,R6),PCMDSUM1                                                
+         LA    R4,5(R6)                                                         
+         EDIT  EXTCCRFN,(5,(R4)),ZERO=NOBLANK,FILL=0                            
+         LA    R4,16(R6)                                                        
+         SR    RF,RF                                                            
+         ICM   RF,3,EXTCNOFN                                                    
+         EDIT  (RF),(5,(R4)),ZERO=NOBLANK,FILL=0                                
+         LA    R4,27(R6)                                                        
+         SR    RF,RF                                                            
+         ICM   RF,3,EXTCREFN                                                    
+         EDIT  (RF),(5,(R4)),ZERO=NOBLANK,FILL=0                                
+         LA    R4,38(R6)                                                        
+         SR    RF,RF                                                            
+         ICM   RF,3,EXTCCOFN                                                    
+         EDIT  (RF),(5,(R4)),ZERO=NOBLANK,FILL=0                                
+         CLI   EXTCFCOD,0                                                       
+         BE    PCMDOK                                                           
+         MVC   48(1,R6),EXTCFCOD                                                
+         B     PCMDOK                                                           
+*                                                                               
+PCSU010  LA    R5,IO               READ FOR XFILE TRANSFER PASSIVE              
+         USING GXTRD,R5                                                         
+         XC    GXKEY,GXKEY         CLEAR RECORD KEY                             
+         MVI   GXKREC,GXSFRECQ     SET UP KEY VALUES                            
+         MVC   GXSFEID,EXSEID                                                   
+         MVC   GXSFAGY,EXSAGY                                                   
+         MVC   GXSFSYS,EXSSYS                                                   
+         MVC   GXSFSUB,EXSSUB                                                   
+         MVC   GXSFFNUM,EXSFNUM                                                 
+*                                  READ WITH FLUSH                              
+         GOTO1 VDATAMGR,DMCB,(X'24',DMREAD),GENDIR,(R5),(R5),0                  
+         CLI   8(R1),X'00'                                                      
+         BNE   PCMDER41                                                         
+*                                  GET XFILE RECORD WITH FLUSH                  
+         MVC   GENDA,GXDDA                                                      
+         GOTO1 VDATAMGR,DMCB,(X'24',GETREC),GENFIL,GENDA,(R5),DMWORK            
+         CLI   8(R1),X'00'                                                      
+         BNE   PCMDER41                                                         
+*                                                                               
+         LA    R4,GXFIRST(R5)      PROCESS ELEMENT DATA                         
+*                                                                               
+PCSU100  CLI   0(R4),0             SEARCH FOR FILE TRANSFER ELEMENT             
+         BE    PCSU200               AND FILE DEFINITION ELEMENT                
+         CLI   0(R4),GXFTELQ                                                    
+         BE    PCSU120                                                          
+         CLI   0(R4),GXFDELQ                                                    
+         BE    PCSU130                                                          
+PCSU110  SR    RF,RF                                                            
+         IC    RF,1(R4)                                                         
+         AR    R4,RF                                                            
+         B     PCSU100                                                          
+*                                                                               
+         USING GXFTEL,R4                                                        
+PCSU120  EQU   *                   PROCESS FILE TRANSFER ELEMENT DATA           
+         CLC   GXFTEID,EXSEID                                                   
+         BNE   PCSU110                                                          
+         MVC   EXSDNO,GXFTDNO                                                   
+         MVC   EXSTNO,GXFTTNO                                                   
+         MVC   EXSRNO,GXFTRNO                                                   
+         MVC   EXSDRE,GXFTDRE                                                   
+         MVC   EXSTRE,GXFTTRE                                                   
+         MVC   EXSRRE,GXFTRRE                                                   
+         MVC   EXSDCO,GXFTDCO                                                   
+         MVC   EXSTCO,GXFTTCO                                                   
+         MVC   EXSRCO,GXFTRCO                                                   
+         B     PCSU110                                                          
+         DROP  R4                                                               
+*                                                                               
+         USING GXFDEL,R4                                                        
+PCSU130  EQU   *                   PROCESS FILE DEFINITION ELEMENT DATA         
+         MVC   EXSDSN,GXFDDSN                                                   
+         MVC   EXSRNM,GXFDRNM                                                   
+         MVC   EXSBNM,GXFDBNM                                                   
+         MVC   EXSMTO,GXFDMTO                                                   
+         MVC   EXSMOD,GXFDMOD                                                   
+         B     PCSU110                                                          
+         DROP  R4                                                               
+PCSU200  MVC   0(80,R6),PCMDSUM2                                                
+         OC    EXSRNO,EXSRNO                                                    
+         BZ    *+10                                                             
+         MVC   20(6,R6),EXSRNO                                                  
+         OC    EXSRRE,EXSRRE                                                    
+         BZ    *+10                                                             
+         MVC   32(6,R6),EXSRRE                                                  
+         OC    EXSRCO,EXSRCO                                                    
+         BZ    *+10                                                             
+         MVC   45(6,R6),EXSRCO                                                  
+         B     PCMDOK                                                           
+*                                  PROCESS ERROR                                
+PCMDER01 EQU   *                                                                
+         MVC   0(80,R3),PCMDEM01                                                
+         B     PCMDERR                                                          
+PCMDER02 EQU   *                                                                
+         MVC   0(80,R3),PCMDEM02                                                
+         B     PCMDERR                                                          
+PCMDER03 EQU   *                                                                
+         MVC   0(80,R3),PCMDEM03                                                
+         B     PCMDERR                                                          
+PCMDER04 EQU   *                                                                
+         MVC   0(80,R3),PCMDEM04                                                
+         B     PCMDERR                                                          
+PCMDER05 EQU   *                                                                
+         MVC   0(80,R3),PCMDEM05                                                
+         B     PCMDERR                                                          
+PCMDER06 EQU   *                                                                
+         MVC   0(80,R3),PCMDEM06                                                
+         B     PCMDERR                                                          
+PCMDER07 EQU   *                                                                
+         MVC   0(80,R3),PCMDEM07                                                
+         B     PCMDERR                                                          
+PCMDER08 EQU   *                                                                
+         MVC   0(80,R3),PCMDEM08                                                
+         B     PCMDERR                                                          
+PCMDER20 EQU   *                                                                
+         MVC   0(80,R3),PCMDEM20                                                
+         B     PCMDERR                                                          
+PCMDER21 EQU   *                                                                
+         MVC   0(80,R3),PCMDEM21                                                
+         ICM   RE,15,ARETCODE                                                   
+         BNZ   *+6                                                              
+         DC    H'0'                                                             
+         MVC   BYTE,0(RE)                                                       
+         GOTO1 VHEXOUT,DMCB,BYTE,43(R3),1,=C'TOG'                               
+         B     PCMDERR                                                          
+PCMDER22 EQU   *                                                                
+         MVC   0(80,R3),PCMDEM22                                                
+         B     PCMDERR                                                          
+PCMDER30 EQU   *                                                                
+         MVC   0(80,R3),PCMDEM30                                                
+         B     PCMDERR                                                          
+PCMDER31 EQU   *                                                                
+         MVC   0(80,R3),PCMDEM31                                                
+         ICM   RE,15,ARETCODE                                                   
+         BNZ   *+6                                                              
+         DC    H'0'                                                             
+         MVC   BYTE,0(RE)                                                       
+         GOTO1 VHEXOUT,DMCB,BYTE,43(R3),=C'TOG'                                 
+         B     PCMDERR                                                          
+PCMDER40 EQU   *                                                                
+         MVC   0(80,R3),PCMDEM40                                                
+         B     PCMDERR                                                          
+PCMDER41 EQU   *                                                                
+         MVC   0(80,R3),PCMDEM41                                                
+         B     PCMDERR                                                          
+PCMDER50 EQU   *                                                                
+         MVC   0(80,R3),PCMDEM50                                                
+         B     PCMDERR                                                          
+*                                  PROCESS ERROR                                
+PCMDERR  EQU   *                                                                
+         ICM   RE,15,ARETCODE                                                   
+         BNZ   *+6                                                              
+         DC    H'0'                                                             
+         MVI   0(RE),EXSECM1Q      SET RETURN CODE TO ERROR                     
+         B     RETURN                AND EXIT                                   
+*                                                                               
+PCMDEND  EQU   *                                                                
+         B     PCMDOK                                                           
+*                                                                               
+PCMDOK   EQU   *                   OK EXIT                                      
+         ICM   RE,15,ARETCODE                                                   
+         BNZ   *+6                                                              
+         DC    H'0'                                                             
+         MVI   0(RE),EXSROKQ       SET RETURN CODE TO ENTRY FOUND               
+         B     RETURN                                                           
+         DROP  R2                                                               
+         EJECT                                                                  
+***********************************************************************         
+* ENQUEUE CONTROL SYSTEM                                              *         
+***********************************************************************         
+ENQCTRL  NTR1                                                                   
+         CLI   ENQCFLAG,C'Y'                                                    
+         BE    ECTRLX                                                           
+*                                    FLUSH PROBLEM                              
+*&&UK*&& MVC   ENQCMND,=C'ENQDEQ  '                                             
+*&&US*&& MVC   ENQCMND,=C'ENQCTL  '                                             
+         GOTO1 VDATAMGR,DMCBENQ,(0,ENQCMND),(C'T',=C'CTRL')                     
+         TM    8(R1),X'01'                                                      
+         BO    ECTR010             SYSTEM IS ALREADY ENQUEUED                   
+         GOTO1 VDATAMGR,DMCBENQ,(0,ENQCMND),(C'E',=C'CTRL')                     
+*                                                                               
+ECTR010  MVI   ENQCFLAG,C'Y'                                                    
+*                                                                               
+ECTRLX   XIT1                                                                   
+***********************************************************************         
+* DEQUEUE CONTROL SYSTEM                                              *         
+***********************************************************************         
+DEQCTRL  NTR1                                                                   
+         CLI   ENQCFLAG,C'N'                                                    
+         BE    DCTRLX                                                           
+         GOTO1 VDATAMGR,DMCBENQ,(0,ENQCMND),(C'D',=C'CTRL')                     
+         MVI   ENQCFLAG,C'N'                                                    
+*                                                                               
+DCTRLX   XIT1                                                                   
+         EJECT                                                                  
+**********************************************************************          
+* RETURN                                                             *          
+**********************************************************************          
+RETURN   EQU   *                                                                
+         B     EXIT                EXIT TO CALLER                               
+*                                                                               
+YES      SR    RC,RC                                                            
+NO       LTR   RC,RC                                                            
+         XIT1                                                                   
+         DROP  R7                                                               
+*                                                                               
+FIRST    DC    C' '                                                             
+SPACES   DC    128C' '                                                          
+TIMEOUTQ DC    XL4'00100000'          10 MINUTE TIME OUT                        
+*                                                                               
+         EJECT                                                                  
+         LTORG                                                                  
+         EJECT                                                                  
+         DS    0D                                                               
+PCMDOKM  DC    CL80'EXTRACT SUB SYSTEM COMMAND LINE PROCESSED OK'               
+PCMDSUM1 DC    CL80' CR: 00000, NO: 00000, RC: 00000, CO: 00000, FC( )'         
+PCMDSUM2 DC    CL80' RETURN CODES - NO:       , RC:       , CO:       '         
+PCMDEM01 DC    CL80'INVALID NUMBER OF FIELDS IN COMMAND LINE'                   
+PCMDEM02 DC    CL80'INVALID FIELD 1 - NOT "EXTRACT"'                            
+PCMDEM03 DC    CL80'INVALID FIELD 3 - ESSID INCORRECT'                          
+PCMDEM04 DC    CL80'INVALID FIELD 4 - INCORRECT 2 CHARACTER AGENCY ID'          
+PCMDEM05 DC    CL80'INVALID FIELD 5 - INCORRECT SYSTEM NAME'                    
+PCMDEM06 DC    CL80'INVALID FIELD 6 - INCORRECT SUB SYSTEM NAME'                
+PCMDEM07 DC    CL80'INVALID FIELD 2 - COMMAND NOT KNOWN'                        
+PCMDEM08 DC    CL80'INVALID FIELD 7 - INCORRECT FILE TRANSFER NUMBER'           
+PCMDEM20 DC    CL80'INVALID "SEND" COMMAND'                                     
+PCMDEM21 DC    CL80'INVALID "SEND" COMMAND - UPDATE ERROR CODE=  '              
+PCMDEM22 DC    CL80'INVALID "SEND" COMMAND - INCORRECT FILE NUMBER'             
+PCMDEM30 DC    CL80'INVALID "STOP/GO" COMMAND'                                  
+PCMDEM31 DC    CL80'INVALID "STOP/GO" COMMAND - UPDATE ERROR CODE=  '           
+PCMDEM40 DC    CL80'INVALID "STATUS" COMMAND'                                   
+PCMDEM41 DC    CL80'INVALID "STATUS" COMMAND - FILE READ ERROR'                 
+PCMDEM50 DC    CL80'INVALID "COMMIT" COMMAND'                                   
+AGENDIR  DC    A(0)                                                             
+VBINSRCH DC    V(BINSRCH)                                                       
+VDATAMGR DC    V(DATAMGR)                                                       
+VDYNALOC DC    V(DYNALLOC)                                                      
+VSCANNER DC    V(SCANNER)                                                       
+VNUMVAL  DC    V(NUMVAL)                                                        
+VHEXOUT  DC    V(HEXOUT)                                                        
+*                                                                               
+         DS    0D                  EXTRACT TRANSFER CONTROL TABLE               
+EXTCSEN  DC    F'0'                EXTRACT TRANSFER TABLE SENTINEL              
+AEXTCTBL DC    A(0)                A(START OF EXTRACT TRANSFER TABLE)           
+AEXTCTBX DC    A(0)                A(END OF EXTRACT TRANSFER TABLE)             
+AEXTCNXT DC    A(0)                A(NEXT ENTRY IN EXTRACT TABLE)               
+EXTCTBSZ DC    A(0)                EXTCTBL MAX NO. OF ENTRIES (RPT/DAY)         
+EXTCTBEN DC    A(0)                EXTCTBL CURRENT NO. OF ENTRIES               
+*                                                                               
+         EJECT                                                                  
+MYSPACES DC    CL256' '                                                         
+DMOPEN   DC    C'OPEN   '                                                       
+DMREAD   DC    C'DMREAD '                                                       
+DMRSEQ   DC    C'DMRSEQ '                                                       
+DMRDHI   DC    C'DMRDHI '                                                       
+DMADD    DC    C'DMADD  '                                                       
+DMWRT    DC    C'DMWRT  '                                                       
+DMCLSE   DC    C'DMCLSE '                                                       
+DMFAST   DC    C'DMFAST '                                                       
+SYSFLES  DC    C'SYSFLES'                                                       
+GETREC   DC    C'GETREC '                                                       
+PUTREC   DC    C'PUTREC '                                                       
+ADDREC   DC    C'ADDREC '                                                       
+DMRFIL   DC    C'RECOVER'                                                       
+CONTROL  DC    C'CONTROL'                                                       
+CTFILE   DC    C'CTFILE '                                                       
+GENDIR   DC    C'GENDIR '                                                       
+GENFIL   DC    C'GENFIL '                                                       
+                                                                                
+         DS    0D                  EXTRACT TRANSFER CONTROL TABLE               
+EXTCTBL  DC    (EXTCLEN)X'00'                                                   
+EXTCTBX  EQU   *                                                                
+EXTCLEN  EQU   (EXTCTBLM*EXTCTBLQ)                                              
+EXTCTBLM EQU   10000               MAXIMUM POSSIBLE XTRANSFER RECORDS           
+         EJECT                                                                  
+         DS    0D                                                               
+       ++INCLUDE FASYSLST                                                       
+                                                                                
+       ++INCLUDE DXSYSLEX                                                       
+                                                                                
+       ++INCLUDE DXSUBLST                                                       
+         EJECT                                                                  
+WORKD    DSECT                                                                  
+DMCB     DS    6F                                                               
+DMCBSAVE DS    6F                                                               
+RELO     DS    A                                                                
+DUB      DS    D                                                                
+APARM    DS    A                   A(PARAMETER LIST)                            
+DMWORK   DS    12D                                                              
+DMCBENQ  DS    6F                                                               
+DUB2     DS    D                                                                
+FULL     DS    F                                                                
+HALF     DS    H                                                                
+BYTE     DS    XL1                                                              
+COMFLAG  DS    CL1                                                              
+FREQCODE DS    XL1                                                              
+FLDNUM   DS    XL1                                                              
+RELFLAG  DS    XL1                                                              
+AGENFIL  DS    A                                                                
+MVSTIME  DS    F                   TIME RETURNED  UNSIGNED FOR EXTRACT          
+SENDXFLG DS    XL1                 TIME RETURNED UNSIGNED FOR EXTRACT           
+TWOPASSF DS    XL1                 PROCRTS TWO PASS FLAG                        
+FIRSPASS EQU   1                   FIRST PASS                                   
+SECNPASS EQU   2                   SECOND PASS                                  
+TODAY2   DS    XL2                 TODAYS DATE BINARY                           
+ENQCFLAG DS    XL1                 Y = CONTROL SYSTEM ENQUEUED                  
+FILEFLAG DS    XL1                 Y = EXTRACT FILE AWAITNIG TRANSFER           
+CTLSAVE  DS    XL(L'GXDCTL)        SAVE PASSIVE IS RECORD CONTROL BYTES         
+*                                                                               
+PARM     DS    XL(8*4)             PARAMETER LIST                               
+PARMX    EQU   *                                                                
+         ORG   PARM                                                             
+AEXSERVC DS    AL4                 A(EXSERV PARAMETER BLOCK)                    
+ARETCODE DS    AL4                 A(RETURN CODE)                               
+         DS    XL(6*4)                                                          
+         ORG   PARMX                                                            
+*                                                                               
+ENQCMND  DS    CL8                 SAVE ENQDEQ COMAND NAME                      
+COMMAND  DS    CL8                 SAVE COMMAND LINE COMMAND TEXT               
+WORK     DS    CL256                                                            
+BLOCKI   DS    10CL32              SCANNER BLOCK                                
+*                                                                               
+GENDA    DS    F                   GENFIL DISK ADDRESS                          
+KEY      DS    XL25                IO KEY FOR CTFILE READS                      
+IOL      DS    F                   IO DATA BUFFER                               
+IO       DS    2048X                                                            
+                                                                                
+*                                                                               
+WORKX    EQU   *                                                                
+         EJECT                                                                  
+* DDEXSERVD                                                                     
+         PRINT OFF                                                              
+       ++INCLUDE DDEXSERVD                                                      
+         PRINT ON                                                               
+* GEGENXTR                                                                      
+         PRINT OFF                                                              
+       ++INCLUDE GEGENXTR                                                       
+         PRINT ON                                                               
+* FASYSLSTD                                                                     
+         PRINT OFF                                                              
+       ++INCLUDE FASYSLSTD                                                      
+         PRINT ON                                                               
+* DXSUBLSTD                                                                     
+         PRINT OFF                                                              
+       ++INCLUDE DXSUBLSTD                                                      
+         PRINT ON                                                               
+* DMGREQUS                                                                      
+         PRINT OFF                                                              
+       ++INCLUDE DMGREQUS                                                       
+         PRINT ON                                                               
+* DMDTFIS                                                                       
+         PRINT OFF                                                              
+       ++INCLUDE DMDTFIS                                                        
+         PRINT ON                                                               
+* CFGENFILE                                                                     
+         PRINT OFF                                                              
+       ++INCLUDE CTGENFILE                                                      
+         PRINT ON                                                               
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'002DDEXSERV  05/16/16'                                      
+         END                                                                    

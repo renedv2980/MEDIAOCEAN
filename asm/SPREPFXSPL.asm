@@ -1,0 +1,647 @@
+*          DATA SET SPREPFXSPL AT LEVEL 146 AS OF 10/04/00                      
+*PHASE SPFX02K                                                                  
+*INCLUDE SORTER                                                                 
+         TITLE 'SPFX02 - FIND BUYS WITH MISSING 03 ELEMENTS - UGH'              
+SPFX02   CSECT                                                                  
+         DS    4000C                                                            
+         ORG   SPFX02                                                           
+         PRINT NOGEN                                                            
+         NMOD1 0,SPFX02,RC                                                      
+*                                                                               
+         L     RA,0(R1)                                                         
+         USING SPWORKD,RA,R9                                                    
+         LA    R9,2048(RA)                                                      
+         LA    R9,2048(R9)                                                      
+*                                                                               
+         CLI   MODE,REQFRST                                                     
+         BE    FX10                                                             
+         CLI   MODE,PROCBUY                                                     
+         BE    FX20                                                             
+*                                                                               
+EQXIT    CR    RB,RB                                                            
+         B     EXIT                                                             
+NEQXIT   LTR   RB,RB                                                            
+*                                                                               
+EXIT     XIT1                                                                   
+*                                                                               
+         EJECT                                                                  
+FX10     BRAS  RE,READSPL                                                       
+         B     EXIT                                                             
+         EJECT                                                                  
+* PROCBUY                                                                       
+*                                                                               
+FX20     CLI   KEY+10,0            TEST PASSIVE POINTER                         
+         BNE   EXIT                                                             
+*                                                                               
+         GOTO1 GETBUY                                                           
+         L     R8,ADBUY                                                         
+         USING BUYREC,R8                                                        
+*                                                                               
+* IF NO X'97' ELEMENT THIS BUY DIDN'T COME FROM NWS                             
+         LA    R6,BDELEM                                                        
+         MVI   ELCDLO,X'97'                                                     
+         MVI   ELCDHI,X'97'                                                     
+         BRAS  RE,NEXTEL                                                        
+         BNE   EXIT                                                             
+*                                                                               
+* CHECK FOR SPILL ELEMENT IN BUY                                                
+*                                                                               
+         LA    R6,BDELEM                                                        
+         MVI   ELCDLO,3                                                         
+         MVI   ELCDHI,3                                                         
+         BRAS  RE,NEXTEL                                                        
+         BE    EXIT                FOUND SPILL - NO PROBLEMO                    
+*                                                                               
+* SEE IF THERE SHOULD BE SPILL FOR THIS STATION                                 
+*                                                                               
+         BAS   RE,GETSPL                                                        
+         BNE   EXIT                NO SPILL SHOULD BE THERE                     
+*                                                                               
+         BAS   RE,PRTBUY                                                        
+         B     EXIT                                                             
+         EJECT                                                                  
+*============================================================*                  
+* BUILD SPILL TABLE KEY AND SEARCH FOR THIS STATION                             
+*============================================================*                  
+         SPACE 1                                                                
+GETSPL   NTR1                                                                   
+         XC    DUB,DUB                                                          
+         L     RE,ADCLT                                                         
+         USING CLTHDRD,RE                                                       
+         MVC   DUB(1),CPROF+3      RTGSVC                                       
+         DROP  RE                                                               
+*                                                                               
+         LA    R1,WORK                                                          
+         XC    0(32,R1),0(R1)                                                   
+         USING STAPACKD,R1                                                      
+*                                                                               
+         MVI   STAPACT,C'U'                                                     
+         MVC   STAPAGY,AGY                                                      
+         MVI   STAPMED,C'N'                                                     
+         MVC   STAPACOM,ACOMFACS                                                
+         MVI   STAPCTRY,C'C'                                                    
+*                                                                               
+         MVC   STAPMKT(5),KEY+4                                                 
+         GOTO1 VSTAPACK,(R1)                                                    
+         CLI   STAPERR,0                                                        
+         BE    *+6                                                              
+         DC    H'0'                                                             
+         MVC   DUB+1(5),STAPQSTA   MOVE STATION                                 
+         MVI   DUB+5,0             LAST BYTE OF STA X'00'                       
+         L     RE,ADBUY                                                         
+         MVC   DUB+6(2),1(RE)      MOVE CLIENT                                  
+         DROP  R1                                                               
+*                                                                               
+         MVI   CLTSPILL,C'N'                                                    
+         L     R0,SPILLCNT                                                      
+         GOTO1 BINSRCH,DMCB,DUB,A(SPILLTAB),(R0),L'SPILLTAB,(0,8)               
+         CLI   0(R1),0             TEST FOUND                                   
+         BNE   GETSPL4                                                          
+         MVI   CLTSPILL,C'Y'                                                    
+         B     GETSPL10                                                         
+*                                                                               
+GETSPL4  XC    DUB+6(2),DUB+6      CLEAR CLIENT                                 
+*                                                                               
+         MVI   0(R1),0             RESET                                        
+         GOTO1 (RF),(R1)                                                        
+         CLI   0(R1),0                                                          
+         BNE   NEQXIT                                                           
+GETSPL10 MVC   SVBINADR,0(R1)      SAVE TABLE ENTRY ADDRESS                     
+         B     EQXIT                                                            
+*                                                                               
+* CODE BELOW IS NOP FOR THE TIME BEING                                          
+*                                                                               
+GETXP12  L     R0,=A(MYBUY)                                                     
+         ST    R0,AREC                                                          
+         GOTO1 GET                                                              
+*                                                                               
+         BAS   RE,FIXBUY                                                        
+         BNE   GETXP2                                                           
+*                                                                               
+         BAS   RE,BLDPRDLS         BUILD PRODUCT LIST                           
+*                                                                               
+         CLI   RCWRITE,C'Y'                                                     
+         BNE   GETXP14                                                          
+*                                                                               
+         GOTO1 PUT                                                              
+GETXP14  XC    DMCB+20(4),DMCB+20                                               
+*                                                                               
+         BAS   RE,PUTPTRS          ADD PASSIVE POINTERS                         
+*                                                                               
+GETXP16  CLI   CLTSPILL,C'Y'                                                    
+         BNE   *+10                                                             
+         MVC   P(6),=C'CLIENT'                                                  
+         MVC   P+8(16),=C'SPILL ADDED FOR '                                     
+         L     RE,SVBINADR                                                      
+         MVC   P+20(4),1(RE)                                                    
+         GOTO1 REPORT                                                           
+         MVI   CLTSPILL,C'N'                                                    
+         B     GETXP2                                                           
+CLTSPILL DC    C'N'                                                             
+*&&DO                                                                           
+         EJECT                                                                  
+FIXBUY   NTR1                                                                   
+         L     R6,AREC                                                          
+         USING BUYRECD,R6                                                       
+*                                                                               
+         LA    R6,BDELEM                                                        
+         MVI   ELCODE,X'03'                                                     
+         BAS   RE,NEXTEL                                                        
+         BE    NEQXIT              IF SPILL IN RECORD, IT'S OK                  
+* BUILD SPILL DEMO ELEMENT                                                      
+         L     R6,AREC                                                          
+         LA    R6,BDELEM                                                        
+         SR    R0,R0                                                            
+         IC    R0,1(R6)                                                         
+         AR    R6,R0                                                            
+         CLI   0(R6),2                                                          
+         BE    *+6                                                              
+         DC    H'0'                                                             
+         MVC   ELEM(24),0(R6)                                                   
+         MVI   ELEM,3              SET SPILL DEMEL CODE                         
+         MVI   ELEM+1,24           RESET LENGTH                                 
+* MOVE ALL RATINGS TO SPILL ELEM                                                
+         SR    R0,R0                                                            
+         ZIC   R0,1(R6)                                                         
+         AHI   R0,-24                                                           
+         BNP   NEQXIT                                                           
+         SRL   R0,3                SET FOR BCT                                  
+         LA    R1,ELEM+24                                                       
+         LA    R6,24(R6)           POINT TO FIRST DEMO                          
+*                                                                               
+FIXB10   CLI   1(R6),C'R'                                                       
+         BE    FIXB12                                                           
+         CLI   1(R6),C'E'                                                       
+         BNE   FIXB14                                                           
+FIXB12   XC    0(8,R1),0(R1)                                                    
+         MVC   0(3,R1),0(R6)       MOVE DEMO DESC                               
+         LA    R1,8(R1)                                                         
+         SR    RE,RE                                                            
+         IC    RE,ELEM+1           BUMP ELEMENT LENGTH                          
+         LA    RE,8(RE)                                                         
+         STC   RE,ELEM+1                                                        
+*                                                                               
+FIXB14   LA    R6,8(R6)                                                         
+         BCT   R0,FIXB10                                                        
+* ADD AN 03 ELEMENT FOR EACH SPILL MARKET                                       
+         L     R6,AREC             FIND DEMO ELEMENT AGAIN                      
+         LA    R6,BDELEM                                                        
+         SR    R0,R0                                                            
+         IC    R0,1(R6)                                                         
+         AR    R6,R0                                                            
+         CLI   0(R6),2                                                          
+         BE    *+6                                                              
+         DC    H'0'                                                             
+*                                                                               
+         L     R4,SVBINADR         POINT TO SAVED TABLE ENTRY                   
+         LA    R4,8(R4)            POINT TO FIRST MARKET                        
+         LA    R5,10                                                            
+*                                                                               
+FIXB20   MVC   ELEM+4(4),0(R4)     MOVE MARKET NUMBERS                          
+         SR    R0,R0                                                            
+         IC    R0,1(R6)                                                         
+         AR    R6,R0               POINT BEYOND LAST DEMO ELEMENT               
+                                                                                
+FIXB22   GOTO1 RECUP,DMCB,AREC,ELEM,(R6)                                        
+         LA    R4,4(R4)                                                         
+         OC    0(2,R4),0(R4)       TEST MORE MARKETS                            
+         BZ    FIXBX                                                            
+         BCT   R5,FIXB20                                                        
+*                                                                               
+FIXBX    BAS   RE,PRTFIX                                                        
+         B     EQXIT                                                            
+         EJECT                                                                  
+PRTFIX   NTR1                                                                   
+         CLI   QOPT1,C'Y'                                                       
+         BNE   EXIT                                                             
+*                                                                               
+         L     R6,AREC                                                          
+         LA    R6,BDELEM                                                        
+         MVI   ELCODE,3                                                         
+         BAS   RE,NEXTEL                                                        
+         BE    *+6                                                              
+         DC    H'0'                                                             
+         BAS   RE,NEXTEL           FIND ANOTHER SPILL ELEM                      
+         BNE   EXIT                                                             
+*                                                                               
+         CP    FIXCOUNT,=P'10'                                                  
+         BH    EXIT                                                             
+         AP    FIXCOUNT,=P'1'                                                   
+*                                                                               
+         L     RE,AREC                                                          
+         SR    R0,R0                                                            
+         ICM   R0,3,13(RE)                                                      
+         GOTO1 PRNTBL,DMCB,=C'FIXED BUY',AREC,C'DUMP',(R0),=C'1D00'             
+         B     EXIT                                                             
+*&&                                                                             
+*                                                                               
+         EJECT                                                                  
+READSPL  NTR1                                                                   
+*                                                                               
+         MVI   FORCEHED,C'Y'                                                    
+         ZAP   FIXCOUNT,=P'0'      RESET                                        
+         MVC   P(28),=C'BUILDING SPILL TABLE NOW FOR'                           
+         MVC   P+29(2),AGY                                                      
+         GOTO1 REPORT                                                           
+*                                                                               
+         L     RE,=A(SPILLTAB)     CLEAR SPILL TABLE                            
+         L     RF,=A(SPILLTBX-SPILLTAB)                                         
+         SR    R0,R0                                                            
+         SR    R1,R1                                                            
+         MVCL  RE,R0                                                            
+*                                                                               
+         XC    KEY,KEY                                                          
+         MVC   KEY(2),=X'0D13'                                                  
+         MVC   KEY+2(2),AGY                                                     
+*                                                                               
+         L     R4,=A(SPILLTAB)                                                  
+         GOTO1 HIGH                                                             
+         B     RDSP4                                                            
+*                                                                               
+RDSP2    GOTO1 SEQ                                                              
+*                                                                               
+RDSP4    CLC   KEY(4),KEYSAVE      SAME TYPE/AGY                                
+         BNE   READSPLX                                                         
+*                                                                               
+         L     R6,=A(MYBUY)                                                     
+         ST    R6,AREC                                                          
+         GOTO1 GET                                                              
+         MVC   0(8,R4),4(R6)       MOVE RTGSVC/STATION(5)/CLT(2)                
+*                                                                               
+         LA    R6,24(R6)           POINT TO FIRST ELEMENT                       
+*                                                                               
+         LA    RE,8(R4)            POINT TO TABLE MKT LIST                      
+         LA    RF,(L'SPILLTAB-8)/4 MAX SPILL MKTS                               
+*                                                                               
+RDSP10   CLI   0(R6),0                                                          
+         BE    RDSP14                                                           
+         CLI   0(R6),5                                                          
+         BNE   RDSP12                                                           
+         TM    8(R6),X'80'         TEST TO IGNORE                               
+         BO    RDSP12                                                           
+* MOVE MARKET TO TABLE                                                          
+         LTR   RF,RF                                                            
+         BP    *+6                                                              
+         DC    H'0'                                                             
+         BCTR  RF,0                DECREMENT                                    
+         MVC   0(4,RE),2(R6)       MOVE AGY MKT/RTGSVC MKT                      
+         LA    RE,4(RE)                                                         
+*                                                                               
+RDSP12   SR    R0,R0                                                            
+         IC    R0,1(R6)                                                         
+         AR    R6,R0                                                            
+         B     RDSP10                                                           
+*                                                                               
+RDSP14   LA    R0,(L'SPILLTAB-8)/4 MAX SPILL MKTS                               
+         BCTR  R0,0                                                             
+         CR    RF,R0                                                            
+         BNL   RDSP16                                                           
+RDSP16   OC    8(4,R4),8(R4)       TEST ANY MARKETS THERE                       
+         BZ    RDSP2               NONE - SKIP ENTRY                            
+*                                                                               
+         LA    R4,L'SPILLTAB(R4)   NEXT TABLE ENTRY                             
+         C     R4,=A(SPILLTBX)                                                  
+         BL    RDSP2                                                            
+         DC    H'0'                                                             
+*                                                                               
+READSPLX L     R0,=A(SPILLTAB)                                                  
+         SR    R4,R0                                                            
+         SRDL  R4,32                                                            
+         D     R4,=A(L'SPILLTAB)   DIVIDE BY ENTRY LEN                          
+         LTR   R4,R4                                                            
+         BZ    *+6                                                              
+         DC    H'0'                                                             
+         ST    R5,SPILLCNT                                                      
+         XIT1                                                                   
+FIXCOUNT DC    PL4'0'                                                           
+         EJECT                                                                  
+*&&DO                                                                           
+*        ADD PRODUCTS TO PRDLIST FOR PUTREC TO ADD PASSIVE SPILL PTRS           
+*                                                                               
+BLDPRDLS NTR1                                                                   
+*                                                                               
+*        FIND SPILL BUY ELEMS                                                   
+*                                                                               
+         XC    PRDLST,PRDLST      INIT PRODUCT LIST                             
+         XC    DMCB+20(4),DMCB+20                                               
+*                                                                               
+         L     R6,AREC                                                          
+         USING BUYRECD,R6                                                       
+*                                                                               
+         LA    RF,BDMASPRD         FIRST MASPRD                                 
+         BAS   RE,ADDPRDL                                                       
+*                                                                               
+         LA    RF,1(RF)            SECOND MASPRD                                
+         BAS   RE,ADDPRDL                                                       
+*                                                                               
+         L     R6,AREC             POINT TO BUY RECORED                         
+         LA    R6,BDELEM           POINT TO FIRST ELEMENT IN RECORD             
+*                                                                               
+PPTPRDLP DS    0H                                                               
+*                                                                               
+         CLI   0(R6),0             DONE AT END OF RECORD                        
+         BE    PPTPRDDN                                                         
+*                                                                               
+         CLI   0(R6),X'0B'         LOOKING FOR BUY ELEMENTS                     
+         BE    *+8                                                              
+         CLI   0(R6),X'0C'                                                      
+         BNE   PPTPRDCN                                                         
+*                                                                               
+         USING REGELEM,R6          ESTABLISH REGULAR POOL BUY ELEMENT           
+*                                                                               
+*        ADD PRODUCT(S) TO PRDLIST                                              
+*                                                                               
+         CLI   RLEN,14             SKIP IF NO PRODUCTS ALLOCATED                
+         BL    PPTPRDCN                                                         
+         LA    RF,10(R6)           POINT TO FIRST PRODUCT                       
+         BAS   RE,ADDPRDL                                                       
+*                                                                               
+         CLI   RLEN,18             SKIP IF NO PIGGYBACK ALLOCATED               
+         BL    PPTPRDCN                                                         
+*                                                                               
+         LA    RF,14(R6)           POINT TO SECOND PRODUCT                      
+         BAS   RE,ADDPRDL                                                       
+         B     PPTPRDCN                                                         
+         SPACE 1                                                                
+*================================================================*              
+*        ADD PRODUCT IF NOT ALREADY IN LIST                                     
+*        RF==> PRODUCT TO ADD TO LIST                                           
+*================================================================*              
+         SPACE 1                                                                
+ADDPRDL  CLI   0(RF),0             TEST NO PRODUCT                              
+         BER   RE                  YES - IGNORE                                 
+         LA    R1,PRDLST           INIT PRODUCT LIST                            
+*                                                                               
+ADDPRDL2 CLI   0(R1),0             DONE AT END OF LIST                          
+         BE    ADDPRDL4                                                         
+         CLC   0(1,R1),0(RF)       SKIP IF PRODUCT IN LIST                      
+         BER   RE                                                               
+         LA    R1,1(R1)                                                         
+         B     ADDPRDL2                                                         
+*                                                                               
+ADDPRDL4 MVC   0(1,R1),0(RF)       ADD PRODUCT TO LIST                          
+         BR    RE                                                               
+*                                                                               
+PPTPRDCN DS    0H                                                               
+         SR    R0,R0                                                            
+         IC    R0,1(R6)                                                         
+         AR    R6,R0                                                            
+         B     PPTPRDLP                                                         
+*                                                                               
+PPTPRDDN DS    0H                                                               
+*                                                                               
+         CLI   QOPT1,C'Y'                                                       
+         BNE   PPTPRD99                                                         
+         CP    PPTCTR,=P'0'                                                     
+         BE    PPTPRD99            PRINT ONLY 1ST 20                            
+*                                                                               
+         MVC   P+5(7),=C'PRDLST='                                               
+         GOTO1 HEXOUT,DMCB,PRDLST,P+13,10                                       
+         GOTO1 REPORT                                                           
+*                                                                               
+PPTPRD99 DS    0H                                                               
+*                                                                               
+         OC    PRDLST,PRDLST       SKIP IF NO PRODUCTS IN LIST                  
+         BZ    PPTPRDX                                                          
+*                                                                               
+         LA    RE,PRDLST           PASS A(PRDLIST) WITH PUTREC                  
+         ST    RE,DMCB+20                                                       
+*                                                                               
+PPTPRDX  DS    0H                                                               
+*                                                                               
+         XIT1                                                                   
+*                                                                               
+*ADD SPILL PASSIVE POINTERS                                                     
+*                                                                               
+PUTPTRS  NTR1  LABEL=*                                                          
+*                                                                               
+*        ADD POOL SPILL PASSIVE POINTERS                                        
+*                                                                               
+*        FIND SPILL DEMO ELEM                                                   
+*                                                                               
+         MVC   PPTELCDE,ELCODE     SAVE ELEMENT CODE                            
+*                                                                               
+         L     R6,AREC             POINT TO BUYREC WITH SPILL                   
+         USING BUYRECD,R6                                                       
+         MVI   ELCODE,3            LOOKING FOR X'03' DEMO ELEMENT               
+         LA    R6,BDELEM           POINT TO FIRST ELEMENT IN RECORD             
+*                                                                               
+         CLI   QOPT1,C'Y'                                                       
+         BNE   PPTMKTLP                                                         
+         CP    PPTCTR,=P'0'                                                     
+         BE    PPTMKTLP            PRINT ONLY 1ST 20                            
+*                                                                               
+         MVC   P+5(20),=CL20'SPILL PASSIVES'                                    
+         GOTO1 REPORT                                                           
+*                                                                               
+PPTMKTLP DS    0H                                                               
+*                                                                               
+         BAS   RE,NEXTEL                                                        
+         BNE   PPTMKTDN                                                         
+*                                                                               
+         USING NDELEM,R6           ESTABLISH DEMO ELEMENT                       
+*                                                                               
+*        ADD SPILL PASSIVE FOR POOL                                             
+*                                                                               
+         L     RE,AREC             POINT TO NEW BUY RECORD                      
+         MVC   KEY(10),0(RE)       COPY BUYKEY                                  
+         MVC   KEY+4(2),NDPROG     REPLACE MKT WITH AGY SPILL MKT               
+         MVI   KEY+10,X'80'        SET SPILL INDICATOR                          
+         MVC   KEY+11(1),10(RE)    MOVE LINE NUMBER                             
+         MVI   KEY+12,1                                                         
+*                                                                               
+         CLI   RCWRITE,C'Y'                                                     
+         BNE   PPT2                                                             
+*                                                                               
+         GOTO1 DATAMGR,DMCB,=C'DMADD',=C'SPTDIR',KEY,KEY                        
+*                                                                               
+         TM    8(R1),X'FF'-X'20'   TEST ALL ERRORS BUT DUP KEY                  
+         BZ    *+6                                                              
+         DC    H'0'                                                             
+*                                                                               
+*        PRINT PASSIVE                                                          
+*                                                                               
+PPT2     CLI   QOPT1,C'Y'                                                       
+         BNE   PPTMKTNP                                                         
+         CP    PPTCTR,=P'0'                                                     
+         BE    PPTMKTNP            PRINT ONLY 1ST 20                            
+*                                                                               
+         SR    R7,R7                                                            
+         ICM   R7,3,13(R6)                                                      
+         AR    R7,R6                                                            
+         XC    0(2,R7),0(R7)       SET EOR FLAG                                 
+*                                                                               
+         GOTO1 HEXOUT,DMCB,KEY,P+40,18                                          
+         GOTO1 REPORT                                                           
+*                                                                               
+         SP    PPTCTR,=P'1'        DECREMENT COUNTER                            
+*                                                                               
+PPTMKTNP DS    0H                                                               
+*                                                                               
+PPTMKTCN DS    0H                                                               
+*                                                                               
+         B     PPTMKTLP                                                         
+*                                                                               
+PPTMKTDN DS    0H                                                               
+*                                                                               
+         MVC   ELCODE,PPTELCDE     RESTORE ELEMENT CODE                         
+*                                                                               
+PUTPTRSX DS    0H                                                               
+         XIT1                                                                   
+*                                                                               
+PPTCTR   DC    PL2'20'                                                          
+PPTELCDE DS    X                                                                
+*&&                                                                             
+         LTORG                                                                  
+         EJECT                                                                  
+PRTBUY   NTR1                                                                   
+         L     R8,ADBUY                                                         
+         USING BUYRECD,R8                                                       
+*                                                                               
+         CLC   PRTKEY(10),0(R8)     SAME A-M/CLT/PRD/MKT/STA/EST                
+         JE    EXIT                                                             
+*                                                                               
+         MVC   PRTKEY,0(R8)                                                     
+         LA    R5,P+2                                                           
+         USING PLINED,R5                                                        
+         MVC   PAGY(2),BUYALPHA                                                 
+         MVC   PMED,QMED                                                        
+         GOTO1 CLUNPK,DMCB,BUYKCLT,PCLT                                         
+         GOTO1 MSUNPK,DMCB,BUYMSTA,PMKT,WORK                                    
+         MVC   PSTA(4),WORK                                                     
+         MVI   PSTA+4,C'-'                                                      
+         MVC   PSTA+5(2),=C'TV'                                                 
+*                                                                               
+         ZIC   R0,BUYKEST                                                       
+         CVD   R0,DUB                                                           
+         OI    DUB+7,X'0F'                                                      
+         UNPK  PEST,DUB                                                         
+         MVI   PEST+3,C'-'                                                      
+*                                                                               
+         ZIC   R0,BUYKBUY                                                       
+         CVD   R0,DUB                                                           
+         OI    DUB+7,X'0F'                                                      
+         UNPK  PLIN,DUB                                                         
+* FIND X'97' ELEMENT                                                            
+         MVI   ELCDLO,X'97'                                                     
+         MVI   ELCDHI,X'97'                                                     
+         LA    R6,BDELEM                                                        
+         BRAS  RE,NEXTEL                                                        
+         BNE   PRTBX                                                            
+         USING BWSELEM,R6                                                       
+         MVC   PKEY(3),BWSBYR                                                   
+         SR    R0,R0                                                            
+         ICM   R0,3,BWSCAM                                                      
+         CVD   R0,DUB                                                           
+         OI    DUB+7,X'0F'                                                      
+         UNPK  PKEY+4(4),DUB                                                    
+         DROP  R6,R8                                                            
+*                                                                               
+PRTBX    GOTO1 REPORT                                                           
+         B     EXIT                                                             
+*                                                                               
+PRTKEY   DC    XL13'00'                                                         
+         LTORG                                                                  
+         EJECT                                                                  
+*&&DO                                                                           
+* CHECK FOR A DEMO OVERRIDE RECORD                                              
+CHKDEMOV NTR1                                                                   
+         XC    KEY,KEY                                                          
+         MVC   KEY(2),=X'0D17'                                                  
+         MVC   KEY+2(1),BUYKAM                                                  
+* FIND A X'68' ELEMENT TO GET NTWK SEQNUM                                       
+         BAS   RE,GETNET                                                        
+         MVC   KEY+3(1),BYTE       NETOWRK SEQNUM                               
+         MVC   KEY+4(2),BUYKCLT                                                 
+         MVC   KEY+7(4),BDPROGRM                                                
+         L     RE,ADCLT                                                         
+         USING CLTHDRD,RE                                                       
+         MVC   KEY+11(1),CPROF+3      RTGSVC                                    
+         DROP  RE                                                               
+         GOTO1 HIGH                                                             
+         CLC   KEY(12),KEYSAVE                                                  
+         BE    FX22                                                             
+* NO CLIENT EXCEPTION FOUND, TRY DEFAULT                                        
+         MVC   KEY,KEYSAVE         RESTORE KEY                                  
+         XC    KEY+4(2),KEY+4      CLEAR CLIENT                                 
+         GOTO1 HIGH                                                             
+         CLC   KEY(12),KEYSAVE                                                  
+         BNE   *+8                                                              
+FX22     MVI   30(R4),C'*'                                                      
+         B     EXIT                                                             
+*&&                                                                             
+         LTORG                                                                  
+         EJECT                                                                  
+NEXTEL   CLI   0(R6),0                                                          
+         JE    NEXTELX                                                          
+         SR    R0,R0                                                            
+         ICM   R0,1,1(R6)                                                       
+         JNZ   *+6                                                              
+         DC    H'0'                                                             
+         AR    R6,R0                                                            
+NEXTEL2  CLI   0(R6),0                                                          
+         JE    NEXTELX                                                          
+         CLC   ELCDLO,0(R6)                                                     
+         JH    NEXTEL                                                           
+         CLC   ELCDHI,0(R6)                                                     
+         JL    NEXTEL                                                           
+         CR    RB,RB                                                            
+         J     *+6                                                              
+NEXTELX  LTR   RB,RB                                                            
+         BR    RE                                                               
+*                                                                               
+ELCDLO   DS    X                                                                
+ELCDHI   DS    X                                                                
+SPILLCNT DS    F                                                                
+SVBINADR DS    A                                                                
+ELEM     DS    XL128                                                            
+*                                                                               
+PRDLST   DS    XL256               PRODUCT LIST                                 
+*                                                                               
+         DS    0D                                                               
+         DC    CL8'**MYBUY'                                                     
+MYBUY    DS    4000C                                                            
+*                                                                               
+         DC    CL8'**MYBUY2'                                                    
+MYBUY2   DS    4000C                                                            
+*                                                                               
+         DS    0D                                                               
+         DC    CL8'SPILLTAB'                                                    
+SPILLTAB DS    0XL48                                                            
+         DS    48000C                                                           
+SPILLTBX EQU   *                                                                
+         EJECT                                                                  
+* DSECT FOR PRINT LINE                                                          
+PLINED   DSECT                                                                  
+PAGY     DS    CL2                                                              
+         DS    CL2                                                              
+PMED     DS    CL1                                                              
+         DS    CL2                                                              
+PCLT     DS    CL3                                                              
+         DS    CL2                                                              
+PMKT     DS    CL4                                                              
+         DS    CL2                                                              
+PSTA     DS    CL7                                                              
+         DS    CL2                                                              
+PPRD     DS    CL3                                                              
+         DS    CL2                                                              
+PEST     DS    CL3                                                              
+         DS    CL1                                                              
+PLIN     DS    CL3                                                              
+         DS    CL1                                                              
+PLINOLD  DS    CL3                                                              
+         DS    CL1                                                              
+PKEY     DS    CL26                BUY LINE KEY                                 
+         EJECT                                                                  
+CLTHDRD  DSECT                                                                  
+       ++INCLUDE SPGENCLT                                                       
+BUYRECD  DSECT                                                                  
+       ++INCLUDE SPGENBUY                                                       
+         EJECT                                                                  
+*                                                                               
+       ++INCLUDE SPREPMODES                                                     
+       ++INCLUDE SPREPWORKD                                                     
+         EJECT                                                                  
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'146SPREPFXSPL10/04/00'                                      
+         END                                                                    

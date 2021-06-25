@@ -1,0 +1,2119 @@
+*          DATA SET PQDUMP     AT LEVEL 003 AS OF 04/13/20                      
+*PHASE PQDUMPA                                                                  
+*INCLUDE CARDS                                                                  
+*INCLUDE DMDMGRL                                                                
+*INCLUDE DATCON                                                                 
+*INCLUDE PERVAL                                                                 
+*INCLUDE HEXOUT                                                                 
+*INCLUDE HEXIN                                                                  
+*INCLUDE SORTER                                                                 
+         TITLE 'PQDUMP - TRANSFER PRTQ FILES FROM DISK/TAPE'                    
+         PRINT NOGEN                                                            
+PQDUMP   CSECT                                                                  
+*                                                                               
+         ENTRY UTL                                                              
+         ENTRY SSB                                                              
+*                                                                               
+         NBASE WORKX-WORKD,**PQDU**,=A(WORKAREA),RA,R9                          
+         USING WORKD,RC                                                         
+         ST    RD,SAVERD                                                        
+*                                                                               
+         L     R1,=A(PQBUFF-WORKD) ADDRESS OUT OF RANGE WORK                    
+         AR    R1,RC                                                            
+         ST    R1,APQBUFF                                                       
+         L     R1,=A(CTIO-WORKD)                                                
+         AR    R1,RC                                                            
+         ST    R1,ACTIO                                                         
+         SHI   R1,8                                                             
+         MVC   0(8,R1),=C'**CTIO**'                                             
+*                                                                               
+         MVC   ERRINF,SPACES                                                    
+         MVC   PQFILE,PRTQUE                                                    
+*                                                                               
+         LA    R8,IOAREA           R8=IOAREA                                    
+         USING PQPLD,R8                                                         
+         USING UKRECD,WKKEY                                                     
+         USING PLINED,PLINE                                                     
+*                                                                               
+         BAS   RE,PRINTI           INIT PRINTING                                
+         BAS   RE,INIT             READ CARDS ECT                               
+         BAS   RE,OPENALL          OPEN FILES                                   
+         BAS   RE,MAIN             MAIN LOOP                                    
+         BAS   RE,CLOSEALL         CLOSE FILES                                  
+*                                                                               
+XBASE    L     RD,SAVERD           EXIT FROM TOP                                
+         XBASE                                                                  
+*                                                                               
+EXITEQ   CR    RB,RB                                                            
+         B     EXIT                                                             
+EXITNE   LTR   RB,RB                                                            
+EXIT     XIT1                                                                   
+         EJECT                                                                  
+                                                                                
+***********************************************************************         
+*        INITIALISE                                                             
+***********************************************************************         
+INIT     NTR1                                                                   
+*                                                                               
+         L     RF,=A(SSB)          OPEN SERVICE FILES READ-ONLY                 
+         OI    SSOMTIND-SSOOFF(RF),SSOWSRN                                      
+*                                                                               
+         LA    R3,CARD                                                          
+INIT002  GOTO1 =V(CARDS),DMCB,(R3),=C'RE00'                                     
+         CLC   =C'DDSIO=',0(R3)                                                 
+         BNE   INIT003                                                          
+         L     RF,=V(DDSIO)        OVERRIDE DDSIO NAME                          
+         MVC   0(8,RF),6(R3)                                                    
+         B     INIT002                                                          
+*                                                                               
+INIT003  CLC   =C'DSPACE=',0(R3)                                                
+         BNE   INIT004                                                          
+         L     RF,=A(SSB)          SET DSPACE ID IN SSB                         
+         MVC   SSODSPAC-SSOOFF(1,RF),7(R3)                                      
+         B     INIT002                                                          
+*                                                                               
+INIT004  GOTO1 =V(DATAMGR),DMCB,=C'OPEN',=C'SER',=C'NCTFILE X'                  
+*                                                                               
+         GOTO1 =V(DATCON),DMCB,(5,0),(1,TODAY)                                  
+         GOTO1 (RF),(R1),(5,0),(30,TODAYC)                                      
+         GOTO1 (RF),(R1),(5,0),(2,TODAYO)                                       
+         BAS   RE,GETTIME                                                       
+*                                                                               
+         MVC   TITLE,TITLE1                                                     
+         LA    R1,TITLE            PRINT PARAMETER CARDS TITLE                  
+         BAS   RE,PRINTT                                                        
+         LA    R3,CARD                                                          
+         B     INIT012                                                          
+*                                                                               
+INIT010  GOTO1 =V(CARDS),DMCB,(R3),=C'RE00'                                     
+INIT012  CLC   =C'/*',0(R3)                                                     
+         BE    INIT020                                                          
+         MVC   PLINE+1(80),0(R3)                                                
+         BAS   RE,PRINTL           PRINT PARAMETER CARD                         
+*                                                                               
+INIT015  LR    R1,R3               PASS TO VALCARD                              
+         BAS   RE,VALCARD          READ KEYWORD=VALUES                          
+         BE    INIT010                                                          
+         DC    H'0'                Make sure someone knows about it             
+*                                                                               
+INIT020  MVI   RCPRTQ,C' '         Clear progress message flags                 
+         XC    RCPRTQC,RCPRTQC                                                  
+         B     EXITEQ                                                           
+         EJECT                                                                  
+                                                                                
+***********************************************************************         
+* OPEN FILES                                                                    
+***********************************************************************         
+OPENALL  NTR1                                                                   
+*                                                                               
+OPEN010  CLI   INPUT,C'T'          TEST TAPE INPUT                              
+         BNE   OPEN020                                                          
+         OPEN  (TAPEIN,INPUT)      OPEN INPUT                                   
+*                                                                               
+OPEN020  CLI   OUTPUT,C'T'         TEST TAPE OUTPUT                             
+         BNE   OPEN030                                                          
+         OPEN  (TAPEOUT,OUTPUT)    OPEN OUTPUT                                  
+*                                                                               
+OPEN030  CLI   REPFLG,C'N'         TEST FOR REPORT=NO                           
+         BE    OPEN040                                                          
+         GOTO1 =V(SORTER),DMCB,SRTCARD,RECCARD                                  
+*                                                                               
+OPEN040  B     EXITEQ                                                           
+         EJECT                                                                  
+                                                                                
+***********************************************************************         
+*        READ DATA LINES AND WRITE PRTQ                                         
+***********************************************************************         
+MAIN     NTR1                                                                   
+         ST    RD,MAINRD           SAVE THIS RD FOR TAPEEND EXIT                
+         BAS   RE,GETLIST          GET LIST OF PRTQ FLES                        
+*                                                                               
+MAIN005  BAS   RE,INITPQ           GET FILE CI DETAIL                           
+*                                                                               
+MAIN010  MVI   FERI,0              INIT FILE ERROR INDICATOR                    
+*                                                                               
+         BAS   RE,GETFILE          GET A PRTQ FILE                              
+         BE    MAIN015                                                          
+*                                                                               
+         BAS   RE,GETMORE          IF EOF LOOK FOR MORE FILES                   
+         BE    MAIN005                                                          
+         BNE   TAPEEND             EXIT WHEN NO MORE                            
+*                                                                               
+MAIN015  BAS   RE,CHECKPR          Track and report on progress                 
+*                                                                               
+         BAS   RE,FILTER           FILTER OUT UNWANTED FILES                    
+         BNE   MAIN010                                                          
+*                                                                               
+         BAS   RE,PUTSORT          PUT REPORT DATA TO SORT                      
+*                                                                               
+         BAS   RE,PUTREC           OPEN THE FILE                                
+         BE    MAIN020                                                          
+*                                                                               
+         BAS   RE,PUTERRS          OUTPUT ERROR MESSAGE                         
+         B     MAIN010                                                          
+*                                                                               
+MAIN020  BAS   RE,READREC          READ A RECORD                                
+         BNE   MAIN050                                                          
+*                                                                               
+         BAS   RE,PUTREC           WRITE A RECORD                               
+         BE    MAIN020                                                          
+         BAS   RE,PUTERRS          OUTPUT ERROR MESSAGE                         
+         B     MAIN020                                                          
+*                                                                               
+MAIN050  BAS   RE,PUTREC           WRITE EOF RECORD                             
+         BE    MAIN010                                                          
+         BAS   RE,PUTERRS          OUTPUT ERROR MESSAGE                         
+         B     MAIN010                                                          
+*                                                                               
+TAPEEND  L     RD,MAINRD           RESTORE RD                                   
+*                                                                               
+         MVI   PQFILE+4,C' '       No more PRTQs                                
+         BAS   RE,CHECKPR          Track and report on progress                 
+*                                                                               
+         BAS   RE,REPORT           WRITE A REPORT                               
+*                                                                               
+MAINX    B     EXITEQ                                                           
+         EJECT                                                                  
+                                                                                
+***********************************************************************         
+*        GET NEXT FILE FROM INPUT SOURCE                                        
+***********************************************************************         
+GETFILE  NTR1                                                                   
+*                                                                               
+         CLI   INPUT,C'T'                                                       
+         BNE   GETF500                                                          
+                                                                                
+*----------------------------------------------------------------------         
+* TAPE INPUT                                                                    
+*----------------------------------------------------------------------         
+GETF010  GET   TAPEIN,IOAREAF      GET UNTIL SOF                                
+         CLC   QLSOFLAB,SOFLAB                                                  
+         BNE   GETF010                                                          
+*                                                                               
+         MVC   CSOFNDX,QLINDEX                                                  
+*                                                                               
+         MVC   UKKEY,QLSRCID       SET USERID FROM KEY                          
+         CLI   QLREPCHR,0                                                       
+         BE    *+10                                                             
+         MVC   PQFILE+4(1),QLREPCHR                                             
+*                                                                               
+         OC    QLLINES,QLLINES     IGNORE REPORTS WITH NO LINES                 
+         BZ    GETF010                                                          
+         TM    QLSTAT,PQSTTE       IGNORE FILE WITH A TEMP STATUS               
+         BNZ   GETF010                                                          
+*                                                                               
+         LA    R1,PRTQ             TEST FOR FILE IN SELECTION LIST              
+GETF020  CLI   QLREPCHR,0                                                       
+         BE    GETF900                                                          
+         CLC   0(1,R1),QLREPCHR                                                 
+         BE    GETF900                                                          
+         LA    R1,1(R1)                                                         
+         CLI   0(R1),C' '          NOT IN LIST SO GET NEXT FILE                 
+         BE    GETF010                                                          
+         B     GETF020                                                          
+                                                                                
+*----------------------------------------------------------------------         
+* FILE INPUT                                                                    
+*----------------------------------------------------------------------         
+GETF500  BAS   RE,READPQ                                                        
+         BNE   EXITNE              EXIT NEQ IF EOF                              
+*                                                                               
+         CLC   QLSOFLAB,SOFLAB                                                  
+         BNE   GETF500                                                          
+         MVC   CSOFNDX,QLINDEX     SAVE FIRST INDEX                             
+*                                                                               
+GETF900  DS    0H                                                               
+*                                                                               
+GETFILX  B     EXITEQ                                                           
+         EJECT                                                                  
+                                                                                
+***********************************************************************         
+* GET LIST OF PRINT QUEUE FILES                                                 
+***********************************************************************         
+GETLIST  NTR1                                                                   
+*                                                                               
+         CLI   INPUT,C'T'          TAPE HAS ONLY ONE FILE                       
+         BNE   GL010                                                            
+         CLI   OUTPUT,C'T'                                                      
+         BE    GETLISX                                                          
+*                                                                               
+GL010    L     R5,APQBUFF          GET LIST OF DISK FILES                       
+         LA    RF,IOAREA                                                        
+         GOTO1 =V(DATAMGR),DMCB,(0,GLIST),PQFILE,UKKEY,(RF),(R5)                
+         ICM   RE,15,UKUSRINF                                                   
+         BZ    GETLISD                                                          
+*                                                                               
+         SR    R1,R1               R1=NUM OF FILES IN LIST                      
+         ICM   R1,1,0(RE)                                                       
+         BZ    GETLISD             CHECK HI LO BOUNDS                           
+         CH    R1,=H'16'                                                        
+         BH    GETLISD                                                          
+*                                                                               
+         LA    R1,2(R1)            ADD TWO FOR HDR AND TRL                      
+         SLL   R1,3                                                             
+         BCTR  R1,0                                                             
+         EX    R1,*+8                                                           
+         B     *+10                                                             
+         MVC   PRTQLST(0),0(RE)    COPY PRTQ LIST TO MY OWN AREA                
+         XC    PRTQLSTX,PRTQLSTX   SET END OF MAXIMUM LIST                      
+*                                                                               
+         MVC   PQFILE,=C'PRTQ    '                                              
+         MVC   PQFILE+4(1),PRTQ    START WITH FIRST SPECIFIED ENTRY             
+*                                                                               
+GETLISX  B     EXITEQ                                                           
+*                                                                               
+GETLISD  DC    H'0'                                                             
+         EJECT                                                                  
+                                                                                
+***********************************************************************         
+*        ANY MORE INPUT FILES                                                   
+***********************************************************************         
+GETMORE  NTR1                                                                   
+*                                                                               
+         CLI   INPUT,C'T'          NOT IF TAPE LOAD                             
+         BE    EXITNE                                                           
+*                                                                               
+         LA    RE,PRTQNTRY         START WITH FIRST FILE                        
+GETM010  CLC   PQFILE+4(1),1(RE)                                                
+         BE    GETM050                                                          
+         LA    RE,8(RE)                                                         
+         CLI   0(RE),0             LAST FILE SO EOF                             
+         BE    EXITNE                                                           
+         B     GETM010                                                          
+*                                                                               
+GETM050  LA    RE,8(RE)            SELECT NEXT FILE AND EXIT OK                 
+         CLI   0(RE),0             LAST FILE SO EOF                             
+         BE    EXITNE                                                           
+         MVC   PQFILE+4(1),1(RE)                                                
+*                                                                               
+         LA    R1,PRTQ             TEST FOR FILE IN SELECTION LIST              
+GETM060  CLC   0(1,R1),PQFILE+4                                                 
+         BE    EXITEQ                                                           
+         LA    R1,1(R1)                                                         
+         CLI   0(R1),C' '          NOT IN LIST SO GET NEXT FILE                 
+         BE    GETM010                                                          
+         BNE   GETM060                                                          
+         EJECT                                                                  
+                                                                                
+***********************************************************************         
+*        FILTER OUT UNWANTED FILES                                              
+***********************************************************************         
+FILTER   NTR1                                                                   
+*                                                                               
+FILT010  OC    QLSRCID,QLSRCID     TEST FOR ZERO USER                           
+         BZ    FILTERN                                                          
+         OC    USERID,USERID       TEST FOR USER=ALL                            
+         BZ    FILT020                                                          
+         CLC   USERID,QLSRCID      OR SPECIFIC USER                             
+         BE    FILT020                                                          
+         B     FILTERN                                                          
+*                                                                               
+FILT020  SR    RF,RF               CDATE FILTER <=>                             
+         IC    RF,CDATE                                                         
+         MVC   HALF1,CDATE+1                                                    
+         OC    HALF1,HALF1         ANY CDATE FILTER?                            
+         BZ    FILT030             NO: SKIP CHECK                               
+         TM    QLTYP1,QLTYNCD                                                   
+         BO    FILT021                                                          
+         GOTO1 =V(DATCON),PLIST,(14,HALF1),(2,HALF1)                            
+FILT021  CLC   QLAGELD,HALF1                                                    
+         EX    R6,*+8                                                           
+         B     *+8                                                              
+         BC    0,FILT030                                                        
+         B     FILTERN                                                          
+*                                                                               
+FILT030  SR    R6,R6               DDATE FILTER <=>                             
+         IC    R6,DDATE                                                         
+         MVC   HALF1,DDATE+1                                                    
+         OC    HALF1,HALF1         ANY DDATE FILTER?                            
+         BZ    FILT040             NO: SKIP CHECK                               
+         TM    QLTYP1,QLTYNCD                                                   
+         BO    FILT031                                                          
+         GOTO1 =V(DATCON),PLIST,(14,HALF1),(2,HALF1)                            
+FILT031  CLC   QLAGEDD,HALF1                                                    
+         EX    R6,*+8                                                           
+         B     *+8                                                              
+         BC    0,FILT040                                                        
+         B     FILTERN                                                          
+*                                                                               
+FILT040  SR    R6,R6               RDATE FILTER <=>                             
+         IC    R6,RDATE                                                         
+         MVC   HALF1,RDATE+1                                                    
+         OC    HALF1,HALF1         ANY RDATE FILTER?                            
+         BZ    FILT050             NO: SKIP CHECK                               
+         TM    QLTYP1,QLTYNCD                                                   
+         BO    FILT041                                                          
+         GOTO1 =V(DATCON),PLIST,(14,HALF1),(2,HALF1)                            
+FILT041  CLC   QLAGERD,HALF1                                                    
+         EX    R6,*+8                                                           
+         B     *+8                                                              
+         BC    0,FILT050                                                        
+         B     FILTERN                                                          
+*                                                                               
+FILT050  LA    R0,3                6 CHR FILE ID                                
+         LA    R1,SUBID                                                         
+         LA    RF,QLSUBID                                                       
+FILT051  CLI   0(R1),C' '          BLANK IS LAST CHR                            
+         BE    FILT060                                                          
+         CLI   0(R1),C'*'          * MATCHES ALL                                
+         BE    *+14                                                             
+         CLC   0(1,R1),0(RF)                                                    
+         BNE   FILTERN                                                          
+         LA    R1,1(R1)                                                         
+         LA    RF,1(RF)                                                         
+         BCT   R0,FILT051          DO ALL 6 CHRS                                
+*                                                                               
+FILT060  LLC   RF,RID#             RID# (report ID #)                           
+         CLC   QLREPRNO,RID#+1     Actual value                                 
+         EX    RF,*+8                                                           
+         B     *+8                                                              
+         BC    0,FILT070                                                        
+         B     FILTERN                                                          
+*                                                                               
+FILT070  EQU   *                                                                
+*                                                                               
+FILTERY  B     EXITEQ                                                           
+*                                                                               
+FILTERN  OI    RIND,RNEXT#         WANT TO SKIP TO NEXT REPORT                  
+         BAS   RE,READPQ                                                        
+         B     EXITNE                                                           
+         EJECT                                                                  
+                                                                                
+***********************************************************************         
+*        GET NEXT PRTQ RECORD                                                   
+***********************************************************************         
+READREC  NTR1                                                                   
+*                                                                               
+         CLI   INPUT,C'T'                                                       
+         BE    *+12                                                             
+         BAS   RE,READPQ                                                        
+         B     READR010                                                         
+         GET   TAPEIN,IOAREAF                                                   
+*                                                                               
+READR010 CLC   QLSOFLAB,EOFLAB     END OF FILE                                  
+         BE    EXITNE                                                           
+*                                                                               
+READR020 CLI   INPUT,C'T'                                                       
+         BE    EXITEQ                                                           
+         XC    IOAREAF,IOAREAF                                                  
+         XR    R1,R1                                                            
+         ICM   R1,3,IOAREA         LENGTH OF RECORD                             
+         AHI   R1,4                PLUS LENGTH OF IOAREAF                       
+         STCM  R1,3,IOAREAF                                                     
+         B     EXITEQ                                                           
+         EJECT                                                                  
+                                                                                
+***********************************************************************         
+*        PUT NEXT PRTQ RECORD                                                   
+***********************************************************************         
+PUTREC   NTR1                                                                   
+         MVI   DMCB+8,0            CLEAR ERROR FLAG                             
+*                                                                               
+         CLC   IOAREAF(2),=H'0003'   Deal with bad record length                
+         BL    PUTR100                                                          
+         CLC   IOAREAF(2),=AL2(1027)                                            
+         BH    PUTR100                                                          
+*                                                                               
+         CLC   QLSOFLAB,SOFLAB       START-OF-FILE                              
+         BNE   PUTR002                                                          
+         B     PUTR010                                                          
+*                                                                               
+PUTR002  CLC   QLSOFLAB,EOFLAB       END-OF-FILE                                
+         BNE   PUTR005                                                          
+         CLI   FERI,FERL             Previous rec in file had bad len?          
+         BNE   PUTR010               NO:                                        
+         MVC   QLSOFLAB,EOFLAB       YES: mark file as bad                      
+         MVC   QLSOFLAB+5(3),=C'ERR'                                            
+         MVI   FERI,0                Clear file error indicator                 
+         B     PUTR010                                                          
+*                                                                               
+PUTR005  XR    R1,R1                                                            
+         ICM   R1,3,IOAREA                                                      
+         AHI   R1,2                                                             
+         STCM  R1,3,IOAREAF+2                                                   
+         XC    IOAREA(2),IOAREA                                                 
+         PUT   TAPEOUT,IOAREAF+2                                                
+         B     PUTR030                                                          
+*                                                                               
+PUTR010  PUT   TAPEOUT,IOAREAF                                                  
+*                                                                               
+PUTR030  CLC   QLSOFLAB+5(3),=C'ERR' END-OF-FILE error?                         
+         BNE   EXITEQ                                                           
+         MVI   DMCB+8,X'80'          Simulate END-OF-FILE error                 
+         MVC   ERRINF,CSOFNDX                                                   
+         B     EXITNE                                                           
+*                                                                               
+PUTR100  MVI   DMCB+8,X'41'          Simulate format error for bad len          
+         MVC   ERRINF(6),=C'RECLN='                                             
+         MVI   FERI,FERL                                                        
+         GOTO1 =V(HEXOUT),PLIST,IOAREAF,ERRINF+6,2                              
+         B     EXITNE                                                           
+         EJECT                                                                  
+                                                                                
+***********************************************************************         
+*        CLOSE ALL AND EXIT                                                     
+***********************************************************************         
+CLOSEALL NTR1                                                                   
+*                                                                               
+         CLI   INPUT,C'T'          TEST INPUT=TAPE                              
+         BNE   CLOSE010                                                         
+         CLOSE TAPEIN              CLOSE TAPEIN                                 
+*                                                                               
+CLOSE010 CLI   OUTPUT,C'T'         TEST OUTPUT=TAPE                             
+         BNE   CLOSEX                                                           
+         CLOSE TAPEOUT             CLOSE TAPEOUT                                
+*                                                                               
+CLOSEX   B     EXITEQ                                                           
+         EJECT                                                                  
+                                                                                
+***********************************************************************         
+*        CALL PRTQ WITH BUFFER COMMAND                                          
+***********************************************************************         
+INITPQ   ST    RE,SAVERE                                                        
+*                                                                               
+         LA    RF,CIADDR                                                        
+         MVC   CIADDR,=X'00010100'                                              
+         GOTO1 =V(DATAMGR),DMCB,FFOPEN,PQFILE,UKKEY,(RF),APQBUFF                
+         CLI   8(R1),0                                                          
+         JNE   *+2                                                              
+         L     R1,APQBUFF                                                       
+         MVC   CIDATA,12(R1)                                                    
+*                                                                               
+         LH    R1,CIBLKLN          CALCULATE SIZE OF 1S AND 2S                  
+         MH    R1,CIHIREC                                                       
+         LR    R0,R1                                                            
+         MH    R1,CITRKS                                                        
+         ST    R1,CI1SIZE                                                       
+         LR    R1,R0                                                            
+         MH    R1,CJTRKS                                                        
+         ST    R1,CI2SIZE                                                       
+*                                                                               
+         SR    R0,R0               CALCULATE TOTAL SIZE OF FILE                 
+         SR    R1,R1                                                            
+         ICM   R1,3,CICITOT                                                     
+         M     R0,CI1SIZE                                                       
+         ST    R1,CITSIZE                                                       
+         LH    R1,CJCITOT                                                       
+         M     R0,CI2SIZE                                                       
+         A     R1,CITSIZE                                                       
+         ST    R1,CITSIZE                                                       
+*                                                                               
+         SR    RF,RF                                                            
+         ICM   RF,3,RID#LOW        A LOW STARTING NUMBER FILTER                 
+         BNZ   *+8                                                              
+         LH    RF,CICINDX          IF NO INDEX, START WITH 1ST REPORT           
+         STH   RF,SVREPNO                                                       
+*                                                                               
+         SH    RF,CICINDX          FIRST REPORT IS AFTER THE INDEX              
+         JM    *+2                 BAD REPORT NUMBER IN CARDS                   
+         AHI   RF,1                ADD 1, THERE IS NO TRACK 0                   
+         MH    RF,CITRKS           TRACKS PER CI                                
+         LH    RE,CICINDX          INDEX CIS                                    
+         MH    RE,CITRKS           TRACKS PER CI                                
+         AR    RF,RE               START WITH DESIRED REPORT                    
+         STH   RF,SVCIADDR         TTTT                                         
+         MVC   SVCIADDR+2(2),=X'0100'  BBRR                                     
+*                                                                               
+         MVI   RIND,0                                                           
+*                                                                               
+         L     RE,SAVERE                                                        
+         BR    RE                                                               
+         EJECT                                                                  
+                                                                                
+***********************************************************************         
+* READ THROUGH PRTQ FILE                                                        
+***********************************************************************         
+READPQ   NTR1                                                                   
+*                                                                               
+         L     R5,APQBUFF                                                       
+         LA    R8,IOAREA           FOR VARIABLE OR HEADER                       
+*                                                                               
+         USING SKBUFFD,R7                                                       
+         LR    R7,R5                                                            
+         AH    R7,=H'13680'                                                     
+         LA    R7,3(R7)                                                         
+         SRL   R7,2                                                             
+         SLL   R7,2                                                             
+*                                                                               
+         TM    RIND,RNEXT#         WANT TO SKIP TO NEXT REPORT                  
+         BO    RDNXTRPT            . YES                                        
+         TM    RIND,RNEXT          IN THE PROCESS OF READING RECORDS            
+         BO    RDNXT               . YES                                        
+         B     RDFST               . NO, READ FIRST                             
+*----------------------------------------------------------------------         
+*                                  READ FIRST RECORD FOR THIS REPORT            
+*----------------------------------------------------------------------         
+RDFST    MVC   CIADDR,SVCIADDR     TTTT                                         
+*                                                                               
+         CLC   CIADDR(2),CJSTTRK   START OF PART 2S                             
+         BNL   RDPQEOF             END OF PRINT QUEUE TO PROCESS                
+*                                                                               
+         OC    RID#HI,RID#HI                                                    
+         BZ    RDFST010                                                         
+         CLC   SVREPNO,RID#HI                                                   
+         BH    RDPQEOF             END OF PRINT QUEUE TO PROCESS                
+*                                                                               
+RDFST010 GOTO1 =V(DATAMGR),DMCB,DMREAD,PQFILE,CIADDR,(R5)                       
+         CLI   8(R1),0                                                          
+         BE    RDFST020                                                         
+         TM    8(R1),X'80'                                                      
+         BO    RDPQEOF                                                          
+         DC    H'00'                                                            
+*                                                                               
+         USING PQRECD,R5                                                        
+RDFST020 OC    PQREPNO,PQREPNO                                                  
+         BZ    RDNXTRPT                                                         
+*                                                                               
+         XC    PQPLD(28),PQPLD     ** OPEN DATA **                              
+         MVC   QLSOFLAB,SOFLAB     START OF REPORT LABEL                        
+         MVC   QLAGELT,PQAGELT     RETURNED REPORT CREATION TIME                
+         MVC   QLREPTY,PQREPTY     REPORT TYPE                                  
+         MVC   QLTYP1,PQTYP1       REPORT TYPE FLAGS#1                          
+         MVC   QLPIDNUM,PQPIDNUM   PID NUMBER - TAGYPER/TPERSON                 
+         MVC   QLREPRNO,PQREPNO    RETURNED REPORT NUMBER                       
+**             QLREPINT            RETURNED PRTQ FILE INTERNAL NUMBER           
+**             QLREPRCF            RETURNED CI DSK ADR 1ST BYTE  0T             
+         MVC   QLREPRCI,CIADDR     RETURNED CI DSK ADR 2/3 BYTES TTTT           
+**       MVC   QLREPCHR,PQFILE+4   RETURNED PRTQ FILE ALPHA CHR                 
+         MVI   QLEXTRA,X'FF'       MUST SET TO X'FF' FOR EXTRA VALUES           
+         MVC   QLFLAG,PQXFLAG      FLAGS FOR PASSING ATTRIBUTES                 
+         MVC   QLINDEX,PQINDEX     ** INDEX **                                  
+*                                                                               
+         MVC   QLBATTR,PQBATTR     ** BLOCK ATTRIBUTES - QLBATTR **             
+         MVC   QLNCIX,PQNCIX       NUMBER OF EXTENSION CI'S                     
+         MVC   QLFATTR,PQFATTR     ** REPORT ATTRIBUTES **                      
+*                                                                               
+         OI    RIND,RNEXT          READ NEXT RECORD                             
+         MVC   SKADDR,CIADDR       SET FILE ADDR IN BUFFER                      
+         XC    SKLINES,SKLINES                                                  
+         MVC   SKKEY,PQKEY                                                      
+         MVC   SKDISP,=AL2(PQDATA1-PQINDEX)                                     
+         XC    SKLEN,SKLEN                                                      
+         MVC   SKSTRCI,CIADDR      STARTING ADDRESS FOR THIS CI                 
+         LH    R1,SKSTRCI          THE STARTING TRACK                           
+         AH    R1,CITRKS           PLUS THE NUMBER OF TRACKS PER CI             
+         AHI   R1,-1               MINUS ONE FOR THE STARTING TRACK             
+         STH   R1,SKENDCI          GETS YOU THE LAST TRACK FOR THE CI           
+         MVC   SKENDCI+2(1),CIHIREC+1 W/ HIGH BLOCK # FOR FULL ADDRESS          
+         MVC   SKNXTCI,PQCINEXT                                                 
+*                                                                               
+         LA    R6,(QLSOFEND-PQPLD)+4                                            
+         XC    IOAREAF,IOAREAF                                                  
+         STCM  R6,3,IOAREAF                                                     
+         B     RDOKAY                                                           
+                                                                                
+*----------------------------------------------------------------------         
+* READ NEXT RECORD ON PRINT QUEUE                                               
+*----------------------------------------------------------------------         
+RDNXT    LR    R6,R5                                                            
+         AH    R6,SKDISP           Point to next record                         
+         MVC   SKLEN,0(R6)                                                      
+         LH    R1,SKLEN            Get length                                   
+         CHI   R1,1                                                             
+         BE    RDEOR               Send end of report                           
+         BH    RDREC               Get record                                   
+*                                                                               
+         CLC   CIADDR+2(1),CIHIREC+1  Last block of track                       
+         BE    RDNXTRK                                                          
+*                                                                               
+RDNXTBK  LLC   RF,CIADDR+2                                                      
+         AHI   RF,1                                                             
+         STC   RF,CIADDR+2         Next block                                   
+         B     RDNXT10                                                          
+*                                                                               
+RDNXTRK  LH    RF,CIADDR                                                        
+         AHI   RF,1                                                             
+         STH   RF,CIADDR           Next track                                   
+         MVC   CIADDR+2(2),=X'0100'  BBRR                                       
+*                                                                               
+         CLC   CIADDR,SKENDCI      Are we finished with this CI?                
+         BNH   RDNXT10             . No                                         
+*                                                                               
+RDNXTCI  MVC   CIADDR,SKNXTCI      NEXT CI                                      
+         OC    CIADDR(2),CIADDR                                                 
+         BZ    RDPQERR                                                          
+         MVC   CIADDR+2(2),=X'0100'  BBRR                                       
+*                                                                               
+         MVC   SKSTRCI,CIADDR      Starting address for this CI                 
+         LH    R1,SKSTRCI          The starting track                           
+         AH    R1,CJTRKS           Plus the number of tracks per CI             
+         AHI   R1,-1               Minus one for the starting track             
+         STH   R1,SKENDCI          Gets you the last track for the CI           
+         MVC   SKENDCI+2(1),CIHIREC+1 w/ high block # for full address          
+*                                                                               
+RDNXT10  GOTO1 =V(DATAMGR),DMCB,DMREAD,PQFILE,CIADDR,(R5)                       
+         CLI   8(R1),0                                                          
+         JNE   *+2                                                              
+*                                                                               
+         USING PQRECD,R5                                                        
+         CLC   SKKEY,PQKEY                                                      
+         BNE   RDPQERR                                                          
+         CLC   CIADDR,SKSTRCI      GET NEXT FROM FIRST CI                       
+         BNE   *+10                                                             
+         MVC   SKNXTCI,PQCINEXT                                                 
+         MVC   SKDISP,=AL2(PQDATA-PQINDEX)                                      
+         XC    SKLEN,SKLEN                                                      
+         B     RDNXT                                                            
+*                                                                               
+RDREC    LR    RF,R1               Length of record                             
+         AHI   RF,4                Clear some extra                             
+         LR    R0,R8                                                            
+         LR    RE,R6                                                            
+         MVCL  R0,RE                                                            
+         LH    R1,SKLEN            BUMP BUFFER DISPLACEMENT                     
+         AH    R1,SKDISP                                                        
+         STH   R1,SKDISP                                                        
+         L     R1,SKLINES          BUMP LINE COUNT                              
+         LA    R1,1(R1)                                                         
+         ST    R1,SKLINES                                                       
+         B     RDOKAY                                                           
+*                                                                               
+RDEOR    XC    QLSOFLAB(28),QLSOFLAB                                            
+         MVC   QLSOFLAB,EOFLAB                                                  
+         MVC   IOAREAF,=X'000E0000'                                             
+         B     RDNXTRPT                                                         
+*                                                                               
+RDPQERR  XC    QLSOFLAB(28),QLSOFLAB                                            
+         MVC   QLSOFLAB,EOFLAB                                                  
+         MVC   QLSOFLAB+5(3),=C'ERR'                                            
+         MVC   IOAREAF,=X'000E0000'                                             
+*                                                                               
+RDNXTRPT XC    SKKEY,SKKEY                                                      
+*                                                                               
+         LH    RF,SVREPNO                                                       
+         AHI   RF,1                                                             
+         STH   RF,SVREPNO          NEXT REPORT #                                
+*                                                                               
+         LH    RF,SVCIADDR                                                      
+         AH    RF,CITRKS           TRACKS PER CI                                
+         STH   RF,SVCIADDR         NEXT REPORT CI                               
+*                                                                               
+         CLI   RIND,0                                                           
+         BNE   RDNXTR10                                                         
+         OC    PQREPNO,PQREPNO                                                  
+         BZ    RDFST               Try again                                    
+RDNXTR10 MVI   RIND,0              Next time read first                         
+*                                                                               
+RDOKAY   SR    RE,RE                                                            
+         J     EXIT                                                             
+*                                                                               
+RDPQEOF  LTR   RE,RE               Set not equal CC                             
+         J     EXIT                                                             
+*                                                                               
+RERROR   DC    H'0'                DUMP IF BAD RETURN                           
+         EJECT                                                                  
+                                                                                
+***********************************************************************         
+* PUT INDEX RECORD TO SORTER                                                    
+***********************************************************************         
+PUTSORT  ST    RE,SAVERE                                                        
+*                                                                               
+         CLI   REPFLG,C'N'               TEST FOR REPORT=NO                     
+         BE    PUTSORTX                                                         
+*                                                                               
+         MVC   BYTE,QLINDEX-1                                                   
+         MVC   QLINDEX-1(1),PQFILE+4                                            
+         GOTO1 =V(SORTER),DMCB,=C'PUT',QLINDEX-1                                
+         MVC   QLINDEX-1(1),BYTE                                                
+*                                                                               
+PUTSORTX L     RE,SAVERE                                                        
+         BR    RE                                                               
+         EJECT                                                                  
+                                                                                
+***********************************************************************         
+* PRINT AN ERROR LINE                                                           
+***********************************************************************         
+PUTERRS  NTR1                                                                   
+*                                                                               
+         MVC   PLINE,SPACES                                                     
+         MVC   PLINE+1(10),=C'PUT ERROR '                                       
+*                                                                               
+         TM    DMCB+8,X'41'                                                     
+         BNO   *+14                                                             
+         MVC   PLINE+1(10),=C'FORMAT ERR'                                       
+         B     PUTERRS1                                                         
+*                                                                               
+         TM    DMCB+8,X'81'                                                     
+         BNO   *+14                                                             
+         MVC   PLINE+1(10),=C'TOO BIG   '                                       
+         B     PUTERRS1                                                         
+         TM    DMCB+8,X'40'                                                     
+         BNO   *+14                                                             
+         MVC   PLINE+1(10),=C'DISK ERROR'                                       
+         B     PUTERRS1                                                         
+         TM    DMCB+8,X'80'                                                     
+         BNO   *+14                                                             
+         MVC   PLINE+1(10),=C'EOF ERROR '                                       
+         B     PUTERRS2                                                         
+*                                                                               
+PUTERRS1 MVC   PLINE+12(10),ERRINF                                              
+         MVC   ERRINF,SPACES                                                    
+         L     RF,APQBUFF                                                       
+         GOTO1 =V(HEXOUT),PLIST,(RF),PLINE+23,20                                
+         BAS   RE,PRINTL                                                        
+         LA    R1,DMCB                                                          
+         B     EXITEQU                                                          
+*                                                                               
+PUTERRS2 MVC   PLINE+12(10),ERRINF                                              
+         MVC   ERRINF,SPACES                                                    
+         LA    RF,CSOFNDX                                                       
+         GOTO1 =V(HEXOUT),PLIST,(RF),PLINE+23,20                                
+         BAS   RE,PRINTL                                                        
+         LA    R1,DMCB                                                          
+         B     EXITEQU                                                          
+         EJECT                                                                  
+                                                                                
+***********************************************************************         
+* CHECK PROGRESS                                                                
+***********************************************************************         
+CHECKPR  NTR1                                                                   
+*                                                                               
+         L     R1,RCPRTQC          Bump file count                              
+         AHI   R1,1                                                             
+         ST    R1,RCPRTQC                                                       
+*                                                                               
+         CLC   RCPRTQ,PQFILE+4     Same PRTQ                                    
+         BNE   CHKPR010            . No, do something                           
+         SR    R0,R0               Every 10000 files show progress              
+         D     R0,=F'10000'                                                     
+         CHI   R0,0                                                             
+         BNE   CHKPRX                                                           
+         B     CHKPR050                                                         
+*                                                                               
+CHKPR010 CLI   RCPRTQ,C' '         First time through                           
+         BE    CHKPR020            . yes, just print                            
+         SHI   R1,1                                                             
+         ST    R1,RCPRTQC                                                       
+         MVC   RCMSGF,RCPRTQ       Last for this PRTQ                           
+         EDIT  (B4,RCPRTQC),RCMSGC,ZERO=NOBLANK,ALIGN=LEFT                      
+         LA    R4,RCMSGH           Message header                               
+         WTO   TEXT=(R4)                                                        
+*                                                                               
+         CLI   PQFILE+4,C' '                                                    
+         BE    CHKPRX                                                           
+*                                                                               
+         LHI   R1,1                Start over                                   
+         ST    R1,RCPRTQC                                                       
+CHKPR020 MVC   RCPRTQ,PQFILE+4     keep track of print queue file               
+*                                                                               
+CHKPR050 MVC   RCMSGF,RCPRTQ       Output progress message                      
+         EDIT  (B4,RCPRTQC),RCMSGC,ZERO=NOBLANK,ALIGN=LEFT                      
+         LA    R4,RCMSGH                                                        
+         WTO   TEXT=(R4)                                                        
+*                                                                               
+CHKPRX   B     EXIT                                                             
+         EJECT                                                                  
+                                                                                
+***********************************************************************         
+* PRINT A PRTQ REPORT                                                           
+***********************************************************************         
+REPORT   NTR1                                                                   
+*                                                                               
+         ZAP   LINE,=P'99'         START WITH A TITLE LINE                      
+*                                                                               
+REP010   MVC   PLINE,T2                                                         
+         GOTO1 =V(SORTER),DMCB,=C'GET'                                          
+         ICM   RF,15,4(R1)                                                      
+         BZ    REPORTX                                                          
+         MVC   QLINDEX-1(126),0(RF)                                             
+*                                                                               
+         OC    GUSER,GUSER         NO TOTALS FIRST TIME                         
+         BZ    REP015                                                           
+         CLC   QLSRCID,GUSER       SKIP IF SAME AS PREV                         
+         BE    REP020                                                           
+         BAS   RE,TOTALS           PRINT USER TOTALS                            
+*                                                                               
+         CLC   CUSERF,QLINDEX-1                                                 
+         BE    REP014                                                           
+*                                                                               
+         BAS   RE,FTOTALS          PRINT FILE TOTALS                            
+         ZAP   LINE,=P'99'                                                      
+         MVC   PLINE,T2                                                         
+         B     REP015                                                           
+*                                                                               
+REP014   BAS   RE,PRINTL                                                        
+         MVC   PLINE,T2                                                         
+*                                                                               
+REP015   MVC   GUSER,QLSRCID       GET USERID NAME                              
+         BAS   RE,GETUSR                                                        
+*                                                                               
+REP020   BAS   RE,COUNT            KEEP A COUNT OF TOTALS                       
+         MVC   PRUSER,GUSERN                                                    
+         MVC   PLPRTQ(1),QLINDEX-1 PRTQ FILE NUMBER                             
+         MVC   PLLSUB,QLSUBID                                                   
+         XC    FULL,FULL                                                        
+         MVC   FULL+2(2),QLREPNO                                                
+         MVI   EDITCHR,C'T'                                                     
+         BAS   RE,EDITF                                                         
+         MVC   PRREPNO,DUB+3                                                    
+*                                                                               
+         MVC   PRDESC,QLDESC                                                    
+*                                                                               
+         MVC   PLTYPE,SPACES                                                    
+         MVC   PLTYPE+1(1),QLTYPE                                               
+*                                                                               
+         MVC   PLATTR,=C'O.EP.X.S'                                              
+         LA    RF,PLATTR                                                        
+         MVC   BYTE,QLATTB         SET /CLR ATTR BITS                           
+         LA    R1,X'80'                                                         
+REP040   EX    R1,*+8                                                           
+         B     *+8                                                              
+         TM    BYTE,0                                                           
+         BO    *+8                                                              
+         MVI   0(RF),C' '          REPLACE WITH ' ' IF ZERO                     
+         LA    RF,1(RF)                                                         
+         SRA   R1,1                                                             
+         BNZ   REP040                                                           
+*                                                                               
+REP050   MVC   BYTE,QLSTAT                                                      
+         BAS   RE,STATOUT                                                       
+         MVC   PRSTAT,DUB                                                       
+*                                                                               
+         XC    HALF,HALF                                                        
+         MVC   HALF+1(1),QLAGES                                                 
+         BAS   RE,EDITH                                                         
+         MVC   PLSIZE,DUB+5                                                     
+*                                                                               
+         MVC   PLLIVED,DOTS                                                     
+         MVC   HALF1,QLDATEL                                                    
+         GOTO1 =V(DATCON),DMCB,(14,HALF1),(17,PLLIVED)                          
+         ORG   *-2                                                              
+         TM    QLTYP1,QLTYNCD                                                   
+         BO    *+8                                                              
+         MVI   DMCB,2                                                           
+         BASR  RE,RF                                                            
+*                                                                               
+         MVC   PLDEADD,DOTS                                                     
+         OC    QLDATED,QLDATED                                                  
+         BZ    REP061                                                           
+         MVC   HALF1,QLDATED                                                    
+         GOTO1 =V(DATCON),DMCB,(14,HALF1),(17,PLDEADD)                          
+         ORG   *-2                                                              
+         TM    QLTYP1,QLTYNCD                                                   
+         BO    *+8                                                              
+         MVI   DMCB,2                                                           
+         BASR  RE,RF                                                            
+*                                                                               
+REP061   MVC   PLRETAD,DOTS                                                     
+         MVC   HALF1,QLAGERD                                                    
+         GOTO1 =V(DATCON),DMCB,(14,HALF1),(17,PLRETAD)                          
+         ORG   *-2                                                              
+         TM    QLTYP1,QLTYNCD                                                   
+         BO    *+8                                                              
+         MVI   DMCB,2                                                           
+         BASR  RE,RF                                                            
+*                                                                               
+         MVC   DUB(2),QLTIMEL                                                   
+         BAS   RE,TIMEOUT                                                       
+         MVC   PLLIVET,DUB+2                                                    
+*                                                                               
+REP070   MVC   PLDEADT,DOTS                                                     
+         MVC   PLSENTO,DOTS                                                     
+         MVC   DUB(2),QLTIMED                                                   
+         OC    DUB(2),DUB                                                       
+         BZ    REP080                                                           
+         BAS   RE,TIMEOUT                                                       
+         MVC   PLDEADT,DUB+2                                                    
+         MVC   PLSENTO,QLPRSYM                                                  
+*                                                                               
+REP080   SR    R0,R0                                                            
+         SR    R1,R1                                                            
+         IC    R1,QLAGERT                                                       
+         MH    R1,=H'10'           CONVERT 10 MIN INCREMENTS                    
+         D     R0,=F'60'                                                        
+         STC   R1,DUB                                                           
+         STC   R0,DUB+1                                                         
+         BAS   RE,TIMEOUT                                                       
+         MVC   PLRETAT,DUB+2       RETAIN TIME                                  
+*                                                                               
+         MVC   FULL,QLLINES                                                     
+         BAS   RE,EDITF                                                         
+         MVC   PLRECS,DUB+3                                                     
+         XC    FULL,FULL                                                        
+         MVC   FULL+1(3),QLLINES                                                
+         BAS   RE,EDITF                                                         
+         MVC   PLBYTES,DUB+3                                                    
+         MVC   HALF,QLAVCPL                                                     
+         BAS   RE,EDITH                                                         
+         MVC   PLAVG,DUB+3                                                      
+         XC    HALF,HALF                                                        
+         MVC   HALF+1(1),QLMAXCPL                                               
+         BAS   RE,EDITH                                                         
+         MVC   PLMAX,DUB+3                                                      
+         MVC   BYTE,QLNCI                                                       
+         BAS   RE,EDITB                                                         
+         MVC   PLCIS,DUB+5                                                      
+         MVC   BYTE,QLNCIX                                                      
+         BAS   RE,EDITB                                                         
+         MVC   PLCISX,DUB+5                                                     
+*                                                                               
+         BAS   RE,PRINTL                                                        
+         B     REP010                                                           
+*                                                                               
+REPORTX  BAS   RE,TOTALS           PRINT USER TOTALS                            
+         BAS   RE,FTOTALS          PRINT FILE TOTALS                            
+         B     EXITEQ                                                           
+         EJECT                                                                  
+                                                                                
+***********************************************************************         
+* PRINT TOTALS LINE                                                             
+***********************************************************************         
+TOTALS   NTR1                                                                   
+*                                                                               
+         MVC   PLINE,T4            CLOSE OFF BOX                                
+         MVI   PBOX1,ML                                                         
+         MVI   PBOXX,MR                                                         
+         BAS   RE,PRINTL                                                        
+         MVC   PLINE,SPACES                                                     
+         MVI   PBOX1,VB                                                         
+         MVI   PBOXX,VB                                                         
+         MVC   PLINE+2(8),CUSERN                                                
+         MVC   PLINE+10(3),=C'PQ='                                              
+         MVC   PLINE+13(1),CUSERF                                               
+         LA    R2,UCTFILE                                                       
+         BAS   RE,PCOUNTS                                                       
+         MVC   PLINE+15(48),MYWORK                                              
+         MVC   PLINE+64(7),=C'ACTIVE '                                          
+         LA    R2,UCAFILE                                                       
+         BAS   RE,PCOUNTS                                                       
+         MVC   PLINE+72(48),MYWORK                                              
+*                                                                               
+         BAS   RE,PRINTL                                                        
+         XC    UCOUNTS,UCOUNTS                                                  
+         MVC   PLINE,T1            SET UP FOR NEXT BOX                          
+         MVI   PLINE,C' '                                                       
+         MVI   PBOX1,ML                                                         
+         MVI   PBOXX,MR                                                         
+         B     EXITEQ                                                           
+         EJECT                                                                  
+                                                                                
+***********************************************************************         
+* FINAL TOTALS                                                                  
+***********************************************************************         
+FTOTALS  NTR1                                                                   
+*                                                                               
+         MVI   PLINE,HB                                                         
+         MVC   PLINE+1(155),PLINE                                               
+         MVI   PBOX1,ML                                                         
+         MVI   PBOXX,MR                                                         
+         BAS   RE,PRINTL                                                        
+         MVC   PLINE,SPACES                                                     
+         MVI   PBOX1,VB                                                         
+         MVI   PBOXX,VB                                                         
+         MVC   PLINE+2(8),=C'TOTALS  '                                          
+         MVC   PLINE+10(3),=C'PQ='                                              
+         MVC   PLINE+13(1),CUSERF                                               
+         LA    R2,TCTFILE                                                       
+         BAS   RE,PCOUNTS                                                       
+         MVC   PLINE+15(48),MYWORK                                              
+         MVC   PLINE+64(7),=C'ACTIVE '                                          
+         LA    R2,TCAFILE                                                       
+         BAS   RE,PCOUNTS                                                       
+         MVC   PLINE+72(48),MYWORK                                              
+*                                                                               
+         BAS   RE,PRINTL                                                        
+         XC    TCOUNTS,TCOUNTS                                                  
+         MVI   PLINE,HB                                                         
+         MVC   PLINE+1(155),PLINE                                               
+         MVI   PBOX1,BL                                                         
+         MVI   PBOXX,BR                                                         
+         BAS   RE,PRINTL                                                        
+         B     EXITEQ                                                           
+         EJECT                                                                  
+                                                                                
+***********************************************************************         
+* COUNT TOTALS FOR USER / ALL                                                   
+***********************************************************************         
+COUNT    NTR1                                                                   
+*                                                                               
+         SR    R1,R1               SET R0 TO NUMBER OF PART 2S                  
+         SR    R0,R0                                                            
+         IC    R1,QLNCI                                                         
+         IC    R0,QLNCIX                                                        
+         BCTR  R1,0                                                             
+         AR    R0,R1                                                            
+*                                                                               
+         MVC   CUSERN,GUSERN       SAVE NAME                                    
+         MVC   CUSERF,QLINDEX-1    SAVE NAFILE NUMBER                           
+*                                                                               
+         LA    RF,TCTFILE          TOTALS TOR FILE                              
+         BAS   RE,COUNTR                                                        
+         LA    RF,UCTFILE          TOTALS FOR USER                              
+         BAS   RE,COUNTR                                                        
+*                                                                               
+         TM    QLSTAT,X'80'        TEST FOR ACTIVE                              
+         BZ    COUNTX                                                           
+*                                                                               
+         MVC   HALF1,TODAYC                                                     
+         TM    QLTYP1,QLTYNCD                                                   
+         BO    *+10                                                             
+         MVC   HALF1,TODAYO                                                     
+         CLC   QLAGERD,HALF1       TEST FOR WELL EXPIRED                        
+         BL    COUNTX                                                           
+         BH    COUNT050                                                         
+*                                                                               
+         CLC   QLAGERT,TIMEI       TEST FOR JUST EXPIRED                        
+         BL    COUNTX                                                           
+*                                                                               
+COUNT050 LA    RF,TCAFILE          TOTAL ACTIVES FOR FILE                       
+         BAS   RE,COUNTR                                                        
+         LA    RF,UCAFILE          TOTAL ACTIVES FOR USER                       
+         BAS   RE,COUNTR                                                        
+*                                                                               
+COUNTX   B     EXITEQ                                                           
+*                                                                               
+COUNTR   L     R1,FILEQ(RF)        FILE COUNT                                   
+         LA    R1,1(R1)                                                         
+         ST    R1,FILEQ(RF)                                                     
+*                                                                               
+         L     R1,BYTEQ(RF)        BYTE COUNT                                   
+         MVC   HALF,QLPAGES                                                     
+         AH    R1,HALF                                                          
+         ST    R1,BYTEQ(RF)                                                     
+*                                                                               
+         L     R1,CI1Q(RF)         1 CI COUNT                                   
+         LA    R1,1(R1)                                                         
+         ST    R1,CI1Q(RF)                                                      
+*                                                                               
+         LR    R1,R0               2 CI COUNT                                   
+         A     R1,CI2Q(RF)                                                      
+         ST    R1,CI2Q(RF)                                                      
+         BR    RE                                                               
+         EJECT                                                                  
+                                                                                
+***********************************************************************         
+* BUILD LINE OF COUNTER SUMMARY                                                 
+***********************************************************************         
+PCOUNTS  NTR1                                                                   
+*                                                                               
+         MVC   MYWORK,SPACES                                                    
+         MVC   MYWORK+00(6),=C'FILES='                                          
+         MVC   FULL,FILEQ(R2)                                                   
+         BAS   RE,EDITF                                                         
+         MVC   MYWORK+06(5),DUB1                                                
+         MVC   MYWORK+12(6),=C'BYTES='                                          
+         MVC   FULL,BYTEQ(R2)                                                   
+         BAS   RE,EDITF                                                         
+         MVC   MYWORK+18(5),DUB1                                                
+         MVC   MYWORK+24(6),=C'PART2='                                          
+         MVC   FULL,CI2Q(R2)                                                    
+         BAS   RE,EDITF                                                         
+         MVC   MYWORK+30(5),DUB1                                                
+*                                                                               
+         MVC   MYWORK+36(6),=C'SPACE='                                          
+         SR    R0,R0                                                            
+         L     R1,CI1Q(R2)                                                      
+         M     R0,CI1SIZE                                                       
+         ST    R1,FULL                                                          
+         L     R1,CI2Q(R2)                                                      
+         M     R0,CI2SIZE                                                       
+         A     R1,FULL                                                          
+         ST    R1,FULL                                                          
+         BAS   RE,EDITF                                                         
+         MVC   MYWORK+42(5),DUB1                                                
+*                                                                               
+PCOUNTX  B     EXITEQ                                                           
+         EJECT                                                                  
+                                                                                
+***********************************************************************         
+* GET USERID FROM 2 CHR NUMBER                                                  
+***********************************************************************         
+GETUSR   NTR1                                                                   
+         XC    KEY,KEY             FIND ID REC                                  
+         MVI   KEY,CTIKTYPQ                                                     
+         MVC   KEY+CTIKNUM-CTIREC(2),GUSER                                      
+         GOTO1 =V(DATAMGR),DMCB,DMREAD,CTFILE,KEY,ACTIO                         
+         CLI   8(R1),0                                                          
+         BNE   GETUS050                                                         
+         L     R1,ACTIO                                                         
+         LA    R1,CTIDATA-CTIREC(R1)                                            
+GETUS010 CLI   0(R1),X'02'         LOOK FOR ID NAME ELEMENT                     
+         BE    GETUS020                                                         
+         SR    RF,RF                                                            
+         ICM   RF,1,1(R1)          NEXT                                         
+         BZ    GETUS050                                                         
+         AR    R1,RF                                                            
+         B     GETUS010                                                         
+GETUS020 MVC   GUSERN,SPACES       COPY NAME TO GUSERN                          
+         IC    RF,1(R1)                                                         
+         SH    RF,=H'3'                                                         
+         EX    RF,*+8                                                           
+         B     *+10                                                             
+         MVC   GUSERN(0),2(R1)                                                  
+         B     EXITEQU                                                          
+*                                                                               
+GETUS050 MVC   GUSERN,SPACES       NO RECORD JUST EDIT OUT                      
+         EDIT  (B2,GUSER),(6,GUSERN),ALIGN=LEFT                                 
+         B     EXITEQU                                                          
+         EJECT                                                                  
+                                                                                
+***********************************************************************         
+* STATUS ROUTINE BYTE=STAT DUB=RESULT                                           
+***********************************************************************         
+STATOUT  NTR1                                                                   
+         MVC   DUB,SPACES          CLEAR OUTPUT AREA                            
+         LA    RF,STATTBL                                                       
+         SR    R0,R0                                                            
+*                                                                               
+         LA    R1,X'80'            START FROM X'80'                             
+STAT010  EX    R1,*+8                                                           
+         B     *+8                                                              
+         TM    BYTE,0              TEST STATUS SET                              
+         BZ    STAT020                                                          
+*                                                                               
+         CH    R0,=H'0'                                                         
+         BNE   STAT011                                                          
+         MVC   DUB(4),0(RF)        FIRST GOES INTO DUB                          
+         B     STAT019                                                          
+*                                                                               
+STAT011  CH    R0,=H'1'                                                         
+         BNE   STAT012                                                          
+         MVI   DUB+4,C','          SECOND IS STAT,STA                           
+         MVC   DUB+5(3),0(RF)                                                   
+         B     STAT019                                                          
+*                                                                               
+STAT012  CH    R0,=H'2'                                                         
+         BNE   STAT020                                                          
+         MVC   DUB+2(3),DUB+4                                                   
+         MVI   DUB+5,C','          THIRD IS ST,ST,ST                            
+         MVC   DUB+6(2),0(RF)                                                   
+         B     STAT019                                                          
+*                                                                               
+STAT019  AH    R0,=H'1'                                                         
+*                                                                               
+STAT020  SRL   R1,1                NEXT STATUS ENTRY                            
+         LA    RF,4(RF)                                                         
+         CLI   0(RF),X'FF'                                                      
+         BNE   STAT010             LOOP BACK                                    
+*                                                                               
+STATOUTX B     EXITEQ                                                           
+*                                                                               
+STATTBL  DC    C'ACTV'                                                          
+         DC    C'HOLD'                                                          
+         DC    C'PROC'                                                          
+         DC    C'SENT'                                                          
+         DC    C'KEEP'                                                          
+         DC    C'DELD'                                                          
+         DC    C'SNDG'                                                          
+         DC    C'CRTG'                                                          
+         DC    C'XXXX'                                                          
+         DC    C'RUNG'                                                          
+         EJECT                                                                  
+                                                                                
+***********************************************************************         
+* EDIT ROUTINE                                                                  
+***********************************************************************         
+EDITF    ST    RE,SAVERE           EDIT FROM FULL                               
+         L     RE,FULL                                                          
+         B     EDITRT                                                           
+EDITH    ST    RE,SAVERE           EDIT FROM HALF                               
+         LH    RE,HALF                                                          
+         B     EDITRT                                                           
+EDITB    ST    RE,SAVERE           EDIT FROM BYTE                               
+         SR    RE,RE                                                            
+         IC    RE,BYTE                                                          
+*                                                                               
+EDITRT   CLI   EDITCHR,C'T'        TREAT AS TEXT, NOT AS A COUNT                
+         BNE   EDITRE                                                           
+         MVI   EDITCHR,C' '        SET CHR TO BLANK                             
+         B     EDITRF                                                           
+*                                                                               
+EDITRE   MVI   EDITCHR,C' '        SET CHR TO BLANK                             
+         C     RE,=F'9216'                                                      
+         BL    EDITRF              IF < 9K JUST EDIT                            
+         C     RE,=F'1048576'                                                   
+         BNL   EDITRM              IF > 1M EDIT MEG                             
+*                                                                               
+         MVI   EDITCHR,C'k'        EDIT k                                       
+         SR    RF,RF                                                            
+         SRDL  RE,10               DIVIDE BY 1K                                 
+         SRL   RF,22                                                            
+         B     EDITRF                                                           
+*                                                                               
+EDITRM   MVI   EDITCHR,C'M'        EDIT M                                       
+         SR    RF,RF                                                            
+         SRDL  RE,20               DIVIDE BY 1M                                 
+         SRL   RF,12                                                            
+*                                                                               
+EDITRF   EDIT  (RE),(8,DUB),DUB=EDUB,ZERO=NOBLANK                               
+*                                                                               
+         CLI   EDITCHR,C' '        NORMAL EDIT EXITS HERE                       
+         BE    EDITX                                                            
+*                                                                               
+         MVC   DUB(5),DUB+3        SHIFT NUMBER ALONG 3                         
+*                                                                               
+         MH    RF,=H'10'                                                        
+         SRL   RF,10                                                            
+         CLI   EDITCHR,C'M'                                                     
+         BNE   *+8                                                              
+         SRL   RF,10                                                            
+         EDIT  (RF),(1,DUB+6),DUB=EDUB,ZERO=NOBLANK                             
+         MVI   DUB+5,C'.'                                                       
+         MVC   DUB+7(1),EDITCHR    INSERT DEC AND EDIT CHR                      
+         CLI   DUB+2,C' '                                                       
+         BE    EDITX               EXIT NOW IF <= 5 CHRS                        
+         MVC   DUB1(5),DUB                                                      
+         MVC   DUB(7),SPACES                                                    
+         MVC   DUB+2(5),DUB1       ELSE DROP THE DEC PLACE                      
+*                                                                               
+EDITX    LM    RE,RF,DUB           PUT ALIGN=LEFT INTO DUB1                     
+         STM   RE,RF,DUB1                                                       
+EDIT1    LM    RE,RF,DUB1                                                       
+         CLI   DUB1,C' '                                                        
+         BNE   EDITXX                                                           
+         SLDL  RE,8                                                             
+         STM   RE,RF,DUB1                                                       
+         MVI   DUB1+7,C' '                                                      
+         B     EDIT1                                                            
+*                                                                               
+EDITXX   L     RE,SAVERE                                                        
+         BR    RE                                                               
+         EJECT                                                                  
+                                                                                
+***********************************************************************         
+* TIME OUTPUT ROUTINE                                                           
+***********************************************************************         
+TIMEOUT  XC    DUB+2(6),DUB+2      EXPAND BINARY TIME IN DUB(2)                 
+         MVC   DUB+2(6),DOTS                                                    
+         CLI   DUB,23                                                           
+         BH    TIMEOUTX                                                         
+         CLI   DUB+1,59                                                         
+         BH    TIMEOUTX                                                         
+*                                                                               
+         SR    R0,R0                                                            
+         IC    R0,DUB                                                           
+         CVD   R0,DUB1                                                          
+         OI    DUB1+7,X'0F'                                                     
+         UNPK  DUB+2(2),DUB1+6(2)                                               
+*                                                                               
+         MVI   DUB+4,C':'                                                       
+         SR    R0,R0                                                            
+         IC    R0,DUB+1                                                         
+         CVD   R0,DUB1                                                          
+         OI    DUB1+7,X'0F'                                                     
+         UNPK  DUB+5(2),DUB1+6(2)                                               
+*                                                                               
+TIMEOUTX BR    RE                                                               
+         EJECT                                                                  
+                                                                                
+***********************************************************************         
+* GET TIME NOW                                                                  
+***********************************************************************         
+GETTIME  ST    RE,SAVERE                                                        
+         TIME  TU                  R0=TIME IN 1/38400 SECS                      
+         SRDL  R0,32                                                            
+         D     R0,=F'38400'        R1=TIME IN SECONDS                           
+         LR    RF,R1                                                            
+         MH    R1,=H'3'                                                         
+         SRL   R1,2                R1=(SECS*3)/4                                
+         STH   R1,TIMEC            TIMEC=TIME IN SPECIAL UNITS                  
+         LR    R1,RF                                                            
+         SR    R0,R0                                                            
+         D     R0,=F'60'           R1=BINARY MINUTES                            
+         SR    RE,RE                                                            
+         LR    RF,R1                                                            
+         D     RE,=F'10'                                                        
+         LTR   RE,RE                                                            
+         BZ    *+8                                                              
+         LA    RF,1(RF)                                                         
+         STC   RF,TIMEI            TIMEI=SINGLE BYTE 10MIN INCREMENT            
+         SR    R0,R0                                                            
+         D     R0,=F'60'           R0=MINS,R1=HOURS                             
+         STC   R1,TIMEB                                                         
+         STC   R0,TIMEB+1          TIMEB=B'HHHHHHHHMMMMMMMM'                    
+         L     RE,SAVERE                                                        
+         BR    RE                                                               
+         EJECT                                                                  
+                                                                                
+***********************************************************************         
+* PRINT TITLE                                                                   
+***********************************************************************         
+TITLE1   DC    CL166' '                                                         
+         ORG   TITLE1                                                           
+         DC    C'1',X'40'                                                       
+         DC    C'--------------------- PARAMETER CARDS ---------------'         
+         DC    C'-----------------------------------------------------'         
+         DC    C'-----------------------------------------------------'         
+         DC    C'-------'                                                       
+         ORG                                                                    
+                                                                                
+***********************************************************************         
+* REPORT LINES                                                                  
+***********************************************************************         
+T1       DC    C'1'                                                             
+         DC    AL1(TL),10AL1(HB)                                                
+         DC    AL1(TM),02AL1(HB)                                                
+         DC    AL1(TM),07AL1(HB)                                                
+         DC    AL1(TM),05AL1(HB)                                                
+         DC    AL1(TM),16AL1(HB)                                                
+         DC    AL1(TM),03AL1(HB)                                                
+         DC    AL1(TM),08AL1(HB)                                                
+         DC    AL1(TM),08AL1(HB)                                                
+         DC    AL1(TM),03AL1(HB)                                                
+         DC    AL1(TM),07AL1(HB)                                                
+         DC    AL1(HB),05AL1(HB)                                                
+         DC    AL1(TM),07AL1(HB)                                                
+         DC    AL1(HB),05AL1(HB)                                                
+         DC    AL1(TM),08AL1(HB)                                                
+         DC    AL1(TM),07AL1(HB)                                                
+         DC    AL1(HB),05AL1(HB)                                                
+         DC    AL1(TM),05AL1(HB)                                                
+         DC    AL1(TM),05AL1(HB)                                                
+         DC    AL1(TM),05AL1(HB)                                                
+         DC    AL1(TM),05AL1(HB)                                                
+         DC    AL1(TM),03AL1(HB)                                                
+         DC    AL1(TM),03AL1(HB)                                                
+         DC    AL1(TR)                                                          
+         DC    9AL1(BB)                                                         
+*                                                                               
+T2       DC    C' '                                                             
+         DC    AL1(VB),10AL1(BB)                                                
+         DC    AL1(VB),02AL1(BB)                                                
+         DC    AL1(VB),07AL1(BB)                                                
+         DC    AL1(VB),05AL1(BB)                                                
+         DC    AL1(VB),16AL1(BB)                                                
+         DC    AL1(VB),03AL1(BB)                                                
+         DC    AL1(VB),08AL1(BB)                                                
+         DC    AL1(VB),08AL1(BB)                                                
+         DC    AL1(VB),03AL1(BB)                                                
+         DC    AL1(VB),07AL1(BB)                                                
+         DC    AL1(BB),05AL1(BB)                                                
+         DC    AL1(VB),07AL1(BB)                                                
+         DC    AL1(BB),05AL1(BB)                                                
+         DC    AL1(VB),08AL1(BB)                                                
+         DC    AL1(VB),07AL1(BB)                                                
+         DC    AL1(BB),05AL1(BB)                                                
+         DC    AL1(VB),05AL1(BB)                                                
+         DC    AL1(VB),05AL1(BB)                                                
+         DC    AL1(VB),05AL1(BB)                                                
+         DC    AL1(VB),05AL1(BB)                                                
+         DC    AL1(VB),03AL1(BB)                                                
+         DC    AL1(VB),03AL1(BB)                                                
+         DC    AL1(VB)                                                          
+         DC    9AL1(BB)                                                         
+*                                                                               
+TITLE2   DC    C' '                                                             
+         DC    AL1(VB),CL10'Userid'                                             
+         DC    AL1(VB),CL02'PQ'                                                 
+         DC    AL1(VB),CL07'Rep-ID'                                             
+         DC    AL1(VB),CL05'Rep#'                                               
+         DC    AL1(VB),CL16'Description'                                        
+         DC    AL1(VB),CL03'Typ'                                                
+         DC    AL1(VB),CL08'Attrib'                                             
+         DC    AL1(VB),CL08'Status'                                             
+         DC    AL1(VB),CL03'Siz'                                                
+         DC    AL1(VB),CL13'Cretated on'                                        
+         DC    AL1(VB),CL13'Sent on'                                            
+         DC    AL1(VB),CL08'Sent to'                                            
+         DC    AL1(VB),CL13'Retain until'                                       
+         DC    AL1(VB),CL05'Recs'                                               
+         DC    AL1(VB),CL05'Bytes'                                              
+         DC    AL1(VB),CL05'Avg'                                                
+         DC    AL1(VB),CL05'Max'                                                
+         DC    AL1(VB),CL03'Cis'                                                
+         DC    AL1(VB),CL03'Xci'                                                
+         DC    AL1(VB)                                                          
+         DC    9AL1(BB)                                                         
+*                                                                               
+T3       DC    C' '                                                             
+         DC    AL1(ML),10AL1(HB)                                                
+         DC    AL1(MM),02AL1(HB)                                                
+         DC    AL1(MM),07AL1(HB)                                                
+         DC    AL1(MM),05AL1(HB)                                                
+         DC    AL1(MM),16AL1(HB)                                                
+         DC    AL1(MM),03AL1(HB)                                                
+         DC    AL1(MM),08AL1(HB)                                                
+         DC    AL1(MM),08AL1(HB)                                                
+         DC    AL1(MM),03AL1(HB)                                                
+         DC    AL1(MM),07AL1(HB)                                                
+         DC    AL1(HB),05AL1(HB)                                                
+         DC    AL1(MM),07AL1(HB)                                                
+         DC    AL1(HB),05AL1(HB)                                                
+         DC    AL1(MM),08AL1(HB)                                                
+         DC    AL1(MM),07AL1(HB)                                                
+         DC    AL1(HB),05AL1(HB)                                                
+         DC    AL1(MM),05AL1(HB)                                                
+         DC    AL1(MM),05AL1(HB)                                                
+         DC    AL1(MM),05AL1(HB)                                                
+         DC    AL1(MM),05AL1(HB)                                                
+         DC    AL1(MM),03AL1(HB)                                                
+         DC    AL1(MM),03AL1(HB)                                                
+         DC    AL1(MR)                                                          
+         DC    9AL1(BB)                                                         
+*                                                                               
+T4       DC    C' '                                                             
+         DC    AL1(BL),10AL1(HB)                                                
+         DC    AL1(BM),02AL1(HB)                                                
+         DC    AL1(BM),07AL1(HB)                                                
+         DC    AL1(BM),05AL1(HB)                                                
+         DC    AL1(BM),16AL1(HB)                                                
+         DC    AL1(BM),03AL1(HB)                                                
+         DC    AL1(BM),08AL1(HB)                                                
+         DC    AL1(BM),08AL1(HB)                                                
+         DC    AL1(BM),03AL1(HB)                                                
+         DC    AL1(BM),07AL1(HB)                                                
+         DC    AL1(HB),05AL1(HB)                                                
+         DC    AL1(BM),07AL1(HB)                                                
+         DC    AL1(HB),05AL1(HB)                                                
+         DC    AL1(BM),08AL1(HB)                                                
+         DC    AL1(BM),07AL1(HB)                                                
+         DC    AL1(HB),05AL1(HB)                                                
+         DC    AL1(BM),05AL1(HB)                                                
+         DC    AL1(BM),05AL1(HB)                                                
+         DC    AL1(BM),05AL1(HB)                                                
+         DC    AL1(BM),05AL1(HB)                                                
+         DC    AL1(BM),03AL1(HB)                                                
+         DC    AL1(BM),03AL1(HB)                                                
+         DC    AL1(BR)                                                          
+         DC    9AL1(BB)                                                         
+*                                                                               
+         EJECT                                                                  
+                                                                                
+***********************************************************************         
+* BOX EQUATES                                                                   
+***********************************************************************         
+TL       EQU   X'AC'               TOP LEFT                                     
+TM       EQU   X'CC'               TOP MIDDLE                                   
+TR       EQU   X'BC'               TOP RIGHT                                    
+HB       EQU   X'BF'               HORIZONTAL BAR                               
+VB       EQU   X'FA'               VERTICAL  BAR                                
+ML       EQU   X'EB'               MIDDLE LEFT                                  
+MM       EQU   X'8F'               MIDDLE MIDDLE                                
+MR       EQU   X'EC'               MIDDLE RIGHT                                 
+BL       EQU   X'AB'               BOTTOM LEFT                                  
+BM       EQU   X'CB'               BOTTOM MIDDLE                                
+BR       EQU   X'BB'               BOTTOM RIGHT                                 
+BB       EQU   X'40'               BLANK LINE                                   
+         EJECT                                                                  
+                                                                                
+***********************************************************************         
+* PRINT ROUTINES                                                                
+***********************************************************************         
+PRINTI   ST    RE,SAVERE                                                        
+         OPEN  (SYSPRINT,OUTPUT)   PRINT INIT                                   
+         ZAP   LINE,=P'0'                                                       
+         ZAP   PAGE,=P'1'                                                       
+         L     RE,SAVERE                                                        
+         BR    RE                                                               
+*                                                                               
+PRINTT   ST    RE,SAVERE           PRINT TITLES                                 
+         ZAP   LINE,=P'0'          RESET LINECOUNT                              
+         AP    PAGE,=P'1'          BUMP PAGECOUNT                               
+         PUT   SYSPRINT,TITLE      PRINT TITLE                                  
+         L     RE,SAVERE                                                        
+         BR    RE                                                               
+*                                                                               
+PRINTL   ST    RE,SAVERE           PRINT LINE                                   
+         AP    LINE,=P'1'          BUMP LINECOUNT                               
+         CP    LINE,MAXLINE        TEST FOR MAX LINES                           
+         BL    PRINTL2                                                          
+*                                                                               
+PRINTL1  ZAP   LINE,=P'3'          RESET LINECOUNT                              
+         AP    PAGE,=P'1'          BUMP PAGECOUNT                               
+         PUT   SYSPRINT,T1         PRINT TITLE                                  
+         PUT   SYSPRINT,TITLE2                                                  
+         PUT   SYSPRINT,T3                                                      
+*                                                                               
+PRINTL2  PUT   SYSPRINT,PLINE      PRINT LINE                                   
+         MVC   PLINE,SPACES                                                     
+         L     RE,SAVERE                                                        
+         BR    RE                  EXIT                                         
+*                                                                               
+PRINTX   ST    RE,SAVERE           CLOSE PRINT                                  
+         CLOSE SYSPRINT                                                         
+         L     RE,SAVERE                                                        
+         BR    RE                                                               
+         EJECT                                                                  
+                                                                                
+***********************************************************************         
+* PARAMETER CARDS AND HANDLING ROUTINE                                          
+***********************************************************************         
+*                                                                               
+*        CL7'KEYWORD',AL1(KEYWRD LEN-1,OP LEN),X'FLAGS',AL3(OUTPUT)             
+*                                                                               
+*FLAGS   X'8000'                   A(OUTPUT) IS A(ROUTINE)                      
+*        X'4000'                   ACCEPT =,/=                                  
+*        X'2000'                   ACCEPT <,>,<=,=>                             
+*        X'1000'                   HEX VALUE                                    
+*        X'0800'                   DEC VALUE                                    
+*        X'0400'                   OUTPUT IS A LIST                             
+*        X'0200'                   TIME VALUE                                   
+*        X'0100'                   DATE VALUE                                   
+*                                                                               
+CARDTAB  DS    0F                                                               
+         DC    C'INPUT  ',AL1(4,4),X'0000',AL3(INPUT)                           
+*        DC    C'OUTPUT ',AL1(5,4),X'0000',AL3(OUTPUT)     TO TAPE ONLY         
+         DC    C'USER   ',AL1(3,2),X'8000',AL3(VALUSR)                          
+         DC    C'PRTQ   ',AL1(3,16),X'0000',AL3(PRTQ)                           
+         DC    C'CDATE  ',AL1(4,2),X'6100',AL3(CDATE)                           
+         DC    C'DDATE  ',AL1(4,2),X'6100',AL3(DDATE)                           
+         DC    C'RDATE  ',AL1(4,2),X'6100',AL3(RDATE)                           
+         DC    C'RID#   ',AL1(3,4),X'6800',AL3(RID#)                            
+         DC    C'RIDLOW ',AL1(5,2),X'0800',AL3(RID#LOW)                         
+         DC    C'RIDHI  ',AL1(4,2),X'0800',AL3(RID#HI)                          
+         DC    C'REPORT ',AL1(5,1),X'0000',AL3(REPFLG)                          
+         DC    C'SUBID  ',AL1(4,3),X'8000',AL3(VALSUBID)                        
+         DC    X'0000'                                                          
+*                                                                               
+* CARD OUTPUT AREAS SET WITH DEFAULTS                                           
+*                                                                               
+INPUT    DC    C'DISK'             INPUT=DISK/TAPE                              
+OUTPUT   DC    C'TAPE'             OUTPUT=TAPE - MUST BE A DUMP TO TAPE         
+REPFLG   DC    C'Y'                REPORT=YES                                   
+PRTQ     DC    C'123456789ABCDEFG '  PRTQ=123456789                             
+USERID   DC    X'0000'             USER=ALL                                     
+SUBID    DC    C'*     '           SUBID=ALL                                    
+CDATE    DC    XL3'F00000'         COMP LIVE DATE                               
+DDATE    DC    XL3'F00000'         COMP DEAD DATE                               
+RDATE    DC    XL3'F00000'         COMP RETAIN DATE                             
+RID#     DC    X'F0',X'0000'       Report ID# to filter                         
+RID#LOW  DC    X'0000'                                                          
+RID#HI   DC    X'0000'                                                          
+         EJECT                                                                  
+                                                                                
+***********************************************************************         
+* VALIDATE INPUT CARDS                                                          
+***********************************************************************         
+VALCARD  NTR1                                                                   
+         ST    RD,CARDRD                                                        
+         LR    R2,R1                                                            
+         LA    R1,79(R1)                                                        
+         ST    R1,CARDEND          SAVE LAST CHR ADDR                           
+         CLI   0(R2),C'*'          * IN COL 1 IS A COMMENT                      
+         BE    EXITEQU                                                          
+*                                                                               
+VALC001  LA    R4,CARDTAB                                                       
+         ST    R2,CARDR2                                                        
+VALC010  SR    R1,R1               GET LEN FOR COMPARE                          
+         IC    R1,7(R4)                                                         
+         EX    R1,*+8              EXECUTE KEYWORD TEST                         
+         B     *+10                                                             
+         CLC   0(0,R2),0(R4)                                                    
+         BE    VALC020                                                          
+         LA    R4,14(R4)           TRY NEXT ENTRY                               
+         CLI   0(R4),0                                                          
+         BNE   VALC010                                                          
+         B     CERRKEY             ERROR INVALID KEYWORD                        
+*                                                                               
+VALC020  LA    R2,1(R2,R1)         POINT TO DELIMITER                           
+*                                                                               
+         LA    RF,VALCDELS         DELIMITER TABLE                              
+         B     *+8                                                              
+VALC021  LA    RF,5(RF)                                                         
+         CLI   0(RF),0                                                          
+         BE    CERRDEL             END OF TABLE INVALID DELIMITER               
+*                                                                               
+         MVC   BYTE,4(RF)          AUTH BIT MUST BE ON                          
+         CLI   BYTE,0              EXCEPT WHEN ZERO                             
+         BE    *+14                                                             
+         NC    BYTE,9(R4)                                                       
+         BZ    VALC021                                                          
+*                                                                               
+         SR    R1,R1                                                            
+         IC    R1,2(RF)            GET EX LEN                                   
+         EX    R1,*+8                                                           
+         B     *+10                                                             
+         CLC   0(0,R2),0(RF)       TEST DELIMITERS                              
+         BNE   VALC021                                                          
+*                                                                               
+         MVC   BYTE,3(RF)          SAVE COMPARE CHR                             
+         LA    R2,1(R1,R2)                                                      
+         B     VALC025                                                          
+*                                                                               
+VALCDELS DC    C'= ',AL1(0),X'80',X'00'                                         
+         DC    C'>=',AL1(1),X'B0',X'20'                                         
+         DC    C'<=',AL1(1),X'D0',X'20'                                         
+         DC    C'/=',AL1(1),X'70',X'40'                                         
+         DC    C'< ',AL1(0),X'40',X'20'                                         
+         DC    C'> ',AL1(0),X'20',X'20'                                         
+         DC    X'00'                                                            
+*                                                                               
+VALC025  LR    R1,R2               GET LEN FOR MOVE                             
+VALC026  CLI   0(R1),C','                                                       
+         BE    VALC030                                                          
+         CLI   0(R1),C' '                                                       
+         BE    VALC030                                                          
+         CLI   0(R1),0                                                          
+         BE    VALC030                                                          
+         LA    R1,1(R1)                                                         
+         B     VALC026                                                          
+*                                                                               
+VALC030  SR    R1,R2                                                            
+*                                                                               
+VALC031  BCTR  R1,0                                                             
+         SR    RF,RF                                                            
+         ICM   RF,7,11(R4)         GET ADDRESS FOR MOVE                         
+*                                                                               
+         TM    9(R4),X'80'         IF ROUTINE                                   
+         BZ    *+10                                                             
+         BASR  RE,RF               GOTO ROUTINE                                 
+         B     VALC500                                                          
+*                                                                               
+         TM    9(R4),X'04'         IF LIST                                      
+         BNO   VALC050                                                          
+VALC040  CLI   0(RF),X'FF'         CHECK NOT FULL                               
+         BE    CERRMAN                                                          
+         CLI   0(RF),0             EMPTY ENTRY                                  
+         BE    VALC050                                                          
+         SR    R0,R0                                                            
+         IC    R0,8(R4)                                                         
+         AR    RF,R0                                                            
+         TM    9(R4),X'60'         /<=>                                         
+         BZ    VALC040                                                          
+         LA    RF,1(RF)            ONE MORE FOR CODE                            
+         B     VALC040                                                          
+*                                                                               
+VALC050  TM    9(R4),X'60'         IF /<=>                                      
+         BZ    *+14                                                             
+         MVC   0(1,RF),BYTE        SAVE COMP CODE                               
+         LA    RF,1(RF)                                                         
+*                                                                               
+         TM    9(R4),X'10'         HEX INPUT                                    
+         BNO   VALC060                                                          
+         LA    R0,1(R1)            SET R0 HEX INPUT LEN                         
+         GOTO1 =V(HEXIN),DMCB,(R2),(RF),(R0)                                    
+         ICM   R1,15,12(R1)                                                     
+         BZ    CERRHEX                                                          
+         B     VALC500                                                          
+*                                                                               
+VALC060  TM    9(R4),X'08'         DEC INPUT                                    
+         BZ    VALC070                                                          
+         LR    R4,R2                                                            
+         LA    R3,1(R1)                                                         
+         BAS   RE,VALNUM           VALIDATE NUMBER                              
+         CLI   DUB,X'FF'                                                        
+         BE    CERRDEC                                                          
+         CVB   R1,DUB                                                           
+         STH   R1,0(RF)            SAVE HALFWORD (DEFAULT)                      
+         B     VALC500                                                          
+*                                                                               
+VALC070  TM    9(R4),X'02'         TIME INPUT                                   
+         BZ    VALC080                                                          
+         BAS   RE,VALTIME                                                       
+         MVC   0(4,RF),FULL                                                     
+         B     VALC500                                                          
+*                                                                               
+VALC080  TM    9(R4),X'01'         DATE INPUT                                   
+         BZ    VALC400                                                          
+         LA    R0,1(R1)            SET R0 INPUT LEN                             
+         ST    RF,FULL                                                          
+         GOTO1 =V(PERVAL),DMCB,((R0),(R2)),(X'60',WORK)                         
+         L     RF,FULL                                                          
+         CLI   4(R1),X'04'                                                      
+         BNE   CERRDAT                                                          
+         MVC   0(2,RF),WORK+PVALNSTA-PERVALD                                    
+         B     VALC500                                                          
+*                                                                               
+VALC400  CLI   8(R4),0             DONT CARE                                    
+         BE    VALC410                                                          
+         CLM   R1,1,8(R4)          CHECK MAX LEN                                
+         BNL   CERRMAX                                                          
+         SR    RE,RE                                                            
+         IC    RE,8(R4)            PAD OUT TO SPACES                            
+         BCTR  RE,0                                                             
+         EX    RE,*+8                                                           
+         B     *+10                                                             
+         MVC   0(0,RF),SPACES                                                   
+VALC410  EX    R1,*+8                                                           
+         B     *+10                                                             
+         MVC   0(0,RF),0(R2)       MOVE TO OUTPUT AREA                          
+*                                                                               
+VALC500  CLI   0(R2),C','          TEST FOR ANOTHER                             
+         LA    R2,1(R2)                                                         
+         BE    VALC001             GO FIND TABLE ENTRY                          
+         C     R2,CARDEND          TEST FOR END OF CARD                         
+         BL    VALC500                                                          
+*                                                                               
+EXITEQU  CR    RB,RB               SET CC EQU                                   
+         B     EXIT                                                             
+         EJECT                                                                  
+*                                                                               
+CERRDEC  LA    R1,=C'MUST BE HEX     '                                          
+         B     CERRX                                                            
+CERRHEX  LA    R1,=C'MUST BE DECIMAL '                                          
+         B     CERRX                                                            
+CERRKEY  LA    R1,=C'INVALID KEYWORD '                                          
+         B     CERRX                                                            
+CERRDEL  LA    R1,=C'INVALID DELIMITR'                                          
+         B     CERRX                                                            
+CERRMAX  LA    R1,=C'VALUE TOO LONG  '                                          
+         B     CERRX                                                            
+CERRMAN  LA    R1,=C'TOO MANY FILTERS'                                          
+         B     CERRX                                                            
+CERRTIM  LA    R1,=C'INVALID TIME    '                                          
+         B     CERRX                                                            
+CERRUSR  LA    R1,=C'INVALID USERD   '                                          
+         B     CERRX                                                            
+CERRDAT  LA    R1,=C'INVALID DATE    '                                          
+         B     CERRX                                                            
+CERRFIL  LA    R1,=C'INVALID FILE    '                                          
+         B     CERRX                                                            
+*                                                                               
+CERRX    L     RD,CARDRD                                                        
+         L     R2,CARDR2                                                        
+         LA    RF,PLINE+1                                                       
+CERRX1   MVC   0(1,RF),0(R2)                                                    
+         CLI   0(RF),C' '                                                       
+         BE    CERRX2                                                           
+         CLI   0(RF),C','                                                       
+         BE    CERRX2                                                           
+         LA    R2,1(R2)                                                         
+         LA    RF,1(RF)                                                         
+         B     CERRX1                                                           
+*                                                                               
+CERRX2   LA    RF,1(RF)                                                         
+         MVC   0(13,RF),=C'*** ERROR ***'                                       
+         LA    RF,14(RF)                                                        
+         MVC   0(16,RF),0(R1)                                                   
+         BAS   RE,PRINTL                                                        
+*                                                                               
+EXITNEQ  LTR   RB,RB               SET CC NEQ                                   
+         B     EXIT                                                             
+         EJECT                                                                  
+                                                                                
+***********************************************************************         
+* GET TIME FROM 0(R2) (R1)=EX LEN  TIME=HH:MM:SS.TU                             
+***********************************************************************         
+VALTIME  NTR1                                                                   
+         MVC   HALF,=C'00'         FIRST MAY BE 1:00 OR 02:00                   
+         CLI   1(R2),C':'                                                       
+         BNE   VALT010                                                          
+*                                                                               
+         MVC   HALF+1(1),0(R2)     ASSUME 1:00                                  
+         LA    R2,2(R2)                                                         
+         B     VALT020                                                          
+*                                                                               
+VALT010  MVC   HALF+0(2),0(R2)     ASSUME 02:00                                 
+         LA    R2,3(R2)                                                         
+*                                                                               
+VALT020  LA    R3,2                PREPARE FULL AND HALF                        
+         LA    R4,HALF                                                          
+         XC    FULL,FULL                                                        
+*                                                                               
+         BAS   RE,VALNUM           VALIDATE HOURS                               
+         L     RF,=A(60*60*100)                                                 
+         BAS   RE,VALTADD                                                       
+*                                                                               
+         MVC   HALF,0(R2)          VALIDATE MINUTES                             
+         BAS   RE,VALNUM                                                        
+         L     RF,=A(60*100)                                                    
+         BAS   RE,VALTADD                                                       
+*                                                                               
+         CLI   2(R2),C':'          TEST FOR SECS                                
+         BNE   EXITEQU                                                          
+         LA    R2,3(R2)                                                         
+         MVC   HALF,0(R2)                                                       
+         BAS   RE,VALNUM           VALIDATE SECS                                
+         L     RF,=F'100'                                                       
+         BAS   RE,VALTADD                                                       
+*                                                                               
+         CLI   2(R2),C'.'          TEST FOR TUS                                 
+         BNE   EXITEQU                                                          
+         LA    R2,3(R2)                                                         
+         MVC   HALF,0(R2)                                                       
+         BAS   RE,VALNUM           VALIDATE TUS                                 
+         LA    RF,1                                                             
+         BAS   RE,VALTADD                                                       
+         B     EXITEQU                                                          
+*                                                                               
+VALTADD  CLI   DUB,X'FF'           TEST FOR INVALID NUMERIC                     
+         BE    CERRTIM                                                          
+         SR    R0,R0               CONVERT AND MULTIPLY BY RF                   
+         CVB   R1,DUB                                                           
+         MR    R0,RF                                                            
+         A     R1,FULL                                                          
+         ST    R1,FULL             ADD TO FULL                                  
+         BR    RE                                                               
+       ++INCLUDE DDVALNUM                                                       
+         EJECT                                                                  
+                                                                                
+***********************************************************************         
+* VALIDATE USRID=                                                               
+***********************************************************************         
+VALUSR   NTR1                                                                   
+         XC    KEY,KEY             FIND ID REC                                  
+         MVI   KEY,CTIKTYPQ                                                     
+         MVC   KEY+CTIKID-CTIREC,SPACES                                         
+         EX    R1,*+8                                                           
+         B     *+10                                                             
+         MVC   KEY+CTIKID-CTIREC(0),0(R2)                                       
+         GOTO1 =V(DATAMGR),DMCB,DMREAD,CTFILE,KEY,ACTIO                         
+         CLI   8(R1),0                                                          
+         BNE   CERRUSR                                                          
+         L     R1,ACTIO                                                         
+         LA    R1,CTIDATA-CTIREC(R1)                                            
+VALUS010 CLI   0(R1),X'02'         LOOK FOR ID NUMBER ELEMENT                   
+         BE    VALUS020                                                         
+         SR    R0,R0                                                            
+         ICM   R0,1,1(R1)          NEXT                                         
+         BZ    CERRUSR                                                          
+         AR    R1,R0                                                            
+         B     VALUS010                                                         
+VALUS020 MVC   USERID(2),2(R1)                                                  
+         B     EXITEQU                                                          
+         EJECT                                                                  
+                                                                                
+***********************************************************************         
+* VALIDATE SUBID= R2=SUBID R1=EX LEN                                            
+***********************************************************************         
+VALSUBID NTR1                                                                   
+         MVC   SUBID,SPACES        CLEAR TO SPACES                              
+         EX    R1,*+8                                                           
+         B     *+10                                                             
+         MVC   SUBID(0),0(R2)      JUST COPY INTO FILE                          
+         B     EXITEQU                                                          
+         EJECT                                                                  
+                                                                                
+***********************************************************************         
+* CONSTANTS & LTORG                                                             
+***********************************************************************         
+DMREAD   DC    CL7'DMREAD'                                                      
+CTFILE   DC    CL7'CTFILE'                                                      
+DMPRINT  DC    CL7'DMPRINT'                                                     
+BUFFER   DC    CL7'BUFFER'                                                      
+FFOPEN   DC    CL7'FFOPEN'                                                      
+GLIST    DC    CL7'GLIST'                                                       
+GFILE    DC    CL7'GFILE'                                                       
+PRTQUE   DC    CL7'PRTQU '                                                      
+SEQ      DC    CL7'SEQ '                                                        
+SPACES   DC    CL166' '                                                         
+DOTS     DC    CL16'................'                                           
+MAXLINE  DC    P'60'                                                            
+*                                                                               
+SRTCARD  DC    C'SORT FIELDS=(1,9,BI,A) '                                       
+RECCARD  DC    C'RECORD TYPE=F,LENGTH=126 '                                     
+*                                                                               
+SOFLAB   DS    0CL10                                                            
+         DC    X'0000',C'SOFSOF',X'0000'                                        
+EOFLAB   DS    0CL10                                                            
+         DC    X'FFFF',C'EOFEOF',X'FFFF'                                        
+*                                                                               
+RCMSGH   DC    AL2(RCMSGL)                                                      
+RCMSGM   DC    C' -PROGRESS- '                                                  
+         DC    C'PRTQ'                                                          
+RCMSGF   DC    C' '                                                             
+         DC    C' - file read count = '                                         
+RCMSGC   DC    C'XXXXXXXXXX'                                                    
+RCMSGL   EQU   *-RCMSGM                                                         
+*                                                                               
+PRTQRECL EQU   13680                                                            
+*                                                                               
+         LTORG                                                                  
+         EJECT                                                                  
+                                                                                
+***********************************************************************         
+*        DCBS & ADCONS                                                          
+***********************************************************************         
+TAPEIN   DCB   DDNAME=TAPEIN,DSORG=PS,MACRF=(GM),EODAD=TAPEEND,        X        
+               RECFM=VB,BLKSIZE=0,LRECL=4004,BUFNO=2                            
+*                                                                               
+TAPEOUT  DCB   DDNAME=TAPEOUT,DSORG=PS,MACRF=(PM),                     X        
+               RECFM=VB,BLKSIZE=0,LRECL=4004,BUFNO=2                            
+*                                                                               
+SYSPRINT DCB   DSORG=PS,MACRF=PM,DDNAME=SYSPRINT,RECFM=FBA,LRECL=(166)          
+*                                                                               
+UTL      DC    F'0',X'01',XL3'00',XL252'00'                                     
+SSB      DC    X'0000FF',X'40',4X'00',CL8' ',1024X'00'                          
+*                                                                               
+       ++INCLUDE FATABSDEQU                                                     
+*                                                                               
+         DS    0D                                                               
+         DC    CL8'WKWKWKWK'                                                    
+WORKAREA DC    60000X'00'                                                       
+         EJECT                                                                  
+                                                                                
+***********************************************************************         
+*        WORKING STORAGE                                                        
+***********************************************************************         
+WORKD    DSECT                                                                  
+SAVERD   DS    A                                                                
+MAINRD   DS    A                                                                
+SAVERE   DS    A                                                                
+CARDRD   DS    A                                                                
+CARDR2   DS    A                                                                
+*                                                                               
+APQBUFF  DS    A                                                                
+ACTIO    DS    A                                                                
+*                                                                               
+DUB      DS    D                                                                
+DUB1     DS    D                                                                
+EDUB     DS    D                                                                
+FULL     DS    F                                                                
+HALF     DS    H                                                                
+HALF1    DS    H                                                                
+HALF2    DS    H                                                                
+BYTE     DS    X                                                                
+EDITCHR  DS    X                                                                
+DMCB     DS    6F                                                               
+PLIST    DS    6F                                                               
+CARDEND  DS    A                                                                
+PQFILE   DS    CL8                                                              
+ERRINF   DS    CL10                                                             
+WORK     DS    CL64                                                             
+MYWORK   DS    CL64                                                             
+LINE     DS    PL2                                                              
+PAGE     DS    PL4                                                              
+PLINE    DS    CL166                                                            
+TITLE    DS    CL166                                                            
+TODAY    DS    CL3                 YYMMDD PWOS                                  
+TIMEI    DS    CL1                 BINARY 10 MINUTES                            
+TODAYC   DS    H                   TODAY TYPE 14, DATES>2027                    
+TODAYO   DS    H                   TODAY COMP                                   
+TIMEB    DS    H                   BINARY HHMM                                  
+TIMEC    DS    H                   BINARY (SECS*3)/4                            
+*                                                                               
+RCPRTQ   DS    C                   Progress message PRTQ number                 
+RCPRTQC  DS    F                   Progress message PRTQ count                  
+*                                                                               
+CARD     DS    CL80                                                             
+KEY      DS    CL40                                                             
+         DS    CL40                                                             
+WKKEY    DS    CL40                                                             
+*                                                                               
+CSOFNDX  DS    CL(L'QLINDEX)       SOF INDEX FOR CURRENT FILE                   
+*                                                                               
+FERI     DS    C                   FILE ERROR INDICTOR                          
+FERL     EQU   C'L'                . RECORD LENGTH ERROR                        
+*                                                                               
+PRTQLST  DS    0X                                                               
+PRTQMAX  DS    X                   NUMBER OF PRTQ FILES                         
+         DS    X                                                                
+PRTQFLG  DS    X                                                                
+         DS    XL5                                                              
+PRTQNTRY DS    16XL8               MAXIMUM OF 16 PRTQ FILES                     
+PRTQLSTX DS    XL8                                                              
+*                                                                               
+         DS    0F                                                               
+       ++INCLUDE DMPRTQW                                                        
+*                                                                               
+CI1SIZE  DS    F                                                                
+CI2SIZE  DS    F                                                                
+CITSIZE  DS    F                                                                
+*                                                                               
+GUSER    DS    XL2                                                              
+GUSERN   DS    CL10                                                             
+CUSERN   DS    CL10                NAME OF USER FOR COUNT                       
+CUSERF   DS    CL1                 FILE NUMBER OF USER                          
+*                                                                               
+SVCIADDR DS    F                   SAVED CI ADDRESS                             
+SVREPNO  DS    H                   SAVED REPORT NUMBER                          
+RIND     DS    X                   READ INDICATOR                               
+RFIRST   EQU   X'00'               READ FIRST RECORD FOR REPORT                 
+RNEXT    EQU   X'80'               READ NEXT RECORD FOR REPORT                  
+RNEXT#   EQU   X'40'               READ NEXT REPORT                             
+*                                                                               
+FILEQ    EQU   0                                                                
+BYTEQ    EQU   4                                                                
+CI1Q     EQU   8                                                                
+CI2Q     EQU   12                                                               
+         DS    0F                                                               
+UCOUNTS  DS    0XL32                                                            
+UCAFILE  DS    F                   USER COUNT ACTIVE FILES                      
+UCABYTE  DS    F                   USER COUNT ACTIVE BYTES                      
+UCA1CI   DS    F                   USER COUNT ACTIVE PT1S                       
+UCA2CI   DS    F                   USER COUNT ACTIVE PT2S                       
+*                                                                               
+UCTFILE  DS    F                   USER COUNT TOTAL FILES                       
+UCTBYTE  DS    F                   USER COUNT TOTAL BYTES                       
+UCT1CI   DS    F                   USER COUNT TOTAL PT1S                        
+UCT2CI   DS    F                   USER COUNT TOTAL PT2S                        
+*                                                                               
+TCOUNTS  DS    0XL32                                                            
+TCAFILE  DS    F                   TOTAL COUNT ACTIVE FILES                     
+TCABYTE  DS    F                   TOTAL COUNT ACTIVE BYTES                     
+TCA1CI   DS    F                   TOTAL COUNT ACTIVE PT1S                      
+TCA2CI   DS    F                   TOTAL COUNT ACTIVE PT2S                      
+*                                                                               
+TCTFILE  DS    F                   TOTAL COUNT TOTAL FILES                      
+TCTBYTE  DS    F                   TOTAL COUNT TOTAL BYTES                      
+TCT1CI   DS    F                   TOTAL COUNT TOTAL PT1S                       
+TCT2CI   DS    F                   TOTAL COUNT TOTAL PT2S                       
+*                                                                               
+IOAREAF  DS    XL4                                                              
+IOAREA   DS    CL(PRTQRECL)                                                     
+*                                                                               
+         DS    CL8                                                              
+CTIO     DS    2048C                                                            
+*                                                                               
+PQBUFF   DS    14336C                                                           
+*                                                                               
+SPARE    DS    1024C                                                            
+WORKX    EQU   *                                                                
+*                                                                               
+         EJECT                                                                  
+*************************************************************                   
+*        OTHER DSECTS                                       *                   
+*************************************************************                   
+PLINED   DSECT                                                                  
+         DS    CL1                                                              
+PBOX1    DS    CL1                                                              
+PRUSER   DS    CL10                                                             
+         DS    CL1                                                              
+PLPRTQ   DS    CL2                                                              
+         DS    CL1                                                              
+PLLSUB   DS    0CL3                                                             
+PLKEY    DS    CL7                                                              
+         DS    CL5                                                              
+PRREPNO  DS    CL5                                                              
+         DS    CL1                                                              
+PRDESC   DS    CL16                                                             
+         DS    CL1                                                              
+PLTYPE   DS    CL3                                                              
+         DS    CL1                                                              
+PLATTR   DS    CL8                                                              
+         DS    CL1                                                              
+PRSTAT   DS    CL8                                                              
+         DS    CL1                                                              
+PLSIZE   DS    CL3                                                              
+         DS    CL1                                                              
+PLLIVED  DS    CL7                                                              
+         DS    CL1                                                              
+PLLIVET  DS    CL5                                                              
+         DS    CL1                                                              
+PLDEADD  DS    CL7                                                              
+         DS    CL1                                                              
+PLDEADT  DS    CL5                                                              
+         DS    CL1                                                              
+PLSENTO  DS    CL8                                                              
+         DS    CL1                                                              
+PLRETAD  DS    CL7                                                              
+         DS    CL1                                                              
+PLRETAT  DS    CL5                                                              
+         DS    CL1                                                              
+PLRECS   DS    CL5                                                              
+         DS    CL1                                                              
+PLBYTES  DS    CL5                                                              
+         DS    CL1                                                              
+PLAVG    DS    CL5                                                              
+         DS    CL1                                                              
+PLMAX    DS    CL5                                                              
+         DS    CL1                                                              
+PLCIS    DS    CL3                                                              
+         DS    CL1                                                              
+PLCISX   DS    CL3                                                              
+PBOXX    DS    CL1                                                              
+         EJECT                                                                  
+         DCBD    DSORG=QS,DEVD=DA                                               
+*                                                                               
+* DDPERVALD                                                                     
+* DMPRTQL                                                                       
+* DMPRTQK                                                                       
+* CTGENFILE                                                                     
+* FASSBOFF                                                                      
+* DMSPACED                                                                      
+         PRINT OFF                                                              
+       ++INCLUDE DDPERVALD                                                      
+       ++INCLUDE DMPRTQL                                                        
+       ++INCLUDE DMPRTQD                                                        
+       ++INCLUDE DMPRTQK                                                        
+       ++INCLUDE DMPRTQS                                                        
+       ++INCLUDE CTGENFILE                                                      
+       ++INCLUDE DMSPACED                                                       
+         PRINT ON                                                               
+                                                                                
+SSBOFFD  DSECT                                                                  
+       ++INCLUDE FASSBOFF                                                       
+                                                                                
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'003PQDUMP    04/13/20'                                      
+         END                                                                    

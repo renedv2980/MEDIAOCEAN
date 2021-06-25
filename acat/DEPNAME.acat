@@ -1,0 +1,509 @@
+*          DATA SET DEPNAME    AT LEVEL 065 AS OF 05/01/02                      
+*CATALP PNAMEA                                                                  
+*                                                                               
+         TITLE 'VARIABLE COMPARISON OF 2 STRINGS'                               
+***********************************************************************         
+*INPUTS:                                                              *         
+*        PARM1   BYTE 0            L'FILTER EXPRESSION                *         
+*                BYTE 1-3          A(FILTER EXPRESSION)               *         
+*                                                                     *         
+*        PARM2   BYTE 0            L'SOURCE STRING                    *         
+*                BYTE 1-3          A(SOURCE STRING)                   *         
+*                                                                     *         
+*        PARM3   BYTE 0-4          A(SCANNER)                         *         
+*                                                                     *         
+*                                                                     *         
+*OUTPUTS:                                                             *         
+*                                                                     *         
+*NOTE:   1. WHEN VALIDATING, PARM2 MUST=0                             *         
+*        2. CALLING PROCEDURE MUST PASS THE ADDRESS OF SCANNER        *         
+*                                                                     *         
+*VALID FILTERS ARE:                                                   *         
+*       '-4L' / '-20R'  = TRUNCATE ## CHARACTERS FROM LEFT OR RIGHT   *         
+*       '*XYZ'          = SEARCH FOR STRING WITH '*'=WILD CARD        *         
+*       'XYZ'           = COMPARES FOR EXACT MATCH INCL LENGTH        *         
+*       '<ABC'          = IF 'ABC' APPEARS AT STRING END,TRUNCATE IT  *         
+*                                                                     *         
+***********************************************************************         
+         PRINT NOGEN                                                            
+PNAME    CSECT                                                                  
+         NMOD1 WORKX-WORKD,**PNAME**                                            
+         USING WORKD,RC                                                         
+         LR    RA,R1               RA=A(PARMLIST)                               
+         MVC   VSCANNER,8(RA)      SAVE ADDRESS OF SCANNER                      
+*                                                                               
+*EXPRESSION                                                                     
+         XC    EXPRH,EXPRH                                                      
+         MVI   EXPRH,8+L'EXPR      FAKE FLDH LENGTH                             
+         L     R3,0(RA)                                                         
+         LA    R3,0(R3)            R3=A(FILTER)                                 
+         ZIC   R2,0(RA)            R2=L'FILTER EXPRESSION                       
+         LTR   R2,R2               MAKE SURE FILTER EXISTS                      
+         BZ    MATCH               NO FILTERS - EXIT                            
+         STC   R2,EXPRH+5          SAVE LENGTH IN FAKE FIELD HDR                
+         BCTR  R2,0                DECR FOR EXMVC                               
+         EXMVC R2,EXPR,0(R3)       FILTER EXPRESSION                            
+         OC    EXPR,SPACES         BLANK PAD                                    
+*                                                                               
+*SOURCE STRING                                                                  
+         MVI   VAL,C'N'            INIT VALIDATION FLAG                         
+         ZIC   R2,4(RA)            R3=L'INPUT STRING                            
+         OC    4(4,RA),4(RA)                                                    
+         BNZ   *+12                                                             
+         MVI   VAL,C'Y'            ONLY VALIDATE EXPRESSION PARMS               
+         B     PARMS                                                            
+*                                                                               
+         L     R3,4(RA)                                                         
+         LA    R3,0(R3)            R3=A(INPUT STRING)                           
+         ST    R3,ASTRG                                                         
+         LTR   R2,R2               MAKE SURE L'STR IS NON-ZERO                  
+         BZ    ERR2                                                             
+         BCTR  R2,0                DECR FOR EXMVC                               
+         EXMVC R2,STRING,0(R3)     SAVE SOURCE STRING                           
+         OC    STRING,SPACES                                                    
+*                                                                               
+         LA    R3,STRING           TRUNCATE TRAILING SPACES                     
+         AR    R3,R2               PT TO LAST BYTE OF STRING                    
+         CLI   0(R3),C' '                                                       
+         BNE   PNAM10              NON SPACE INDICATES LAST CHAR IN STG         
+         BCTR  R3,0                NO, BACK UP ANOTHER BYTE                     
+         BCT   R2,*-10             KEEP TESTING                                 
+         B     NOMATCH             SOURCE STRING IS EMPTY                       
+*                                                                               
+PNAM10   LA    R2,1(R2)                                                         
+         STC   R2,STRLEN           SAVE ACTUAL LENGTH                           
+*                                                                               
+PARMS    DS    0H                                                               
+         MVI   TRUNC,C'N'                                                       
+         GOTO1 VSCANNER,DMCB,(70,EXPRH),SCANTBL                                 
+         CLI   4(R1),0                                                          
+         BE    ERR2                INVALID EXPRESSION                           
+         MVC   ENTYS,4(R1)         SAVE # ENTRIES IN TABLE                      
+         ZIC   R1,ENTYS                                                         
+         MH    R1,=Y(L'SCANTBL)    LENGTH OF SCAN ENTRY                         
+         LA    R1,SCANTBL(R1)      END ADDRESS                                  
+         ST    R1,SCANX            NO MORE ENTRIES                              
+         MVI   INDENT,0            INDENT FOWARD/BACK=0                         
+         MVI   DIR,C'L'            DEFAULT DIRECTION=LEFT                       
+         MVI   ERRNUM,0            CLEAR ERROR CODE                             
+         LA    R2,SCANTBL          PARSE THRU FILTERS                           
+         BAS   RE,LESSFLT          SEARCH FOR '<' FILTER                        
+         CLI   ERRNUM,0                                                         
+         BNE   EXIT                                                             
+*                                                                               
+SCANLP   DS    0H                  SCAN LOOP                                    
+         ST    R2,SCANLN           SAVE WHICH LINE WE'RE DOING                  
+         MVI   ERRNUM,0                                                         
+         CLI   0(R2),0             ANY INPUT?                                   
+         BE    ERR2                NO - MISSING INPUT                           
+         CLI   12(R2),C'<'         SPECIAL FILTER                               
+         BE    SCANLP5             ALREADY HANDLED ABOVE IN LESSFLT             
+         CLI   12(R2),C'-'         IS THIS AN INDENT REQUEST?                   
+         BNE   SCANLP2                                                          
+         MVI   TRUNC,C'Y'          TRUNCATION REQUEST-ONLY                      
+         BAS   RE,INDNT            YES, SET DIR AND INDENT AMT                  
+         BNZ   EXIT                CC=NZ (ERRNUM SET) IF ERRORS                 
+         B     SCANLP5                                                          
+*                                                                               
+SCANLP2  MVI   TRUNC,C'N'          NOT A TRUNC ONLY REQUEST                     
+         BAS   RE,FILTER           PROCESS FILTER                               
+         BZ    MATCH               CC=0 IF MATCH                                
+         CLI   ERRNUM,2            ERROR, EXIT                                  
+         BE    ERR2                                                             
+*                                                                               
+SCANLP5  L     R2,SCANLN           TEST NEXT PARM                               
+         LA    R2,L'SCANTBL(R2)    NEXT SCAN ENTRY                              
+         C     R2,SCANX            HAVE WE PROCESSED ALL ENTRIES?               
+         BL    SCANLP              NOT YET, LOOP BACK                           
+         CLI   VAL,C'Y'                                                         
+         BE    MATCH               NO ERRORS- RETURN ZERO                       
+         CLI   TRUNC,C'N'          TRUNCATION ONLY REQUEST?                     
+         BE    NOMATCH             NO, SEARCH STRNG DID NOT MATCH               
+         B     MATCH               NO ERRORS                                    
+         EJECT                                                                  
+***********************************************************************         
+*LESSFLT-'<' FILTER.  IF THE CHARACTERS AT THE END OF THE INPUT STRING          
+*        MATCH THE FILTER CHARACTERS, TRUNCATE THOSE CHAR.  MULTIPLE            
+*        FILTERS WILL BE HANDLED. I.E. PNAME='<(SP)','<(RG)','<-'               
+*        I.E. PNAME='<(SP)','<(RG)'   STRING='ABC NEWS-(RG) (SP)'               
+*             OUTPUT:'ABC NEWS'                                                 
+***********************************************************************         
+LESSFLT  NTR1                                                                   
+         MVI   ERRNUM,0                                                         
+         LA    R3,LESSTBL          TBL WILL HOLD CHARS TO SCAN FOR              
+         XC    LESSTBL,LESSTBL                                                  
+         LA    R2,SCANTBL          LIST OF INPUT PARMS                          
+LESS5    CLI   12(R2),C'<'         PUT ALL '<' FILTER STRGS IN TBL              
+         BNE   LESS20                                                           
+         MVI   TRUNC,C'Y'                                                       
+LESS10   CLI   0(R2),1             MUST BE INPUT FOLLOWING '<' SIGN             
+         BH    *+12                YES                                          
+         MVI   ERRNUM,2                                                         
+         B     LESSX                                                            
+*                                                                               
+         ZIC   R1,0(R2)            L'ENTRY IN SCANTBL                           
+         BCTR  R1,0                -1 FOR '<' CHARACTER                         
+         STC   R1,0(R3)            SAVE FILTER CHARS LENGTH                     
+         BCTR  R1,0                -1 FOR EXMVC                                 
+         EXMVC R1,1(R3),13(R2)                                                  
+         AR    R3,R1               NEXT ENTRY IN TABLE                          
+         LA    R3,2(R3)            +1 FOR EXMVC  +1 FOR LENGTH FIELD            
+*                                                                               
+LESS20   LA    R2,L'SCANTBL(R2)    NEXT PARAMETER IN LIST                       
+         C     R2,SCANX            END OF PARMS?                                
+         BL    LESS5                                                            
+         CLI   VAL,C'Y'            DONE WITH VAILDATING, NOW PROCESS?           
+         BE    LESSX               NO                                           
+*                                                                               
+*PROCESS FILTERS                                                                
+*                                                                               
+         CLI   LESSTBL,0           TABLE EMPTY?                                 
+         BE    LESSX                                                            
+         MVC   NEWSTR,SPACES                                                    
+         MVC   NEWSTR,STRING                                                    
+         MVC   NEWLEN,STRLEN                                                    
+LESS50   LA    R3,LESSTBL          PT TO FILTERS FND AND SAVED IN TBL           
+         LA    RE,NEWSTR                                                        
+         ZIC   RF,NEWLEN                                                        
+         AR    RE,RF                                                            
+         BCTR  RE,0                                                             
+         BCTR  RF,0                LENGTH OF STRING                             
+*                                                                               
+LESS52   CLI   0(RE),C' '          TRUNCATE TRAILING SPACES                     
+         BNE   LESS55                                                           
+         STC   RF,NEWLEN                                                        
+         BCTR  RE,0                                                             
+         BCT   RF,LESS52                                                        
+*                                                                               
+LESS55   CLI   0(R3),0             END OF TABLE?                                
+         BE    LESS70              YES- OVERWRITE OLD STRG WITH NEWSTR          
+         LA    RE,NEWSTR                                                        
+         ZIC   RF,NEWLEN                                                        
+         AR    RE,RF               RE PTS TO 1 BYTE AFTER STRG END              
+         ZIC   R1,0(R3)            LENGTH OF ENTRY IN TABLE                     
+         CR    R1,RF               IS FILTER LEN LESS THAN STRG LEN             
+         BH    LESS60              NO, PROCESS NEXT FILTER                      
+         SR    RE,R1               BACKSPACE WITHIN STRG TO COMPARE             
+         BCTR  R1,0                -1 FOR EXCLC                                 
+         EXCLC R1,0(RE),1(R3)      CMP TBL FILTER TO STRG END                   
+         BNE   LESS60              NO MATCH, NEXT FILTER                        
+         EXMVC R1,0(RE),SPACES     CLEAR STRING                                 
+         LA    R1,1(R1)            +1 FROM EXCLC                                
+         ZIC   RF,NEWLEN                                                        
+         SR    RF,R1               STR LEN - # CHARS TO DEL                     
+         STC   RF,NEWLEN           SAVE NEW LEN                                 
+         CLI   NEWLEN,0                                                         
+         BE    LESSX               IF ENTIRE PGR NAME IS DELETED-END            
+         B     LESS50              ELSE RESTART PARSING FROM TBL TOP            
+*                                                                               
+LESS60   ZIC   R1,0(R3)            # CHARS TO BUMP TO NEXT POSN IN TBL          
+         LA    R1,1(R1)            FOR LENGTH FIELD IN TABLE                    
+         AR    R3,R1               NEXT FILTER                                  
+         B     LESS55                                                           
+*                                                                               
+LESS70   DS    0H                                                               
+         L     R1,ASTRG            REPLACE STRING WITH NEW ONE                  
+         ZIC   RF,4(RA)            ORIGINAL LENGTH                              
+         BCTR  RF,0                                                             
+         EXMVC RF,0(R1),SPACES                                                  
+         ZIC   RF,NEWLEN                                                        
+         BCTR  RF,0                                                             
+         EXMVC RF,0(R1),NEWSTR                                                  
+         MVC   STRING,SPACES                                                    
+         MVC   STRLEN,NEWLEN                                                    
+         EXMVC RF,STRING,NEWSTR                                                 
+         LA    RF,1(RF)                                                         
+         STC   RF,4(RA)                                                         
+*                                                                               
+LESSX    B     XIT                                                              
+*                                                                               
+         EJECT                                                                  
+***********************************************************************         
+*INDNT PARM  - R2=A(SCANTBL ENTRY)                                              
+***********************************************************************         
+INDNT    NTR1                                                                   
+         CLI   0(R2),3             MIN LENGTH=3  E.G. -2R                       
+         BL    INERR2              INVALID INDENT EXPRESSION                    
+         ZIC   R1,0(R2)            DELETE TRAILING BLANKS                       
+         BCTR  R1,0                                                             
+         LA    R3,12(R2)           TRUNCATE TRAILING SPACES                     
+         AR    R3,R1               PT TO LAST BYTE OF STRING                    
+         CLI   0(R3),C' '                                                       
+         BNE   IND5                NON SPACE INDICATES LAST CHAR IN STG         
+         BCTR  R3,0                NO, BACK UP ANOTHER BYTE                     
+         BCT   R1,*-10             KEEP TESTING                                 
+         B     INERR2              FIELD IS EMPTY                               
+*                                                                               
+IND5     LA    R1,1(R1)                                                         
+         STC   R1,0(R2)            SAVE ACTUAL LENGTH                           
+*                                                                               
+         CLI   0(R2),3             MIN LENGTH=3  E.G. -2R                       
+         BL    INERR2              INVALID INDENT EXPRESSION                    
+         ZIC   R1,0(R2)            L'PARAM                                      
+         LA    R3,12(R2)           BEGIN OF EXPR                                
+         AR    R3,R1                                                            
+         BCTR  R3,0                PT TO LAST BYTE IN PARM                      
+         CLI   0(R3),C'L'          LEFT?                                        
+         BE    *+12                                                             
+         CLI   0(R3),C'R'          RIGHT?                                       
+         BNE   INERR2                                                           
+         MVC   DIR,0(R3)           SAVE DIRECTION                               
+         SH    R1,=H'2'            DECR LENGTH FOR 'R'/'L'  AND '-'             
+*                                                                               
+         LA    RF,13(R2)           VALIDATE NUMERIC PART OF PARM                
+IND10    CLI   0(RF),C'0'                                                       
+         BL    INERR2              INVALID                                      
+         CLI   0(RF),C'9'                                                       
+         BH    INERR2                                                           
+         LA    RF,1(RF)                                                         
+         BCT   R1,IND10                                                         
+*                                                                               
+         CLI   0(R2),4             MAX LENGTH IS 4 (-79R)                       
+         BH    INERR2                                                           
+         ZIC   R1,0(R2)            FULL LENGTH OF PARM                          
+         SH    R1,=H'3'            -1(+CHAR)-1(DIR CHAR)-1(EX)                  
+         EX    R1,*+8                                                           
+         B     *+10                                                             
+         PACK  DUB,13(0,R2)                                                     
+         CVB   R1,DUB                                                           
+         STC   R1,INDENT           SAVE INDENT VALUE                            
+         CLI   INDENT,79           MAX IS +79                                   
+         BH    INERR2                                                           
+*                                                                               
+IND20    CLI   VAL,C'Y'            DON'T ADJUST PRG NAME FOR VALIDATION         
+         BE    INDNTX                                                           
+         MVC   NEWLEN,STRLEN                                                    
+         MVC   NEWSTR,SPACES       SET RETURN STRING                            
+         CLC   INDENT,STRLEN                                                    
+         BNL   IND25                                                            
+         ZIC   R3,STRLEN           LENGTH OF ENTIRE PRG NAME                    
+         ZIC   RF,INDENT           INDENT AMT                                   
+         SR    R3,RF               R3= NEW/LEFTOVER SOURCE LENGTH               
+         STC   R3,DUB              TEMP SAVE NEW SOURCE STRNG LENGTH            
+         SR    RE,RE               WILL HOLD ADDR OF SOURCE STR                 
+         CLI   DIR,C'L'            DELETE CHARS FROM BEG OF STRING?             
+         BNE   *+6                 NO                                           
+         LR    RE,RF               YES, ADD INDENT AMT TO STRING ADDR           
+         LA    RE,STRING(RE)       RE=SEARCH POSN IN SOURCE STRING              
+         BCTR  R3,0                DECR FOR EXMVC                               
+         EXMVC R3,NEWSTR,0(RE)                                                  
+         LA    R3,1(R3)                                                         
+         STC   R3,4(RA)            SAVE NEW STRING LENGTH                       
+*                                                                               
+IND25    ZIC   R3,4(RA)                                                         
+         BCTR  R3,0                                                             
+         EXCLC R3,NEWSTR,SPACES    IS NEW STRING ALL BLANK?                     
+         BE    INDNTX              YES, DON'T TRUNCATE                          
+         L     R1,ASTRG            A(SOURCE STRING PASSED)                      
+         ZIC   RF,STRLEN                                                        
+         BCTR  RF,0                                                             
+         EXMVC RF,0(R1),SPACES     CLEAR ENTIRE INPUT STRING                    
+         ZIC   RF,4(RA)                                                         
+         BCTR  RF,0                                                             
+         EXMVC R3,0(R1),NEWSTR                                                  
+         LA    R3,1(R3)                                                         
+         STC   R3,4(RA)            SAVE NEW LENGTH                              
+         B     INDNTX                                                           
+*                                                                               
+INERR2   MVI   ERRNUM,2            INVALID INDENT PARAMETER                     
+*                                                                               
+INDNTX   OC    ERRNUM,ERRNUM                                                    
+         B     XIT                                                              
+         EJECT                                                                  
+*                                                                               
+***********************************************************************         
+*FILTER -ANALYZE FILTER REQUEST AND PROCESS. R2= A(SCAN TBL ENTRY)              
+***********************************************************************         
+FILTER   NTR1                                                                   
+         XC    SRCHSTR,SRCHSTR                                                  
+         CLI   0(R2),1                                                          
+         BNE   *+12                                                             
+         CLI   12(R2),C' '                                                      
+         BE    FLTERR2                                                          
+*                                                                               
+         ZIC   R1,0(R2)            L'INPUT FIELD                                
+         BCTR  R1,0                                                             
+         LA    R3,12(R2)           TRUNCATE TRAILING SPACES                     
+         AR    R3,R1               PT TO LAST BYTE OF STRING                    
+         CLI   0(R3),C' '                                                       
+         BNE   FLT5                NON SPACE INDICATES LAST CHAR IN STG         
+         BCTR  R3,0                NO, BACK UP ANOTHER BYTE                     
+         BCT   R1,*-10             KEEP TESTING                                 
+         B     FLTERR2             FIELD IS EMPTY                               
+*                                                                               
+FLT5     LA    R1,1(R1)                                                         
+         STC   R1,0(R2)            SAVE ACTUAL LENGTH                           
+*                                                                               
+         CLI   0(R2),1             EXPR IS ONLY 1 CHAR LONG?                    
+         BNE   *+12                                                             
+         CLI   12(R2),C'*'                                                      
+         BE    FLTERR2             ERROR- INVALID FIELD                         
+         CLI   0(R2),2             EXPR = 2 CHARS LONG?                         
+         BNE   *+14                                                             
+         CLC   12(2,R2),=C'**'                                                  
+         BE    FLTERR2             ERROR- INVALID FIELD                         
+*                                                                               
+         CLI   VAL,C'Y'                                                         
+         BE    FLTERR1             SET TO NO MATCH                              
+*                                                                               
+         CLC   INDENT,STRLEN       IS INDENT VALUE < STRING LENGTH              
+         BNL   FLTERR1             NO MATCH                                     
+*                                                                               
+         MVI   VAR,C'N'            VARIABLE STRING SEARCH: DEFAULT=NO           
+         CLI   12(R2),C'*'                                                      
+         BNE   *+8                                                              
+         MVI   VAR,C'Y'                                                         
+*                                                                               
+         MVI   EXACT,C'Y'          EXACT MATCH (LENGTH): DEFAULT=YES            
+         ZIC   R1,0(R2)            L'PARM (EXPR)                                
+         BCTR  R1,0                                                             
+         LA    R3,12(R2)           BEGIN OF PARM+LEN=                           
+         AR    R3,R1               R3=LAST BYTE IN STRING                       
+         CLI   0(R3),C'*'          NON-EXACT MATCH- TRAILING DATA OKAY          
+         BNE   *+10                                                             
+         MVI   EXACT,C'N'          NO                                           
+         BCTR  R1,0                                                             
+*                                                                               
+         CLI   VAR,C'Y'            IF VAR SRCH, REMOVE * AT BEG OF STRG         
+         BNE   FLT10                                                            
+         BCTR  R1,0                DECR LENGTH FOR *                            
+         EXMVC R1,SRCHSTR,13(R2)   SAVE RAW SEARCH STRING                       
+         B     FLT12                                                            
+*                                                                               
+FLT10    EXMVC R1,SRCHSTR,12(R2)   SAVE SEARCH STRING                           
+*                                                                               
+FLT12    LA    R1,1(R1)                                                         
+         STC   R1,SRCHLEN          SAVE ADJUSTED LENGTH                         
+         ZIC   R3,STRLEN           SOURCE STRING LENGTH                         
+         ZIC   RF,INDENT           INDENT AMT                                   
+         SR    R3,RF               R3= NEW/LEFTOVER SOURCE LENGTH               
+         STC   R3,DUB              TEMP SAVE NEW SOURCE STRNG LENGTH            
+         SR    RE,RE               WILL HOLD ADDR OF SOURCE STR                 
+         CLI   DIR,C'L'            DELETE CHARS FROM BEG OF STRING?             
+         BNE   *+6                 NO                                           
+         LR    RE,RF               YES, ADD INDENT AMT TO STRING ADDR           
+         LA    RE,STRING(RE)       RE=SEARCH POSN IN SOURCE STRING              
+         BCTR  R3,0                DECR FOR EXMVC                               
+         EXMVC R3,NEWSTR,0(RE)                                                  
+         STC   R3,NEWLEN           SAVE NEW STRING LENGTH                       
+         LA    R3,1(R3)            RESTORE STRING LENGTH                        
+*                                                                               
+         ZIC   RF,SRCHLEN          LENGTH OF SEARCH STRING                      
+         CR    R3,RF               IS SOURCE LEN < SEARCH LEN?                  
+         BL    FLTERR1             YES, -> NOT FOUND                            
+*                                                                               
+         CLI   VAR,C'Y'            VARIABLE SEARCH?                             
+         BNE   FLT20               NO                                           
+FLT15    CLC   DUB(1),SRCHLEN      IS SOURCE LEN < SEARCH LEN?                  
+         BL    FLTERR1             YES, -> NOT FOUND                            
+         CLI   EXACT,C'Y'          IF EXACT MATCH,STRLEN MUST=SRCHLN            
+         BNE   *+14                                                             
+         CLC   DUB(1),SRCHLEN      IS SOURCE LEN = SEARCH LEN?                  
+         BNE   FLT17               NO, DON'T TEST STRINGS                       
+         ZIC   RF,SRCHLEN          COMPARE STRINGS                              
+         BCTR  RF,0                                                             
+         EXCLC RF,0(RE),SRCHSTR                                                 
+         BE    FLTFND              FOUND                                        
+*                                                                               
+FLT17    ZIC   R3,DUB                                                           
+         BCTR  R3,0                NO, KEEP CUTTING SOURCE LEN                  
+         STC   R3,DUB                                                           
+         LA    RE,1(RE)            PT TO NEXT POSN IN SRC STRING                
+         B     FLT15                                                            
+*                                                                               
+FLT20    CLI   EXACT,C'Y'                                                       
+         BNE   *+10                                                             
+         CR    R3,RF                                                            
+         BNE   FLTERR1                                                          
+         BCTR  RF,0                SEARCH LEN-1 (FOR EXCLC)                     
+         EXCLC RF,0(RE),SRCHSTR                                                 
+         BNE   FLTERR1             NOT FOUND                                    
+*                                                                               
+FLTFND   MVI   ERRNUM,0            MATCH!                                       
+         CLI   VAL,C'Y'                                                         
+         BE    FILTX                                                            
+         ZIC   R3,NEWLEN                                                        
+         L     R1,ASTRG            A(SOURCE STRING PASSED)                      
+         ZIC   RF,STRLEN           ORIGINAL STRING LENGTH                       
+         BCTR  RF,0                                                             
+         EXMVC RF,0(R1),SPACES     CLEAR INPUT STRING                           
+         EXMVC R3,0(R1),NEWSTR                                                  
+         LA    R3,1(R3)                                                         
+         STC   R3,4(RA)            SAVE NEW LENGTH                              
+         B     FILTX                                                            
+*                                                                               
+FLTERR1  MVI   ERRNUM,1            NO MATCH                                     
+         B     FILTX                                                            
+FLTERR2  MVI   ERRNUM,2            INVALID INPUT FIELD                          
+         B     FILTX                                                            
+*                                                                               
+FILTX    OC    ERRNUM,ERRNUM                                                    
+         B     XIT                                                              
+         EJECT                                                                  
+*                                                                               
+*                                                                               
+***********************************************************************         
+*EXIT CODES -  SET PARM 1 ON OUTPUT. SET CC: ZERO=FOUND, NZ=NOT FND/ERR         
+***********************************************************************         
+*                                                                               
+*                                                                               
+MATCH    MVI   ERRNUM,X'00'        MATCH! - SEARCH STRG FND IN SRC STRG         
+         B     EXIT                                                             
+NOMATCH  MVI   ERRNUM,X'01'        NO MATCH                                     
+         B     EXIT                                                             
+ERR2     MVI   ERRNUM,X'02'        INVALID EXPRESSION                           
+         B     EXIT                                                             
+*                                                                               
+XIT      XIT1                                                                   
+*                                                                               
+EXIT     MVC   0(1,RA),ERRNUM                                                   
+         ZIC   R1,ERRNUM                                                        
+         LTR   R1,R1               SET COND CODE                                
+         XMOD1                                                                  
+         EJECT                                                                  
+* ********************************************************************          
+*              LITERALS ETC.                                                    
+* ********************************************************************          
+*                                                                               
+SPACES   DC    CL80' '             SPACES                                       
+LESSTBL  DC    XL80'00'            '<' FILTERS                                  
+*                                                                               
+         LTORG                                                                  
+         EJECT                                                                  
+* ********************************************************************          
+* WORKING STORAGE                                                               
+* ********************************************************************          
+WORKD    DSECT                                                                  
+*                                                                               
+         DS    0H                                                               
+PARM1    DS    CL80                                                             
+PARM2    DS    CL80                                                             
+*                                                                               
+ENTYS    DS    X                   # ENTRIES IN SCANTABLE                       
+TRUNC    DS    X                   TRUNCATE ONLY?                               
+VAL      DS    X                   VALIDATION CALL?                             
+ERRNUM   DS    X                   ERROR CODE                                   
+EXACT    DS    X                   EXACT MATCH ON SEARCH STRING: Y/N            
+VAR      DS    X                   VARIABLE SEARCH?                             
+INDENT   DS    X                   # CHARS TO DELETE FROM LEFT OR RIGHT         
+DIR      DS    X                   DIRECTN LEFT OR RIGHT TO INDENT: L/R         
+NEWLEN   DS    X                   NEW LENGTH OF SRC STRING                     
+STRLEN   DS    X                   LENGTH OF SOURCE STRING                      
+SRCHLEN  DS    X                   LENGTH OF SEARCH STRING                      
+SCANX    DS    A                   END ADDRESS FOR SCAN LOOP                    
+SCANLN   DS    A                   A(CURRENT SCAN LINE)                         
+ASTRG    DS    A                   A(INPUT STRING)                              
+VSCANNER DS    A                   A(SCANNER)                                   
+DUB      DS    D                   DOUBLE WORD                                  
+DMCB     DS    12F                                                              
+EXPRH    DS    CL8                 FAKE FIELD HEADER FOR SCANNER                
+EXPR     DS    CL80                INPUT EXPRESSION                             
+STRING   DS    CL80                SOURCE STRING                                
+NEWSTR   DS    CL80                NEW SOURCE STRING                            
+SRCHSTR  DS    CL80                SEARCH STRING                                
+SCANTBL  DS    35CL92              SCAN TABLE                                   
+WORKX    EQU   *                                                                
+         EJECT                                                                  
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'065DEPNAME   05/01/02'                                      
+         END                                                                    

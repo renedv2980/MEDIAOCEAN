@@ -1,0 +1,252 @@
+*          DATA SET DDSTXITER  AT LEVEL 003 AS OF 11/02/17                      
+*PROCESS USING(WARN(15))                                                        
+*CATALP STXITER                                                                 
+         TITLE 'STXITER - CONTROL/PRINT PARTIAL DUMPS'                          
+***********************************************************************         
+* THIS PROGRAM ALLOWS A CALLING PROGRAM TO DUMP FROM ONE TO TEN AREAS *         
+* IF THERE IS AN ABEND IN THE PROGRAM.                                *         
+* P1 IS THE ADDRESS OF A LIST OF AREAS TO DUMP. AN AREA IS DEFINED BY *         
+* ITS START AND END ADDRESSES, OR BY A START ADDRESS AND A LENGTH.    *         
+* END OF LIST IS DEFINED BY X'80' IN HOB END ADDRESS OR LENGTH.       *         
+***********************************************************************         
+STXITER  CSECT                                                                  
+         PRINT NOGEN                                                            
+         NMOD1 0,**STXTER,RR=(R8)                                               
+         ST    R8,RELO                                                          
+         L     R3,=A(DMPLIST)                                                   
+         A     R3,RELO                                                          
+         L     R2,0(R1)            GET USER'S LIST                              
+*                                                                               
+         LA    R5,FULL             FOR A(TIOT)                                  
+         EXTRACT (5),FIELDS=TIOT                                                
+         L     R5,FULL                                                          
+         LA    R5,24(R5)                                                        
+*                                                                               
+STXIT0   CLI   0(R5),0             NO CALLER ALLOCATIONS IF END OF TIOT         
+         BE    STXIT1                                                           
+         CLC   4(8,R5),=C'SYSMDUMP'  EXIT IF CALLER HAS //SYSMDUMP DD           
+         BE    EXIT                                                             
+*NOP*    CLC   4(8,R5),=C'SYSUDUMP'  EXIT IF CALLER HAS //SYSUDUMP DD           
+*NOP*    BE    EXIT                                                             
+         LLC   R0,0(R5)            GET LENGTH OF THIS ENTRY                     
+         AR    R5,R0               BUMP TO NEXT ENTRY                           
+         B     STXIT0                                                           
+*                                                                               
+STXIT1   MVI   IDFFLAG,C'N'        ASSUME WE'RE NOT RUNNING UNDER IDF           
+         CSVQUERY INEPNAME=ASMIDF  IS ASMIDF LOADED?                            
+         LTR   RF,RF                                                            
+         BNZ   *+8                                                              
+         MVI   IDFFLAG,C'Y'        YES-SET RUNNING UNDER IDF                    
+         LA    R0,10               SET MAX PDUMPS                               
+*                                                                               
+STXIT2   LM    R4,R5,0(R2)         GET START & END ADDRESS                      
+         LA    R5,0(R5)            CLEAR HIGH ORDER BYTE                        
+         CR    R4,R5               IF START ADDR LESS THAN END                  
+         BL    STXIT4              ALLOW IT, MUST BE ENDING ADDRESS             
+         C     R5,=F'65536'        LENGTH CAN'T BE OVER 64K                     
+         BNH   *+6                                                              
+         DC    H'0'                                                             
+         AR    R5,R4               START + LEN = END                            
+*                                                                               
+STXIT4   STM   R4,R5,0(R3)                                                      
+*                                                                               
+         TM    4(R2),X'80'         CHECK FOR E-O-L                              
+         BO    STXITX                                                           
+         LA    R2,8(R2)                                                         
+         LA    R3,8(R3)                                                         
+         BCT   R0,STXIT2                                                        
+         AHI   R3,-8                                                            
+*                                                                               
+STXITX   MVI   4(R3),X'80'         FORCE E-O-L FLAG                             
+*                                                                               
+         L     R0,=A(STXPRT)                                                    
+         A     R0,RELO                                                          
+         L     R1,=A(STXREGS)                                                   
+         A     R1,RELO                                                          
+*                                                                               
+         L     R2,=A(STXPRT)                                                    
+         CLI   IDFFLAG,C'Y'        ARE WE RUNNING UNDER IDF?                    
+         BE    TERMNO              YES-SET TERM=NO PARAMETER                    
+         ESTAE (R2),CT,ASYNCH=YES,TERM=YES                                      
+         B     EXIT                                                             
+*                                                                               
+TERMNO   DS    0H                                                               
+         ESTAE (R2),CT,ASYNCH=YES,TERM=NO                                       
+*                                                                               
+EXIT     XMOD1 1                                                                
+*                                                                               
+RELO     DC    A(0)                                                             
+FULL     DC    F'0'                                                             
+ASMIDF   DC    CL8'ASMIDF'         DEBUGGER EXECUTABLE NAME                     
+IDFFLAG  DC    C' '                'Y' IF RUNNING UNDER ASMIDF                  
+*                                                                               
+         LTORG                                                                  
+         DROP  RB                                                               
+         EJECT                                                                  
+***********************************************************************         
+* ESTAE ABEND ROUTINE TO PRINT DUMP OR WRITE TO DISK                  *         
+***********************************************************************         
+STXPRT   DS    0D                                                               
+         USING *,RF                                                             
+         STM   RE,RC,12(RD)                                                     
+         ST    RD,ESTAERD                                                       
+         ST    R1,ESTAER1                                                       
+         DROP  RF                                                               
+*                                                                               
+         LR    RB,RF                                                            
+         USING STXPRT,RB                                                        
+*                                                                               
+         USING SDWA,R1                                                          
+         MVC   STXPSW,SDWAEC1          SAVE USER PSW                            
+         MVC   STXREGS(64),SDWAGRSV    R0-RF                                    
+         DROP  R1                                                               
+*                                                                               
+         ST    RD,STXSAVE+4        CAN'T USE LAST SAVE AREA                     
+         LA    RD,STXSAVE          SET UP NEW                                   
+*                                                                               
+         ESTAE 0                   CANCEL PREVIOUS ESTAE                        
+*                                                                               
+         LA    R3,DMPLIST-8                                                     
+NXTDMP   LA    R3,8(R3)                                                         
+         LM    R4,R5,0(R3)         GET START & END ADDRESSES                    
+         LA    R5,0(R5)            CLEAR HIGH ORDER BYTE                        
+         BAS   R9,PDUMP                                                         
+         CLI   STMODE,C'M'         ONLY ONE MDUMPER CALL                        
+         BE    NXTDMPX1                                                         
+         TM    4(R3),X'80'         TEST END OF LIST                             
+         BZ    NXTDMP                                                           
+*                                                                               
+NXTDMPX  L     R1,ESTAER1          PDUMPER MODE                                 
+         SETRP DUMP=NO,RC=0                                                     
+         B     NXTDMPX2                                                         
+*                                                                               
+NXTDMPX1 L     R1,ESTAER1          MDUMPER MODE                                 
+         SETRP DUMP=YES,RC=0                                                    
+*                                                                               
+NXTDMPX2 L     RD,ESTAERD          RETURN TO CALLER                             
+         LM    RE,RC,12(RD)                                                     
+         BR    RE                                                               
+         EJECT                                                                  
+***********************************************************************         
+* SET DUMP MODE AND DATA AND CALL PDUMPER OR MDUMPER                  *         
+***********************************************************************         
+PDUMP    MVI   STFLAGS,0           CLEAR FLAGS                                  
+         LT    RF,=V(MDUMPER)                                                   
+         BZ    *+8                                                              
+         OI    STFLAGS,VMDUMPQ     SET V(MDUMPER) PRESENT                       
+         LT    RF,=V(PDUMPER)                                                   
+         BZ    *+8                                                              
+         OI    STFLAGS,VPDUMPQ     SET V(PDUMPER) PRESENT                       
+*                                                                               
+PDUMP2   LT    RE,=V(SSB)          TEST IF V(MASTC) IS DEFINED IN SSB           
+         BZ    PDUMP6                                                           
+         CLI   SSOXTND-SSOOFF(RE),X'FF'                                         
+         BNE   PDUMP6                                                           
+         LT    RE,SSOMASTC-SSOOFF(RE)                                           
+         BZ    PDUMP6                                                           
+         OI    STFLAGS,VMASTCQ     SET V(MASTC) PRESENT                         
+         USING MASTD,RE                                                         
+         CLI   MCDUMP,C'M'         TEST AND SET MDUMPER WANTER                  
+         BNE   *+8                                                              
+         OI    STFLAGS,WMDUMPQ                                                  
+         MVC   STUSERID,MCUSERID   SAVE SOME DATA FROM V(MASTC)                 
+         MVC   STPROG,MCPROG                                                    
+         MVC   STDESTID,MCDESTID                                                
+         MVC   STOVSYS,MCOVSYS                                                  
+         MVC   STAGYA,MCUSER                                                    
+         DROP  RE                                                               
+*                                                                               
+PDUMP4   LT    RE,=V(UTL)          TEST IF V(UTL) IS RESOLVED                   
+         BZ    PDUMP6                                                           
+         MVC   STSENUM,4(RE)                                                    
+*                                                                               
+PDUMP6   TM    STFLAGS,VMDUMPQ     TEST IF HAVE V(MDUMPER)                      
+         BO    PDUMPM              YES-THEN USE IT                              
+         B     PDUMPP                                                           
+*                                                                               
+PDUMPM   MVI   STMODE,C'M'         SET TO USE MDUMPER                           
+         LT    RF,=V(MDUMPER)                                                   
+         BZR   R9                  EXIT IF V(MDUMPER) NOT INCLUDED              
+         XC    P1(16),P1                                                        
+         LA    R0,=CL8'DUMP'                                                    
+         GOTO1 (RF),P1,(R0)                                                     
+         BR    R9                                                               
+*                                                                               
+PDUMPP   MVI   STMODE,C'P'         SET TO USE PDUMPER                           
+         LT    RF,=V(PDUMPER)                                                   
+         BZR   R9                  EXIT IF V(PDUMPER) NOT INCLUDED              
+         XC    P1(16),P1                                                        
+         LA    R0,STXPSW                                                        
+         GOTO1 (RF),P1,(R0),(R4),(R5)                                           
+         BR    R9                                                               
+*                                                                               
+ESTAER1  DS    F                                                                
+ESTAERD  DS    F                                                                
+         DS    0D                                                               
+         DC    CL8'STXREGS'                                                     
+STXPSW   DS    D                                                                
+STXREGS  DS    8D                                                               
+DMPLIST  DC    20F'0'                                                           
+         DC    CL8'STXSAVE'                                                     
+STXSAVE  DS    16D                                                              
+*                                                                               
+         DC    CL8'STXDATA'                                                     
+STXDATA  DC    XL32'00'                                                         
+         ORG   STXDATA                                                          
+STUSERID DS    CL8                 USER ID ALPHA (FIRST 8 CHRS)                 
+STREPID  DS    CL3                 PQ REPORT ID                                 
+STREPNO  DS    XL2                 PQ REPORT NUMBER                             
+STPROG   DS    CL2                 PROGRAM ID                                   
+STCC     DS    XL3                 COMPLETION CODE X'SSSUUU'                    
+STDESTID DS    XL2                 USER ID NUMBER                               
+STSENUM  DS    XL1                 SE NUMBER                                    
+STOVSYS  DS    XL1                 SYSTEM NUMBER                                
+STAGYA   DS    CL2                 AGENCY ALPHA                                 
+         DS    XL8                 N/D                                          
+*                                                                               
+STMODE   DC    C' '                MODE M=MDUMPER                               
+*                                                                               
+STFLAGS  DC    X'00'                                                            
+WMDUMPQ  EQU   X'10'               V(MDUMPER) REQUESTED IN MCDUMP               
+VMASTCQ  EQU   X'04'               V(MASTC)   PRESENT                           
+VPDUMPQ  EQU   X'02'               V(PDUMPER) PRESENT                           
+VMDUMPQ  EQU   X'01'               V(MDUMPER) PRESENT                           
+*                                                                               
+P1       DS    A                                                                
+P2       DS    A                                                                
+P3       DS    A                                                                
+P4       DS    A                                                                
+P5       DS    A                                                                
+P6       DS    A                                                                
+*                                                                               
+SPIERD   DS    A                                                                
+SPIERE   DS    A                                                                
+SPIERF   DS    A                                                                
+SPIER0   DS    A                                                                
+SPIER1   DS    A                                                                
+SPIER2   DS    A                                                                
+SPIER3   DS    A                                                                
+SPIER4   DS    A                                                                
+SPIER5   DS    A                                                                
+SPIER6   DS    A                                                                
+SPIER7   DS    A                                                                
+SPIER8   DS    A                                                                
+SPIER9   DS    A                                                                
+SPIERA   DS    A                                                                
+SPIERB   DS    A                                                                
+SPIERC   DS    A                                                                
+*                                                                               
+         LTORG                                                                  
+*                                                                               
+* IHASDWA MACRO                                                                 
+         PRINT OFF                                                              
+         IHASDWA GR32=YES                                                       
+         PRINT ON                                                               
+* FASSBOFF                                                                      
+       ++INCLUDE FASSBOFF                                                       
+* DDMASTD                                                                       
+       ++INCLUDE DDMASTD                                                        
+*                                                                               
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'003DDSTXITER 11/02/17'                                      
+         END                                                                    

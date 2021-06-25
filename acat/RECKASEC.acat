@@ -1,0 +1,419 @@
+*          DATA SET RECKASEC   AT LEVEL 132 AS OF 08/27/07                      
+*CATALP RECKASEC                                                                
+         TITLE 'RECKASEC' - REPPAK PAR APPLICATION ACCESS VALIDATION            
+***********************************************************************         
+* HISTORY OF CHANGES:                                                 *         
+* AUG27/07 (BU ) - LENGTH OF COMPARE IS L(SECDEF VALUE), NOT L(ABACT) *         
+*                                                                     *         
+*                                                                     *         
+*                                                                     *         
+***********************************************************************         
+*                                                                               
+* INPUT  PARAMETER 1 = A(APPLICATION PAR BLOCK) (REGENABLK)                     
+*                                                                               
+*        PARAMETER 2 = A(FLD HEADER FOR ERROR MESSAGE) (OPTIONAL)               
+*                                                                               
+*        PARAMETER 3 = A(TIOB) (OPTIONAL - FOR BEEP ON ERROR)                   
+*                                                                               
+*        ---------------------------------------------------------              
+*                                                                               
+*        PARAMETER 4 = A(RFBLOCK)                                               
+*                                                                               
+*        PARAMETER 5 = VREPFACS                                                 
+*                                                                               
+*        ---------------------------------------------------------              
+*                                                                               
+* OUTPUT          CC = EQUAL     - REQUEST VAILD                                
+*                 CC = NOT EQUAL - REQUEST INVALID                              
+*                                                                               
+*        PARAMETER 1 = BYTE 0 ----- RETURN CODE ------ (ONLY ONE)               
+*                             X'00' SECURED, ACCESS GRANTED                     
+*                             X'01' UNSECURED, ACCESS GRANTED                   
+*                             X'80' SECURED, ACCESS DENIED                      
+*                             X'52' NO PID NUMBER CONNECTED - VALID             
+*                                                                               
+RECKASEC CSECT                                                                  
+         PRINT NOGEN                                                            
+         NMOD1 (WORKDX-WORKD),*CKSEC*,CLEAR=YES,RR=R5                           
+         USING WORKD,RC                                                         
+***********************************************************************         
+* INITIALIZATION                                                                
+***********************************************************************         
+         ST    R5,RELO                                                          
+         ST    RD,SAVERD                                                        
+         ST    R1,SVPARM                                                        
+         L     RA,0(R1)            A(SBLOCK)                                    
+         USING SECBLK,RA                                                        
+         L     RF,12(R1)           P4                                           
+         MVC   RFBLOCK,0(RF)       COMFACS,AGENCY CODE                          
+         MVC   VREPFACS,16(R1)                                                  
+*                                                                               
+         L     RE,COMFACS          RESOLVE ADDRESSES                            
+         USING COMFACSD,RE                                                      
+         MVC   GETFACT,CGETFACT                                                 
+         MVC   HELLO,CHELLO                                                     
+         MVC   DATAMGR,CDATAMGR                                                 
+         DROP  RE                                                               
+*                                                                               
+         MVC   AGENCYCT,AGENCY     SAVE CONNECTED REP CODE                      
+*                                                                               
+         XC    KEY,KEY             READ REPREC FOR MASTER REP CODE              
+         LA    R6,KEY                                                           
+         USING RREPREC,R6                                                       
+         MVI   RREPKTYP,X'01'                                                   
+         MVC   RREPKREP,AGENCY                                                  
+         GOTOX (RFGETREC,VREPFACS),DMCB,KEY,IOAREA,0,RFBLOCK                    
+         BE    *+6                                                              
+         DC    H'0'                                                             
+         LA    R6,IOAREA                                                        
+         CLC   RREPMAST,=X'FFFF'   MASTER?                                      
+         BE    CKS020                                                           
+         OC    RREPMAST,=X'4040'                                                
+         CLC   RREPMAST,=X'4040'                                                
+         BE    CKS020              NO MASTER/SUBSID CONTROL                     
+         MVC   AGENCY,RREPMAST     USE MASTER REP CODE TO READ PAR REC          
+         DROP  R6                                                               
+***********************************************************************         
+* FIND APPLICABLE SECDEF RECORD FOR THIS ACCESS REQUEST                         
+***********************************************************************         
+CKS020   DS    0H                                                               
+         XC    KEY,KEY             GET ROOT SECDEF REC FOR PGM                  
+         LA    R6,KEY                                                           
+         USING RSDFREC,R6                                                       
+         MVC   RSDFKTYP(2),=X'1502'                                             
+         MVC   RSDFKREP,AGENCY                                                  
+         MVC   RSDFKPRG,ABPGM                                                   
+         MVC   KEYSAVE,KEY                                                      
+         GOTO1 DATAMGR,DMCB,=C'DMRDHI',=C'REPDIR',KEY,KEY,0                     
+         CLC   KEY(18),KEYSAVE                                                  
+         BNE   EXITOK              NO - SECDEF REC, NO SECURITY DEFINED         
+         CLC   RSDFKREC,ABREC      ROOT PGM REQUEST?                            
+         BE    CKS050              YES - STRAIGHT TO GETREC                     
+         MVC   WORK(L'KEY),KEY     SAVE THIS ROOT KEY                           
+         MVC   KEY,KEYSAVE                                                      
+         MVC   RSDFKREC,ABREC                                                   
+         MVC   KEYSAVE,KEY                                                      
+         GOTO1 DATAMGR,DMCB,=C'DMRDHI',=C'REPDIR',KEY,KEY,0                     
+         CLC   KEY(26),KEYSAVE     MATCH W/REC TYPE?                            
+         BE    CKS050              DO GETREC                                    
+         MVC   KEY,WORK            REVERT TO ROOT PGM                           
+         CLC   RSDFKREC,SPACES     IS THIS ACTUALLY A ROOT KEY?                 
+         BNE   EXITOK              NO                                           
+         DROP  R6                                                               
+*                                                                               
+CKS050   DS    0H                  FETCH SECDEF RECORD                          
+         GOTO1 DATAMGR,DMCB,=C'GETREC',=C'REPFIL',KEY+28,SDFREC,DMWORK          
+         CLI   8(R1),0                                                          
+         BE    *+6                                                              
+         DC    H'0'                                                             
+***********************************************************************         
+* READ PAR RECORD TO FIND USERS ACCESS LEVEL                                    
+***********************************************************************         
+         GOTO1 GETFACT,DMCB,0      GET PID NUMBER                               
+         L     RF,0(R1)                                                         
+         MVC   PIDNUM,FAPASSWD-FACTSD(RF)                                       
+*                                                                               
+         OC    PIDNUM,PIDNUM                                                    
+         BNZ   CKS140                                                           
+         L     R1,SVPARM                                                        
+         MVI   0(R1),X'52'         NO PID NUMBER - SECURITY INACTIVE            
+         MVI   4(R1),0                                                          
+         B     EXITOK              RETURN CC:EQUAL                              
+*                                                                               
+CKS140   DS    0H                                                               
+         XC    ACCLEV,ACCLEV       DEFAULT ACCESS LEVEL                         
+*                                                                               
+         XC    KEY,KEY                                                          
+         LA    R6,KEY                                                           
+         USING RSECREC,R6                                                       
+         MVC   RSECKTYP(2),=X'1501'                                             
+         MVC   RSECKREP,AGENCY                                                  
+         MVC   RSECKPID,PIDNUM                                                  
+         DROP  R6                                                               
+         GOTOX (RFGETREC,VREPFACS),DMCB,KEY,RSECREC,0,RFBLOCK                   
+         BNE   CKS300              NO PAR REC - CHECK W/DEFAULT ACCESS          
+*                                                                               
+         GOTO1 HELLO,DMCB,(C'G',=C'REPFIL'),(X'70',PARREC),            +        
+               (11,RSDFKPRG),0                                                  
+         CLI   12(R1),0            GOT IT?                                      
+         BNE   CKS300              NO ELEM - CHECK W/DEFAULT ACCESS             
+         L     R6,12(R1)                                                        
+         USING RSECPGEL,R6                                                      
+         MVC   ACCLEV,RSECPSEC     ACCESS LEVEL FROM PAR REC                    
+         DROP  R6                                                               
+*                                                                               
+***********************************************************************         
+* CHECK ACTION IN SECDEF REC FOR USERS ACCESS LEVEL                             
+***********************************************************************         
+CKS300   DS    0H                                                               
+         OC    ACCLEV,ACCLEV       HAVE A SPECIFIC ACCESS LEVEL                 
+         BNZ   *+10                YES                                          
+         MVC   ACCLEV,RSDFIDF      NO - USE SECDEF DEFINED DEFAULT              
+*                                                                               
+         CLC   ACCLEV,=CL8'ALL'    NOW CHECK THE 2 SPECIAL CASES                
+         BE    EXITOK                                                           
+         CLC   ACCLEV,=CL8'NOACCESS'                                            
+         BE    ERROR                                                            
+*                                                                               
+         XC    WORK,WORK           BUILD TABLE OF ACC LEVELS TO CHECK           
+         MVC   WORK(L'ACCLEV),ACCLEV          USER'S ACCESS LEVEL               
+         MVI   WORK+L'ACCLEV,X'FF'                                              
+*                                                                               
+         LA    R2,ABACT+L'ABACT-1  FIGURE ACTION INPUT LENGTH                   
+         CLI   0(R2),C' '                                                       
+         BNE   *+10                                                             
+         BCTR  R2,0                                                             
+         B     *-10                                                             
+         LA    RF,ABACT                                                         
+         CR    R2,RF                                                            
+         BH    *+6                                                              
+         DC    H'0'                                                             
+         SR    R2,RF                                                            
+         LA    R2,1(R2)                                                         
+         STC   R2,ACTLEN                                                        
+*                                                                               
+         LA    R2,WORK             FIRST ACCESS LEVEL                           
+*                                                                               
+CKS350   DS    0H                  GET ACCESS LEVEL DEFINITION ELEM             
+         GOTO1 HELLO,DMCB,(C'G',=C'REPFIL'),(X'20',SDFREC),(8,0(R2)),0          
+         CLI   12(R1),0            GOT IT?                                      
+         BNE   CKS500              NO ELEM - CAN'T CHECK IT, GET NEXT           
+         L     R6,12(R1)                                                        
+         ZIC   R7,1(R6)                                                         
+         AR    R7,R6               END OF ELEM                                  
+         LA    R6,RSDFDSEL-RSDFDEL(R6) FIRST MINI ELEM                          
+*                                                                               
+CKS370   DS    0H                                                               
+         CLI   1(R6),C'*'          EMBEDDED ACCESS LEVEL?                       
+         BNE   CKS380              NO                                           
+         LA    RE,WORK             FIND NEXT SPOT IN TABLE                      
+         CLI   0(RE),X'FF'                                                      
+         BE    *+12                                                             
+         LA    RE,L'ACCLEV(RE)                                                  
+         B     *-12                                                             
+         ZIC   RF,0(R6)                                                         
+         AHI   RF,-2                                                            
+         EX    RF,*+4                                                           
+         MVC   0(0,RE),2(R6)       PUT ACCESS LEVEL IN TABLE                    
+         OC    0(L'ACCLEV,RE),SPACES                                            
+         MVI   L'ACCLEV(RE),X'FF'  NEW END MARK                                 
+         B     CKS450                                                           
+*                                                                               
+CKS380   DS    0H                                                               
+         CLI   1(R6),C'='          EXACT MATCH CASE?                            
+         BNE   CKS400              NO - PROCEED TO NORMAL CHECK                 
+         ZIC   RF,0(R6)            SECDEF ACTION LEN                            
+         ZIC   RE,ACTLEN           INPUT ACTION LEN                             
+         BCTR  RF,0                                                             
+         CR    RF,RE               EXACT LEN MATCH                              
+         BNE   CKS450              NO                                           
+         BCTR  RF,0                                                             
+         EX    RF,*+8                                                           
+         B     *+10                                                             
+         CLC   2(0,R6),ABACT       MATCH?                                       
+         BE    EXITOK              YES                                          
+         BNE   CKS450              NO - NEXT ACTION                             
+*                                                                               
+CKS400   DS    0H                  NORMAL COMPARISON                            
+         ZIC   RF,0(R6)            SECDEF ACTION LEN                            
+*                                                                               
+*   FOLLOWING CODE TAKES THE LOWER OF THE "SECDEF" VALUE OR                     
+*        THE SCREEN INPUT LENGTH.  ALWAYS WANT IT TO BE THE                     
+*        "SECDEF" VALUE, SO THE FOLLOWING CODE IS INACTIVATED.                  
+*        BILL / AUG27/2007                                                      
+*                                                                               
+**       ZIC   RE,ACTLEN           INPUT ACTION LEN                             
+**       CR    RF,RE                                                            
+**       BL    *+6                                                              
+**       LR    RF,RE               TAKE THE LOWER OF THE 2 LENGTHS              
+*                                                                               
+         BCTR  RF,0                                                             
+         EX    RF,*+8                                                           
+         B     *+10                                                             
+         CLC   1(0,R6),ABACT       MATCH?                                       
+         BE    EXITOK              YES                                          
+*                                                                               
+CKS450   DS    0H                  NEXT ACTION IN ELEMENT                       
+         ZIC   RF,0(R6)                                                         
+         LA    R6,1(RF,R6)                                                      
+         CR    R6,R7               VS END OF ELEM                               
+         BL    CKS370              MORE TO GO                                   
+         CLI   0(R6),X'20'         ANOTHER ELEM?                                
+         BNE   CKS500              NO                                           
+         CLC   2(L'ACCLEV,R6),0(R2) SAME ACCESS LEVEL?                          
+         BNE   CKS500              NO - PROCEED TO CHECK NEXT LEVEL             
+         ZIC   R7,1(R6)                                                         
+         AR    R7,R6               END OF ELEM                                  
+         LA    R6,RSDFDSEL-RSDFDEL(R6) FIRST MINI ELEM                          
+         B     CKS370                                                           
+*                                                                               
+CKS500   DS    0H                                                               
+         LA    R2,L'ACCLEV(R2)                                                  
+         CLI   0(R2),X'FF'         MORE ACCESS LEVELS TO CHECK?                 
+         BE    ERROR               NO - FAILED                                  
+         B     CKS350              YES - NEXT CHECK                             
+**********************************************************************          
+* ERROR - GENERATES ERROR MSG, INTERRUPTS MODULE EXECUTION & EXITS              
+**********************************************************************          
+ERROR    DS    0H                                                               
+         L     R1,SVPARM                                                        
+         ICM   R2,15,4(R1)         A(MSG FIELD HEADER)                          
+         BZ    ERROR850            NO MSG FIELD                                 
+         ZIC   R3,0(R2)                                                         
+         SH    R3,=H'8'            MINUS HEADER                                 
+         TM    1(R2),X'02'         EXT?                                         
+         BZ    *+8                                                              
+         SH    R3,=H'8'            MINUS EXT                                    
+*                                                                               
+         BCTR  R3,0                                                             
+         EX    R3,*+8                                                           
+         B     *+10                                                             
+         XC    8(0,R2),8(R2)       CLEAR MSG FIELD                              
+         LA    R3,1(R2,R3)         END OF FIELD+1                               
+         OI    1(R2),X'08'         HIGH INTENSITY                               
+         OI    6(R2),X'80'         XMIT                                         
+         LA    R2,8(R2)            FIRST TEXT SPOT IN FIELD                     
+*                                                                               
+         MVC   0(25,R2),=C'ACCESS DENIED: No Action '                           
+         LA    R2,25(R2)                                                        
+*                                                                               
+         LA    RF,ABACT            ACTION NAME FROM ABLOCK                      
+         MVI   BYTE,L'ABACT                                                     
+         BAS   RE,ADDWORD                                                       
+         LA    R2,1(R2)                                                         
+*                                                                               
+         MVC   0(4,R2),=C'for '                                                 
+         LA    R2,4(R2)                                                         
+*                                                                               
+         LA    RF,ACCLEV           ACCESS LEVEL NAME                            
+         MVI   BYTE,L'ABACT                                                     
+         BAS   RE,ADDWORD                                                       
+         LA    R2,1(R2)                                                         
+*                                                                               
+         MVC   0(06,R2),=C'access'                                              
+         LA    R2,06(R2)                                                        
+*                                                                               
+         L     R1,SVPARM                                                        
+         L     RF,4(R1)            A(MSG FIELD HEADER)                          
+         SR    R2,RF               LEN OF MSG                                   
+         STC   R2,7(RF)                                                         
+*                                                                               
+         ICM   R3,15,8(R1)         ATIOB                                        
+         BZ    ERROR850                                                         
+         USING TIOBD,R3                                                         
+         OI    TIOBINDS,TIOBALRM   BEEP                                         
+         DROP  R3                                                               
+*                                                                               
+ERROR850 DS    0H                                                               
+         L     R1,SVPARM                                                        
+         MVI   0(R1),X'80'         PASS ERROR CODE TO APPLICATION               
+         L     RD,SAVERD           GET ALL THE WAY OUT                          
+         B     EXITL               EXIT CC NOT EQUAL                            
+*                                                                               
+* ADDWORD - APPENDS WORD TO MESSAGE TEXT                                        
+*                                                                               
+*   BEFORE: RF=A(WORD TO APPEND)                                                
+*           R2=A(NEXT SPACE IN MESSAGE TEXT)                                    
+*           BYTE=MAX LENGTH OF WORD (SPACE OR NULL PADDED)                      
+*                                                                               
+*    AFTER: R2=A(NEXT AVAILABLE SPACE IN MSG)                                   
+*           BYTE=ACTUAL LENGTH OF WORD APPENDED                                 
+*                                                                               
+*     NOTE: USES R1                                                             
+*                                                                               
+ADDWORD  DS    0H                                                               
+         ZIC   R1,BYTE                                                          
+         AR    R1,RF                                                            
+ADDW010  DS    0H                                                               
+         BCTR  R1,0                                                             
+         CR    R1,RF                                                            
+         BL    ADDW050                                                          
+         CLI   0(R1),0                                                          
+         BE    ADDW010                                                          
+         CLI   0(R1),C' '                                                       
+         BE    ADDW010                                                          
+*                                                                               
+         SR    R1,RF               LEN OF WORD-1                                
+         EX    R1,*+8                                                           
+         B     *+10                                                             
+         MVC   0(0,R2),0(RF)                                                    
+         LA    R1,1(R1)                                                         
+         AR    R2,R1               BUMP INSERTION POINT                         
+         STC   R1,BYTE                                                          
+         BR    RE                                                               
+ADDW050  DS    0H                  NO WORD                                      
+         MVI   BYTE,0                                                           
+         BR    RE                                                               
+**********************************************************************          
+* COMMON ROUTINES                                                               
+**********************************************************************          
+EXITH    CLI   *,0                 SET CC HIGH                                  
+         B     EXIT                                                             
+EXITL    CLI   *,X'FF'                                                          
+         B     EXIT                                                             
+EXITNO   LTR   RB,RB               SET CC NOT EQUAL                             
+         B     EXIT                                                             
+OK       EQU   *                                                                
+EXITOK   CR    RB,RB               SET CC EQUAL                                 
+         B     EXIT                                                             
+EXIT     DS    0H                  JUST EXIT                                    
+         XIT1                                                                   
+*                                                                               
+NOHOOK   BR    RE                                                               
+*                                                                               
+         GETEL R6,34,ELCODE                                                     
+*                                                                               
+SPACES   DC    80C' '                                                           
+       ++INCLUDE REPSECTAB                                                      
+BANNER   DC    C'BILLUHR: AUG27/07 - LEN = SECDEF, NOT ABACT'                   
+         DS    0H                                                               
+         LTORG                                                                  
+***>>>   FOR TESTING PURPOSES, KEEP THE SIZE OF THIS MODULE THE SAME            
+         ORG   RECKASEC+(((*-RECKASEC)/2048)+1)*2048                            
+*                                                                               
+WORKD    DSECT                                                                  
+DMWORK   DS    12D                                                              
+DUB      DS    D                                                                
+DMCB     DS    6F                                                               
+FULL     DS    F                                                                
+RELO     DS    F                                                                
+SVPARM   DS    F                                                                
+SAVERD   DS    F                                                                
+VREPFACS DS    A                                                                
+GETFACT  DS    A                                                                
+HELLO    DS    A                                                                
+DATAMGR  DS    A                                                                
+RFBLOCK  DS    0CL6                                                             
+COMFACS  DS    A                                                                
+AGENCY   DS    CL2                 REP CODE (MASTER)                            
+AGENCYCT DS    CL2                 ACTUAL CONNECTED REP CODE (SUBSID)           
+ELCODE   DS    X                                                                
+BYTE     DS    X                                                                
+PIDNUM   DS    CL2                 PASSWORD ID NUMBER                           
+ACTLEN   DS    X                   ACTION INPUT LENGTH                          
+ACCLEV   DS    CL8                 ACCESS LEVEL FOR PID                         
+*                                                                               
+WORK     DS    CL256                                                            
+KEY      DS    CL32                                                             
+KEYSAVE  DS    CL32                                                             
+*                                                                               
+       ++INCLUDE REGENSEC                                                       
+         ORG   RSECREC                                                          
+PARREC   DS    XL2000                                                           
+       ++INCLUDE REGENSDF                                                       
+         ORG   RSDFREC                                                          
+IOAREA   DS    0XL4000             RECYLE THIS AREA - WATCH OUT                 
+SDFREC   DS    XL4000                                                           
+*                                                                               
+WORKDX   EQU   *                                                                
+SECBLK   DSECT                                                                  
+       ++INCLUDE REGENABLK                                                      
+         DSECT                                                                  
+       ++INCLUDE REGENREPA                                                      
+       ++INCLUDE DDCOMFACS                                                      
+       ++INCLUDE FAFACTS                                                        
+       ++INCLUDE FATIOB                                                         
+       ++INCLUDE REPFACSQ                                                       
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'132RECKASEC  08/27/07'                                      
+         END                                                                    

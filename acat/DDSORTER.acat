@@ -1,0 +1,542 @@
+*          DATA SET DDSORTER   AT LEVEL 006 AS OF 01/09/19                      
+*PROCESS USING(WARN(15))                                                        
+*CATALP SORTER                                                                  
+*                                                                               
+         TITLE 'DDSORTER - IBM DFSORT INTERFACE'                                
+*                                                                               
+***********************************************************************         
+*                                                                               
+* PARAMETERS ARE AS FOLLOWS:                                                    
+*                                                                               
+* TO START A SORT                                                               
+*                                                                               
+*        P1    A(SORT CARD)  MUST END WITH A BLANK                              
+*               NOTE: THE "WORK=" PARAMETER IS OBSOLETE. IT'S HARMLESS          
+*                     IN MOST CASES, BUT IT'S BETTER TO NOT PROVIDE IT.         
+*        P2    XL1: X'80' = P3 IS PRESENT, ELSE 0                               
+*              AL3(RECORD CARD)  MUST BE BLANK-TERMINATED                       
+*        P3    AL1: X'80' = WRITE DFSORT INFORMATIONAL MESSAGES TO              
+*                           SYSOUT DATASET "DFSMSG")                            
+*                   X'40' = DO NOT ABEND IF DFSORT RETURNS A NON-ZERO           
+*                           RETURN CODE TO DDSORTER. INSTEAD, PUT               
+*                           DFSORT'S RETURN CODE INTO THE LOW-ORDER             
+*                           BYTE OF P3 AND RETURN TO THE CALLER. NOTE           
+*                           THAT THIS MAY HAPPEN AFTER *ANY* CALL TO            
+*                           DDSORTER (INIT, PUT, GET, END).                     
+*                   X'20' = DO NOT USE 'DEBUG NOESTAE'                          
+*              XL2: 0 (FOR FUTURE USE)                                          
+*              AL1: MAY CONTAIN DFSORT RETURN CODE (SEE HOB X'40' BIT)          
+*                                                                               
+* TO PASS AN INPUT RECORD                                                       
+*                                                                               
+*        P1    A(C'PUT')                                                        
+*        P2    A(RECORD)                                                        
+*        P3    ON OUTPUT, LOW-ORDER BYTE MAY CONTAIN DFSORT'S RETURN            
+*               CODE (SEE INIT CALL, P3, X'40' BIT)                             
+*                                                                               
+* TO GET AN OUTPUT RECORD                                                       
+*                                                                               
+*        P1    A(C'GET')                                                        
+*        P2    A(RECORD) ON RETURN FROM SORTER. A(0) = END OF FILE              
+*        P3    ON OUTPUT, LOW-ORDER BYTE MAY CONTAIN DFSORT'S RETURN            
+*               CODE (SEE INIT CALL, P3, X'40' BIT)                             
+*                                                                               
+* TO TERMINATE THE SORT OPERATION                                               
+*                                                                               
+*        P1    A(C'END')                                                        
+*        P2    N/A                                                              
+*        P3    ON OUTPUT, LOW-ORDER BYTE MAY CONTAIN DFSORT'S RETURN            
+*               CODE (SEE INIT CALL, P3, X'40' BIT)                             
+*                                                                               
+***********************************************************************         
+*                                                                               
+*                 >>>>>>>>> TAKE NOTE <<<<<<<<<                                 
+*                                                                               
+* This subroutine is a general interface between our assembler                  
+* application programs and DFSORT.                                              
+*                                                                               
+* To perform a sort:                                                            
+*  1. Call this routine with an initialization call (i.e., with                 
+*      "SORT FIELDS" and "RECORD" cards).                                       
+*  2. Call with a loop of "PUT" calls, passing each record to be sorted         
+*      one at a time.                                                           
+*  3. Call with a loop of "GET" calls. The sort will be performed at            
+*      the first "GET" call, and the records will be returned one at a          
+*      time. When a "GET" call results in a returned address of zero,           
+*      this means that the sort is complete, and that control is                
+*      fully returned to the caller.                                            
+*  4. Call with an "END" call. This is usually optional, but it is              
+*      good practice to do so.                                                  
+*                                                                               
+* The behavior of this subroutine is, to some extent, an optical                
+* illusion. When you call this routine with an initialization call,             
+* control is returned to you, but you are actually executing as a               
+* DFSORT ***exit*** until one of these events occurs:                           
+*  1. DFSORT terminates (whether successfully or not)                           
+*  2. You force DFSORT to terminate via an "END" call.                          
+*                                                                               
+* This behavior is basically transparent to the application, but it             
+* can result in some subtleties. For example, if you are running under          
+* IDF, and if you issue a STMTSTEP (i.e., a single-step) into the               
+* initialization call to this routine, you will not appear to get               
+* control back until the entire sort is complete. Nevertheless, the             
+* sort will have taken place. If you need to debug your logic while             
+* DFSORT has control, then you need to set breakpoints in your code.            
+* You cannot rely on the STMTSTEP command.                                      
+*                                                                               
+* Technical details for the curious: when you call this routine with            
+* an initialization call, we use your "SORT FIELDS" and "RECORD" cards          
+* to build a 24-bit parameter list to DFSORT. Your (i.e., the caller's)         
+* registers are saved locally within this module. We LINK to DFSORT.            
+* The E15 and E35 exit entry points used by DFSORT are contained within         
+* this module. When DFSORT calls the E15 or E35 exit, we save DFSORT's          
+* registers, restore the caller's registers, and branch back to the             
+* caller, who is then expected to call DDSORTER with a "PUT" or                 
+* "GET" command (for E15 and E35, respectively). We then save the               
+* caller's registers, restore DFSORT's registers, and exit back to              
+* DFSORT with the appropriate return code (for DFSORT) in RF.                   
+* On a "PUT" call, we set the address of the record in R1, so DFSORT            
+* knows where to find it.                                                       
+*                                                                               
+***********************************************************************         
+*                                                                               
+* SRTRSW VALUES:                                                                
+*           X'00' - FIRST TIME, ALSO RESET AT NORMAL END OF SORT                
+*           C'G' -  LAST ACTION WAS A GET                                       
+*           C'P' -  LAST ACTION WAS A PUT                                       
+*           C'X' -  SET BY END COMMAND TO FORCE END OF SORT                     
+*           C'Z' -  AT OPEN TO FORCE CLOSE OF PREVIOUS SORT                     
+*                                                                               
+***********************************************************************         
+SORTER   CSECT                                                                  
+         PRINT NOGEN                                                            
+*                                                                               
+         NMOD1 0,**SRTR**          SAVE CALLER'S REGISTERS                      
+*                                                                               
+         TAM   ,                   USER MUST CALL MODULE IN 24-BIT MODE         
+         JNE   *+2                                                              
+*                                                                               
+         ST    RD,USERRD           SAVE CALLER'S RD                             
+         ST    R1,USERR1           SAVE CALLER'S R1                             
+         STAM  AR0,ARF,SAVAREGS    SAVE CALLER'S ACCESS REGISTERS               
+*                                                                               
+         LR    R2,R1                                                            
+         USING PARAMS,R2                                                        
+*                                                                               
+         L     RE,P1                                                            
+         CLC   =C'GET',0(RE)                                                    
+         JE    GET                                                              
+         CLC   =C'PUT',0(RE)                                                    
+         JE    PUT                                                              
+         CLC   =C'SORT',0(RE)                                                   
+         JE    OPN                                                              
+         CLC   =C'END',0(RE)                                                    
+         JE    END                                                              
+         ABEND 681                 INVALID DDSORTER COMMAND                     
+         EJECT                                                                  
+OPN      CLI   SRTRSW,0            START OF SORT OR LAST SORT ENDED OK          
+         JE    OPN1                                                             
+         MVI   SRTRSW,C'Z'         FORCE LAST SORT TO END                       
+         J     END2                                                             
+*                                                                               
+OPN1     L     R2,USERR1                                                        
+         L     R4,P1               GET A(SORT CARD)                             
+         LA    R4,0(,R4)           CLEAR HOB                                    
+         ST    R4,SORTSORT         PASS CLEAN ADDRESS TO DFSORT                 
+*                                                                               
+         CLC   =C'SORT ',0(R4)                                                  
+         JE    OPN4                                                             
+         ABEND 682                 INVALID SORT CARD                            
+*                                                                               
+* SCAN FOR END OF SORT CARD - A BLANK OR ",WORK="                               
+*                                                                               
+OPN4     LA    R4,6(,R4)                                                        
+*                                                                               
+OPN6     CLI   0(R4),C' '          BLANK TERMINATES THE SORT CARD               
+         JE    OPN10                                                            
+         CLC   =C',WORK=',0(R4)                                                 
+         JE    OPN10                                                            
+         LA    R4,1(,R4)                                                        
+         J     OPN6                                                             
+*                                                                               
+OPN10    MVI   0(R4),C' '          SET BLANK AS TERMINATOR                      
+         ST    R4,SORTSRTX         SET END ADDRESS OF SORT CARD                 
+*                                                                               
+         L     R4,P2               GET A(RECORD CARD)                           
+         MVC   SORTMSGO,=CL3'NOF'  DEFAULT: SUPPRESS DFSORT MESSAGES            
+         TM    P2,X'80'            IS P3 PRESENT?                               
+         JZ    OPN11               NO                                           
+         TM    P3,X'80'            YES: SUPPRESS DFSORT MESSAGES?               
+         JZ    OPN11               YES                                          
+         MVC   SORTMSGO,=CL3'(I)'  NO: PRINT ALL NON-DIAGNOSTIC MSGS            
+*                                                                               
+OPN11    DS    0H                                                               
+         LA    R4,0(,R4)           CLEAR HOB                                    
+         ST    R4,SORTREC          PASS CLEAN ADDRESS TO DFSORT                 
+*                                                                               
+         CLC   =C'RECORD ',0(R4)                                                
+         JE    OPN14                                                            
+         ABEND 683                 INVALID RECORD CARD                          
+*                                                                               
+OPN14    LA    R4,8(,R4)                                                        
+*                                                                               
+         CLI   0(R4),C' '          SCAN FOR BLANK INDICATING EOR                
+         JE    *+12                                                             
+         LA    R4,1(,R4)                                                        
+         J     *-12                                                             
+*                                                                               
+         ST    R4,SORTRECX         SET END ADDRESS OF RECORD CARD               
+*                                                                               
+* DYNAMICALLY ALLOCATE THIS DFSORT MESSAGE DATASET:                             
+*    //DFSMSG DD SYSOUT=*                                                       
+* IF THE DYNALLOC CALL IS UNSUCCESSFUL, IT'S PROBABLY BECAUSE DFSMSG            
+* IS ALREADY ALLOCATED. BUT EVEN IF IT FAILS FOR ANY OTHER REASON, WE           
+* DON'T REALLY CARE. IF DFSORT CAN'T WRITE ITS MESSAGES TO DFSMSG,              
+* NOTHING BAD WILL HAPPEN (OTHER THAN THE FACT THAT THERE WILL BE NO            
+* MESSAGES, OBVIOUSLY).                                                         
+*                                                                               
+         XC    RBLK,RBLK                                                        
+RBL      USING S99RB,RBLK                                                       
+         MVI   RBL.S99RBLN,S99RBEND-S99RB   L'REQUEST BLOCK                     
+         MVI   RBL.S99VERB,S99VRBAL         ALLOCATE BY DSN                     
+         MVC   RBL.S99TXTPP,=A(ATXTUNIT)    A(TEXT UNIT LIST)                   
+         DROP  RBL                                                              
+         LA    R1,ARBLK                                                         
+         DYNALLOC                                                               
+*                                                                               
+         ENQ   (MAJORNAM,MINORNAM,E,MINORNMQ,STEP),RET=USE                      
+         LTR   RF,RF                                                            
+         JZ    OPNX2                                                            
+         ABEND 687                ANOTHER SORT IS RUNNING CONCURRENTLY          
+*                                                                               
+OPNX2    LA    R1,PARMS                                                         
+         XC    SAVER(SAVER_LEN),SAVER        CLEAR CALLER'S SAVE AREA           
+         XC    SAVF5SA(SAVF5SA_LEN),SAVF5SA  CLEAR OUR SAVE AREA                
+         LA    RD,SAVER                                                         
+CREG     USING SAVER,RD           STANDARD IBM SAVE AREA FORMAT                 
+         MVC   CREG.SAVPLI,=C'SORT' SET SAVE AREA ID                            
+         MVC   CREG.SAVPREV,USERRD  SET SAVE AREA BACK CHAIN                    
+         DROP  CREG                                                             
+*                                                                               
+         MVC   SORTPARS,=AL2(SORTLSTX-SORTLIST) ASSUME 'DEBUG NOESTAE'          
+         MVI   RETURN_ON_ABEND,C'N' ASSUME ABEND ON NONZERO RETURN CODE         
+*                                                                               
+         IF  (TM,P2,X'80',O)      IF P3 IS PRESENT:                             
+           TM    P3,X'20'          CALLER WANTS 'DEBUG NOESTAE'?                
+           JZ    *+10              BIT ON MEANS THEY DON'T. TRUNCATE...         
+           MVC   SORTPARS,=AL2(SORTNDBX-SORTLIST) ...PARMS TO REMOVE IT         
+           TM    P3,X'40'          CALLER WANTS CONTROL BACK ON ABEND?          
+           JZ    *+8                  NO                                        
+           MVI   RETURN_ON_ABEND,C'Y' YES                                       
+         ENDIF ,                                                                
+*                                                                               
+* CALL DFSORT                                                                   
+*                                                                               
+         LINK  EP=SORT                                                          
+*                                                                               
+* NOTE: CONTROL IS NOT RETURNED TO THIS POINT UNTIL DFSORT TERMINATES.          
+*                                                                               
+         LR    R3,RF               SAVE SORT RETURN CODE                        
+*                                                                               
+         DEQ   (MAJORNAM,MINORNAM,MINORNMQ,STEP)                                
+*                                                                               
+         CLI   RETURN_ON_ABEND,C'Y' SAFE TO SET RETURN CODE IN P3?              
+         JNE   *+12                NO                                           
+         L     R2,USERR1           CALLER'S R1                                  
+         STC   R3,P3+3             PASS DFSORT'S RETURN CODE TO CALLER          
+*                                                                               
+         LTR   R3,R3               WAS DFSORT RETURN CODE OK?                   
+         JZ    SRTRETOK            YES                                          
+*                                                                               
+         MVI   SRTRSW,0            DON'T DO ANOTHER SORT                        
+*                                                                               
+         CLI   RETURN_ON_ABEND,C'Y' RETURN TO CALLER?                           
+         JE    SRTRETOK            YES                                          
+         ABEND 684                 NO: CHECK DFSMSG (DFSORT MESSAGES)           
+*                                                                               
+SRTRETOK DS    0H                                                               
+*                                                                               
+         CLI   SRTRSW,C'Z'         IS THIS A FORCE END TO PREVIOUS SORT         
+         MVI   SRTRSW,0            SET TO INDICATE SORT ENDED NOW               
+         JE    OPN1                START NEW SORT IF FORCE END DONE             
+*                                                                               
+         LAM   AR0,ARF,SAVAREGS    RESTORE CALLER'S ACCESS REGISTERS            
+         L     RD,USERRD           RESTORE CALLER'S RD                          
+*                                                                               
+EXIT     XMOD1 ,                   RESTORE CALLER'S REGS. AND RETURN            
+         EJECT                                                                  
+PARMS    DC    X'80',AL3(SORTPARS)                                              
+*                                                                               
+         CNOP  2,4                 FORCE ALIGNMENT                              
+SORTPARS DC    AL2(SORTLSTX-SORTLIST) LENGTH OF DFSORT PARMS                    
+*                                                                               
+SORTLIST DS    0H                                                               
+*                                                                               
+SORTSORT DC    A(0)                A(SORT STMT START)                           
+SORTSRTX DC    A(0)                A(SORT STMT END)                             
+SORTREC  DC    A(0)                A(RECORD STMT START)                         
+SORTRECX DC    A(0)                A(RECORD STMT END)                           
+         DC    A(INPUT)            A(E15 ROUTINE)                               
+         DC    A(OUTPUT)           A(E35 ROUTINE)                               
+         DC    X'FF'               MESSAGE OPTION INDICATOR                     
+SORTMSGO DS    CL3                 MESSAGE OPTION PARAMETER                     
+         DC    X'03',AL3(TXTMSDDN) A(DFSORT MESSAGE DDNAME)                     
+SORTNDBX EQU   *                                                                
+         DC    X'05',AL3(DEBUG)    A(DEBUG STMT START)                          
+         DC    X'00',AL3(DEBUGX)   A(DEBUG STMT END)                            
+SORTLSTX EQU   *                                                                
+         EJECT                                                                  
+GET      CLI   SRTRSW,C'P'         IS THIS THE FIRST GET?                       
+         JNE   GET2                NO                                           
+*                                                                               
+* FIRST GET - TELL DFSORT TO SORT *                                             
+*                                                                               
+         TTIMER CANCEL             CANCEL ANY LOOP CATCHER IN DDMASTER          
+*                                                                               
+         MVI   SRTRSW,C'G'                                                      
+         L     RD,DFSORTRD         RESTORE DFSORT'S RD (LOW HALF)               
+         LMH   GR0,GRF,SAVF5SAG64HS0 RESTORE DFSORT'S GPR HIGH HALVES           
+         LM    RE,RC,12(RD)        RESTORE DFSORT'S GPR LOW HALVES              
+         LGHI  GRF,8               SET RETURN CODE: DO NOT RETURN               
+         BSM   0,RE                                                             
+*                                                                               
+GET2     CLI   SRTRSW,C'G'                                                      
+         JE    GET3                                                             
+         ABEND 685                 GET COMMAND EXPECTED NOW                     
+*                                                                               
+GET3     DS    0H                                                               
+         L     RD,DFSORTRD         RESTORE DFSORT'S RD (LOW HALF)               
+         LMH   GR0,GRF,SAVF5SAG64HS0 RESTORE DFSORT'S GPR HIGH HALVES           
+         LM    RE,RC,12(RD)        RESTORE DFSORT'S GPR LOW HALVES              
+         LGHI  GRF,4               SET RETURN CODE: DELETE RECORD               
+         BSM   0,RE                                                             
+*                                                                               
+*                                                                               
+PUT      DS    0H                                                               
+         CLI   SRTRSW,C'P'                                                      
+         JE    PUT1                                                             
+         ABEND 686                 PUT COMMAND EXPECTED NOW                     
+*                                                                               
+PUT1     DS    0H                                                               
+         LMH   GR0,GRF,SAVF5SAG64HS0 RESTORE DFSORT'S HIGH HALVES               
+         SGR   GR1,GR1             CLEAR HIGH HALF OF R1                        
+         L     R1,P2               A(RECORD) IN LOW HALF OF R1                  
+         L     RD,DFSORTRD         RESTORE DFSORT'S RD (LOW HALF)               
+         LM    RE,R0,12(RD)        RESTORE DFSORT'S GPR LOW HALVES              
+         LM    R2,RC,28(RD)        (EXCEPT FOR R1!)                             
+         LGHI  GRF,12              SET RETURN CODE: INSERT RECORD               
+         BSM   0,RE                                                             
+*                                                                               
+*                                                                               
+END      CLI   SRTRSW,0                                                         
+         JE    EXIT                                                             
+         MVI   SRTRSW,C'X'                                                      
+*                                                                               
+END2     DS    0H                                                               
+         L     RD,DFSORTRD         RESTORE DFSORT'S RD (LOW HALF)               
+         LMH   GR0,GRF,SAVF5SAG64HS0 RESTORE DFSORT'S GPR HIGH HALVES           
+         LM    RE,RC,12(RD)        RESTORE DFSORT'S GPR LOW HALVES              
+         LGHI  GRF,8               SET RETURN CODE: DO NOT RETURN               
+         BSM   0,RE                                                             
+         DROP  RB                                                               
+         EJECT                                                                  
+*                                                                               
+* E15 EXIT OF DFSORT COMES HERE, GO TO CALLER FOR NEXT RECORD, OR GET           
+*  NOTE: RF = A(THIS ROUTINE)                                                   
+*                                                                               
+         USING INPUT,RF                                                         
+INPUT    DS    0H                                                               
+         STM   RE,RC,12(RD)        SAVE GPR LOW HALVES IN DFSORT'S AREA         
+*                                                                               
+         TAM   ,                   DFSORT MUST CALL US IN 24-BIT MODE           
+         JNE   *+2                                                              
+         CLC   =X'00E2D4F1',0(RD)  CONFIRM DFSORT'S EYE-CATCHER                 
+         JNE   *+2                                                              
+         TM    7(RD),X'01'         CONFIRM NOT A C'FxSA' SAVE AREA              
+         JO    *+2                                                              
+*                                                                               
+         MVC   SAVF5SAID,=A(SAVF5SAID_VALUE)  SAVE AREA IDENTIFIER              
+         STG   GRD,SAVF5SAPREV     BACKWARD POINTER                             
+         STMH  GR0,GRF,SAVF5SAG64HS0      SAVE GPR HIGH HALVES LOCALLY          
+         DROP  RF                                                               
+         LR    RB,RF                                                            
+         USING INPUT,RB                                                         
+*                                                                               
+         ST    RD,DFSORTRD         SAVE DFSORT'S RD (LOW HALF)                  
+         CLI   SRTRSW,0            IS THIS FIRST TIME IN                        
+         JNE   INPUTA              NO                                           
+         AP    SRTCNTR,=P'1'       BUMP NUMBER OF SORTS PERFORMED               
+         MVI   SRTRSW,C'P'                                                      
+*                                                                               
+* ESTABLISH ESTAE UNDER CURRENT RB TO HANDLE ABENDS *                           
+         ESTAE SRTABEND,CT                                                      
+*                                                                               
+INPUTA   DS    0H                                                               
+*                                                                               
+         LAM   AR0,ARF,SAVAREGS    RESTORE CALLER'S ACCESS REGISTERS            
+         L     RD,USERRD           RESTORE CALLER'S RD                          
+*                                                                               
+         CLI   RETURN_ON_ABEND,C'Y' SAFE TO SET RETURN CODE IN P3?              
+         JNE   *+12                NO                                           
+         L     R2,USERR1           CALLER'S R1                                  
+         MVI   P3+3,0              PASS BACK CLEAN DFSORT RETURN CODE           
+*                                                                               
+         XIT1  ,                   RESTORE CALLER'S REGISTERS...                
+*                                  ...AND RETURN EXPECTING "PUT" CALL           
+*                                                                               
+         DROP  RB                                                               
+SRTCNTR  DC    PL4'0'              TOTAL NUMBER OF SORTS PERFORMED              
+         EJECT                                                                  
+*                                                                               
+* E35 EXIT OF DFSORT - RECORD RETURNED BY DFSORT IS PASSED TO CALLER            
+*  NOTE: RF = A(THIS ROUTINE)                                                   
+*                                                                               
+         USING OUTPUT,RF                                                        
+OUTPUT   DS    0H                                                               
+         STM   RE,RC,12(RD)        SAVE GPR LOW HALVES IN DFSORT'S AREA         
+*                                                                               
+         TAM   ,                   DFSORT MUST CALL US IN 24-BIT MODE           
+         JNE   *+2                                                              
+         CLC   =X'00E2D4F1',0(RD)  CONFIRM DFSORT'S EYE-CATCHER                 
+         JNE   *+2                                                              
+         TM    7(RD),X'01'         CONFIRM NOT A C'FxSA' SAVE AREA              
+         JO    *+2                                                              
+*                                                                               
+         MVC   SAVF5SAID,=A(SAVF5SAID_VALUE)  SAVE AREA IDENTIFIER              
+         STG   GRD,SAVF5SAPREV     BACKWARD POINTER                             
+         STMH  GR0,GRF,SAVF5SAG64HS0      SAVE GPR HIGH HALVES LOCALLY          
+         DROP  RF                                                               
+*                                                                               
+         LR    RB,RF                                                            
+         USING OUTPUT,RB                                                        
+*                                                                               
+         ST    RD,DFSORTRD         SAVE DFSORT'S RD (LOW HALF)                  
+*                                                                               
+         CLI   SRTRSW,C'X'         FORCE END?                                   
+         JE    OUTX                                                             
+         CLI   SRTRSW,C'Z'         FORCE END?                                   
+         JE    OUTY                                                             
+*                                                                               
+         L     R0,0(,R1)           GET RECORD ADDRESS                           
+         L     R1,USERR1                                                        
+         ST    R0,4(,R1)           PASS ADDRESS TO USER                         
+*                                                                               
+         LTR   R0,R0                                                            
+         JZ    OUTX                                                             
+*                                                                               
+         LAM   AR0,ARF,SAVAREGS    RESTORE CALLER'S ACCESS REGISTERS            
+         L     RD,USERRD           RESTORE CALLER'S RD                          
+*                                                                               
+         CLI   RETURN_ON_ABEND,C'Y' SAFE TO SET RETURN CODE IN P3?              
+         JNE   *+12                NO                                           
+         L     R2,USERR1           CALLER'S R1                                  
+         MVI   P3+3,0              PASS BACK CLEAN DFSORT RETURN CODE           
+*                                                                               
+         XIT1  ,                   RESTORE CALLER'S REGISTERS...                
+*                                  ...AND RETURN EXPECTING "GET" CALL           
+*                                                                               
+OUTX     MVI   SRTRSW,0            SET SORT TERMINATED                          
+*                                                                               
+OUTY     ESTAE 0                   ELIMINATE ESTAE EXIT                         
+         L     RD,DFSORTRD         RESTORE DFSORT'S RD (LOW HALF)               
+         LMH   GR0,GRF,SAVF5SAG64HS0 RESTORE DFSORT'S GPR HIGH HALVES           
+         LM    RE,RC,12(RD)        RESTORE DFSORT'S GPR LOW HALVES              
+         LGHI  GRF,8               SET RETURN CODE: DO NOT RETURN               
+         BSM   0,RE                                                             
+         DROP  RB                                                               
+         DROP  R2                                                               
+*----------------------------------------------------------------------         
+* ESTAE ROUTINE FOR SORT - IF ANY REGS ARE ALTERED, THEY MUST BE SAVED          
+*       AND RESTORED BEFORE RETURN.                                             
+*----------------------------------------------------------------------         
+         USING *,RF                                                             
+         USING SDWA,R1                                                          
+SRTABEND MVI   SRTRSW,0            SET SORT TERMINATED                          
+         STM   RE,R1,ABNDREGS      SAVE REGISTERS                               
+         DEQ   (MAJORNAM,MINORNAM,MINORNMQ,STEP),RET=HAVE                       
+         LRL   RF,ABND_RF          RESTORE REGISTERS                            
+         LM    RE,R1,ABNDREGS                                                   
+         CHI   R0,12               IS THERE AN SDWA                             
+         JE    SRTABNDA            NO PASS RET CODE IN REG F                    
+         SETRP DUMP=IGNORE,RC=0                                                 
+         BSM   0,RE                PERCOLATE TO HIGHER ESTAE                    
+*                                                                               
+SRTABNDA SGR   GRF,GRF             SET RETURN CODE ZERO                         
+         BSM   0,RE                                                             
+*                                                                               
+ABNDREGS DS    0F                  SAVED GPRS                                   
+ABND_RE  DS    F                                                                
+ABND_RF  DS    F                                                                
+ABND_R0  DS    F                                                                
+ABND_R1  DS    F                                                                
+         DROP  R1,RF                                                            
+*----------------------------------------------------------------------         
+* IBM MAPPING MACRO IHASDWA FOLLOWS *                                           
+*----------------------------------------------------------------------         
+         PRINT OFF                                                              
+         IHASDWA GR32=YES                                                       
+         PRINT ON                                                               
+SORTER   CSECT                                                                  
+         EJECT                                                                  
+*                                                                               
+USERR1   DS    A                   CALLER'S R1                                  
+USERRD   DS    A                   CALLER'S RD                                  
+SAVAREGS DS    16F                 CALLER'S ACCESS REGISTERS                    
+DFSORTRD DS    A                   DFSORT'S RD (LOW HALF)                       
+*                                                                               
+         DS    0AD                                                              
+         DC    CL16'***SAVE AREAS***'                                           
+         PRINT GEN                                                              
+         IHASAVER DSECT=NO,SAVER=YES,SAVF5SA=YES                                
+         PRINT NOGEN                                                            
+         EJECT                                                                  
+SORTER   CSECT                                                                  
+*                                                                               
+SRTRSW   DS    C                   DEFINE AS CHARACTER FOR IDF...               
+         ORG   SRTRSW                                                           
+         DC    X'00'               ...THEN INITIALIZE TO NULL                   
+*                                                                               
+RETURN_ON_ABEND DC C'N'            RETURN TO CALLER ON NON-ZERO...              
+*                                  ...RETURN CODE FROM DFSORT (Y/N)             
+MAJORNAM DC    CL8'DDS'            RESOURCE NAMES FOR ENQ                       
+MINORNAM DC    C'DDSORTER'                                                      
+MINORNMQ EQU   *-MINORNAM                                                       
+*                                                                               
+         DS    0D                                                               
+         DC    C'*ARBLK**'                                                      
+ARBLK    DC    A(RBLK)             REQUEST BLOCK POINTER                        
+         ORG   *-4                                                              
+         DC    X'80'                                                            
+         ORG                                                                    
+*                                                                               
+RBLK     DS    XL(S99RBEND-S99RB)  REQUEST BLOCK                                
+*                                                                               
+ATXTUNIT DS    0A                  DYNALLOC TEXT UNIT LIST                      
+         DC    A(TXTDD)                                                         
+         DC    A(TXTSYSO)                                                       
+         ORG   *-4                                                              
+         DC    X'80'                                                            
+         ORG                                                                    
+*                                                                               
+TXTDD    DC    AL2(DALDDNAM),AL2(1),AL2(L'TXTMSDDN)                             
+TXTMSDDN DC    CL8'DFSMSG'         DDNAME (SAME NAME THAT ICETOOL USES)         
+TXTSYSO  DC    AL2(DALSYSOU),AL2(0)  SYSOUT=*                                   
+*                                                                               
+DEBUG    DC    C'DEBUG NOESTAE '                                                
+DEBUGX   EQU   *-1                                                              
+*                                                                               
+         LTORG                                                                  
+         EJECT                                                                  
+*                                                                               
+PARAMS   DSECT                                                                  
+P1       DS    A                                                                
+P2       DS    A                                                                
+P3       DS    A                                                                
+P4       DS    A                                                                
+*                                                                               
+         IEFZB4D0                                                               
+         IEFZB4D2                                                               
+*                                                                               
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'006DDSORTER  01/09/19'                                      
+         END                                                                    

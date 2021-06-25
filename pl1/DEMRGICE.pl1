@@ -1,0 +1,202 @@
+        /* DATA SET DEMRGICE   AT LEVEL 008 AS OF 12/15/20    */                
+       ++INCLUDE IEBUPDTHDR                                                     
+***********************************************************************         
+                                                                                
+THIS MEMBER CONTAINS ICETOOL/DFSORT CONTROL CARDS. THIS UTILITY IS              
+INTENDED FOR USE IN THE DEMOS SYSTEM. IT TAKES AS INPUT A FILE WHICH IS         
+TYPICALLY THE OUTPUT OF A DEMOS CONVERSION, AND WHICH IS MEANT TO BE            
+THE INPUT TO AN UPDATE. SUCH INPUT FILES SOMETIMES CONTAIN RECORDS              
+WHICH ARE MARKED FOR DELETION. IN SOME CASES, THE INPUT FILE IS                 
+CONCATENATED WITH ANOTHER INPUT FILE CONTAINING *ONLY* POINTERS WHICH           
+ARE MARKED FOR DELETION. (SOMETIMES NOTHING IS MARKED FOR DELETION,             
+WHICH IS FINE, OF COURSE.)                                                      
+                                                                                
+THIS UTILITY IS INTENDED TO BE GENERAL ENOUGH TO HANDLE ANY SEQUENCE            
+OR COMBINATION OF INPUT RECORDS.                                                
+                                                                                
+THE PURPOSE OF THIS UTILITY IS TO PROCESS THE INPUT FILE (WHETHER               
+CONCATENATED OR NOT), AND TO PRODUCE A SINGLE MERGED INPUT UPDATE FILE          
+CONTAINING ONLY THOSE RECORDS WHICH SHOULD BE APPLIED IN THE SUBSEQUENT         
+UPDATE. IN THIS WAY, WE CAN DELETE UNWANTED POINTERS AND ADD WANTED             
+POINTERS (AND RECORDS) WITHIN THE SAME UPDATE STEP.                             
+                                                                                
+THE RULES ARE:                                                                  
+ 1. IF THE RECORD IS *NOT* MARKED FOR DELETION, IT IS KEPT, AND THE             
+    ORIGINAL SORT ORDER IS PRESERVED.                                           
+ 2. IF THE RECORD (POINTER) *IS* MARKED FOR DELETION, ONLY ONE SUCH             
+    POINTER WITH A GIVEN MAJOR KEY WILL BE KEPT, AND EVEN THEN, IT WILL         
+    BE KEPT IF AND ONLY IF THERE IS NO OTHER RECORD WITH THE SAME MAJOR         
+    KEY WHICH IS *NOT* MARKED FOR DELETION.                                     
+ 3. FOR NATIONAL DEMOS:                                                         
+    NTI PROGRAM NUMBER BITMAP RECORDS ARE ALWAYS FORCED TO THE                  
+    BEGINNING OF THE OUTPUT FILE. THIS IS REQUIRED BY PVLD, SO THAT             
+    WE CAN EXAMINE THESE RECORDS (TO CONFIRM THAT NO PROGRAM NUMBERS            
+    ARE BEING REUSED) BEFORE WE UPDATE ANY RECORDS ON NTIFIL. NOTE:             
+    WHEN THESE RECORDS ARE PRESENT, WE FORCE THE GENERATION OF A                
+    "DUMMY" RECORD IMMEDIATELY FOLLOWING THE BITMAP RECORDS. THIS               
+    IS ONLY DONE BECAUSE WHEN THE UPDATE RUNS, THE PRESENCE OF THE              
+    DUMMY RECORD WILL TRIGGER AN IMMEDIATE WRITE OF THE LAST BITMAP             
+    RECORD TO DISK. SEE DMDXLRPS FOR DETAILS.                                   
+    DEC/2020: NOTE THAT THIS APPROACH WILL NOT WORK UNDER VSAM, BECAUSE         
+              THE INPUT FILE TO AN IDCAMS UPDATE MUST BE IN SORT ORDER          
+              BY KEY! WE WILL NEED TO REVISIT THIS IF AND WHEN WE EVER          
+              CONVERT NTIDIR/FIL TO VSAM.                                       
+                                                                                
+OCT/2016: IN ANTICIPATION OF VSAM, WE NOW GENERATE AN ADDITIONAL                
+          OUTPUT FILE CALLED DUPEXTPS (DUPLICATE EXTENDED PASSIVES).            
+          THERE SHOULD NEVER BE EXTENDED PASSIVES WITH DUPLICATE MAJOR          
+          KEYS AND DIFFERENT DATA, BUT THIS CAN THEORETICALLY HAPPEN IF         
+          A CONVERSION HAS A BUG. SO WE CATCH THEM HERE.                        
+                                                                                
+***********************************************************************         
+./ ADD NAME=SYMNAMES   ** SYMBOLICS USED IN CONTROL CARDS                       
+*                                                                               
+       ++INCLUDE DEMRGICESY                                                     
+*                                                                               
+./ ADD NAME=TOOLIN     ** CONTROL CARDS FOR ICETOOL                             
+*                                                                               
+* SORT THE INPUT FILE AND PRODUCE AN OUTPUT FILE READY FOR INPUT INTO           
+* AN UPDATE.                                                                    
+* ALSO PRODUCE OUTPUT FILES NEEDED TO PRODUCE DEBUG/TRACE REPORTS.              
+*                                                                               
+SORT FROM(IN) USING(CTL1)                                                       
+*                                                                               
+* SAVE THE "Q" KEYS FOR THE SAME FMS/BOOK/STATION/STATTYPE/BOOKTYPE.            
+*                                                                               
+SELECT FROM(QTEMP) TO(TEMP1) -                                                  
+ ON(PMCODE) -                                                                   
+ ON(PMMEDIA) -                                                                  
+ ON(PMSRC) -                                                                    
+ ON(PMBOOK) -                                                                   
+ ON(PMSTAT) -                                                                   
+ ON(PMSTYP) -                                                                   
+ ON(PMBTYP) -                                                                   
+ FIRST                                                                          
+*                                                                               
+* INVOKE A DFSORT EXIT TO PRINT A TRACE TO SYSPRINT.                            
+COPY FROM(TEMP1) USING(CTL2)                                                    
+*                                                                               
+COUNT FROM(DUPEXTPS) NOTEMPTY RC4                                               
+*                                                                               
+* PRINT A LISTING OF THE DUPLICATE KEYS FOR ANALYSIS.                           
+* NOTE: THE ABSENCE OF A TITLE AND COLUMN HEADINGS IS DELIBERATE. THAT          
+* WAY, IF THERE ARE NO RECORDS TO PRINT, THE SHOWDUPS SYSOUT DATASET            
+* WILL NOT APPEAR IN THE SPOOLED OUTPUT AT ALL.                                 
+*                                                                               
+DISPLAY FROM(DUPEXTPS) LIST(SHOWDUPS) -                                         
+   BLANK -                                                                      
+   NOHEADER -                                                                   
+   ON(1,23,HEX) -                                                               
+   ON(1,23,CH)                                                                  
+*                                                                               
+*                                                                               
+./ ADD NAME=CTL1CNTL   ** CONTROL CARDS FOR USING(CTL1)                         
+*                                                                               
+* SORT THE INPUT FILE BY MAJOR KEY IN SUCH A WAY THAT ALL RECORDS TO BE         
+* KEPT APPEAR *BEFORE* THOSE MARKED FOR DELETION.                               
+* SEQUENCE NUMBERS ARE GENERATED TO FORCE A UNIQUE KEY ACROSS DUPLICATE         
+* MAJOR KEYS (THE SEQUENCE NUMBER IS RESET WITH EACH NEW MAJOR KEY).            
+*                                                                               
+ INREC IFTHEN=(WHEN=INIT,                                                       
+               BUILD=(S_RDW,                                                    
+                      S_DELETE_FLAG:MARKED_KEEP,                                
+                      S_MAJOR_KEY_SEQ:FORCE_AFTER,                              
+                      S_RECORD:RECORD)),                                        
+       IFTHEN=(WHEN=(S_STATUS_BYTE,BO,MARKED_FOR_DELETION),                     
+               OVERLAY=(S_DELETE_FLAG:MARKED_DELETED),HIT=NEXT),                
+       IFTHEN=(WHEN=(S_FMS_AND_STATION,EQ,NTI_BITMAP_KEY),                      
+               OVERLAY=(S_MAJOR_KEY_SEQ:FORCE_FIRST))                           
+*                                                                               
+ SORT FIELDS=(S_MAJOR_KEY_SEQ,A,                                                
+              S_MAJOR_KEY,A,                                                    
+              S_DELETE_FLAG,A,                                                  
+              S_MINOR_KEY,A),                                                   
+      EQUALS                  ** PRESERVE ORDER OF DUPLICATE MINOR KEYS         
+*                                                                               
+* A STORED SEQUENCE NUMBER IS USED BY THE SUBSEQUENT OUTFIL, TO                 
+* IDENTIFY THE FIRST OCCURRENCE OF A MAJOR KEY.                                 
+*                                                                               
+ OUTREC IFTHEN=(WHEN=INIT,                                                      
+                 OVERLAY=(S_SEQNUM:SEQNUM,8,PD,RESTART=(S_MAJOR_KEY))),         
+*                                                                               
+* FOR EACH BITMAP RECORD, PUSH THE KEY INTO THE *NEXT* RECORD ONLY.             
+* THIS MEANS THAT THE FIRST RECORD *AFTER* THE LAST BITMAP RECORD KEY           
+* WILL BE THE LAST ONE WITH THE PUSHED BITMAP KEY. OUTFIL NEEDS THIS.           
+*                                                                               
+        IFTHEN=(WHEN=GROUP,                                                     
+                 BEGIN=(S_FMS_AND_STATION,EQ,NTI_BITMAP_KEY),RECORDS=2,         
+                       PUSH=(S_PUSH_FMT_AND_STATION:S_FMS_AND_STATION))         
+*                                                                               
+* KEEP ONLY THOSE RECORDS WHICH ARE NOT MARKED FOR DELETION, AND:               
+*     ARE NOT PASSIVES (I.E., THEY ARE DEMO RECORDS), OR                        
+*     ARE THE *FIRST* OCCURRENCE OF A NON-EXTENDED PASSIVE, OR                  
+*     ARE EXTENDED PASSIVES (I.E., KEEP ALL OCCURRENCES OF THESE).              
+* ALSO KEEP THE FIRST OCCURRENCE OF ANY MAJOR KEY MARKED FOR DELETION.          
+*                                                                               
+ OUTFIL FNAMES=OUT,                                                             
+ INCLUDE=(S_DELETE_FLAG,EQ,MARKED_KEEP,AND,                                     
+           (S_RDW_RECLEN,NE,S_PASSIVE_LENGTH,OR,                                
+           (S_RDW_RECLEN,EQ,S_PASSIVE_LENGTH,AND,                               
+            S_STATUS_BYTE,BZ,EXTENDED_PASSIVE,AND,                              
+            S_SEQNUM,EQ,+1),OR,                                                 
+           (S_RDW_RECLEN,EQ,S_PASSIVE_LENGTH,AND,                               
+            S_STATUS_BYTE,BO,EXTENDED_PASSIVE)),OR,                             
+         (S_DELETE_FLAG,EQ,MARKED_DELETED,AND,S_SEQNUM,EQ,+1)),                 
+*                                                                               
+* IF WE SEE A RECORD WITH A PUSHED BITMAP KEY WHICH IS *NOT* A BITMAP           
+* RECORD, WE KNOW THIS IS THE INSERTION POINT FOR THE "DUMMY" RECORD.           
+*                                                                               
+ IFTHEN=(WHEN=(S_PUSH_FMT_AND_STATION,EQ,NTI_BITMAP_KEY,AND,                    
+               S_FMS_AND_STATION,NE,NTI_BITMAP_KEY),                            
+         BUILD=(RDW,                                                            
+                EMPTY_NTI_RECORD_FMS,   ** DUKMAJOR                             
+                15Z,                                                            
+                X'0000',                ** DUMINOR (MINOR KEY)                  
+                X'001D',                ** DURLEN (RECORD LEN)                  
+                X'00',                  ** DURSTAT (STATUS BYTE)                
+                X'0105010101',          ** FAKE LOAD DATE ELEMENT               
+                X'00',                  ** EOR                                  
+                /,                      START A NEW RECORD                      
+                RDW,RECORD:S_RECORD)),  WRITE THE CURRENT RECORD AS IS          
+*                                                                               
+* ALL OTHER RECORDS JUST GET WRITTEN AS IS.                                     
+*                                                                               
+ IFTHEN=(WHEN=NONE,BUILD=(RDW,RECORD:S_RECORD))                                 
+*                                                                               
+* CREATE AN ERROR FILE OF DUPLICATE EXTENDED PASSIVE KEYS.                      
+*                                                                               
+ OUTFIL FNAMES=DUPEXTPS,                                                        
+        VTOF,                     ** CONVERT TO FIXED LENGTH                    
+ INCLUDE=(S_DELETE_FLAG,EQ,MARKED_KEEP,AND,                                     
+          S_RDW_RECLEN,EQ,S_PASSIVE_LENGTH,AND,                                 
+          S_STATUS_BYTE,BO,EXTENDED_PASSIVE,AND,                                
+          S_SEQNUM,GT,+1),                                                      
+ BUILD=(S_UPD_DIR)                                                              
+*                                                                               
+* CREATE A FILE OF "Q" KEYS THAT WE WANT TO TRACE IN SYSPRINT.                  
+*                                                                               
+ OUTFIL FNAMES=QTEMP,                                                           
+        VTOF,                     ** CONVERT TO FIXED LENGTH                    
+*                                ** PMCODE=PMCODEQU, PMMEDIA=N, PMSRC=N         
+ INCLUDE=(S_DELETE_FLAG,EQ,MARKED_KEEP,AND,S_FMS,EQ,C'QNN'),                    
+ BUILD=(S_UPD_DIR)                                                              
+*                                                                               
+* CREATE A FILE OF "Z" AND "J" KEYS.                                            
+*                                                                               
+ OUTFIL FNAMES=TEMP1,                                                           
+        VTOF,                     ** CONVERT TO FIXED LENGTH                    
+ INCLUDE=(S_DELETE_FLAG,EQ,MARKED_KEEP,AND,                                     
+          (S_FILE,EQ,PZCODEQU,OR,                                               
+           S_FILE,EQ,PJCODEQU)),                                                
+ BUILD=(S_UPD_DIR)                                                              
+*                                                                               
+*                                                                               
+./ ADD NAME=CTL2CNTL   ** CONTROL CARDS FOR USING(CTL2)                         
+*                                                                               
+* PRINT A TRACE TO SYSPRINT.                                                    
+* *NOTE*: THERE IS NO OUTPUT FILE SPECIFIED FOR THIS ICETOOL OPERATOR,          
+*         BECAUSE ALL OF THE INPUT RECORDS ARE BEING DISCARDED BY THE           
+*         E35 EXIT.                                                             
+*                                                                               
+ MODS E35=(DEMRGX1,0)                                                           
+*                                                                               

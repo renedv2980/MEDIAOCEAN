@@ -1,0 +1,597 @@
+*          DATA SET DDGETRET   AT LEVEL 023 AS OF 09/26/19                      
+*CATALP GETRET                                                                  
+*                                                                               
+***********************************************************************         
+* PARM IS CONTROL BLOCK CONTAINING FOLLOWING DATA                     *         
+*                                                                     *         
+* XL1 RETURN CODE       SET TO ZERO IF VALID REQUEST                  *         
+* XL1 COUNTRY CODE      CAN BE PASSED AND RETURNED IF REQUIRED        *         
+* XL2 NUMBER OF HOURS   INPUT NUM OF HOURS FOR RETAIN PERIOD          *         
+* XL1 FLAGS             80=BACKWARDS                                  *         
+*                       40=ALLOW START ON WEEKEND/HOLIDAY             *         
+*                       20=PASS BACK COUNTRY IN GRDCTRY               *         
+*                       10=USE TALENT PARTNERS CALENDARS (NOT DDS)    *         
+*                       08=CALCULATE RETAIN RATHER THAN USE CALENDAR  *         
+*                       04=ALLOW END ON WEEKEND/HOLIDAY               *         
+*                       01=USE TALENT PARTNERS UNION CALENDARS        *         
+* XL1 INFO              80=OUTPUT DATE IS A WEEKEND DAY               *         
+*                       40=OUTPUT DATE IS PUBLIC HOLIDAY              *         
+*                       20=OUTPUT DATE IS OUT OF RANGE - WAS CALULATED*         
+*                       07=OUTPUT DAY NUM IN LOW ORDER BITS 1=MON     *         
+*                                                                     *         
+* XL1 BINARY YEAR       INPUT DATE BINARY YMD                         *         
+* XL1 BINARY MONTH                                                    *         
+* XL1 BINARY DAY                                                      *         
+* XL1 BINARY HOUR       INPUT TIME BINARY HM                          *         
+* XL1 BINARY MINUTE                                                   *         
+*                                                                     *         
+*                                                                     *         
+* XL1 BINARY YEAR       OUTPUT DATE BINARY YMD                        *         
+* XL1 BINARY MONTH                                                    *         
+* XL1 BINARY DAY                                                      *         
+* XL1 BINARY HOUR       OUTPUT TIME BINARY HM                         *         
+* XL1 BINARY MINUTE                                                   *         
+***********************************************************************         
+*                                                                               
+* DEV NOTES:                                                                    
+* 1. POSSIBLE BUG IN LIVE GETRET:                                               
+*    WHEN COUNTING RETAIN TIME BACKWARD, THE RETAIN HH:MM IS SET                
+*    INCORRECTLY.  THE PROGRAM CALCULATES THE NUMBER OF FULL DAYS               
+*    FROM RETAIN HOURS, AND USES THE REMAINING HOURS AS HH:MM                   
+*    THIS IS INCORRECT.                                                         
+*    EXAMPLE: 25 HOURS BACK FROM APR08, 14:00 SHOULD RESULT IN                  
+*    APR07, 13:00.  THE LIVE GETRET RETURNS APR07, 11:00                        
+*    IT IS USING REMAINDER OF THE DIVISION BY 24HRS AS HH:MM                    
+*                                                                               
+* 2. POSSIBLE BUG IN LIVE GETRET:                                               
+*    IF "OK TO START ON HOLIDAY" FLAG IS SET, ONE EXTRA DAY IS ADDED            
+*    WHEN COUNT STARTS ON A SATURDAY                                            
+*    0034 HOURS                                                                 
+*    IN:       APR09/16  14:01     APR09/16  14:01                              
+*    OUT:      APR12/16  00:01     APR11/16  00:01                              
+*                                                                               
+*                                                                               
+*                                                                               
+         TITLE 'GETRET - GET RETAIN DATE/TIME '                                 
+         PRINT NOGEN                                                            
+GETRET   CSECT                                                                  
+         NMOD1 GRWORKX-GRWORKD,*GETRET*,CLEAR=YES,RR=R8                         
+         USING GRWORKD,RC                                                       
+         ST    R8,RELO                                                          
+         LR    R7,R1                                                            
+         USING GETRETD,R7          R7=A(INPUT CONTROL BLOCK)                    
+*                                                                               
+         MVI   GRDRETC,0           SET RETURN CODE OF ZERO                      
+         MVI   GRDRETI,0           SET RETURN INFO TO ZERO                      
+*                                                                               
+         LAM   AR0,ARF,ARZERO      CLEAR ACCESS REGISTERS                       
+*                                                                               
+         CTRY                                                                   
+         STCM  R0,15,AGYCTRYO      SET AGYOPTS/AGYCTRY/CTRY/LANG                
+                                                                                
+GETR00   XR    R1,R1               TEST IF CALLER PASSED COUNTRY                
+         ICM   R1,1,GRDCTRY                                                     
+         BNZ   *+8                                                              
+         ICM   R1,1,AGYCTRY        USE AGENCY COUNTRY (ACCESS RECORD)           
+         BNZ   *+8                                                              
+         ICM   R1,1,DEFCTRY        USE DEFAULT COUNTRY                          
+         CHI   R1,HOLTCMXQ-2       LAST 2 VALUES USED FOR TALENT, TPU           
+         BNH   *+8                                                              
+         ICM   R1,1,DEFCTRY                                                     
+*                                                                               
+         TM    GRDFLAG,GRDFCTRY                                                 
+         BZ    *+8                                                              
+         STC   R1,GRDCTRY          RETURN COUNTRY CODE USED IF REQUIRED         
+*                                                                               
+*&&US                                                                           
+         TM    GRDFLAG,GRDFTAL     TEST TALENT PARTNERS CALENDAR                
+         JZ    *+8                                                              
+         LHI   R1,CTRYTALQ         COUNTRY EQUATE FOR TALENT PARTNERS           
+*                                                                               
+         TM    GRDFLAG,GRDFTPU     TEST TALENT PARTNERS UNION CALENDAR          
+         JZ    *+8                                                              
+         LHI   R1,CTRYTPUQ         TALENT PARTNERS UNION                        
+*&&                                                                             
+*                                                                               
+         STC   R1,CTRY             SAVE COUNTRY CODE FOR LATER                  
+*                                                                               
+* COPY COUNTRY'S HOLIDAY TABLE FROM DATASPACE TO LOCAL STORAGE                  
+*                                                                               
+* TURN PROTECTION OFF                                                           
+* LOCKSPC MODIFIES A TABLE IN ITS CSECT, CAUSING PROTECTION ERRORS              
+         LT    RF,=V(PROTOFF)      DISABLE CALLERS STORAGE PROTECTION           
+         JZ    *+6                                                              
+         BASR  RE,RF                                                            
+*                                                                               
+* LOCK GETRET TABLE IN TABS DATASPACE                                           
+*                                                                               
+         XC    DUB,DUB                                                          
+         MVC   DUB(4),=AL4(DTGETRET)                                            
+         GOTO1 =V(LOCKSPC),DUB                                                  
+         ICM   RF,15,4(R1)                                                      
+         JZ    *+2                                                              
+*                                                                               
+         SAM31                                                                  
+         ICM   R2,15,(DSPTFRST-DMSPACED)(RF) DISP OF GETRET TAB IN DSP          
+         SAM24                                                                  
+*                                                                               
+         LLC   R0,CTRY             COUNTRY CODE                                 
+         BCTR  R0,0                                                             
+         MHI   R0,HOLTABDLQ*HOLTABNQ*HOLTYMXQ+HOLTTTLQ                          
+         AR    R2,R0                                                            
+*                                                                               
+         ICM   R3,15,=AL4(HOLTABLQ) LENGTH OF TABLE TO BE MOVED                 
+         LA    R4,HOLTAB           LOCAL TABLE                                  
+         LR    R5,R3                                                            
+*                                                                               
+* LOAD TABS DATASPACE ALET INTO AR2                                             
+         L     RF,=V(SSB)                                                       
+         LAM   AR2,AR2,SSBTBLET-SSBD(RF)                                        
+*                                                                               
+         SAM31                                                                  
+         SAC   512                                                              
+         MVCL  R4,R2                                                            
+         SAC   0                                                                
+         SAM24                                                                  
+         LAM   AR2,AR2,ARZERO      CLEAR ACCESS REGISTER AR2                    
+*                                                                               
+* UNLOCK GETRET TABLE IN DATASPACE                                              
+*                                                                               
+         XC    DUB,DUB                                                          
+         MVC   DUB(4),=AL4(DTGETRET)                                            
+         MVI   DUB,X'10'                                                        
+         GOTO1 =V(LOCKSPC),DUB                                                  
+*                                                                               
+* TURN PROTECTION BACK ON                                                       
+*                                                                               
+         LT    RF,=V(PROTON)       ENABLE CALLERS STORAGE PROTECTION            
+         JZ    *+6                                                              
+         BASR  RE,RF                                                            
+*                                                                               
+* BASIC ERROR CHECKING                                                          
+*                                                                               
+         TM    GRDFLAG,GRDF2028    GO BEYOND 2027                               
+         JO    GETR02                                                           
+         CLI   GRDIDY,127          YEAR 2027?                                   
+         JH    GRETERR1                                                         
+*                                                                               
+GETR02   CLI   GRDIDM,1                                                         
+         JL    GRETERR1                                                         
+         CLI   GRDIDM,12                                                        
+         JH    GRETERR1                                                         
+         CLI   GRDIDD,1                                                         
+         JL    GRETERR1                                                         
+*                                                                               
+         CLI   GRDITH,23                                                        
+         JH    GRETERR2                                                         
+         CLI   GRDITM,59                                                        
+         JH    GRETERR2                                                         
+*                                                                               
+* CONVERT INPUT DATE FROM BINARY YMD TO EBCDIC YYMMDD FOR GETDAY                
+*                                                                               
+         GOTO1 =V(DATCON),DMCB,(3,GRDIDYMD),(0,STARTD)                          
+*                                                                               
+* DETERMINE DAY OF THE WEEK FOR INPUT DATE                                      
+*                                                                               
+         GOTO1 =V(GETDAY),DMCB,(X'00',STARTD),WORK                              
+         CLI   DMCB,0              RETURNED DAY OF THE WEEK(BINARY)             
+         JZ    *+2                 SOMETHING WRONG WITH GETDAY                  
+         LLC   RF,DMCB                                                          
+         CVD   RF,CURRDOW                                                       
+*                                                                               
+* CONVERT INPUT TIME TO MINUTES                                                 
+         LLC   R1,GRDITH           INPUT BINARY HOUR                            
+         MHI   R1,60               TO MINUTES                                   
+         LLC   R0,GRDITM           ADD INPUT BINARY MINUTES                     
+         AR    R1,R0               R1 = TOTAL INPUT TIME IN MINUTES             
+*                                                                               
+         XR    R0,R0                                                            
+         ICM   R0,3,GRDHRS         INPUT RETAIN HOURS                           
+         MHI   R0,60               CONVERT TO MINUTES                           
+*                                                                               
+         TM    GRDFLAG,GRDFBACK    GOING BACK REQUIRED NUMBER OF HOURS?         
+         JZ    *+6                 NO                                           
+         LNR   R0,R0               YES - NEGATE RETAIN TIME                     
+*                                                                               
+         AR    R1,R0               ADD RETAIN HOURS TO INPUT TIME               
+*                                                                               
+         LTR   R1,R1                                                            
+         JNM   *+10                                                             
+         OI    CALCFLAG,CFMINUSQ   NEGATIVE DAYS                                
+         LPR   R1,R1               MAKE VALUE POSITIVE FOR CALCULATIONS         
+*                                                                               
+         XR    R0,R0                                                            
+         D     R0,=F'60'                                                        
+         STC   R0,GRDOTM           REMAINDER = OUTPUT MINUTES                   
+         XR    R0,R0                                                            
+         D     R0,=F'24'                                                        
+         STC   R0,GRDOTH           REMAINDER = OUTPUT HOURS                     
+*                                                                               
+         TM    CALCFLAG,CFMINUSQ   NEGATIVE DAYS?                               
+         JZ    *+8                                                              
+         AHI   R1,1                                                             
+         CVD   R1,BUSDAYS          BUSINESS DAYS TO ADD TO START DAY            
+         CVD   R1,SVBDAYS          BUSINESS DAYS TO ADD TO START DAY            
+*                                                                               
+* FIND START AND END OF HOLIDAY TABLE                                           
+*                                                                               
+         XC    HTSTART,HTSTART                                                  
+         XC    HTEND,HTEND                                                      
+*                                                                               
+         LA    R5,HOLTAB+HOLTTTLQ                                               
+         USING HOLTABD,R5                                                       
+*                                                                               
+         OC    HOLTDATE,HOLTDATE   TABLE EMPTY?                                 
+         JZ    GETR08                                                           
+*                                                                               
+         MVC   HTSTART,HOLTDATE                                                 
+         MVC   HTSTART+2(4),=C'0101' JAN01                                      
+*                                                                               
+GETR05   OC    HOLTDATE,HOLTDATE   END OF HOLIDAY TABLE?                        
+         JZ    GETR06                                                           
+         LA    R5,HOLTABDLQ(R5)    CHECK NEXT HOLIDAY IN THE TABLE              
+         J     GETR05                                                           
+*                                                                               
+GETR06   DS    0H                                                               
+         LHI   R0,HOLTABDLQ                                                     
+         LNR   R0,R0                                                            
+         AR    R5,R0                                                            
+         MVC   HTEND,HOLTDATE                                                   
+         MVC   HTEND+2(4),=C'1231' DEC31                                        
+         DROP  R5                                                               
+*                                                                               
+GETR07   DS    0H                                                               
+         CLC   STARTD,HTSTART                                                   
+         JL    GETR90              END DAY OUT OF CALENDAR RANGE                
+         CLC   STARTD,HTEND                                                     
+         JH    GETR90              END DAY OUT OF CALENDAR RANGE                
+*                                                                               
+GETR08   DS    0H                                                               
+         ZAP   DAYS2ADD,=P'0'      DAYS TO ADD TO TODAYS DATE                   
+*                                                                               
+* CHECK IF PERIOD START DAY IS A WEEKEND OR A HOLIDAY                           
+* MOVE TO NEXT BUSINESS DAY                                                     
+         MVC   CURRDAY,STARTD                                                   
+         MVC   HOLSTART,STARTD                                                  
+*                                                                               
+         BRAS  RE,ISWNDHOL         TEST, SAVE DATE AND FLAGS                    
+         JNE   GETR10              NOT WEEKEND OR HOLIDAY                       
+*                                                                               
+* CURRDAY IS A WEEKEND OR HOLIDAY HERE                                          
+         TM    GRDFLAG,GRDFHLOK    OK TO START ON HOLIDAY/WEEKEND?              
+         JZ    GETR09              NO - MOVE TO NEXT BUSINESS DAY               
+*                                                                               
+* OK TO START ON WEEKEND HERE, MUST DECREMENT BUSINESS DAYS                     
+*                                                                               
+         CP    BUSDAYS,=P'0'       ANY BUSINESS DAYS LEFT?                      
+         JE    GETR50              NO - WRAP IT UP                              
+*                                                                               
+         SP    BUSDAYS,=P'1'       DECREMENT BUSINESS DAYS                      
+         AP    DAYS2ADD,=P'1'      UPDATE TOTAL DAYS                            
+         BRAS  RE,ADJDATE          MOVE CURRDAY 1 DAY BACK OF FORWARD           
+*                                                                               
+* NOT OK TO START ON WEEKEND HOLIDAY: SLIDE TO NEXT BUSINESS DAY                
+GETR09   BRAS  RE,NEXTBDAY                                                      
+         MVC   HOLSTART,CURRDAY    ADJ HOLIDAY CHECK PERIOD START-END           
+*                                                                               
+* "MAIN" LOOP                                                                   
+* CALCULATE NUMBER OF DAYS TO ADD TO STARTD                                     
+* WEEKENDS ARE SKIPPED, HOLIDAYS ARE IGNORED, THEY WILL BE                      
+* DEALT WITH LATER                                                              
+*                                                                               
+GETR10   CP    BUSDAYS,=P'0'       ANY MORE BUSINESS DAYS LEFT?                 
+         JE    GETR50                                                           
+*                                                                               
+         BRAS  RE,ADJDOW           MOVE 1 WEEKDAY FORWARD OR BACKWARD           
+*                                                                               
+         CP    CURRDOW,FRI         SATURDAY OR SUNDAY?                          
+         JH    *+10                YES, DON'T DECREMENT BUS DAYS                
+         SP    BUSDAYS,=P'1'       DECREMENT BUSINESS DAY COUNTER               
+         AP    DAYS2ADD,=P'1'      INCREMENT TOTAL DAYS TO ADD                  
+         J     GETR10                                                           
+*                                                                               
+* "MAIN" LOOP DONE HERE                                                         
+* IF IT STOPS ON A WEEKEND, BUSDAYS MAY BE NONZERO                              
+*                                                                               
+GETR50   DS    0H                                                               
+         CVB   RF,DAYS2ADD                                                      
+         TM    GRDFLAG,GRDFBACK    GOING BACK REQUIRED NUMBER OF HOURS?         
+         JZ    *+6                 NO                                           
+         LNR   RF,RF               YES - NEGATE RETAIN TIME                     
+         GOTO1 =V(ADDAY),DMCB,(C'D',STARTD),CURRDAY,(RF)                        
+         MVC   HOLEND,CURRDAY      ADJ HOLIDAY CHECK PERIOD START-END           
+*                                                                               
+         BRAS  RE,ISWNDHOL         SET/RESET WKND/HOL FLAGS                     
+*                                                                               
+* IF START AND END DAY ARE THE SAME, DON'T CHECK HOLIDAYS                       
+         CLC   STARTD,CURRDAY                                                   
+         JE    GETR80                                                           
+*                                                                               
+* CHECK IF ANY HOLIDAYS FALL BETWEEN HOLSTART AND HOLEND                        
+         LA    R5,HOLTAB+HOLTTTLQ                                               
+         USING HOLTABD,R5                                                       
+*                                                                               
+GETR55   OC    HOLTDATE,HOLTDATE   END OF HOLIDAY TABLE?                        
+         JZ    GETR80                                                           
+         CP    HOLTDAY,FRI         HOLIDAY FALLS ON A WEEKEND?                  
+         JH    GETR70              YES, SKIP IT                                 
+*                                                                               
+         TM    GRDFLAG,GRDFBACK    GOING BACK REQUIRED NUMBER OF HOURS?         
+         JO    GETR56              IF BACK, START AND END ARE REVERSED          
+*                                                                               
+         MVC   WORK(L'HOLSTART),HOLSTART                                        
+         MVC   WORK+6(L'HOLEND),HOLEND                                          
+         J     GETR57                                                           
+*                                                                               
+GETR56   MVC   WORK(L'HOLEND),HOLEND                                            
+         MVC   WORK+6(L'HOLSTART),HOLSTART                                      
+*                                                                               
+GETR57   CLC   HOLTDATE,WORK       CURR HOLIDAY EARLIER THAN START-END?         
+         JL    GETR70              YES, SKIP IT                                 
+         CLC   HOLTDATE,WORK+6     CURR HOLIDAY LATER THAN START-END?           
+         JH    GETR80              YES, ALL DONE, STOP CHECKING                 
+*                                                                               
+* HERE WE FOUND A HOLIDAY WITHIN OUR START-END PERIOD                           
+         BRAS  RE,ADJDATE          ADD 1 DAY FOR THE HOLIDAY                    
+*                                                                               
+         BRAS  RE,ISWNDHOL         ADJUSTED DATE = WKND/HOL?                    
+         JNE   *+8                                                              
+         BRAS  RE,NEXTBDAY         SLIDE FORWARD TO NEXT BUSINESS DAY           
+*                                                                               
+GETR70   LA    R5,HOLTABDLQ(R5)    CHECK NEXT HOLIDAY IN THE TABLE              
+         J     GETR55                                                           
+         DROP  R5                                                               
+*                                                                               
+* END OF HOLIDAY TABLE HERE                                                     
+*                                                                               
+GETR80   DS    0H                                                               
+         OC    HTSTART,HTSTART     ANY HOLIDAYS IN TABLE?                       
+         JZ    GETR100             NO, DON'T BOTHER WITH START/END              
+*                                                                               
+         CLC   CURRDAY,HTSTART                                                  
+         JL    GETR90              END DAY OUT OF CALENDAR RANGE                
+         CLC   CURRDAY,HTEND                                                    
+         JNH   GETR100             END DAY WITHIN CALENDAR RANGE - OK           
+*                                                                               
+* START OR END DAY OUT OF RANGE - CALCULATE ENDDAY IGNORING CALENDAR            
+*                                                                               
+GETR90   DS    0H                                                               
+         OI    CURRENDF,GRDICALR                                                
+*                                                                               
+* SEE IF START DAY IS A WEEKEND.  IF YES, MOVE TO NEXT WORKDAY                  
+*                                                                               
+         MVC   CURRDAY,STARTD                                                   
+*                                                                               
+         GOTO1 =V(GETDAY),DMCB,(X'00',CURRDAY),WORK                             
+         CLI   DMCB,0              RETURNED DAY OF THE WEEK(BINARY)             
+         JZ    *+2                 SOMETHING WRONG WITH GETDAY                  
+         LLC   RF,DMCB                                                          
+         CVD   RF,CURRDOW                                                       
+*                                                                               
+         TM    GRDFLAG,GRDFHLOK                                                 
+         BO    GETR92                                                           
+*                                                                               
+         CP    CURRDOW,FRI                                                      
+         JNH   *+8                                                              
+         OI    CURRENDF,GRDIWKND                                                
+*                                                                               
+GETR91   CP    CURRDOW,FRI                                                      
+         JNH   GETR92                                                           
+         BRAS  RE,ADJDATE          MOVE 1 WEEKDAY BACK OR FORWARD               
+         J     GETR91                                                           
+*                                                                               
+GETR92   DS    0H                                                               
+         CVB   RF,SVBDAYS                                                       
+         TM    GRDFLAG,GRDFBACK    GOING BACK REQUIRED NUMBER OF HOURS?         
+         JZ    *+6                 NO                                           
+         LNR   RF,RF               YES - NEGATE RETAIN TIME                     
+         GOTO1 =V(ADDAY),DMCB,(C'D',CURRDAY),WORK,(RF)                          
+         MVC   CURRDAY,WORK                                                     
+         GOTO1 =V(GETDAY),DMCB,(X'00',CURRDAY),WORK                             
+         CLI   DMCB,0              RETURNED DAY OF THE WEEK(BINARY)             
+         JZ    *+2                 SOMETHING WRONG WITH GETDAY                  
+         LLC   RF,DMCB                                                          
+         CVD   RF,CURRDOW                                                       
+*                                                                               
+         CP    CURRDOW,FRI                                                      
+         JNH   *+8                                                              
+         OI    CURRENDF,GRDIWKND                                                
+*                                                                               
+         CLC   STARTD,CURRDAY                                                   
+         JE    GETR100                                                          
+*                                                                               
+* GET TO NEXT WORKING DAY                                                       
+         NI    CURRENDF,X'FF'-(GRDIWKND+GRDIPHOL)                               
+*                                                                               
+GETR95   CP    CURRDOW,FRI                                                      
+         JNH   GETR100                                                          
+         BRAS  RE,ADJDATE          MOVE 1 WEEKDAY BACK OR FORWARD               
+         J     GETR95                                                           
+*                                                                               
+GETR100  DS    0H                                                               
+         ZAP   DUB,CURRDOW                                                      
+         CVB   RF,DUB                                                           
+         STC   RF,GRDRETI          SAVE DAY OF THE WEEK                         
+         OC    GRDRETI,CURRENDF                                                 
+         GOTO1 =V(DATCON),DMCB,(0,CURRDAY),(3,GRDODYMD)                         
+*                                                                               
+GETRX    XMOD1                                                                  
+         LTORG                                                                  
+*                                                                               
+GRETERR1 MVI   GRDRETC,GRDCINVD    INVALID INPUT DATE                           
+         J     GETRX                                                            
+GRETERR2 MVI   GRDRETC,GRDCINVT    INVALID INPUT TIME                           
+         J     GETRX                                                            
+*                                                                               
+*                                                                               
+MON      DC    P'1'                                                             
+TUE      DC    P'2'                                                             
+WED      DC    P'3'                                                             
+THU      DC    P'4'                                                             
+FRI      DC    P'5'                                                             
+SAT      DC    P'6'                                                             
+SUN      DC    P'7'                                                             
+*                                                                               
+ARZERO   DC    16F'0'                                                           
+*                                                                               
+DEFCTRY  DS    0C                                                               
+*&&UK*&& DC    AL1(1)                                                           
+*&&US*&& DC    AL1(2)                                                           
+*                                                                               
+*                                                                               
+* ADJUST DAY OF THE WEEK 1 DAY FORWARD OR BACKWARD                              
+ADJDOW   NTR1                                                                   
+         TM    GRDFLAG,GRDFBACK    GOING BACK REQUIRED NUMBER OF HOURS?         
+         JO    AD10                YES                                          
+*                                                                               
+* DOW CALCULATIONS FOR GOING FORWARD                                            
+         AP    CURRDOW,=P'1'       INCREMENT DAY OF WEEK                        
+*                                                                               
+         CP    CURRDOW,SUN         DAY OF WEEK > SUNDAY?                        
+         JNH   EQXIT               NO, EXIT                                     
+         ZAP   CURRDOW,MON         YES, RE-SET TO MONDAY                        
+         J     EQXIT                                                            
+*                                                                               
+* DOW CALCULATIONS FOR GOING BACKWARD                                           
+AD10     SP    CURRDOW,=P'1'       DECREMENT DAY OF WEEK                        
+         CP    CURRDOW,MON         DAY OF WEEK < MONDAY?                        
+         JNL   EQXIT               NO, EXIT                                     
+         ZAP   CURRDOW,SUN         YES, RE-SET TO SUNDAY                        
+         J     EQXIT                                                            
+*                                                                               
+*                                                                               
+*                                                                               
+* ADJUST DATE IN CURRDAY 1 DAY FORWARD/BACK                                     
+* ADJUST DOW IN CURRDOW 1 DAY FORWARD/BACK                                      
+ADJDATE  NTR1                                                                   
+         LHI   RF,1                1 DAY FORWARD                                
+         TM    GRDFLAG,GRDFBACK    GOING BACK REQUIRED NUMBER OF HOURS?         
+         JZ    *+6                 NO                                           
+         LNR   RF,RF               GOING BACK, MAKE DAYS TO ADD = -1            
+         GOTO1 =V(ADDAY),DMCB,(C'D',CURRDAY),WORK,(RF)                          
+         MVC   CURRDAY,WORK                                                     
+         BRAS  RE,ADJDOW                                                        
+         J     EQXIT                                                            
+*                                                                               
+*                                                                               
+*                                                                               
+* CHECK IF CURR DAY IS A HOLIDAY                                                
+ISHOLIDAY NTR1                                                                  
+         NI    CURRENDF,X'FF'-GRDIPHOL                                          
+*                                                                               
+         LA    RF,HOLTAB+HOLTTTLQ                                               
+         USING HOLTABD,RF                                                       
+*                                                                               
+ISHOL10  OC    HOLTDATE,HOLTDATE   END OF TABLE?                                
+         JZ    NEQXIT              NOT A HOLIDAY                                
+         CLC   CURRDAY,HOLTDATE    CURR HOLIDAY SAME AS START DAY?              
+         JL    NEQXIT  CURR HOLIDAY > CURRDAY NO NEED TO CHECK OTHERS           
+         JH    ISHOL20             YES, A HOLIDAY                               
+*                                                                               
+         CLI   HOLTTYPE,HOLCTHOLQ  PUBLIC HOLIDAY?                              
+         JNE   EQXIT               NO - SOME OTHER TYPE OF HOLIDAY              
+         OI    CURRENDF,GRDIPHOL   INDICATE IT IS A HOLIDAY                     
+         J     EQXIT                                                            
+*                                                                               
+ISHOL20  LA    RF,HOLTABDLQ(RF)    ADVANCE TO NEXT HOLIDAY                      
+         J     ISHOL10                                                          
+         DROP  RF                                                               
+*                                                                               
+*                                                                               
+*                                                                               
+EQXIT    XR    RF,RF                                                            
+         J     EXIT                                                             
+NEQXIT   LHI   RF,1                                                             
+EXIT     LTR   RF,RF                                                            
+         XIT1                                                                   
+*                                                                               
+*                                                                               
+*                                                                               
+* TEST IF CURRDAY IS A WEEKEND OR A HOLIDAY                                     
+ISWNDHOL NTR1                                                                   
+         NI    CURRENDF,X'FF'-(GRDIWKND+GRDIPHOL)                               
+*                                                                               
+         CP    CURRDOW,SAT         CHECK IF WEEKEND                             
+         JL    ISWND10             NO - PROCEED                                 
+*                                                                               
+* CURRDOW FALLS ON A WEEKEND HERE                                               
+         OI    CURRENDF,GRDIWKND   INDICATE IT IS A WEEKEND                     
+         J     EQXIT               SEE IF NEED TO SAVE DAY INFO                 
+*                                                                               
+ISWND10  BRAS  RE,ISHOLIDAY                                                     
+         JNE   NEQXIT                                                           
+         J     EQXIT                                                            
+*                                                                               
+*                                                                               
+*                                                                               
+* SLIDE CURRDAY FORWARD/BACK TO NEXT BUSINESS DAY                               
+NEXTBDAY NTR1                                                                   
+NEXTBD10 BRAS  RE,ISWNDHOL         CURRENT DAY WEEKEND OR HOLIDAY?              
+         JNE   EQXIT               NO, BUSINESS DAY.  TERMINATE LOOP            
+*                                                                               
+* CURRENT DAY IS A HOLIDAY OR A WEEKEND,                                        
+* MOVE ENDING DAY FORWARD/BACKWARD TO NEXT BUSINESS DAY                         
+NEXTBD20 BRAS  RE,ADJDATE          MOVE 1 WEEKDAY BACK OR FORWARD               
+         AP    DAYS2ADD,=P'1'                                                   
+         J     NEXTBD10     SEE IF ADJUSTED DAY IS STILL A HOLIDAY/WKND         
+*                                                                               
+*                                                                               
+*                                                                               
+*                                                                               
+*                                                                               
+*                                                                               
+GRWORKD  DSECT                                                                  
+DUB      DS    D                                                                
+FULL     DS    F                                                                
+DMCB     DS    8F                                                               
+RELO     DS    A                   RELO FACTOR                                  
+WORK     DS    XL64                                                             
+*                                                                               
+STARTD   DS    CL6                 START DAY                                    
+*                                                                               
+HTSTART  DS    CL6                 HOLIDAY TABLE START                          
+HTEND    DS    CL6                 HOLIDAY TABLE END                            
+*                                                                               
+HOLSTART DS    CL6                                                              
+HOLEND   DS    CL6                                                              
+*                                                                               
+CURRINFO DS    0CL(CURRLQ)                                                      
+CURRDAY  DS    CL6                                                              
+CURRDOW  DS    PL8                                                              
+CURRENDF DS    X                                                                
+CURRLQ   EQU   *-CURRDAY                                                        
+*                                                                               
+LASTINFO DS    0CL(LASTLQ)                                                      
+LASTDAY  DS    CL6                                                              
+LASTDOW  DS    PL8                                                              
+LASTENDF DS    X                                                                
+LASTLQ   EQU   *-LASTDAY                                                        
+*                                                                               
+CALCFLAG DS    X                                                                
+CFMINUSQ EQU   X'80'               NEW TIME HAS NEGATIVE DAYS                   
+*                                                                               
+DAYS2ADD DS    PL8                                                              
+BUSDAYS  DS    PL8                                                              
+SVBDAYS  DS    PL8                                                              
+*                                                                               
+AGYCTRYO DS    X                   AGY CTRY OPTNS                               
+AGYCTRY  DS    X                   AGY CTRY                                     
+CTRY     DS    X                   CTRY                                         
+LANG     DS    X                   LANG                                         
+*                                                                               
+HOLTAB   DS    (HOLTABDLQ*HOLTABNQ*HOLTYMXQ+HOLTTTLQ)X                          
+HOLTABLQ EQU   *-HOLTAB                                                         
+*                                                                               
+GRWORKX  DS    0H                                                               
+*                                                                               
+*                                                                               
+*                                                                               
+       ++INCLUDE DDGETRETD                                                      
+       ++INCLUDE DDHOLTABD                                                      
+       ++INCLUDE DMSPACED                                                       
+       ++INCLUDE FASSB                                                          
+       ++INCLUDE FATABSDEQU                                                     
+*                                                                               
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'023DDGETRET  09/26/19'                                      
+         END                                                                    

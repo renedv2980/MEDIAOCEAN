@@ -1,0 +1,1075 @@
+*          DATA SET DDMQIO     AT LEVEL 022 AS OF 10/30/18                      
+*CATALP MQIO                                                                    
+         TITLE 'DDMQIO - INTERFACE TO MQ SERIES SCHEDULER'                      
+***********************************************************************         
+* MQIO - FACPAK ONLINE MQ SERIES UTILITY                              *         
+*        INTERFACE TO MQ SERIES SHEDULER/SUBMITTER SUBTASK FAMQIO     *         
+*                                                                     *         
+* PARAMETER LIST SEE DDMQIOPD                                         *         
+*                                                                     *         
+* COMMANDS INCLUDE:                                                   *         
+*                                                                     *         
+* 'INIT    ': INITIALISE MQIO (IF NOT CALLED DONE FIRST TIME RESET)   *         
+*                                                                     *         
+* 'PUT     ': PUT DATA FROM TASK AREA TO FACPAK OUTPUT MQ QUEUE       *         
+*             P7 - 'CORL' pass correlation id to assign to message    *         
+*             P7 - 'UNIT' assign UNIT of work for transaction         *         
+*                         with the same CorrelId (system generated)   *         
+*             P7 - 'UNIM' assign UNIT of work for transaction         *         
+*                         with the same CorrelId (system generated)   *         
+*                         plus caller provided MsgId in P8            *         
+*             P7 - 'DONE' last call for UNIT of work                  *         
+*                         set both CorrelId and MsgId                 *         
+*                         with saved value of the transaction         *         
+*                                                                     *         
+* 'PUTQ    ': PUT DATA FROM TASK AREA TO SPECIFIC OUTPUT MQ QUEUE     *         
+*                                                                     *         
+* 'GET     ': GET DATA INTO TASK AREA FROM FACPAK INPUT MQ QUEUE      *         
+*                                                                     *         
+* 'REPLY   ': PUT REPLY DATA AT END OF FACPAK TRANSACTION FROM TASK   *         
+*             DATA AREA TO FACPAK OUTPUT MQ QUEUE                     *         
+*                                                                     *         
+* 'COMMIT  ': COMMIT MQ TRANSACTIONS FOR FACPAK TASK                  *         
+*                                                                     *         
+* 'RESET   ': FACPAK CONTROL COMMAND (FROM TASKER) TO RESET STATE     *         
+*             OF FACPAK INPUT MQ QUEUES.                              *         
+*                                                                     *         
+* 'INPUT   ': FACPAK CONTROL COMMAND (FROM TASKER) TO GET DATA INTO   *         
+*             TASK AREA AT START OF TRANSACTION FROM FACPAK CONTROL Q *         
+*                                                                     *         
+* 'END     ': CLEAR OR END CURRENT MQ REQUESTS FOR FACPAK TASKS       *         
+*             AFTER MQIO ERROR EVENT                                  *         
+*                                                                     *         
+* 'JOB     ': BUILD REMOTE JOB REQUEST. OPEN PQ FILE AND PUT MESSAGE  *         
+*             TO FACPAK OUTPUT QUEUE                                  *         
+*                                                                     *         
+* 'OPENSYS ': TAKE ALL OFF WORK AND PUT BACK INTO INPUT QUEUE         *         
+*                                                                     *         
+* 'SYSOPEN ': QUEUE A JOB IN A TASK TO DO AN OPENSYS CALL             *         
+*                                                                     *         
+***********************************************************************         
+         PRINT NOGEN                                                            
+MQIO     CSECT                                                                  
+         ENTRY MQIOLST                                                          
+         ENTRY MQIOECB                                                          
+         PRINT NOGEN                                                            
+         NMOD1 WORKL,**MQIO**,RA,R9,CLEAR=YES                                   
+         USING WORKD,RC                                                         
+         LA    R6,MQIOC                                                         
+         USING MQIOD,R6            R6=A(MQIO LOCAL CONTROL BLOCK)               
+         BRAS  RE,INIT                                                          
+         GOTO1 APROTOFF            DISABLE CALLER'S STORAGE PROTECTION          
+         B     PROCCMD             GO PROCESS COMMAND                           
+         EJECT                                                                  
+***********************************************************************         
+* PROCESS COMMAND TO MQIO FROM CALLER                                 *         
+***********************************************************************         
+PROCCMD  XR    RF,RF                                                            
+         ICM   RF,7,PMQCMD         GET COMMAND FROM INPUT PARAMETER             
+         XC    PMQRET,PMQRET       CLEAR RETURN STATUS CODE                     
+         LA    R1,CMDTAB                                                        
+*                                                                               
+PCM02    CLI   0(R1),X'FF'                                                      
+         BE    PCM04                                                            
+         CLC   0(8,R1),0(RF)                                                    
+         BE    *+12                                                             
+         LA    R1,L'CMDTAB(R1)                                                  
+         B     PCM02                                                            
+*                                                                               
+         ICM   RF,15,8(R1)         GET A(PROCESS ROUTINE)                       
+         BR    RF                  AND GO TO IT                                 
+*                                                                               
+PCM04    MVC   BCMCMD,0(RF)        PUT OUT UNKNOWN COMMAND MESSAGE              
+         LA    R1,BCMMSGH                                                       
+         BRAS  RE,WTO                                                           
+         B     XMOD                                                             
+         EJECT                                                                  
+***********************************************************************         
+* PROCESS COMMAND 'INIT' TO INITILAISE MQIO                           *         
+***********************************************************************         
+PROCINIT B     XMOD                                                             
+         EJECT                                                                  
+***********************************************************************         
+* PROCESS COMMAND 'OPENSYS' TO GET OFF WORK AND ADD TO INPUT          *         
+***********************************************************************         
+         USING SSBD,R8                                                          
+PROCSYS  L     R8,ASSB                                                          
+         TM    SSBSTAT4,SSBSAOR    Am I in an AOR?                              
+         BO    XMOD                Go away                                      
+         DROP  R8                                                               
+*                                                                               
+         BRAS  RE,GETATC           GET A(FAATC ENTRY)                           
+         CLI   ATCFLAG,NO          FAMQIO attached?                             
+         BE    XMOD                No - Exit                                    
+*                                                                               
+         MVI   MQIOACT,MQIOAWRK    FIX UP QUEUES                                
+         ICM   RF,15,ATCBTASK                                                   
+         BNZ   *+6                                                              
+         DC    H'0'                                                             
+         MVC   MQIOABUF,TCBMQBF-TCBD(RF)                                        
+         MVC   MQIOLBUF,=AL4(TCBMQBFQ)                                          
+*                                                                               
+         BRAS  RE,REQUEST          GO SCHEDULE REQUEST FROM FACPAK TASK         
+         B     XMOD                                                             
+         EJECT                                                                  
+***********************************************************************         
+* PROCESS COMMAND TO QUEUE $MQP TO DO AN OPENSYS CALL                 *         
+***********************************************************************         
+         USING SELISTD,R7                                                       
+         USING SSBD,R8                                                          
+PROCOPN  L     R8,ASSB                                                          
+         TM    SSBSTAT4,SSBSAOR    Am I in an AOR?                              
+         BO    XMOD                Go away                                      
+         DROP  R8                                                               
+*                                                                               
+         BRAS  RE,GETATC           GET A(FAATC ENTRY)                           
+         CLI   ATCFLAG,NO          FAMQIO attached?                             
+         BE    XMOD                No - Exit                                    
+*                                                                               
+         SAM31                                                                  
+         L     R7,ASELIST                                                       
+         AHI   R7,6                                                             
+                                                                                
+         USING UTLD,R5                                                          
+         ICM   R5,15,SEFIRST       SEE IF YOU ARE ALREADY FLAGGED               
+         BZ    OPN02                                                            
+         CLC   TSVCREQ,=XL2'016B'  SRMQP00?                                     
+         BNE   OPN02                                                            
+         ICM   RF,15,TBUFF                                                      
+         BZ    *+14                                                             
+         CLC   =CL8'OPENSYS ',0(RF)                                             
+         BE    XMOD                ALREADY GOT ONE IN QUEUE                     
+*                                                                               
+OPN02    LHI   R0,1                                                             
+         GOTO1 ALCM,DMCB,VTGETBUF  GET AN LCBUFFS BUFFER                        
+         LTR   R4,R1                                                            
+         BNZ   *+12                                                             
+         BRAS  RE,NOUTL                                                         
+         B     XMOD                                                             
+*                                                                               
+         LHI   R0,2                                                             
+         GOTO1 ALCM,DMCB,VTGETUTL  GET A UTL FOR THIS MESSAGE                   
+         LTR   R5,R1                                                            
+         BNZ   OPN04                                                            
+         GOTO1 ALCM,DMCB,VTRELBUF,(R4)                                          
+         BRAS  RE,NOUTL                                                         
+         B     XMOD                                                             
+*                                                                               
+OPN04    STCM  R4,15,TBUFF         SET BUFFER AS A(TBUFF)                       
+         MVC   0(8,R4),=CL8'OPENSYS '                                           
+         AHI   R4,-2                                                            
+         MVC   0(2,R4),=AL2(8)     FINISHED WITH R4 (TBUFF)                     
+*                                                                               
+         L     R7,ASELIST                                                       
+         LA    R7,6(R7)            SE#1 (SERVICE) ALWAYS FIRST                  
+         USING SELISTD,R7                                                       
+         MVC   TLUID,=CL8'NONENONE'                                             
+         MVC   TXNEXTIN,SEFIRST    SET LINK TO NEXT UTL ENTRY                   
+         MVC   TNEXTIN,SEFIRST+1   .....                                        
+         MVC   TSVCREQ,=XL2'016B'  SET SPECIAL S/R  SRMQP00                     
+         OI    TSTATC,TSTCMQ       SET MQ TYPE TRANSACTION                      
+*                                                                               
+         TIME  TU                                                               
+         ST    R0,TTIMETU          SET ARRIVAL TIME TO NOW                      
+*                                                                               
+         STCM  R5,15,SEFIRST       SET AT TOP OF SE1 QUEUE                      
+         XR    RF,RF                                                            
+         ICM   RF,3,SEQLEN                                                      
+         BNZ   *+8                                                              
+         STCM  R5,15,SELAST                                                     
+         AHI   RF,1                                                             
+         STH   RF,SEQLEN                                                        
+*                                                                               
+         BRAS  RE,UPDCTR           UPDATE COUNTERS                              
+         B     XMOD                                                             
+         DROP  R5,R7                                                            
+         EJECT                                                                  
+***********************************************************************         
+* COMMANDS 'PUT' AND 'PUTQ' TO ADD MESSAGE TO OUTPUT QUEUE            *         
+***********************************************************************         
+PROCPUT  MVI   MQIOACT,MQIOAPUT                                                 
+         B     PPT02                                                            
+*                                                                               
+PROCPUTQ L     RF,PMQAQNM                                                       
+         ST    RF,MQIOAQNM         A(QUEUENAME)                                 
+         MVI   MQIOACT,MQIOAPTQ                                                 
+         B     PPT02                                                            
+*                                                                               
+PPT02    MVC   MQIOABUF,PMQDATA    A(DATA AREA)                                 
+         MVC   MQIOLBUF,PMQDLEN    L'DATA                                       
+*                                                                               
+         LA    R0,MQIOMSGD         COPY MQ MESSAGE DESCRIPTOR                   
+         LAY   RE,MSGDESC                                                       
+         LHI   R1,MSGDESC_LENGTH                                                
+         LR    RF,R1                                                            
+         MVCL  R0,RE                                                            
+*                                                                               
+         XC    MQIOMSGD_MSGID,MQIOMSGD_MSGID                                    
+         MVC   MQIOMSGD_FORMAT,=CL8'MQSTR'                                      
+*                                                                               
+         CLC   =C'CORL',PMQCMD2                                                 
+         BNE   PPT20                                                            
+         L     RF,PMQCMD2P                                                      
+         MVC   MQIOMSGD_CORRELID,0(RF)                                          
+         B     PPT60                                                            
+         EJECT ,                                                                
+***********************************************************************         
+* ASSIGN THE SAME CORRELATION ID FOR THE UNIT OF WORK                           
+***********************************************************************         
+         USING UTLD,RE                                                          
+PPT20    CLC   =C'UNIT',PMQCMD2                                                 
+         BNE   PPT30                                                            
+         L     RE,AUTLTASK                                                      
+         OI    TMQSTA,TMQSPASS     Default                                      
+                                                                                
+*??      CLI   TSYS,X'40'          PRINT                                        
+*        CLI   TOVSYS,X'04'        Print system                                 
+*        BNE   *+8                                                              
+*        MVI   TMQTYPE,TMQTIDK     SET RECORD TYPE FOR IDESK                    
+*                                                                               
+         MVC   MQIOMSGD_CORRELID(9),=CL5'UNIT='                                 
+         MVC   MQIOMSGD_CORRELID+05(1),TSYS                                     
+         MVC   MQIOMSGD_CORRELID+06(2),TUSER                                    
+         MVC   MQIOMSGD_CORRELID+08(4),TSIN                                     
+         MVC   MQIOMSGD_CORRELID+12(3),TDATEB                                   
+         MVC   MQIOMSGD_CORRELID+15(4),TTIMETU                                  
+         MVC   MQIOMSGD_CORRELID+19(1),TMQTYPE                                  
+         MVC   MQIOMSGD_CORRELID+20(2),TMQSEQN                                  
+                                                                                
+         SAM31                                                                  
+         USING XAUTLD,RF                                                        
+         L     RF,TUTLXADR                                                      
+         L     R1,PMQDATA                                                       
+         MVC   XAMQID,0(R1)                Save off ID of message               
+         MVC   XAMQCOID,MQIOMSGD_CORRELID  Save Correl ID also                  
+         XC    XAMQMGID,XAMQMGID           Clear Msg ID                         
+         DROP  RF                                                               
+         SAM24                                                                  
+*                                                                               
+         B     PPT60                                                            
+         DROP  RE                                                               
+         EJECT ,                                                                
+***********************************************************************         
+* ASSIGN THE SAME CORRELATION ID FOR THE UNIT OF WORK                           
+* ALSO, PASS THE CALLER PROVIDED MESSAGE ID                                     
+***********************************************************************         
+         USING UTLD,RE                                                          
+PPT30    CLC   =C'UNIM',PMQCMD2                                                 
+         BNE   PPT40                                                            
+         L     RE,AUTLTASK                                                      
+         OI    TMQSTA,TMQSPASS     Default                                      
+*                                                                               
+         MVC   MQIOMSGD_CORRELID(9),=CL5'UNIM='                                 
+         MVC   MQIOMSGD_CORRELID+05(1),TSYS                                     
+         MVC   MQIOMSGD_CORRELID+06(2),TUSER                                    
+         MVC   MQIOMSGD_CORRELID+08(4),TSIN                                     
+         MVC   MQIOMSGD_CORRELID+12(3),TDATEB                                   
+         MVC   MQIOMSGD_CORRELID+15(4),TTIMETU                                  
+         MVC   MQIOMSGD_CORRELID+19(1),TMQTYPE                                  
+         MVC   MQIOMSGD_CORRELID+20(2),TMQSEQN                                  
+*                                                                               
+         L     RF,PMQCMD2P                                                      
+         MVC   MQIOMSGD_MSGID,0(RF)     CL24 Caller's MsgID                     
+*                                                                               
+         SAM31                                                                  
+         USING XAUTLD,RF                                                        
+         L     RF,TUTLXADR                                                      
+         L     R1,PMQDATA                                                       
+         MVC   XAMQID,0(R1)                Save off ID of message               
+         MVC   XAMQCOID,MQIOMSGD_CORRELID  Save Correl ID also                  
+         MVC   XAMQMGID,MQIOMSGD_MSGID     Save Msg ID also                     
+         DROP  RF                                                               
+         SAM24                                                                  
+*                                                                               
+         B     PPT60                                                            
+         DROP  RE                                                               
+         EJECT ,                                                                
+***********************************************************************         
+* Override Correlid+Msgid by caller's value                                     
+***********************************************************************         
+         USING UTLD,RE                                                          
+PPT40    CLC   =C'DONE',PMQCMD2                                                 
+         BNE   PPT60                                                            
+         L     RE,AUTLTASK                                                      
+*                                                                               
+         TM    PMQCMD2P,X'80'      INCLUDE MSGID, X'80'=YES                     
+         BZ    PPT41                                                            
+         NI    PMQCMD2P,X'FF'-X'80'                                             
+         L     RF,PMQCMD2P         RF=A(CORRELID+MSGID)                         
+         MVC   MQIOMSGD_MSGID,L'MQIOMSGD_CORRELID(RF)                           
+         B     PPT42                                                            
+*                                                                               
+PPT41    L     RF,PMQCMD2P         RF=A(CORRELID)                               
+PPT42    MVC   MQIOMSGD_CORRELID,0(RF)                                          
+*                                                                               
+         B     PPT60                                                            
+         DROP  RE                                                               
+         EJECT ,                                                                
+*                                                                               
+PPT60    BRAS  RE,REQUEST          GO SCHEDULE REQUEST FROM FACPAK TASK         
+         B     XMOD                                                             
+         EJECT                                                                  
+***********************************************************************         
+* PROCESS COMMAND 'REPLY' TO PUT REPLY DATA AT END OF FACPAK          *         
+*         TRANSACTION FROM TASK DATA AREA TO FACPAK OUTPUT MQ QUEUE   *         
+***********************************************************************         
+PROCRPY  CLC   SVMQION,=F'2'                                                    
+         BNE   *+12                                                             
+         LA    R1,WPROCR                                                        
+         BRAS  RE,WTO                                                           
+*                                                                               
+         LA    R0,MQIOMSGD                                                      
+         L     RE,PMQDATA                                                       
+         LA    R1,MSGDESC_LENGTH                                                
+         LR    RF,R1                                                            
+         MVCL  R0,RE                                                            
+*                                                                               
+         XC    MQIOMSGD_MSGID,MQIOMSGD_MSGID  CLEAR MQ MESSAGE ID               
+         L     RF,PMQDATA                                                       
+         LA    RF,MSGDESC_LENGTH(RF)                                            
+         STCM  RF,15,MQIOABUF                                                   
+         ICM   RF,15,PMQDLEN                                                    
+         BNZ   PRPY04                                                           
+         LHI   RE,TBUFFL                                                        
+         STCM  RE,15,MQIOLBUF                                                   
+         MVI   MQIOACT,MQIOACMT                                                 
+*                                                                               
+         CLC   SVMQION,=F'2'                                                    
+         BNE   PRPY06                                                           
+         LA    R1,WCOMMIT                                                       
+         BRAS  RE,WTO                                                           
+         B     PRPY06              GO SCHEDULE REQUEST FROM FACPAK TASK         
+*                                                                               
+PRPY04   STCM  RF,15,MQIOLBUF                                                   
+         MVI   MQIOACT,MQIOARPY                                                 
+*                                                                               
+         CLC   SVMQION,=F'2'                                                    
+         BNE   PRPY06                                                           
+         LA    R1,WREPLY                                                        
+         BRAS  RE,WTO                                                           
+         B     PRPY06              GO SCHEDULE REQUEST FROM FACPAK TASK         
+*                                                                               
+PRPY06   BRAS  RE,REQUEST          GO SCHEDULE REQUEST FROM FACPAK TASK         
+         B     XMOD                                                             
+         EJECT                                                                  
+***********************************************************************         
+* PROCESS COMMAND 'COMMIT' TO COMMIT MQ TRANSACTIONS FOR FACPAK TASK  *         
+***********************************************************************         
+PROCCMT  CLC   SVMQION,=F'2'                                                    
+         BNE   PCMT02                                                           
+         LA    R1,WPROCCMT                                                      
+         BRAS  RE,WTO                                                           
+*                                                                               
+PCMT02   LA    R0,MQIOMSGD                                                      
+         L     RE,PMQDATA                                                       
+         LA    R1,MSGDESC_LENGTH                                                
+         LR    RF,R1                                                            
+         MVCL  R0,RE                                                            
+*                                                                               
+         XC    MQIOMSGD_MSGID,MQIOMSGD_MSGID  CLEAR MQ MESSAGE ID               
+         L     RF,PMQDATA                                                       
+         LA    RF,MSGDESC_LENGTH(RF)                                            
+         STCM  RF,15,MQIOABUF                                                   
+         ICM   RF,15,PMQDLEN                                                    
+         BNZ   PCMT04                                                           
+         LHI   RE,TBUFFL                                                        
+         STCM  RE,15,MQIOLBUF                                                   
+         MVI   MQIOACT,MQIOACMT                                                 
+*                                                                               
+         CLC   SVMQION,=F'2'                                                    
+         BNE   PCMT06                                                           
+         LA    R1,WCOMMIT                                                       
+         BRAS  RE,WTO                                                           
+         B     PCMT06                                                           
+*                                                                               
+PCMT04   STCM  RF,15,MQIOLBUF                                                   
+         MVI   MQIOACT,MQIOARPY                                                 
+*                                                                               
+         CLC   SVMQION,=F'2'                                                    
+         BNE   PCMT06                                                           
+         LA    R1,WREPLY                                                        
+         BRAS  RE,WTO                                                           
+*                                                                               
+PCMT06   BRAS  RE,REQUEST          GO SCHEDULE REQUEST FROM FACPAK TASK         
+         B     XMOD                                                             
+         EJECT                                                                  
+***********************************************************************         
+* COMMAND 'GET' TO GET DATA INTO TASK AREA FROM FACPAK INPUT QUEUE    *         
+***********************************************************************         
+PROCGET  MVI   MQIOACT,MQIOAGET                                                 
+         OC    PMQDATA,PMQDATA     USE TCB AREA IF ZERO                         
+         BNZ   PGET02                                                           
+*                                                                               
+         ICM   RF,15,ATCBTASK                                                   
+         BNZ   *+6                                                              
+         DC    H'0'                                                             
+         MVC   MQIOABUF,TCBMQBF-TCBD(RF)                                        
+         MVC   MQIOLBUF,=AL4(TCBMQBFQ)                                          
+         B     PGET04                                                           
+*                                                                               
+PGET02   MVC   MQIOABUF,PMQDATA    A(DATA AREA)                                 
+         MVC   MQIOLBUF,PMQDLEN    L'DATA                                       
+*                                                                               
+PGET04   LA    R0,MQIOMSGD         COPY MQ MESSAGE DESCRIPTOR                   
+         LAY   RE,MSGDESC                                                       
+         LHI   R1,MSGDESC_LENGTH                                                
+         LR    RF,R1                                                            
+         MVCL  R0,RE                                                            
+*                                                                               
+         XC    MQIOMSGD_MSGID,MQIOMSGD_MSGID                                    
+         MVC   MQIOMSGD_FORMAT,=CL8'MQSTR'                                      
+*                                                                               
+         CLC   =C'CORL',PMQCMD2                                                 
+         BNE   *+14                                                             
+         L     RF,PMQCMD2P                                                      
+         MVC   MQIOMSGD_CORRELID,0(RF)                                          
+*                                                                               
+         BRAS  RE,REQUEST          GO SCHEDULE REQUEST FROM FACPAK TASK         
+         B     XMOD                                                             
+         EJECT                                                                  
+***********************************************************************         
+* POST MQIO SCHEDULER WITH REQUEST FROM FACPAK TASK                   *         
+***********************************************************************         
+REQUEST  NTR1  ,                                                                
+         CLC   SVMQION,=F'2'       NOW SAY THAT WE HAD TO WAIT                  
+         BNE   *+12                                                             
+         LA    R1,WREQ                                                          
+         BRAS  RE,WTO                                                           
+*                                                                               
+         BRAS  RE,GETATC                                                        
+         BE    *+6                 ?? NEED THIS IN CASE ABEND SUSPENDED         
+         DC    H'0'                                                             
+*                                                                               
+         USING SSBD,R8                                                          
+         L     R8,ASSB                                                          
+REQU02   L     RE,SSBMQREQ                                                      
+         LA    RF,1(RE)                                                         
+         CS    RE,RF,SSBMQREQ                                                   
+         BNE   REQU02                                                           
+*                                                                               
+         USING TCBD,R8                                                          
+         L     R8,ATCBTASK                                                      
+         STCM  R6,15,TCBMQDAT      SAVE A(MQIOD DATA BLOCK)                     
+*                                                                               
+         CLC   SVMQION,=F'2'                                                    
+         BNE   *+12                                                             
+         LA    R1,WBEFWT                                                        
+         BRAS  RE,WTO                                                           
+*                                                                               
+         TBIN  MILI                                                             
+         ST    R1,TCBMQTIM         SET POST TIME                                
+         XC    MQRETECB,MQRETECB                                                
+         LA    R1,MQRETECB                                                      
+         STCM  R1,15,TCBMQERT      SAVE A(MQIO RETURN ECB)                      
+         LA    R1,TCBMQERQ                                                      
+         POST  (1)                                                              
+*                                                                               
+         LA    R1,MQRETECB                                                      
+         CLI   MQIOACT,MQIOAPUT    TREAT PUT/PUTQ AS IO TASK WAIT               
+         BE    REQU050                                                          
+         CLI   MQIOACT,MQIOAPTQ                                                 
+         BE    REQU050                                                          
+         O     R1,=X'FF000000'     SET 'DO NOT WAIT ON THIS ECB'                
+REQU050  GOTO1 AMQWAIT             WAIT FOR MQIO SCHEDULER TO COMPLETE          
+*                                                                               
+         XC    TCBMQTIM,TCBMQTIM   CLEAR POST TIME                              
+         XC    TCBMQDAT,TCBMQDAT                                                
+         ICM   R1,15,TCBMQERT                                                   
+         XC    TCBMQERT,TCBMQERT                                                
+         MVI   0(R1),0                                                          
+         OC    0(4,R1),0(R1)                                                    
+         BZ    REQU100                                                          
+         MVI   PMQRET,MQPCRERQ                                                  
+         ICM   RF,15,PMQAERB                                                    
+         BZ    REQU100                                                          
+         MVC   0(4,RF),MQIOCC                                                   
+         MVC   4(8,RF),MQIORC                                                   
+*                                                                               
+REQU100  CLC   SVMQION,=F'2'                                                    
+         BNE   *+12                                                             
+         LA    R1,WAFTWT                                                        
+         BRAS  RE,WTO                                                           
+         B     XMOD                                                             
+         DROP  R8                                                               
+         EJECT                                                                  
+***********************************************************************         
+* PROCESS CONTROL COMMAND 'RESET' FROM FACPAK TASKER TO RESET STATE   *         
+*         OF FACPAK INPUT MQ QUEUES                                   *         
+***********************************************************************         
+         USING SSBD,R8                                                          
+PROCSET  L     R8,ASSB                                                          
+         TM    SSBSTAT4,SSBSAOR    Am I in an AOR?                              
+         BO    XMOD                Go away                                      
+         DROP  R8                                                               
+*                                                                               
+         BRAS  RE,GETATC           GET A(FAATC ENTRY)                           
+         CLI   ATCFLAG,NO          FAMQIO attached?                             
+         BE    XMOD                No - Exit                                    
+*                                                                               
+         LAY   R4,MQIOLST          R4=A(MQIO CONTROL PARAMETER LIST)            
+         USING MQIOLD,R4                                                        
+*                                                                               
+PSET02   TM    MQIOLFLG,MQIOLCTL   TEST FACPAK CONTROL QUEUE                    
+         BO    PSET04                                                           
+         TM    MQIOLFLG,MQIOLRD    TEST FACPAK INPUT READ QUEUE                 
+         BO    PSET06                                                           
+         B     PSET10                                                           
+*                                                                               
+PSET04   TM    MQIOLFLG,MQIOLBSY   IGNORE IF CURRENTLY BUSY                     
+         BZ    PSET08                                                           
+         B     PSET10                                                           
+*                                                                               
+PSET06   TM    MQIOLFLG,MQIOLBSY   IGNORE IF BUSY                               
+         BZ    PSET08                                                           
+         TM    MQIOLFLG,MQIOLWTG                                                
+         BZ    PSET10                                                           
+         NI    MQIOLFLG,255-(MQIOLWTG+MQIOLBSY)                                 
+*                                                                               
+PSET08   DC    0H                                                               
+*                                                                               
+         CLC   SVMQION,=F'2'                                                    
+         BNE   *+12                                                             
+         LA    R1,WRESET                                                        
+         BRAS  RE,WTO                                                           
+*                                                                               
+         BRAS  RE,GETATC           GET A(FAATC ENTRY)                           
+         BNE   XMOD                                                             
+         ICM   R3,15,ATCENTRY      GET A(ATC ENTRY)                             
+         USING ATCD,R3             R3=A(ATC)                                    
+         POST  ATCECB                                                           
+*                                                                               
+PSET10   ICM   R4,15,MQIOLNXT      GET NEXT ENTRY IN MQIOLST                    
+         BNZ   PSET02                                                           
+         B     XMOD                                                             
+         DROP  R3,R4                                                            
+         EJECT                                                                  
+***********************************************************************         
+* PROCESS CONTROL COMMAND 'INPUT' FROM TASKER                         *         
+* READ MESSAGE FROM CONTROL QUEUE AND QUEUE IT TO $MQP (T16B) ON SE#1 *         
+***********************************************************************         
+PROCINP  XC    MQIOECB,MQIOECB                                                  
+         LAY   R4,MQIOLST                                                       
+         USING MQIOLD,R4                                                        
+*                                                                               
+PINP02   TM    MQIOLECB,X'40'      TEST INPUT ECB FLAGGED BY FAMQIO             
+         BZ    PINP06                                                           
+         TM    MQIOLFLG,MQIOLCTL   TEST CONTROL QUEUE                           
+         BZ    PINP06                                                           
+*                                                                               
+         LHI   R0,1                                                             
+         GOTO1 ALCM,DMCB,VTGETBUF  GET AN LCBUFFS BUFFER                        
+         LTR   R7,R1                                                            
+         BNZ   *+12                                                             
+         BRAS  RE,NOUTL                                                         
+         B     XMOD                                                             
+*                                                                               
+         LHI   R0,2                                                             
+         GOTO1 ALCM,DMCB,VTGETUTL  GET A UTL FOR THIS MESSAGE                   
+         LTR   R5,R1                                                            
+         BNZ   PINP04                                                           
+         USING UTLD,R5                                                          
+         GOTO1 ALCM,DMCB,VTRELBUF,(R7)                                          
+         BRAS  RE,NOUTL                                                         
+         B     XMOD                                                             
+*                                                                               
+PINP04   SAM31                                                                  
+         MVC   TLUID,=CL8'NONENONE'                                             
+         STCM  R7,15,TBUFF         SET BUFFER AS A(TBUFF)                       
+         MVC   0(8,R7),=CL8'FROMMQCT'                                           
+*                                                                               
+         ICM   R6,15,MQIOLC        MQIO CONTROL QUEUE INFO                      
+*                                                                               
+         LA    R0,8(R7)            COPY DATA INTO TBUFF                         
+         L     R1,MQIOLDAT                                                      
+         C     R1,=A(TBUFFXL-8)    MAKE SURE NOT TOO MUCH FOR BUFFER            
+         BNH   *+8                                                              
+         L     R1,=A(TBUFFXL-8)                                                 
+         L     RE,MQIOABUF                                                      
+         LR    RF,R1                                                            
+         MVCL  R0,RE                                                            
+*                                                                               
+         L     R1,MQIOLDAT         NOW SET LENGTH OF DATA IN TBUFF-2            
+         AHI   R1,8                                                             
+         C     R1,=A(TBUFFXL)                                                   
+         BNH   *+8                                                              
+         L     R1,=A(TBUFFXL)                                                   
+         AHI   R7,-2                                                            
+         STH   R1,0(R7)            FINISHED WITH R7 (TBUFF)                     
+*                                                                               
+         L     R7,ASELIST                                                       
+         LA    R7,6(R7)            SE#1 (SERVICE) ALWAYS FIRST IN LIST          
+         USING SELISTD,R7                                                       
+         MVC   TXNEXTIN,SEFIRST    SET LINK TO NEXT UTL ENTRY                   
+         MVC   TNEXTIN,SEFIRST+1   .....                                        
+         MVC   TSVCREQ,=XL2'016B'  SET SPECIAL S/R SRMQP00                      
+         OI    TSTATC,TSTCMQ       SET MQ TYPE TRANSACTION                      
+*                                                                               
+         TIME  TU                                                               
+         ST    R0,TTIMETU          SET ARRIVAL TIME TO NOW                      
+*                                                                               
+         STCM  R5,15,SEFIRST       SET AT TOP OF SE1 QUEUE                      
+         XR    RF,RF                                                            
+         ICM   RF,3,SEQLEN                                                      
+         BNZ   *+8                                                              
+         STCM  R5,15,SELAST                                                     
+         AHI   RF,1                                                             
+         STH   RF,SEQLEN                                                        
+*                                                                               
+         BRAS  RE,UPDCTR                                                        
+         SAM24                                                                  
+*                                                                               
+         NI    MQIOLFLG,255-MQIOLBSY                                            
+         XC    MQIOLECB,MQIOLECB   CLEAR ECB FOR NEXT TIME                      
+*                                                                               
+PINP06   ICM   R4,15,MQIOLNXT      GET NEXT ENTRY IN MQIOLST                    
+         BNZ   PINP02                                                           
+         B     XMOD                                                             
+         DROP  R4,R5,R7                                                         
+         EJECT                                                                  
+***********************************************************************         
+* PROCESS COMMAND 'END' TO END OR CLEAR CURRENT OUTSTANDING MQ        *         
+*         REQUESTS FACPAK TASKS AFTER MQIO ERROR EVENT                *         
+***********************************************************************         
+PROCEND  CLC   SVMQION,=F'2'                                                    
+         BNE   *+12                                                             
+         LA    R1,WEND                                                          
+         BRAS  RE,WTO                                                           
+*                                                                               
+         L     R3,ATCB             SEARCH TCB FOR MQIO REQUESTS PENDING         
+         LH    R4,0(R3)                                                         
+         L     R5,2(R3)                                                         
+         LA    R3,6(R3)                                                         
+         USING TCBD,R3                                                          
+PEND02   TM    TCBFLAG3,TCBMQWT                                                 
+         BZ    PEND04                                                           
+         ICM   R1,15,TCBMQERT                                                   
+         BZ    PEND04                                                           
+*                                                                               
+         LHI   R2,999                                                           
+         POST  (1),(2)                                                          
+*                                                                               
+PEND04   BXLE  R3,R4,PEND02                                                     
+         XC    MQIOECB,MQIOECB     SEARCH MQIO CONTROL PARAMETER LIST           
+         B     XMOD                                                             
+         DROP  R3                                                               
+         EJECT                                                                  
+**********************************************************************          
+* LOCATE A FREE MQIO SCHEDULER                                       *          
+**********************************************************************          
+GETATC   NTR1  ,                   LOCATE A FREE FAMQIO SCHEDULER               
+GATC02   L     RE,ASSB                                                          
+         L     R3,SSBAATC-SSBD(RE)                                              
+         LH    R4,0(R3)                                                         
+         L     R5,2(R3)                                                         
+         LA    R3,6(R3)                                                         
+         USING ATCD,R3             R3=A(ATC)                                    
+         MVI   TCTHERE,NO                                                       
+*                                                                               
+GATC04   CLI   ATCTYPE,ATCTMQIO    TEST MQIO SUB TASK                           
+         BNE   GATC06                                                           
+         TM    ATCSTAT1,ATCSATCH   TEST TASK IS ATTACHED                        
+         BZ    GATC06                                                           
+         TM    ATCSTAT1,ATCSERRS   TEST TASK IS IN ERROR                        
+         BNZ   GATC06                                                           
+         MVI   TCTHERE,YES                                                      
+         TM    ATCSTAT1,ATCSBUSY   TEST TASK IS BUSY                            
+         BNZ   GATC06                                                           
+         OC    ATCATCB,ATCATCB     TEST ALLOCATED TO ANOTHER TASK               
+         BNZ   GATC06                                                           
+         B     GATC16                                                           
+*                                                                               
+GATC06   BXLE  R3,R4,GATC04                                                     
+         CLI   ATCFLAG,NO                                                       
+         BE    EXITL                                                            
+         CLI   TCTHERE,YES         DO WE HAVE AN MQ ATC?                        
+         BNE   GATC14              NO                                           
+*                                                                               
+         ICM   RF,15,ATCBTASK      ARE WE IN A TASK?                            
+         BNZ   GATC12              YES                                          
+*                                                                               
+         CLI   THREADED,0          NZ = MULTITHREADED                           
+         BE    GATC08                                                           
+         GOTO1 ATICTOC,DUB,C'SSET' IF NZ NEED TO TURN OFF TIMER POPS            
+*                                                                               
+GATC08   STIMER WAIT,TUINTVL=TIMETUW                                            
+*                                                                               
+         CLI   THREADED,0                                                       
+         BE    GATC10                                                           
+         GOTO1 ATICTOC,DUB,C'RSET' AND THEN TURN THEM BACK ON                   
+*                                                                               
+GATC10   CLC   SVMQION,=F'2'       NOW SAY THAT WE HAD TO WAIT                  
+         BNE   GATC02                                                           
+         LA    R1,WSTWAIT                                                       
+         BRAS  RE,WTO                                                           
+         B     GATC02              AND GO ROUND AGAIN                           
+*                                                                               
+GATC12   LHI   R1,384*5            DO A TASK WAIT THEN TRY AGAIN                
+         GOTO1 VTKWAIT                                                          
+         CLC   SVMQION,=F'2'       SAY THAT WE HAD TO WAIT                      
+         BNE   GATC02                                                           
+         LA    R1,WTKWAIT                                                       
+         BRAS  RE,WTO                                                           
+         B     GATC02              AND GO ROUND AGAIN                           
+*                                                                               
+GATC14   MVI   ATCFLAG,NO          NO ATC FOUND                                 
+         CLC   SVMQION,=F'2'                                                    
+         BNE   EXITL                                                            
+         LA    R1,WNOTF                                                         
+         BRAS  RE,WTO                                                           
+         B     EXITL                                                            
+*                                                                               
+GATC16   STCM  R3,15,ATCENTRY      ATC FOUND                                    
+         CLI   ATCFLAG,YES                                                      
+         BE    EXITOK                                                           
+         MVI   ATCFLAG,YES                                                      
+         CLC   SVMQION,=F'2'                                                    
+         BNE   EXITOK                                                           
+         LA    R1,WFOUND                                                        
+         BRAS  RE,WTO                                                           
+         B     EXITOK                                                           
+         EJECT                                                                  
+***********************************************************************         
+* WRITE TO OPERATOR CONSOLE                                           *         
+***********************************************************************         
+WTO      NTR1  ,                                                                
+         L     RF,ASSB                                                          
+         MVC   MSGH,=AL2(L'MSG)                                                 
+         MVC   MSG,SPACES                                                       
+         MVC   MSG+00(16),=CL16'*FACPAK* DDMQIO'                                
+         MVC   MSG+04(4),SSBSYSN4-SSBD(RF)                                      
+         MVC   MSG+16(30),0(R1)                                                 
+*                                                                               
+         LA    R2,MSGH                                                          
+         WTO   TEXT=(R2),MCSFLAG=HRDCPY                                         
+         B     EXIT                                                             
+         EJECT                                                                  
+***********************************************************************         
+* INITIALISATION                                                      *         
+***********************************************************************         
+INIT     NTR1  ,                                                                
+         ST    R1,APARM                                                         
+         MVC   PARM,0(R1)          SAVE INPUT PARAMETERS                        
+         L     RF,ASYSFAC          INTIALISE FACPAK ADDRESSES                   
+         L     RE,VSSB-SYSFACD(RF)                                              
+         ST    RE,ASSB                                                          
+         L     RE,VTCB-SYSFACD(RF)                                              
+         ST    RE,ATCB                                                          
+         L     RE,VUTL-SYSFACD(RF)                                              
+         ST    RE,AUTL                                                          
+         MVC   ALCM,VLCM-SYSFACD(RF)                                            
+         MVC   ASELIST,VSELIST-SYSFACD(RF)                                      
+         MVC   ADMGR,VDATAMGR-SYSFACD(RF)                                       
+         MVC   ATICTOC,VTICTOC-SYSFACD(RF)                                      
+*                                                                               
+         L     RE,ASSB                                                          
+         MVC   SVMQION,SSBMQION-SSBD(RE)                                        
+         MVC   THREADED,SSBMTIND-SSBD(RE)                                       
+         L     RE,SSBTKADR-SSBD(RE)                                             
+         ST    RE,ATCBTASK                                                      
+         MVC   AUTLTASK,TCBUTL-TCBD(RE)                                         
+         MVC   ATWA,TCBTWA-TCBD(RE)                                             
+         MVC   ACOMFACS,TCBCOMF-TCBD(RE)                                        
+         MVC   ATIA,TCBTIA-TCBD(RE)                                             
+*                                                                               
+         LAY   R4,MQIOLST                                                       
+         USING MQIOLD,R4                                                        
+         ICM   R6,15,MQIOLC                                                     
+         ICM   R0,15,MQIOABUF                                                   
+         BNZ   EXITOK                                                           
+*                                                                               
+         GOTO1 ATICTOC,DUB,C'SSET'                                              
+*                                                                               
+INIT02   ICM   R6,15,MQIOLC                                                     
+         L     R0,=A(TCBMQBFQ)                                                  
+         ST    R0,MQIOLBUF                                                      
+         GETMAIN RU,LV=(0),LOC=(ANY,ANY),BNDRY=PAGE                             
+         ST    R1,MQIOABUF                                                      
+*                                                                               
+         ICM   R4,15,MQIOLNXT                                                   
+         BNZ   INIT02                                                           
+*                                                                               
+         GOTO1 ATICTOC,DUB,C'RSET'                                              
+         B     EXITOK                                                           
+         EJECT                                                                  
+***********************************************************************         
+* ROUTINE TO OUTPUT 'RAN OUT OF UTL ENTRIES' MESSAGE                  *         
+***********************************************************************         
+NOUTL    NTR1  ,                                                                
+         CLI   NUFLAG,NO           ONLY DO THIS ONE TIME                        
+         BNE   EXIT                                                             
+         GOTO1 ATICTOC,DUB,C'SSET'                                              
+*                                                                               
+         MVI   NUFLAG,YES                                                       
+         L     RF,ASSB                                                          
+         MVC   NUMSG+4(4),SSBSYSN4-SSBD(RF)                                     
+*                                                                               
+NOU02    XC    NUECB,NUECB                                                      
+         XC    NUREPLY,NUREPLY                                                  
+         LA    R2,NUMSGH           NO UTLS                                      
+         CHI   R0,2                                                             
+         BE    *+8                                                              
+         LA    R2,NUMSG1H          NO LCBUFFS                                   
+*                                                                               
+         WTOR  TEXT=((R2),NUREPLY,L'NUREPLY,NUECB)                              
+         WAIT  ECB=NUECB                                                        
+*                                                                               
+         CLC   =C'EOJ',NUREPLY     EOJ SYSTEM?                                  
+         BNE   NOU04               NO                                           
+         L     RF,ASSB                                                          
+         OI    SSBSTAT1-SSBD(RF),SSBSEOJ                                        
+         B     EXIT                                                             
+*                                                                               
+NOU04    CLC   =C'IGNORE',NUREPLY   IGNORE LACK OF UTLS FOR S/RS                
+         BE    EXIT                                                             
+         B     NOU02                                                            
+*                                                                               
+NUFLAG   DC    AL1(NO)                                                          
+NUECB    DC    F'0'                                                             
+NUREPLY  DC    CL8' '                                                           
+NUMSGH   DC    AL2(L'NUMSG)                                                     
+NUMSG    DC    C'*FACXXX* DDMQIO NO UTLS - REPLY IGNORE OR EOJ'                 
+NUMSG1H  DC    AL2(L'NUMSG1)                                                    
+NUMSG1   DC    C'*FACXXX* DDMQIO NO LCBUFFS - REPLY IGNORE OR EOJ'              
+         EJECT                                                                  
+***********************************************************************         
+* LITERALS AND CONSTANTS                                              *         
+***********************************************************************         
+ARSOFF   SAC   0                                                                
+         LAM   AR0,ARF,ARZERO                                                   
+         BR    RE                                                               
+*                                                                               
+EXITL    CLI   *,255                                                            
+         B     EXIT                                                             
+*                                                                               
+EXITOK   CR    RB,RB                                                            
+         B     EXIT                                                             
+*                                                                               
+EXIT     XIT1  ,                                                                
+*                                                                               
+XMOD     L     R1,APARM            EXIT WITH UPDATED PARAMETER LIST             
+         MVC   0(1,R1),PMQRET      RETURN CONTROL CODE                          
+         GOTO1 APROTON             RESTORE CALLER'S STORAGE PROTECTION          
+         B     EXIT                                                             
+*                                                                               
+         USING SSBD,RF                                                          
+UPDCTR   L     RF,ASSB                                                          
+UPDC02   ICM   R1,15,SSBMQNUM                                                   
+         LA    R0,1(R1)                                                         
+         CS    R1,R0,SSBMQNUM                                                   
+         BNE   UPDC02                                                           
+UPDC04   ICM   R1,15,SSBMQTDY                                                   
+         LA    R0,1(R1)                                                         
+         CS    R1,R0,SSBMQTDY                                                   
+         BNE   UPDC04                                                           
+         BR    RE                                                               
+         DROP  RF                                                               
+         EJECT                                                                  
+***********************************************************************         
+* VALID COMMAND TABLE                                                 *         
+***********************************************************************         
+CMDTAB   DS    0XL12                                                            
+         DC    CL8'INIT    ',AL4(PROCINIT)                                      
+         DC    CL8'PUT     ',AL4(PROCPUT)                                       
+         DC    CL8'PUTQ    ',AL4(PROCPUTQ)                                      
+         DC    CL8'GET     ',AL4(PROCGET)                                       
+         DC    CL8'RESET   ',AL4(PROCSET)                                       
+         DC    CL8'INPUT   ',AL4(PROCINP)                                       
+         DC    CL8'REPLY   ',AL4(PROCRPY)                                       
+         DC    CL8'COMMIT  ',AL4(PROCCMT)                                       
+         DC    CL8'END     ',AL4(PROCEND)                                       
+         DC    CL8'OPENSYS ',AL4(PROCSYS)                                       
+         DC    CL8'SYSOPEN ',AL4(PROCOPN)                                       
+         DC    X'FF'                                                            
+*                                                                               
+         DS    0D                                                               
+MQIOECB  DC    F'0'                MQIO INTERFACE ECB                           
+         DS    0D                                                               
+*                                                                               
+MQLINIT  DC    X'FF'               MQIO LIST INITIALISED FLAG                   
+ATCFLAG  DC    C' '                ATC FOUND FLAG                               
+         EJECT                                                                  
+ARZERO   DC    16F'0'                                                           
+ASYSFAC  DC    V(SYSFAC)                                                        
+AMSGQIN  DC    V(MSGQIN)                                                        
+APROTON  DC    V(PROTON)                                                        
+APROTOFF DC    V(PROTOFF)                                                       
+AMQWAIT  DC    V(MQWAIT)                                                        
+*                                                                               
+SPACES   DC    80C' '                                                           
+FFS      DC    80X'FF'                                                          
+DMOPEN   DC    C'OPEN   '                                                       
+DMREAD   DC    C'DMREAD '                                                       
+DMRSEQ   DC    C'DMRSEQ '                                                       
+DMRDHI   DC    C'DMRDHI '                                                       
+DMADD    DC    C'DMADD  '                                                       
+DMWRT    DC    C'DMWRT  '                                                       
+DMCLSE   DC    C'DMCLSE '                                                       
+DMFAST   DC    C'DMFAST '                                                       
+GFILE    DC    C'GFILE  '                                                       
+PRTQUE   DC    C'PRTQUE '                                                       
+SYSFLES  DC    C'SYSFLES'                                                       
+GETREC   DC    C'GETREC '                                                       
+PUTREC   DC    C'PUTREC '                                                       
+ADDREC   DC    C'ADDREC '                                                       
+DMRFIL   DC    C'RECOVER'                                                       
+CONTROL  DC    C'CONTROL'                                                       
+CTFILE   DC    C'CTFILE '                                                       
+GENDIR   DC    C'GENDIR '                                                       
+GENFIL   DC    C'GENFIL '                                                       
+*                                                                               
+BCMMSGH  DC    AL2(BCMMSGL)                                                     
+BCMMSG   DC    C'DDMQIO Unknown command - '                                     
+BCMCMD   DC    CL08'????????'                                                   
+BCMMSGL  EQU   *-BCMMSG                                                         
+*                                                                               
+NUTLMSGH DC    AL2(30)                                                          
+NUTLMSG  DC    CL30'DDMQIO UTL Address is zero'                                 
+*                                                                               
+         LTORG                                                                  
+*                                                                               
+VTKWAIT  DC    V(TKWAIT)                                                        
+TIMETUW  DC    A(384*20)           20MS IN TUS                                  
+*                                                                               
+WFOUND   DC    CL30'ATC found'                                                  
+WNOTF    DC    CL30'ATC not found'                                              
+WPROCR   DC    CL30'PROCRPY'                                                    
+WREPLY   DC    CL30'REPLY'                                                      
+WCOMMIT  DC    CL30'COMMIT'                                                     
+WPROCCMT DC    CL30'PROCCMT'                                                    
+WBEFWT   DC    CL30'Before MQWAIT'                                              
+WTKWAIT  DC    CL30'Had to TKWAIT'                                              
+WSTWAIT  DC    CL30'Had to inline wait'                                         
+WAFTWT   DC    CL30'After MQWAIT'                                               
+WEND     DC    CL30'End called'                                                 
+WJOB     DC    CL30'Job called'                                                 
+WAFTIN   DC    CL30'After INTRD'                                                
+WNOCQ    DC    CL30'Undefined Control Queue Input'                              
+WREQ     DC    CL30'Get a request'                                              
+WRESET   DC    CL30'About to reset'                                             
+         EJECT                                                                  
+***********************************************************************         
+*  MQ API CONSTANTS                                                   *         
+***********************************************************************         
+         CMQA LIST=NO                                                           
+*                                                                               
+OBJDESC    CMQODA  DSECT=NO,LIST=YES        OBJECT DESCRIPTOR                   
+MSGDESC    CMQMDA  DSECT=NO,LIST=YES        MESSAGE DESCRIPTOR                  
+PUTMSGOPTS CMQPMOA DSECT=NO,LIST=YES        PUT MESSAGE OPTIONS                 
+GETMSGOPTS CMQGMOA DSECT=NO,LIST=YES        GET MESSAGE OPTIONS                 
+         EJECT                                                                  
+***********************************************************************         
+* MQIO SCHEDULER CONTROL PARAMETER LIST                               *         
+***********************************************************************         
+         DS    0D                                                               
+         DC    CL8'*MQIOLST'                                                    
+MQIOLST  DS    0D                                                               
+*                                                                               
+C01      DC    CL3'C01',AL1(MQIOLCTL)                                           
+         DC    A(I01)                                                           
+         DC    A(ECBC01)                                                        
+         DC    A(MQIOCC01)                                                      
+         DC    3A(0)                                                            
+*                                                                               
+I01      DC    CL3'I01',AL1(MQIOLRD)                                            
+         DC    A(0)                                                             
+         DC    A(ECBI01)                                                        
+         DC    A(MQIOCI01)                                                      
+         DC    3A(0)                                                            
+*                                                                               
+         DS    0D                                                               
+         DC    CL8'*MQCC01*'                                                    
+MQIOCC01 DS    XL(MQIODLQ)                                                      
+*                                                                               
+         DS    0D                                                               
+         DC    CL8'*MQCI01*'                                                    
+MQIOCI01 DS    XL(MQIODLQ)                                                      
+*                                                                               
+         DS    0D                                                               
+ECBC01   DC    F'0',CL12'=*ECBC01*****'                                         
+ECBI01   DC    F'0',CL12'=*ECBI01*****'                                         
+* DDMQBMC                                                                       
+       ++INCLUDE DDMQBMC                                                        
+         EJECT                                                                  
+***********************************************************************         
+* WORKING STORAGE DSECT                                               *         
+***********************************************************************         
+YES      EQU   C'Y'                                                             
+NO       EQU   C'N'                                                             
+WORKD    DSECT                                                                  
+DUB      DS    D                                                                
+DMCB     DS    6F                                                               
+PLIST    DS    8F                                                               
+APARM    DS    A                   A(PARAMETER LIST)                            
+*                                                                               
+PARM     DS    0XL32               PARAMETER LIST                               
+PMQRET   DS    AL1                 RETURN CODE                                  
+PMQCMD   DS    AL3                 A(MQIO COMMAND)                              
+PMQDATA  DS    AL4                 A(DATA)                                      
+PMQDLEN  DS    AL4                 DATA LENGTH                                  
+PMQAQNM  DS    AL4                 A(MQ QUEUE NAME)                             
+PMQAIOB  DS    AL4                 A(IO BUFFER)                                 
+PMQAERB  DS    AL4                 A(ERROR INFO BLOCK)                          
+PMQCMD2  DS    AL4                 C'CCCC' 4 LETTER SUB COMMAND                 
+PMQCMD2P DS    AL4                 EXTRA PARM FOR SUB COMMAND                   
+*                                                                               
+AMQIT    DS    A                                                                
+*                                                                               
+ATCENTRY DS    A                                                                
+*                                                                               
+MQRETECB DS    F                                                                
+*                                                                               
+ASSB     DS    A                                                                
+ADMGR    DS    A                                                                
+ATCB     DS    A                                                                
+ATCBTASK DS    A                                                                
+AUTL     DS    A                                                                
+AUTLTASK DS    A                                                                
+ALCM     DS    A                                                                
+ASELIST  DS    A                                                                
+ATICTOC  DS    A                                                                
+ATWA     DS    A                                                                
+ATIA     DS    A                                                                
+ACOMFACS DS    A                                                                
+*                                                                               
+SVMQION  DS    F                                                                
+HALF     DS    H                                                                
+BYTE     DS    X                                                                
+TCTHERE  DS    X                                                                
+THREADED DS    X                                                                
+*                                                                               
+WORK     DS    CL255                                                            
+MQIOC    DS    XL(MQIODLQ)                                                      
+DATALEN  DS    F                                                                
+MSGH     DS    H                                                                
+MSG      DS    CL50                                                             
+*                                                                               
+IO       DS    2048X                                                            
+WORKL    EQU   *-WORKD                                                          
+         EJECT                                                                  
+***********************************************************************         
+* OTHER INCLUDED DSECTS                                               *         
+***********************************************************************         
+* DDMQBMD                                                                       
+         PRINT OFF                                                              
+       ++INCLUDE DDMQBMD                                                        
+         PRINT ON                                                               
+* FADSECTS                                                                      
+         PRINT OFF                                                              
+       ++INCLUDE FADSECTS                                                       
+         PRINT ON                                                               
+* DDMQIOD                                                                       
+         PRINT OFF                                                              
+       ++INCLUDE DDMQIOD                                                        
+         PRINT ON                                                               
+* DDMQIOPD                                                                      
+         PRINT OFF                                                              
+       ++INCLUDE DDMQIOPD                                                       
+         PRINT ON                                                               
+* DDCOMFACS                                                                     
+         PRINT OFF                                                              
+       ++INCLUDE DDCOMFACS                                                      
+         PRINT ON                                                               
+         EJECT                                                                  
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'022DDMQIO    10/30/18'                                      
+         END                                                                    

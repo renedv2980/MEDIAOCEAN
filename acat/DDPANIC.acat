@@ -1,0 +1,320 @@
+*          DATA SET DDPANIC    AT LEVEL 011 AS OF 02/09/06                      
+*CATALP PANIC                                                                   
+*********************************************************************           
+*                                                                               
+*PARAM1  XL1   PASS CODE    X'80' = RESOLVE ++INCLUDE STATEMENTS                
+*                           X'40' = MULT DIR READ                               
+*                           X'20' = IGNORE PANDD11 (EVEN IF IT'S THERE)         
+*                           X'10' = P5 = A(676-BYTE AUDIT AREA)                 
+*        AL3   A(COMMAND)                                                       
+*PARAM2  XL1   TAPE CODE    C'T'=PAN DUMP TAPE INPUT                            
+*        AL3   A(FILE)                                                          
+*PARAM3  XL1   RETURN CODE  80=ENDOFBOOK,40=ERROR,10=NOTFOUND,00=OK             
+*        AL3   A(BOOKNAME)                                                      
+*PARAM4  XL1   N/D                                                              
+*        AL3   A(I/O AREA)                                                      
+*PARAM5  XL1   N/D                                                              
+*        AL3   A(AUDIT AREA)                                                    
+*                                                                               
+* TO READ WHOLE OF PAN DIRECTORY SET PARAM1(1)=X'40' AND SET THE                
+* BOOKNAME POINTED TO BY PARAM3 TO CL10'NO-ENTRY'                               
+*    EXAMPLE:                                                                   
+*            MVC   BOOK,=CL10'NO-ENTRY'                                         
+*            GOTO1 =V(PANIC),PL,(X'40',=C'READ'),=C'DIR',BOOK,IOA               
+*********************************************************************           
+         TITLE 'CONTROLLING MODULE INTERFACING WITH PAM'                        
+         PRINT NOGEN                                                            
+PANIC    CSECT                                                                  
+         NMOD1 0,**PANIC*                                                       
+         LR    R9,R1               R9=A(PARAM LIST)                             
+         LM    R2,R6,0(R9)         R2-R6=PARAMS                                 
+         MVI   8(R9),0             CLEAR RETURN CODE                            
+         USING PACBD,R7                                                         
+*                                                                               
+         LA    RE,NOENTRY          ASSUME NO AUDIT/COMMENT INFO NEEDED          
+         TM    0(R9),X'10'         RETURN AUDIT INFO TO CALLER?                 
+         BZ    *+12                NO                                           
+         MVC   AUDIT-AUDITD(,R6),=C'AUDIT   ' TELL PAM TO RETURN IT             
+         LR    RE,R6               A(CALLER'S AUDIT AREA)                       
+         ST    RE,AUDPARM          SET PARM FOR SEARCH CALLS                    
+*                                                                               
+         OC    PAMENTRY,PAMENTRY   HAVE WE ALREADY LOADED PAM?                  
+         BNZ   CHKLOAD                                                          
+         LOAD  EP=PAM              NO - LOAD PAM NOW                            
+         ST    R0,PAMENTRY         SAVE PAM ENTRY POINT                         
+*                                                                               
+CHKLOAD  CLC   =C'LOAD',0(R2)      DOES CALLER JUST WANT TO LOAD PAM?           
+         BE    PANICXIT            YES -- BUT WE ALREADY DID                    
+         EJECT                                                                  
+         MVC   THISBOOK(10),0(R4)                                               
+*                                                                               
+         CLI   OPENSW,C'Y'         OPEN PAN FILE ON FIRST CALL                  
+         BE    PANCMND                                                          
+         MVI   OPENSW,C'Y'         REMEMBER THAT WE'VE DONE THE OPEN(S)         
+*                                                                               
+         CLI   4(R9),C'T'          READING FROM PAN BACKUP DATASET?             
+         BNE   OPNPDD1             NO                                           
+         LA    R7,PACB1            USE PRIMARY PACB                             
+         XC    PACBD(PACBDLQ),PACBD  CLEAR PACB                                 
+         MVI   FUNCTION,OPEN                                                    
+         L     RF,PAMENTRY                                                      
+         CALL  (15),((R7),PANDD3,BACKUP),VL                                     
+         LTR   RF,RF                                                            
+         BZ    PANCMND                                                          
+         DC    H'0'                                                             
+         DC    CL24'PANDD3 FILE OPEN ERROR'                                     
+*                                                                               
+OPNPDD1  LA    R7,PACB1            OPEN PANDD1 USING PRIMARY PACB               
+         XC    PACBD(PACBDLQ),PACBD  CLEAR PACB                                 
+         MVI   FUNCTION,OPEN                                                    
+         L     RF,PAMENTRY                                                      
+         CALL  (15),((R7),PANDD1,NOENTRY),VL                                    
+         LTR   RF,RF                                                            
+         BZ    CHKPDD11                                                         
+         DC    H'0'                                                             
+         DC    CL24'PANDD1 FILE OPEN ERROR'                                     
+*                                                                               
+CHKPDD11 TM    0(R9),X'20'         IGNORE PANDD11 DELIBERATELY?                 
+         BO    PANCMND                                                          
+*                                                                               
+         EXTRACT TIOTADR,FIELDS=(TIOT)                                          
+         L     RF,TIOTADR                                                       
+         USING TIOT1,RF                                                         
+         LA    RF,TIOENTRY                                                      
+         USING TIOENTRY,RF                                                      
+NEXTTIOT CLI   TIOELNGH,0          END OF TIOT TABLE?                           
+         BE    PANCMND             YES: PANDD11 IS NOT ALLOCATED                
+         CLC   =C'PANDD11 ',TIOEDDNM LOOK FOR DDNAME PANDD11                    
+         BE    OPNPDD11                                                         
+         ZIC   R0,TIOELNGH         GET LENGTH OF THIS ENTRY                     
+         AR    RF,R0                                                            
+         B     NEXTTIOT                                                         
+         DROP  RF                                                               
+*                                                                               
+OPNPDD11 LA    R7,PACB2            OPEN PANDD11 WITH 2NDARY PACB                
+         XC    PACBD(PACBDLQ),PACBD  CLEAR PACB                                 
+         MVI   FUNCTION,OPEN                                                    
+         L     RF,PAMENTRY                                                      
+         CALL  (15),((R7),PANDD11,NOENTRY),VL                                   
+         LTR   RF,RF                                                            
+         BZ    GOTDD11                                                          
+         DC    H'0'                                                             
+         DC    CL24'PANDD11 FILE OPEN ERROR'                                    
+GOTDD11  MVI   DD11OPEN,C'Y'       PANDD11 IS ALLOCATED                         
+         EJECT                                                                  
+PANCMND  CLC   =C'DIR',0(R3)       COMMAND VALIDATION                           
+         BE    PANDIR                                                           
+         CLC   =C'READ',0(R2)                                                   
+         BE    PANREAD                                                          
+         CLC   =C'DMREAD',0(R2)                                                 
+         BE    PANREAD                                                          
+         CLC   =C'OPEN',0(R2)                                                   
+         BE    PANICXIT                                                         
+         CLC   =C'DMOPEN',0(R2)                                                 
+         BE    PANICXIT                                                         
+         CLC   =C'CLOSE',0(R2)                                                  
+         BE    PANCLOSE                                                         
+         CLC   =C'DMCLOSE',0(R2)                                                
+         BE    PANCLOSE                                                         
+         DC    H'0'                                                             
+         DC    CL16'INVALID COMMAND'                                            
+*                                                                               
+PANDIR   LA    R8,NOENTRY          DIRECTORY HANDLING                           
+         TM    0(R9),X'40'         TEST FOR SEARCH TYPE DIR READ                
+         BZ    *+8                                                              
+         LA    R8,LASTBOOK         SET LAST POSSIBLE BOOK NAME                  
+*                                                                               
+         LA    R7,PACB1            USE PRIMARY PACB                             
+         XC    ACTION,ACTION                                                    
+         MVI   FUNCTION,SEARCH                                                  
+         L     RA,AUDPARM                                                       
+         L     RF,PAMENTRY                                                      
+         CALL  (15),((R7),(R5),THISBOOK,(R8),(10),NOENTRY),VL                   
+*                                                                               
+         LTR   RF,RF               ANY ERRORS?                                  
+         BZ    PANR4               NO                                           
+         CHI   RF,4                INCLUDE NOT FOUND?                           
+         BNE   PANDIR10                                                         
+         TM    0(R9),X'20'         YES -- IGNORE PANDD11 DELIBERATELY?          
+         BO    PANICXIT                                                         
+         CLI   DD11OPEN,C'Y'       NO - DOES PANDD11 EXIST?                     
+         BNE   PANICXIT            NO - IGNORE IT                               
+         B     SRPDD11                                                          
+*                                                                               
+PANDIR10 CHI   RF,8                MEMBER NOT FOUND?                            
+         BNE   PANDIR20                                                         
+         TM    0(R9),X'20'         IGNORE PANDD11 DELIBERATELY?                 
+         BO    PANR6                                                            
+         CLI   DD11OPEN,C'Y'       NO - DOES PANDD11 EXIST?                     
+         BNE   PANR6                                                            
+         B     SRPDD11             YES                                          
+*                                                                               
+PANDIR20 OI    8(R9),X'40'         SEVERE ERROR (RF=16)                         
+         B     PANICXIT                                                         
+*                                                                               
+SRPDD11  LA    R7,PACB2            USE SECONDARY PACB                           
+         XC    ACTION,ACTION                                                    
+         MVI   FUNCTION,SEARCH                                                  
+         L     RA,AUDPARM                                                       
+         L     RF,PAMENTRY                                                      
+         CALL  (15),((R7),(R5),THISBOOK,(R8),(10),NOENTRY),VL                   
+         B     PANR2                                                            
+         EJECT                                                                  
+PANREAD  LA    R8,NOENTRY          READ PAN BOOK                                
+         TM    0(R9),X'80'         EXPAND INCLUDES?                             
+         BZ    *+8                                                              
+         LA    R8,YES              YES                                          
+*                                                                               
+         CLI   DD11READ,C'Y'       WERE WE READING FROM PANDD11?                
+         BE    RDPDD11                                                          
+*                                                                               
+         LA    R7,PACB1            USE PRIMARY PACB                             
+         XC    ACTION,ACTION                                                    
+         MVI   FUNCTION,READ       READ FROM PANDD1                             
+         L     RF,PAMENTRY                                                      
+         CALL  (15),((R7),(R5),THISBOOK,(R8),NOENTRY),VL                        
+*                                                                               
+         LTR   RF,RF               ANY ERRORS?                                  
+         BZ    PANR4               NO                                           
+         CHI   RF,4                INCLUDE NOT FOUND?                           
+         BNE   PREAD10                                                          
+         CLI   DD11OPEN,C'Y'       RIGHT - IS THERE A PANDD11 TO READ?          
+         BNE   PANICXIT            NO - IGNORE IT                               
+*                                                                               
+         LA    R7,PACB2            USE SECONDARY PACB                           
+         MVC   INCLBOOK,17(R5)     ++INCLUDE MEMBER NAME                        
+         XC    ACTION,ACTION                                                    
+         MVI   FUNCTION,SEARCH                                                  
+         L     RA,AUDPARM                                                       
+         L     RF,PAMENTRY                                                      
+         CALL  (15),((R7),(R5),INCLBOOK,NOENTRY,(10),NOENTRY),VL                
+*                                                                               
+         LTR   RF,RF               ANY ERRORS?                                  
+         BNZ   *+12                                                             
+         MVI   DD11READ,C'Y'       NO -- REMEMBER WE'RE IN PANDD11              
+         B     PANREAD             LOOP BACK AND READ THE FIRST RECORD          
+*                                                                               
+         CHI   RF,4                INCLUDE NOT FOUND?                           
+         BE    PANICXIT            RIGHT - IGNORE IT                            
+         CHI   RF,8                MEMBER NOT FOUND?                            
+         BE    PANR6                                                            
+         OI    8(R9),X'40'         SEVERE ERROR (RF=16)                         
+         B     PANICXIT                                                         
+*                                                                               
+PREAD10  CHI   RF,8                MEMBER NOT FOUND?                            
+         BNE   *+16                                                             
+         CLI   DD11OPEN,C'Y'       RIGHT - IS THERE A PANDD11 TO READ?          
+         BE    RDPDD11                                                          
+         B     PANR6                                                            
+         OI    8(R9),X'40'         SEVERE ERROR (RF=16)                         
+         B     PANICXIT                                                         
+*                                                                               
+RDPDD11  LA    R7,PACB2            USE SECONDARY PACB                           
+         LA    R4,THISBOOK                                                      
+         CLI   DD11READ,C'Y'                                                    
+         BNE   *+8                                                              
+         LA    R4,INCLBOOK         READ FROM THE INCLUDE BOOK                   
+         XC    ACTION,ACTION                                                    
+         MVI   FUNCTION,READ       READ FROM PANDD11                            
+         L     RF,PAMENTRY                                                      
+         CALL  (15),((R7),(R5),(R4),(R8),NOENTRY),VL                            
+*                                                                               
+PANR2    LTR   RF,RF               ANY ERRORS?                                  
+         BZ    PANR4               NO                                           
+         CHI   RF,4                INCLUDE NOT FOUND?                           
+         BE    PANICXIT            RIGHT - IGNORE IT                            
+         CHI   RF,8                MEMBER NOT FOUND?                            
+         BE    PANR6                                                            
+         OI    8(R9),X'40'         SEVERE ERROR (RF=16)                         
+         B     PANICXIT                                                         
+*                                                                               
+PANR4    CLC   =C'$*',0(R5)        PAM END OF BOOK?                             
+         BNE   PANICXIT                                                         
+         CLI   DD11READ,C'Y'       ARE WE IN A PANDD11 ++INCLUDE?               
+         BNE   *+12                                                             
+         MVI   DD11READ,C'N'       NO LONGER READING FROM PANDD11               
+         B     PANREAD                                                          
+*                                                                               
+         MVC   0(2,R5),=C'/*'      SET DDS END OF BOOK                          
+         OI    8(R9),X'80'                                                      
+         B     PANICXIT                                                         
+*                                                                               
+PANR6    OI    8(R9),X'10'         SET NOT FOUND INDICATOR                      
+         B     PANICXIT                                                         
+         EJECT                                                                  
+PANCLOSE CLI   DD11OPEN,C'Y'                                                    
+         BNE   CLSPDD1                                                          
+*                                                                               
+         LA    R7,PACB2                                                         
+         XC    ACTION,ACTION                                                    
+         MVI   FUNCTION,CLOSE                                                   
+         L     RF,PAMENTRY                                                      
+         CALL  (15),((R7)),VL                                                   
+         LTR   RF,RF                                                            
+         BZ    CLSPDD1                                                          
+         DC    H'0'                                                             
+         DC    CL24'PANDD11 FILE CLOSE ERROR'                                   
+*                                                                               
+CLSPDD1  LA    R7,PACB1                                                         
+         XC    ACTION,ACTION                                                    
+         MVI   FUNCTION,CLOSE                                                   
+         L     RF,PAMENTRY                                                      
+         CALL  (15),((R7)),VL                                                   
+         LTR   RF,RF                                                            
+         BZ    CLOSED                                                           
+         DC    H'0'                                                             
+         DC    CL24'PANDD1 FILE CLOSE ERROR'                                    
+*                                                                               
+CLOSED   MVI   OPENSW,C'N'                                                      
+         MVI   DD11OPEN,C'N'                                                    
+*                                                                               
+PANICXIT XMOD1                                                                  
+         EJECT                                                                  
+PAMENTRY DC    A(0)                PAM ENTRY POINT                              
+TIOTADR  DS    A                   A(TIOT)                                      
+AUDPARM  DS    A                   POINTS TO 'NO-ENTRY' OR AUDIT BLOCK          
+OPENSW   DC    C'N'                                                             
+DD11OPEN DC    C'N'                'Y' = PANDD11 IS ALLOCATED                   
+DD11READ DC    C'N'                'Y' = CURRENT MEMBER IS FROM PANDD11         
+PANDD1   DC    CL8'PANDD1'                                                      
+PANDD11  DC    CL8'PANDD11'                                                     
+PANDD3   DC    CL8'PANDD3'                                                      
+BACKUP   DC    CL8'BACKUP'                                                      
+YES      DC    CL8'YES'                                                         
+NOENTRY  DC    CL8'NO-ENTRY',CL44' '                                            
+THISBOOK DC    CL22' '                                                          
+INCLBOOK DC    CL22' '                                                          
+LASTBOOK DC    CL22'Z999999999'                                                 
+         SPACE 2                                                                
+         DS    0D                                                               
+PACB1    DS    XL(PACBDLQ)         PRIMARY PAM ACTION CONTROL BLOCK             
+*                                   PRIMARILY USED FOR PANDD1, BUT CAN          
+*                                   ALSO BE USED FOR PANDD3                     
+         DS    0D                                                               
+PACB2    DS    XL(PACBDLQ)         SECONDARY PAM ACTION CONTROL BLOCK           
+*                                   USED FOR PANDD11 ONLY                       
+         SPACE 2                                                                
+         LTORG                                                                  
+         SPACE 2                                                                
+PACBD    DSECT                                                                  
+ACTION   DS    F                   MUST BE NULLS BEFORE EACH CALL               
+*                                  RETURN CODE PLACED HERE AFTER CALL           
+         DS    XL3                 RESERVED FOR FUTURE USE BY PAM               
+FUNCTION DS    CL1                 MUST SET THIS BEFORE EACH CALL               
+OPEN     EQU   C'O'                                                             
+SEARCH   EQU   C'S'                                                             
+READ     EQU   C'R'                                                             
+CLOSE    EQU   C'C'                                                             
+*                                                                               
+         DS    F                   RESERVED FOR USE BY PAM                      
+PACBDLQ  EQU   *-PACBD                                                          
+         EJECT                                                                  
+AUDITD   DSECT                                                                  
+       ++INCLUDE DDPANAUDIT                                                     
+         EJECT                                                                  
+         DSECT                                                                  
+         IEFTIOT1                                                               
+         SPACE 2                                                                
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'011DDPANIC   02/09/06'                                      
+         END                                                                    

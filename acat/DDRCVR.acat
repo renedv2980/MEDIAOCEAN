@@ -1,0 +1,1620 @@
+*          DATA SET DDRCVR     AT LEVEL 145 AS OF 09/17/20                      
+*CATALP DDRCVR                                                                  
+*======================================================================         
+* RELOCATABLE MODULE TO RECOVER TRANSACTIONS AND REMOVE LOCKS                   
+* CALLER PASSES JOB TO RECOVER                                                  
+*                                                                               
+* P1 ON ENTRY  AL4(JOB DETAIL) OR ZERO=THIS JOB                                 
+* P2 ON EXIT   AL4(SHRMEM RECOVERY BUFFER IF ANY)                               
+*                                                                               
+* JOB DETAIL   CL8'JOBNAME',XL2'JOB NUM'                                        
+*                                                                               
+*======================================================================         
+         TITLE 'RECOVER - RECOVER TRANSACTIONS '                                
+         PRINT NOGEN                                                            
+DDRCVR   CSECT                                                                  
+*                                                                               
+         NMOD1 WORKX-WORKD,**DDRCVR,RA,R9,CLEAR=YES                             
+         USING WORKD,RC                                                         
+         ST    RD,SAVERD                                                        
+*                                                                               
+         ST    R1,APARMS                                                        
+         ICM   RF,15,0(R1)         WAS JOB DETAIL PASSED                        
+         BZ    RCVR1                                                            
+         MVC   JNAME,0(RF)         SAVE JOB NAME                                
+         MVC   JNUM,8(RF)          AND  JOB NUMBER                              
+*                                                                               
+RCVR1    L     R1,=A(IOAREA-WORKD)                                              
+         AR    R1,RC                                                            
+         ST    R1,AIOAREA                                                       
+*                                                                               
+         BAS   RE,INIT                                                          
+         BAS   RE,MAIN                                                          
+         B     XBASE                                                            
+*                                                                               
+XBASE    L     RD,SAVERD           EXIT FROM TOP                                
+         XBASE                                                                  
+*                                                                               
+EXITEQ   CR    RB,RB                                                            
+         B     EXIT                                                             
+EXITNE   LTR   RB,RB                                                            
+*                                                                               
+EXIT     XIT1  ,                                                                
+         EJECT                                                                  
+*************************************************************                   
+*        INITIALISE                                         *                   
+*************************************************************                   
+INIT     NTR1  ,                                                                
+*                                                                               
+         XC    DMCB,DMCB           ENQUIRE ON ZERO                              
+         OI    DMCB,X'20'                                                       
+         GOTO1 VLOCKSPC,DMCB                                                    
+         L     R1,4(R1)                                                         
+         USING DMSPACED,R1         EXTRACT JOB NAME/NUMBER                      
+*                                                                               
+         CLI   JNAME,C' '          ONLY  IF NOT PASSED                          
+         BH    *+10                                                             
+         MVC   JNAME,DSPMVS                                                     
+*                                                                               
+         OC    JNUM,JNUM                                                        
+         BNZ   *+10                                                             
+         MVC   JNUM,DSPJOB                                                      
+         NC    JNUM,=X'FFFF'       *DONT* TURN OFF 8000 BIT                     
+         DROP  R1                                                               
+*                                                                               
+         GOTO1 VDMFATAB,DMCB                                                    
+         USING DMATABS,R1                                                       
+         MVC   @SYSTABS,DMSYTBLL   SAVE OFF SYSTABS SEE DMATABS                 
+         DROP  R1                                                               
+*                                                                               
+         GOTO1 ADATAMGR,DMCB,=C'SSBAD ' GET A(SSB)                              
+         L     R1,4(R1)                                                         
+         L     RE,ASSB             COPY OVER MY SSB                             
+         MVC   0(256,RE),0(R1)     AREN'T THESE ONE AND THE SAME? AH3           
+         USING SSOOFF,R1                                                        
+         OI    SSOFLAG1,SSOFXCPY   TURN OFF SSB COPY                            
+         OI    SSOSTAT2,SSOSLOCK   CALL DMLOCKER OFF-LINE                       
+         MVC   DSPACE,SSODSPAC     SET DATA SPACE                               
+         DROP  R1                                                               
+*                                                                               
+         USING SSBD,RE                                                          
+         MVC   DMALET,SSBALET      EXTRACT ALETS FROM SSB                       
+         MVC   TBALET,SSBTBLET                                                  
+         XC    DMOFFS,DMOFFS                                                    
+         DROP  RE                                                               
+*                                                                               
+         GOTO1 ADATAMGR,DMCB,=C'UPDID'                                          
+         L     R1,12(R1)                                                        
+         MVC   0(2,R1),=C'00'      NO ENQ PROTECTION REQUIRED                   
+*                                                                               
+         GOTO1 ADMOD000,DMCB,X'0000000D'                                        
+         L     R1,0(R1)                                                         
+         ST    R1,ADMGRFLS         TABLE OF FILE NAMES                          
+         B     EXITEQ                                                           
+         EJECT                                                                  
+*************************************************************                   
+*        MAIN PROGRAM                                       *                   
+*************************************************************                   
+MAIN     NTR1  ,                                                                
+         LAM   AR0,ARF,ARZERO                                                   
+         LAM   AR2,AR2,DMALET                                                   
+         L     R2,DMOFFS                                                        
+*AH3     USING DMDSHDR,R2                                                       
+         SAC   512                 SET UP AMODE                                 
+********************************************************************            
+*  THIS CODE IS USED TO UNWIND ONE OF THE FACPAKS ABENDING                      
+*  FIND FACPAK IN "ALL JOB" LIST, THEN EXTRACT DETAILS                          
+********************************************************************            
+*********************************************************************           
+* LOOP THROUGH ALL SYSTEMS CHECKING FOR JOB                                     
+* JOB COULD HAVE WRITTEN TO MULTIPLE SYSTEMS                                    
+*********************************************************************           
+*&&DO*&& L     R2,DMOFFS           START WITH ZERO                              
+                                                                                
+MAIN010  LA    R2,L'DMDHDR(,R2)    FIRST / NEXT SYSTEM                          
+         USING DMSPACED,R2                                                      
+         ST    R2,@DSYSTEM         SAVE CURRENT SYSTEM ENTRY                    
+         C     R2,=X'00004000'     EOT = 64*256 SYSTEM ENTRIES                  
+         BE    MAINX               YES                                          
+*                                                                               
+         USING DMSPACED,R2                                                      
+         MVC   SENAM,DSPNAME       SAVE SYSTEM SYMBOLIC NAME                    
+         XR    R1,R1                                                            
+         ICM   R1,7,DSPECB+1       A(SYSTEM HEADER)                             
+         BZ    MAIN010             NONE - TRY NEXT SYSTEM                       
+         LR    R2,R1                                                            
+         ST    R2,@DSYSHDR         SAVE A(SYSTEM HEADER)                        
+*                                                                               
+         USING DMSYSHDR,R2                                                      
+         MVC   SENUM,DSYSENUM+1    SAVE SE NUMBER                               
+         LLC   R1,SENUM                                                         
+         MHI   R1,DMSYLEN          FIND ENTRY                                   
+         A     R1,@SYSTABS         BASE OF DMSYSTABUS OR DMSYSTABUK             
+         USING SYSTABD,R1                                                       
+         MVC   @SYSFLES,DMSYASYF   SAVE OFF FILE LIST                           
+         DROP  R1                                                               
+                                                                                
+         MVI   SEUSS,NO                                                         
+         XC    GINS(GINL),GINS     CLEAR GIN LIST FOR SYSTEM                    
+         XC    DMCBUSSQ,DMCBUSSQ   UNIX QUEUE PARAMETERS                        
+                                                                                
+*********************************************************************           
+* FIND JOB IN SYSTEM'S JOB LIST                                     *           
+*********************************************************************           
+         L     R2,DSYAJOBS         A(JOBS TABLE) FOR SYSTEM                     
+         USING DSJOBHDR,R2                                                      
+         LA    R0,DSJBHMXQ         MAX ENTRIES                                  
+MAIN020  CLC   DSJOBNAM,JNAME      MATCH ON JOB NAME                            
+         BNE   MAIN022                                                          
+         CLC   DSJOBNUM,JNUM       MATCH ON JOB NUMBER                          
+         BE    MAIN025             START THE PROCESS                            
+*                                                                               
+MAIN022  LA    R2,DSJBHLNQ(,R2)    TRY NEXT JOBTAB ENTRY                        
+         BCT   R0,MAIN020                                                       
+*                                                                               
+         CLI   ADVNUM,0            FOR ADVS UNLOCK ALL SYSTEMS                  
+         BNE   MAIN040             GO TO ????                                   
+         B     MAIN990             GO TO NEXT SYSTEM                            
+                                                                                
+*********************************************************************           
+* START TO RECOVERY PROCESS                                                     
+*********************************************************************           
+MAIN025  ST    R2,@JOBHDR          SAVE A(JOB HEADER)                           
+         MVC   ADVNUM,DSJOBADV     SAVE ADVNUM THEN CLEAR IT                    
+         MVC   JOBFLG,DSJOBFLG     SAVE JOB FLAG                                
+*                                                                               
+         TM    DSJOBFLG,DSJOBABN   OFF-LINE ABEND - WANT TO UNWIND              
+         BO    *+10                                                             
+         XC    DSJOBNAM(16),DSJOBNAM    OTHERWISE CLEAR WHOLE ENTRY             
+*                                       OPPOSED TO THIS ???                     
+         BAS   RE,INFO1            PRINT DISCONECT MSG                          
+*                                                                               
+         SAC   0                                                                
+         XC    DMCB,DMCB                                                        
+         MVI   DMCB,X'20'          ENQUIRE ON SYSTEM                            
+         MVC   DMCB+3(1),SENUM                                                  
+         GOTO1 VLOCKSPC,DMCB                                                    
+*                                                                               
+         USING DMSPACED,RF         USING LOCAL COPY OF DATA SPACE               
+         L     RF,4(R1)            TEST ANY LOCK ON IT                          
+         OC    DSPLOCK,DSPLOCK                                                  
+         JZ    MAIN028                                                          
+*                                  IS IT JOB THAT WE ARE RECOVERING FOR         
+         CLC   DSPMVS,JNAME                                                     
+         JNE   MAIN028                                                          
+         CLC   DSPJOB,JNUM                                                      
+         JNE   MAIN028                                                          
+                                                                                
+**********************************************************************          
+* OKAY TO FREE BECAUSE OF LOCKER TABLE ENTRIES PROTECT TRANSACTIONS             
+**********************************************************************          
+         XC    DMCB,DMCB                                                        
+         MVI   DMCB,X'11'        OK TO FREE SYSTEM FOR RECOVERY                 
+         MVC   DMCB+3(1),SENUM                                                  
+         GOTO1 VLOCKSPC,DMCB                                                    
+         WTO   'RECOVERY FREE SYSTEM ',MCSFLAG=HRDCPY                           
+*                                                                               
+MAIN028  BRAS  RE,GETSYSFL         SET VALUES BASED ON SE                       
+         LAM   AR0,ARF,ARZERO      RESTORE ARS                                  
+         LAM   AR2,AR2,DMALET      BUT DON'T CHANGE MODE YET                    
+*                                                                               
+         CLI   SHRMEM,YES          TEST SHRMEM RECOVERY BUFFER                  
+         BNE   MAIN029                                                          
+         ICM   R2,15,@RECBUF       TEST BUFFER ALLOCATED                        
+         BNZ   MAIN030             GO RECOVER WITH ARS OFF                      
+         B     MAIN040             NO RECOVERY IF NO BUFFER                     
+MAIN029  SAC   512                                                              
+         L     R2,@DSYSHDR         RETURN TO SYSTEM HEADER                      
+         USING DMSYSHDR,R2                                                      
+         ICM   R2,15,DSYABUFF      NO RECOVERY IF NO DSPACE BUFFER              
+         BZ    MAIN040                                                          
+                                                                                
+***********************************************************************         
+* MAIN CALL TO 1) RECOVER TRANSACTIONS IF DSJOBRCV ON IN JOBFLG,                
+*              2) LOCATE GIN(S) IF USS ACTIVE (SEE NOTE),                       
+*              3) CLEAR ACTIVE VERMONT(S).                                      
+*                                                                               
+* NOTE: IF A JOB HAS BEEN SENDING RECOVERY RECORDS TO THE USS QUEUE             
+* AND THEN DIES, THE USS STREAM FOR EACH GIN NEEDS TO BE TERMINATED.            
+* IF THE JOB IS BEING RECOVERED, THEN A ROLLBACK MUST BE SENT TO THE            
+* USS QUEUE FOR EACH GIN THAT WAS ACTIVE.                                       
+* IF THE JOB IS *NOT* SET UP TO BE RECOVERED, ANY UPDATES IT HAS MADE           
+* REMAIN ON FILE SO AN EOT MUST BE WRITTEN TO THE USS QUEUE FOR EACH            
+* ACTIVE GIN. IT WOULD BE WRONG TO SEND A ROLLBACK IN THAT SITUATION,           
+* AND EVEN WORSE TO SEND NEITHER AN EOT NOR A ROLLBACK.                         
+*                                                                               
+* IF RECOVERY BUFFER IS IN DATA SPACE THEN ACCESS MODE ON.                      
+* IF RECOVERY BUFFER IS IN SHARED MEMORY THEN ACCESS MODE OFF.                  
+***********************************************************************         
+MAIN030  BAS   RE,RECVR            RECOVERY PROCESS                             
+*                                                                               
+         CLI   SEUSS,NO            IF USS ACTIVE FOR THIS SE                    
+         BE    MAIN040                                                          
+         CLI   SENUM,1             AND IT'S A USER SYSTEM,                      
+         BNH   MAIN040                                                          
+         OC    GINS(GINL),GINS     AND GINS NEEDING ROLLBACKS/EOTS              
+         BZ    MAIN040                                                          
+         SAC   0                   SEND AN EOT OR ROLLBACK FOR EACH GIN         
+         LA    RE,2                COMMAND TO SEND USS ROLLBACK                 
+         TM    JOBFLG,DSJOBRCV     IF WE ARE RECOVERING UPDATES                 
+         BNZ   *+8                                                              
+         LA    RE,1                OTHERWISE SEND AN EOT                        
+         ST    RE,P1USS            P1USS=COMMAND (EOT OR BACKOUT)               
+         MVC   P2USS+3(1),SENUM                                                 
+         LA    R1,DMCBUSSQ         P1USS ALREADY SET                            
+*                                                                               
+         ICM   RF,15,=V(DMRCVUSS)  MUST BE ABLE TO WRITE TO USS                 
+         JZ    *+2                                                              
+         LA    R0,VRCVMAXQ         MAX VERMONTS = MAX GINS                      
+         LA    R3,GINS                                                          
+MAIN037  OC    0(8,R3),0(R3)       SEND USS ROLLBACK FOR EACH GIN               
+         BZ    MAIN038                                                          
+         ST    R3,P3USS            P3USS=A(GIN)                                 
+         MVI   P2USS,X'FE'         TELL DMRCVUSS WE ARE DDRCVR                  
+         BASR  RE,RF               WRITE ROLLBACK OR EOT                        
+*                                                                               
+MAIN038  LA    R3,8(,R3)           NEXT GIN                                     
+         BCT   R0,MAIN037                                                       
+*                                                                               
+MAIN040  SAC   512                 CLEAR FLAG OR ENTRY                          
+                                                                                
+         L     R2,@JOBHDR          RESTORE A(JOB HEADER)                        
+         USING DSJOBHDR,R2                                                      
+         TM    DSJOBFLG,DSJOBABN   OFF-LINE ABEND                               
+         BZ    *+8                      NO                                      
+         NI    DSJOBFLG,255-DSJOBABN    YES, CLEAR ABEND FLAG                   
+*                                                                               
+         L     R2,@DSYSHDR         RETURN TO SYSTEM HEADER                      
+         USING DMSYSHDR,R2                                                      
+         ICM   R2,15,DSYALOCK                                                   
+         BZ    *+8                                                              
+         BAS   RE,UNLOCK           UNLOCK LOCKTAB                               
+*                                                                               
+MAIN990  SAC   512                                                              
+         L     R2,@DSYSTEM         LOOP BACK FOR NEXT SYSTEM                    
+         B     MAIN010                                                          
+*                                                                               
+MAINX    SAC   0                                                                
+*&&UK*&& GOTO1 VLOCKUP,DMCB,(C'C',0)   AH3 ???                                  
+         LAM   AR0,ARF,ARZERO                                                   
+         B     EXITEQ                                                           
+         EJECT                                                                  
+*================================================================               
+* RECOVER TRANSACTIONS STILL IN PROGRESS IF DSJOBRCV ON IN JOBFLG               
+* FIND THE ACTIVE GIN(S) IF USS ACTIVE (ONE GIN PER VERMONT TASK)               
+* MAKE SURE VERMONT HEADERS ARE CLEARED IN ACTIVE BUFFER                        
+* NOTE THAT IF SHRMEM RECOVERY, AR MODE IS OFF!                                 
+* ON ENRY, R2 (AND @DSYSHDR) POINTS TO THE COMMON RECOVERY BLOCK                
+* WHICH IS IN EITHER THE DMGR DATASPACE OR SHARED MEMORY                        
+*================================================================               
+RECVR    NTR1                                                                   
+         SAM31                                                                  
+**************************************************************                  
+* SEE IF ANY VERMONT(S) BELONG TO OUR FAILED TASK, EXIT IF NONE                 
+**************************************************************                  
+         USING VRCVHDR,R2                                                       
+         LA    R0,VRCVMAXQ         10 ACTIVE ENTRIES IN BUFFER                  
+         LA    R2,VRCVNTRY         POINT 1ST VERMONT ENTRY                      
+*                                                                               
+         USING VRCVNTRY,R2                                                      
+RECV020  CLI   ADVNUM,0            WERE WE ONLINE                               
+         BE    RECV030             NO                                           
+*                                                                               
+         CLC   ADVNUM,VRCVFID#     BACK OUT ALL SINS FOR SYS                    
+         BE    RECV100                                                          
+         B     RECV040                                                          
+*                                                                               
+RECV030  CLI   VRCVOFFL,X'FF'      OFFLINE ENTRY                                
+         BNE   RECV040                                                          
+         MVC   JOB#,VRCVJOB#       VERMONT VER 1 JOB NUMBER                     
+         CLI   VERMONT,VMONTXTN                                                 
+         BNE   *+10                                                             
+         MVC   JOB#,VRCXJOB#       VERMONT VER 2 JOB NUMBER                     
+         CLC   JNUM,JOB#           MATCH ON JOB NUMBER                          
+         BE    RECV100                                                          
+*                                                                               
+RECV040  AH    R2,VMNTRYLN         SOFT LENGTH OF ENTRY                         
+         BCT   R0,RECV020                                                       
+*                                                                               
+RECVDX   B     EXITEQ              NOTHING TO DO FOR THIS SYSTEM                
+         DROP  R2                                                               
+         EJECT                                                                  
+****************************************************                            
+* OPEN SYSTEM FOR RECOVERY AND FREE ANY LOCKER LOCKS                            
+****************************************************                            
+RECV100  SAM24                                                                  
+         XC    RCVCRCV,RCVCRCV     CLEAR COUNTS                                 
+         XC    RCVCERR,RCVCERR                                                  
+*                                                                               
+RECV101  SAC   0                                                                
+         XC    DMCB,DMCB                                                        
+         MVI   DMCB,X'20'          ENQUIRE ON SYSTEM                            
+         MVC   DMCB+3(1),SENUM                                                  
+         GOTO1 VLOCKSPC,DMCB                                                    
+*                                                                               
+         USING DMSPACED,RF         USING LOCAL COPY OF DATA SPACE               
+         L     RF,4(R1)            POINT TO FILE INFO                           
+         OC    DSPLOCK,DSPLOCK     ARE THERE ANY LOCKS?                         
+         JZ    RECV102             NO                                           
+*                                                                               
+         CLC   DSPMVS,JNAME        SAME JOB NAME?                               
+         JNE   RECV102             NO                                           
+         CLC   DSPJOB,JNUM         SAME JOB NUMBER?                             
+         JNE   RECV102             NO                                           
+*                                                                               
+         XC    DMCB,DMCB           UNLOCK SYSTEM, LOCKER STILL LOCKED           
+         MVI   DMCB,X'11'          FORCE FREE                                   
+         MVC   DMCB+3(1),SENUM                                                  
+         GOTO1 VLOCKSPC,DMCB                                                    
+         WTO   'FORCE FREE SYSTEM ',MCSFLAG=HRDCPY                              
+         J     RECV101              ? AH3 LOOP BACK ?                           
+*                                                                               
+RECV102  DS    0H                                                               
+         GOTO1 ADATAMGR,DMCB,OPEN,SYSOVNAM,SEFILN,AIOAREA,0                     
+         EJECT                                                                  
+***********************************************************************         
+* COPY THE CURRENT RECOVERY BUFFER INTO IOAREA BECAUSE YOU CANNOT               
+* WRITE TO DISK FROM THE DATA SPACE. IT WILL NEED TO BE COPIED BACK             
+* LATER. ALL OTHER RECOVERY BLOCKS ARE ALSO READ INTO, PROCESSED IN             
+* AND WRITTEN BACK FROM IOAREA.                                                 
+*                                                                               
+* BUILD A LIST OF THE VERMONT ENTRIES THAT BELONG TO THE FAILED TASK.           
+*         FOR A FAILED OFF-LINE TASK THERE WILL BE ONLY ONE.                    
+*         FOR A FAILED ON-LINE (FACPAK) THERE COULD BE MORE THAN ONE.           
+*                                                                               
+* ADD THE VRCVID# IDENTIFYING EACH SUCH ENTRY TO THE TABLE 'VERMONTS'.          
+***********************************************************************         
+RECV200  XC    DMCB,DMCB           DSPACE RESOURCE NUMBER                       
+         MVI   DMCB,X'02'          RECOVERY ALLOCATE (ABEND LOCK)               
+         MVC   DMCB+3(1),SENUM                                                  
+         GOTO1 VLOCKSPC,DMCB                                                    
+         L     R2,@RECBUF          IF SHRMEM RECOVERY,                          
+*                                                                               
+         CLI   SHRMEM,YES            THIS IS BUFFER ADDRESS                     
+         BE    RECV208                                                          
+*                                                                               
+         SAC   512                 COPY BUFFER FROM DSPACE                      
+         LAM   AR2,AR2,DMALET                                                   
+         L     R2,@DSYSHDR         R2 = A(SYSTEM HEADER)                        
+         USING DMSYSHDR,R2                                                      
+         L     R2,DSYABUFF         R2 = A(BUFFER)                               
+         ST    R2,@RECBUF                                                       
+*                                                                               
+RECV208  SAM31 ,                   MOVE BUFFER TO LOCAL AREA                    
+         USING VRCVHDR,R2                                                       
+         L     RE,AIOAREA          COPY IT TO IOAREA                            
+         LH    RF,VRCVNXT          END OF THIS BLOCK                            
+         LR    R3,RF                                                            
+         MVCL  RE,R2                                                            
+         MVI   DFLAG,YES           FLAG ACTIVE DSPACE BUFFER                    
+*                                                                               
+         XC    VERMONTS(VERMONTL),VERMONTS CLEAR VERMONTS TABLE                 
+*                                                                               
+         LA    R1,VERMONTS                                                      
+         XR    RF,RF               COUNT OF ENTRIES                             
+         LA    R0,VRCVMAXQ         10 ENTRIES IN BUFFER                         
+         L     R2,@RECBUF                                                       
+         LA    R2,VRCVNTRY         POINT TO FIRST ENTRY                         
+*                                                                               
+         USING VRCVNTRY,R2                                                      
+RECV210  CLI   ADVNUM,0            WERE WE OFFLINE                              
+         BE    RECV220             YES                                          
+*                                                                               
+         CLC   ADVNUM,VRCVFID#     NO SO BACK OUT ALL SINS FOR SYS              
+         BE    RECV225                                                          
+         B     RECV230                                                          
+*                                                                               
+RECV220  CLI   VRCVOFFL,X'FF'      OFFLINE ENTRY                                
+         BNE   RECV230                                                          
+         MVC   JOB#,VRCVJOB#                                                    
+         CLI   VERMONT,VMONTXTN    ORGINAL VERMONT?                             
+         BNE   *+10                                                             
+         MVC   JOB#,VRCXJOB#                                                    
+         CLC   JNUM,JOB#           MATCH ON JOB NUMBER                          
+         BNE   RECV230                                                          
+*                                                                               
+RECV225  MVC   0(L'VERMONTS,R1),VRCVID#     COPY SIN ENTRY                      
+         AHI   R1,L'VERMONTS       SAVE OFF SIN TO MATCH ON                     
+         LA    RF,1(,RF)           AND COUNT ACTIVE VERMONTS TO PROCESS         
+*                                                                               
+RECV230  AH    R2,VMNTRYLN         NEXT ACTIVE ENTRY                            
+         BCT   R0,RECV210                                                       
+         STC   R1,VMCOUNT          SAVE NUMBER OF 'VERMONTS' ENTRIES            
+         MVI   VMGINS,0            NO GINS FOUND YET                            
+         DROP  R2                                                               
+         SAC   0                   TURN OFF ACCESS MODE                         
+         SAM24                                                                  
+         B     RECV300                                                          
+         EJECT                                                                  
+******************************************************************              
+* READ THE NEXT RECOVERY BLOCK IDENTIFIED BY DA=PREVDA INTO IOAREA              
+******************************************************************              
+RECV250  L     RE,AIOAREA                                                       
+         LA    R2,DMCB             READ RECOVERY FILE BLOCK                     
+         MVC   RECDA,PREVDA                                                     
+         MVI   RECDA+3,0                                                        
+*                                                                               
+         L     RF,@RCVDTF                                                       
+         USING DTFPHD,RF                                                        
+         TM    DTFTYPE,DTFTBIGF    20 BIT RCVR                                  
+         JZ    RECV252             NO                                           
+*                                                                               
+         MVC   RECDA+3(1),RECDA+2  TTTTTBRR -> TTTTT00B                         
+         NI    RECDA+2,X'F0'                                                    
+         NI    RECDA+3,X'0F'                                                    
+*                                                                               
+RECV252  GOTO1 ADMOD000,Q1,A(DMODREAD),AIOAREA,,@RCVDTF,RECDA                   
+         OC    Q3(2),Q3                                                         
+         JNZ   *+2                                                              
+         XC    PREVDA,PREVDA                                                    
+         MVI   DFLAG,NO            NOT ACTIVE DSPACE BUFFER                     
+         EJECT                                                                  
+**********************************************************************          
+* BUILD A LIST OF OFFSETS TO EACH RECOVERY RECORD IN THE BLOCK                  
+**********************************************************************          
+RECV300  L     RE,AIOAREA          SAVE A(ACTIVE) BLOCK                         
+*                                                                               
+         XC    RECNUMS+000(256),RECNUMS+000                                     
+         XC    RECNUMS+256(256),RECNUMS+256                                     
+         LA    R3,RECNUMS          BUILD LIST OF OFFSETS                        
+*                                                                               
+         USING VRCVHDR,R2                                                       
+         L     R2,AIOAREA                                                       
+         LH    RF,VRCVNXT          RF=OFFSET TO END OF DATA IN BLOCK            
+         AH    R2,VRCV1STR         POINT TO FIRST RECORD                        
+         AHI   R2,VRCVHL1Q                                                      
+         USING DMRCVRD,R2                                                       
+RECV310  LR    R1,R2                                                            
+         S     R1,AIOAREA          CALC OFFSET                                  
+         CR    R1,RF               REACHED END OF DATA?                         
+         BNL   RECV320             YES                                          
+         STCM  R1,3,0(R3)          SAVE DISPLACEMENT TO RECORD                  
+         AHI   R3,L'RECNUMS        NEXT TABLE ENTRY                             
+         SR    R1,R1                                                            
+         ICM   R1,3,DMRCVLN        GET LENGTH                                   
+         BZ    RECV320             BLOCK CORRUPT IF THIS IS ZERO.               
+         AR    R2,R1               NEXT RECORD                                  
+         B     RECV310                                                          
+         DROP  R2                                                               
+***********************************************************************         
+* PROCESS EACH VERMONT ENTRY FOR THE FAILING TASK. TABLE 'VERMONTS'             
+* CONTAINS THE VRCVID# OF EACH VERMONT ENTRY TO BE PROCESSED.                   
+*                                                                               
+* IF THE FAILED JOB IS TO BE RECOVERED, SEARCH THE RECOVERY RECORD              
+* CHAIN ANCHORED IN EACH VERMONT AND BACK OUT ANY CHANGES FOUND.                
+*                                                                               
+* IF USS IS ACTIVE FOR THE SYSTEM, FIND THE GIN THAT APPLIED TO EACH            
+* VERMONT ENTRY FROM THE FIRST  RECORD IN THE CHAIN THAT HAS A GIN.             
+*                                                                               
+* NOTE THAT ALL VERMONT CHAINS THAT EXIST IN THE CURRENT BLOCK ARE              
+* PROCESSED BEFORE GOING ON TO THE PREVIOUS BLOCK. WHEN A CHAIN POINTS          
+* TO A PREVIOUS BLOCK, WE GO ONTO THE NEXT CHAIN IN THE CURRENT BLOCK.          
+*                                                                               
+* ALSO NOTE THAT IF A CHAIN CROSSES MULTIPLE BLOCKS, IT WILL HAVE A             
+* VERMONT ENTRY IN THE SAME POSITION IN EACH BLOCK AND ALSO IN EACH             
+* INTERVENING BLOCK. EACH VERMONT ENTRY WILL CONTAIN THE ADDRESS OF THE         
+* LATEST RECORD IN THE CHAIN IN THAT BLOCK OR, IF NOT IN THAT BLOCK, IN         
+* A PRIOR BLOCK. THIS ALLOWS US TO PROCESS ALL ACTIVE CHAINS IN THE             
+* CURRENT BLOCK TOGETHER AND THEN CONTINUE THEM IN EACH PRIOR BLOCK.            
+***********************************************************************         
+RECV320  L     R3,AIOAREA          FIND 1ST ACTIVE ENTRY                        
+         USING VRCVHDR,R3                                                       
+         LA    R3,VRCVNTRY                                                      
+         LA    R0,VRCVMAXQ         MAX ENTRIES                                  
+*                                                                               
+         USING VRCVNTRY,R3                                                      
+RECV330  OC    VRCVNTRY,VRCVNTRY   IGNORE ZERO ENTRIES                          
+         BZ    RECV350                                                          
+*                                                                               
+         LA    R1,VERMONTS         SCAN VERMONTS FOR A MATCH                    
+RECV332  OC    0(L'VERMONTS,R1),0(R1) END OF LIST?                              
+         BZ    RECV350             YES, NEXT VERMONT                            
+         CLC   0(L'VERMONTS,R1),VRCVID#  MATCH ON SIN?                          
+         BE    RECV334             YES, THIS IS (ONE OF) OURS                   
+         AHI   R1,L'VERMONTS                                                    
+         B     RECV332             NEXT SIN ENTRY                               
+*                                                                               
+RECV334  TM    JOBFLG,DSJOBRCV     RECOVERING TRANSACTIONS?                     
+         BNZ   RECV336             YES, GO DO IT                                
+         CLI   SEUSS,YES           USS ACTIVE?                                  
+         BNE   RECV342             NO, JUST NEED TO CLEAR VERMONT               
+RECV336  STC   R0,VMINDEX          SAVE CURRENT INDEX                           
+         ST    R3,VMENTRY          SAVE CURRENT ENTRY                           
+         B     RECV400             GO PROCESS RECORDS FROM CHAIN END            
+*                                  ALWAYS RETURN TO RECV340                     
+RECV340  LLC   R0,VMINDEX          RELOAD CURRENT VERMONT INDEX                 
+         L     R3,VMENTRY          RELOAD CURRENT VERMONT ENTRY ADDR            
+*                                                                               
+RECV342  CLI   DFLAG,YES           ARE WE STILL ON ACTIVE BLOCK                 
+         BNE   RECV344                                                          
+         XC    VRCVNTRY,VRCVNTRY   YES, CLEAR VERMONT HEADER                    
+         CLI   VERMONT,VMONTXTN                                                 
+         BNE   RECV344                                                          
+         XC    VRCXNTRY,VRCXNTRY                                                
+*                                                                               
+RECV344  TM    JOBFLG,DSJOBRCV     ARE WE RECOVERING?                           
+         BNZ   RECV350             YES, CONTINUE TO NEXT VERMONT                
+         CLI   SEUSS,YES           IS USS ACTIVE?                               
+         BNE   RECV350             NO, CONTINUE TO NEXT VERMONT                 
+         CLC   VMGINS,VMCOUNT      DO WE NOW HAVE ALL OUR GINS?                 
+         BNE   RECV350             NO, CONTINUE TO NEXT VERMONT                 
+         XC    PREVDA,PREVDA       EXIT AFTER COMPLETING THIS BLOCK             
+         B     RECV360             ALL VERMONTS MUST HAVE BEEN CLEARED          
+*                                                                               
+RECV350  AH    R3,VMNTRYLN         NEXT VERMONT ENTRY                           
+         BCT   R0,RECV330                                                       
+         DROP  R3                                                               
+         EJECT                                                                  
+***********************************************************************         
+* ALL VERMONTS IN THE CURRENT BLOCK HAVE BEEN PROCESSED.                        
+* IF THIS IS STILL THE ACTIVE BLOCK, COPY IT BACK TO THE DATASPACE              
+* OR SHARED MEMORY THEN WRITE IT BACK TO DISK.                                  
+* IF THIS IS NOT THE ACTIVE BLOCK, ONLY WRITE IT BACK TO DISK IF WE ARE         
+* RECOVERING OTHERWISE IT WON'T HAVE CHANGED.                                   
+* IF THERE ARE STILL RECORDS TO PROCESS IN EARLIER BLOCKS, PREVDA WILL          
+* CONTAIN THE ADDRESS OF THE HIGHEST BLOCK TO PROCESS. IF IT'S ZERO,            
+* EXIT THE RECVR ROUTINE.                                                       
+***********************************************************************         
+RECV360  CLI   DFLAG,YES           ALWAYS COPY ACTIVE BUFFER BACK TO            
+         BE    RECV362              DSPACE OR SHARED MEM AND WRITE BACK         
+         TM    JOBFLG,DSJOBRCV     IF RECOVERING TRANSACTIONS, WRITE            
+         BNZ   RECV380              BACK ALL OTHER BUFFERS                      
+         B     RECV390             OTHERWISE BUFFER IS UNCHANGED                
+*                                                                               
+RECV362  CLI   SHRMEM,YES          TEST BUFFER IN SHARED MEMORY                 
+         BE    RECV364                                                          
+         SAC   512                 POINT TO DSPACE BUFFER                       
+         LAM   AR2,AR2,DMALET                                                   
+RECV364  SAM31                                                                  
+         L     R2,@RECBUF                                                       
+         USING VRCVHDR,R2                                                       
+         L     RE,AIOAREA          COPY RECORD TO DSPACE                        
+         LH    RF,VRCVNXT          IN THIS CASE LENGTH OF BLOCK                 
+         LR    R3,RF                                                            
+         MVCL  R2,RE                                                            
+         SAC   0                   TURN OFF ACCESS MODE                         
+         SAM24                                                                  
+         DROP  R2                                                               
+*                                                                               
+RECV380  L     RE,@RCVDTF          SET BLOCK SIZE                               
+         ST    RE,Q4                                                            
+         ICM   R0,3,DBLKSZ-DTFPHD(RE)                                           
+         ST    R0,Q3                                                            
+         LA    R2,DMCB                                                          
+         L     RE,AIOAREA          WRITE BUFFER TO DISK                         
+         ST    RE,Q2                                                            
+         MVC   RECDA,0(RE)                                                      
+         MVI   RECDA+3,0                                                        
+         L     RF,@RCVDTF                                                       
+         USING DTFPHD,RF                                                        
+         TM    DTFTYPE,DTFTBIGF    20 BIT RCVR                                  
+         JZ    RECV382                                                          
+         DROP  RF                                                               
+*                                                                               
+         MVC   RECDA+3(1),RECDA+2  TTTTTBRR -> TTTTT00B                         
+         NI    RECDA+2,X'F0'                                                    
+         NI    RECDA+3,X'0F'                                                    
+*                                                                               
+RECV382  GOTO1 ADMOD000,Q1,A(DMODWRI),,,,RECDA                                  
+         OC    Q3(2),Q3                                                         
+         JZ    RECV390             SKIP IF BUFFER WRITE OK                      
+*                                                                               
+         MVC   OPLINE,SPACES                                                    
+         MVC   OPLINE+2(20),=C'RCVR WRITE ERR - EOF'                            
+         MVC   OPLINE(2),=Y(20)                                                 
+         TM    Q3+1,X'04'          TEST EOF                                     
+         BNZ   RECV384             YES, MESSAGE COMPLETE                        
+         MVC   OPLINE+17(3),=C'DA:'                                             
+         GOTO1 =V(HEXOUT),PARMS,RECDA,OPLINE+20,4,0                             
+         MVC   OPLINE+29(3),=C'P3:'                                             
+         GOTO1 =V(HEXOUT),PARMS,Q3,OPLINE+32,2,0                                
+         MVC   OPLINE(2),=Y(36)                                                 
+RECV384  WTO   TEXT=OPLINE                                                      
+         CLI   DFLAG,YES           IS THIS THE ACTIVE BUFFER                    
+         JNE   *+2                 NO - WRITE MUST NOT FAIL                     
+         CLI   ERRORFLG,YES        YES - ALLOW ONE ERROR (PROBABLY EOF)         
+         MVI   ERRORFLG,YES        BUT NO LOOPS                                 
+         JE    *+2                 HAD TWO ERRORS - DIE                         
+         WTO   'RECOVERY CONTINUING'                                            
+*                                                                               
+RECV390  OC    PREVDA,PREVDA       ANY PREVIOUS RECORD TO DO                    
+         BZ    RECVEXIT            NO, ALL DONE                                 
+         TM    JOBFLG,DSJOBRCV     YES, RECOVERING TRANSACTIONS?                
+         BNZ   RECV250             YES, CONTINUE                                
+         CLI   SEUSS,YES           NO, USS ACTIVE?                              
+         BE    RECV250             YES, STILL NEED TO FIND GIN                  
+*                                                                               
+RECVEXIT BAS   RE,INFO2                                                         
+*                                                                               
+         XC    DMCB,DMCB           UNLOCK DSPACE RESOURCE                       
+         OI    DMCB,X'10'                                                       
+         MVC   DMCB+3(1),SENUM                                                  
+         GOTO1 VLOCKSPC,DMCB              UNLOCK RESEORCE                       
+         B     EXIT                                                             
+         EJECT                                                                  
+***********************************************************************         
+* IF THE NEXT (PREVIOUS) RECOVERY RECORD IN THE CHAIN IS IN THIS BLOCK,         
+* GO AND PROCESS IT, OTHERWISE GO ON TO THE NEXT VERMONT ENTRY IN THIS          
+* BLOCK. THIS CHAIN WILL BE CONTINUED LATER - WE NEED TO PROCESS ALL            
+* THE CHAINS WITH RECORDS IN THIS BLOCK FIRST.                                  
+***********************************************************************         
+         USING VRCVNTRY,R3                                                      
+RECV400  DS    0H                                                               
+         L     R1,AIOAREA                                                       
+         CLC   VRCVLINK(3),0(R1)   IS RECORD IN BLOCK                           
+         BE    RECV500             YES, GO PROCESS IT                           
+*                                                                               
+         CLC   VRCVLINK(3),PREVDA  SAVE THE HIGHEST PREVIOUS DA                 
+         BL    *+10                                                             
+         MVC   PREVDA(3),VRCVLINK  THIS IS HIGHER SO SAVE IT                    
+*                                                                               
+         B     RECV340             DO NEXT VERMONT IN THIS BLOCK                
+******************************************************************              
+* PROCESS A SINGLE RECOVERY RECORD.                                             
+* WE ARE RECOVERING IT, EXTRACTING A GIN FROM IT OR BOTH.                       
+* IF WE ARE ONLY LOOKING FOR A GIN, WE CAN END PROCESSING OF THIS               
+* CHAIN AS SOON AS WE HAVE ONE, BUT NOTE THAT WE WILL CONTINUE THE              
+* CHAIN LATER IF IT CHAINS INTO AN EARLIER BLOCK.                               
+******************************************************************              
+RECV500  SR    R4,R4               INDEX INTO RECNUMS TO FIND RECORD            
+         IC    R4,VRCVLINK+3       RR                                           
+         BCTR  R4,0                                                             
+         SLL   R4,1                                                             
+         LA    R4,RECNUMS(R4)      R4 INDEX                                     
+         LH    R1,0(R4)                                                         
+*                                                                               
+         L     R6,AIOAREA          POINT R6 TO RECORD                           
+         AR    R6,R1                                                            
+         USING DMRCVRD,R6                                                       
+         SR    R1,R1                                                            
+         ICM   R1,3,DMRCVLN        GET RECLEN IN R1                             
+         ST    R1,P3                                                            
+         LA    R6,DMRCVHDR                                                      
+         USING RCVRREC,R6                                                       
+*                                                                               
+         CLI   RTASKID,X'FF'        IS IT A HEADER/DELETED                      
+         JNE   RECV505                                                          
+         CLC   RCVHTYP,=C'**SJOB**' IS THIS AN **SJOB** HEADER                  
+         JNE   RECV505                                                          
+         CHI   R1,RCVHDSNL+6        DOES IT CONTAIN A DSN                       
+         JNE   RECV505                                                          
+         GOTO1 MVSRCVR              RECOVER FROM MVS FILE                       
+         JNE   RECV505                                                          
+         MVC   RCVHTYP,=C'XXSJOBXX' BACKED OUT **SJOB** HEADER                  
+*                                                                               
+RECV505  CLI   RTASKID,X'FF'       IGNORE JOB HEADERS/TRAILERS                  
+         BE    RECV540                                                          
+*                                                                               
+RECV510  CLI   SEUSS,YES           IF USS ACTIVE, WE NEED TO FIND GIN           
+         BNE   RECV530             OTHERWISE, WE MUST BE RECOVERING             
+*                                                                               
+         LLC   R1,VMINDEX          RELOAD CURRENT VERMONT INDEX                 
+         BCTR  R1,0                                                             
+         SLL   R1,3                                                             
+         LA    R1,GINS(R1)         POINT TO GIN SLOT FOR THIS VERMONT           
+         OC    0(8,R1),0(R1)       HAVE WE ALREADY FOUND A GIN FOR IT           
+         BNZ   RECV512             YES, SKIP                                    
+*                                                                               
+         TM    RTIME,RTIMEEXT      HEADER EXTENSION?                            
+         BZ    RECV514             NO, SO NO GIN IN THIS RECORD                 
+         L     RF,P3               GET RECORD LENGTH                            
+         AR    RF,R6               ADD A(RCVRREC), 6 BYTES PAST START           
+         AHI   RF,-(DMRCVLNQ+1)    BACK UP TO LAST BYTE                         
+         CLI   0(RF),RXLENQ        CHECK LONG ENOUGH FOR GIN                    
+         BL    RECV514             SHOULDN'T NEED THIS CHECK                    
+         XR    R1,R1                                                            
+         IC    R1,0(,RF)           LAST BYTE IS EXTENSION LENGTH                
+         BCTR  R1,0                                                             
+         SR    RF,R1               RF POINTS TO EXTENSION                       
+         USING RECVEXT,RF                                                       
+         TM    RGESTAT,RGESUSSS    WAS IT SENT TO USS                           
+         BZ    RECV514             NO, SO IGNORE IT                             
+         LLC   R1,VMINDEX          RELOAD CURRENT VERMONT INDEX                 
+         BCTR  R1,0                                                             
+         SLL   R1,3                                                             
+         LA    R1,GINS(R1)         POINT TO GIN SLOT FOR THIS VERMONT           
+         MVC   0(8,R1),RGIN        SAVE OUR GIN FROM THIS RECORD                
+         LLC   R1,VMGINS                                                        
+         LA    R1,1(,R1)           COUNT VERMONTS WITH A GIN FOUND              
+         STC   R1,VMGINS                                                        
+         DROP  RF                                                               
+RECV512  TM    JOBFLG,DSJOBRCV     ARE WE RECOVERING AS WELL?                   
+         BNZ   RECV530             YES, GO DO IT                                
+         B     RECV340 (NOT 540!)  NO, EXIT, WE HAVE THIS VERMONT'S GIN         
+*                                                                               
+RECV514  TM    JOBFLG,DSJOBRCV     ARE WE RECOVERING?                           
+         BZ    RECV540             NO, CONTINUE LOOKING FOR GIN(S)              
+*                                                                               
+RECV530  GOTO1 PROCESS             GO RECOVER RECORD                            
+*                                                                               
+         MVI   RTASKID,X'FF'       LOGICALLY DELETE RECOVERED RECORD            
+         LH    R1,RCVCRCV                                                       
+         LA    R1,1(R1)            BUMP RECOVERED COUNT                         
+         STH   R1,RCVCRCV                                                       
+*                                                                               
+         LTR   RF,RF               TEST ERROR RETURN                            
+         BZ    RECV540                                                          
+         LH    R1,RCVCERR                                                       
+         LA    R1,1(R1)            BUMP ERROR COUNT                             
+         STH   R1,RCVCERR                                                       
+*                                                                               
+RECV540  SHI   R6,DMRCVLNQ         LINK BACK TO PREVIOUS                        
+         USING DMRCVRD,R6                                                       
+         OC    DMRCVLNK,DMRCVLNK   TEST END OF CHAIN                            
+         BZ    RECV340             YES, NEXT VERMONT IN THIS BLOCK              
+         MVC   VRCVLINK,DMRCVLNK   SET PREVIOUS IN THIS CHAIN                   
+         B     RECV400             SEE IF IT'S IN THIS BLOCK                    
+                                                                                
+         DROP  R3,R6               VRCVNTRY, DMRCVRD                            
+                                                                                
+***********************************************************************         
+* PROCESS RECOVERY FILE RECORD                                        *         
+* R6=A(RECORD) AND P3 CONTAINS LENGTH                                 *         
+***********************************************************************         
+PROCESS  NTR1                                                                   
+         USING RCVRREC,R6                                                       
+*                                                                               
+RCDSPACE MVC   TRECTY,RRECTY       DON'T CHANGE IN RECORD                       
+         NI    TRECTY,X'7F'        TURN OFF 'POINTER' BIT                       
+         CLI   TRECTY,CHANGE                                                    
+         BE    RCDELETE            DELETE CHANGES FROM RECOVERY FILE            
+*                                                                               
+         USING SYSFLSTD,R7                                                      
+         L     R7,@SYSFLES         SEARCH FOR FILE IN SYSFLES LIST              
+         XR    R8,R8                                                            
+         IC    R8,SYSF#FLS+1       # OF FILES                                   
+         LA    R7,SYSFLIST                                                      
+RC12A    CLC   RFILTY,SYSFILE#     MATCH FILE NUMBER                            
+         BE    RC12B                                                            
+         LA    R7,SYSFLNQ(,R7)                                                  
+         BCT   R8,RC12A                                                         
+         B     RCDELETE            ERASE INVALID RCVR REC                       
+*                                                                               
+RC12B    L     RE,SYSFADTF-1       GET DTF ADDRESS                              
+         ST    RE,P4                                                            
+         L     RF,ADMOD000         SET V(DMCNTL)                                
+         LA    R1,P1               SET A(PARAMS)                                
+         TM    SYSFIND1,SFISF      TEST FILE TYPE                               
+         BO    RC16                IS FILE                                      
+         B     RC14                DA FILE                                      
+         DROP  R7                                                               
+         EJECT                                                                  
+***********************************************************************         
+* DIRECT ACCESS FILE                                                  *         
+***********************************************************************         
+RC14     LA    RE,RVCHR            READ DA FILE RECORD INTO INPUT AREA          
+         ST    RE,P5                                                            
+         MVC   P1,=A(DMODREAD)                                                  
+         LA    RE,INPUT                                                         
+         ST    RE,P2                                                            
+         BASR  RE,RF                                                            
+         CLI   DM3,0                                                            
+         BE    RC14A                                                            
+         TM    DM3,X'90'                                                        
+         BZ    RCERR3              DISK READ ERROR DA FILE                      
+         CLI   TRECTY,ADD                                                       
+         BNE   RCERR3                                                           
+         BE    RCDELETE            EOF AND NOTFOUND OK FOR ADD                  
+*                                                                               
+RC14A    CLI   TRECTY,COPY         OVERWRITE WITH RECOVERY COPY RECORD          
+         BNE   RC14B                                                            
+         MVC   P1,=A(DMODWRI)                                                   
+         LA    RE,RECORD                                                        
+         ST    RE,P2                                                            
+         BASR  RE,RF                                                            
+         B     RCDELETE                                                         
+*                                                                               
+RC14B    CLI   TRECTY,ADD          LOGICALLY DELETE DA FILE ADDED REC           
+         BNE   RC14C                                                            
+         BAS   R9,LDELETE                                                       
+         MVC   P1,=A(DMODWRI)                                                   
+         BASR  RE,RF                                                            
+         B     RCDELETE                                                         
+*                                                                               
+RC14C    B     RCDELETE            ERASE INVALID RCVR REC                       
+         EJECT                                                                  
+***********************************************************************         
+* INDEX SEQUENTIAL FILE                                               *         
+***********************************************************************         
+RC16     MVC   P1,=A(DMODRKEY)     READ IS FILE RECORD INTO INPUT AREA          
+         LA    RE,INPUT                                                         
+         ST    RE,P2                                                            
+         LA    RE,RECORD           KEY IS IN RECOVERY RECORD                    
+         ST    RE,P5                                                            
+         ST    RE,DM3                                                           
+         BASR  RE,RF                                                            
+         CLI   DM3,0                                                            
+         BNE   RCERR3              DISK READ ERROR IS FILE                      
+*                                                                               
+         L     RE,P4                                                            
+         LH    RE,46(RE)           GET KEYLEN-1                                 
+*                                                                               
+         EX    RE,*+8                                                           
+         B     *+10                                                             
+         CLC   INPUT(0),RECORD     COMPARE KEYS                                 
+         BE    RC16A                                                            
+*                                                                               
+         STM   RE,R1,SAVEEF01      IF KEY NEQ SHOW WHAT KEYS FOUND              
+         LA    R0,1(RE)                                                         
+         ST    R0,PARMS+8          P3 FOR HEXOUT LENGTH                         
+         MVC   OPLINE,SPACES                                                    
+         MVC   OPLINE+2(8),=C'INPUT   '                                         
+         MVC   OPLINE(2),=H'70'                                                 
+         GOTO1 =V(HEXOUT),PARMS,INPUT,OPLINE+10,,0                              
+         WTO   TEXT=OPLINE,MCSFLAG=HRDCPY                                       
+*                                                                               
+         MVC   OPLINE,SPACES                                                    
+         MVC   OPLINE+2(8),=C'RECORD  '                                         
+         MVC   OPLINE(2),=H'70'                                                 
+         GOTO1 =V(HEXOUT),PARMS,RECORD,OPLINE+10                                
+         WTO   TEXT=OPLINE,MCSFLAG=HRDCPY                                       
+         LM    RE,R1,SAVEEF01                                                   
+*                                                                               
+         CLI   TRECTY,ADD                                                       
+         BNE   RCERR3                                                           
+         WTO   'DELETED ADD',MCSFLAG=HRDCPY                                     
+         BE    RCDELETE            NOTFOUND OK FOR ADD                          
+*                                                                               
+RC16A    CLI   TRECTY,COPY         OVERWRITE WITH RECOVERY COPY RECORD          
+         BNE   RC16B                                                            
+         MVC   P1,=A(DMODWKEY)                                                  
+         LA    RE,RECORD                                                        
+         ST    RE,P2                                                            
+         BASR  RE,RF                                                            
+         B     RCDELETE                                                         
+*                                                                               
+RC16B    CLI   TRECTY,ADD          ERASE IS FILE ADDED RECORD                   
+         BNE   RC16C                                                            
+         MVC   P1,=A(DMODEKEY)                                                  
+         BASR  RE,RF                                                            
+         B     RCDELETE                                                         
+*                                                                               
+RC16C    B     RCDELETE            ERASE INVALID RCVR REC                       
+                                                                                
+***********************************************************************         
+* SEARCH FILE TABLE TO FIND LOGICAL DELETE FIELD AND SET TO FF'S      *         
+***********************************************************************         
+LDELETE  L     R3,ADMGRFLS         POINT TO DMGRFLES TABLE                      
+         LH    R4,0(R3)                                                         
+         L     R5,2(R3)                                                         
+         LA    R3,6(R3)                                                         
+*                                                                               
+LDEL2    CLI   0(R3),0             SEARCH FILE TABLE FOR FILE                   
+         BE    *+14                                                             
+         CLC   RFILTY,8(R3)                                                     
+         BE    LDEL4                                                            
+         BXLE  R3,R4,LDEL2                                                      
+         B     LDEL6                                                            
+*                                                                               
+LDEL4    SR    R5,R5                                                            
+         IC    R5,9(R3)            R5=L'LOGICAL DELETE FIELD                    
+         LTR   R5,R5                                                            
+         BZ    LDEL6                                                            
+         BCTR  R5,0                                                             
+         SR    R4,R4                                                            
+         IC    R4,10(R3)                                                        
+         LA    R4,INPUT(R4)        R4=A(LOGICAL DELETE FIELD)                   
+         EX    R5,*+8                                                           
+         B     LDELX                                                            
+         MVC   0(0,R4),=8X'FF'     SET FIELD TO ALL FF'S                        
+*                                                                               
+LDEL6    B     RCDELETE            ERASE INVALID RCVR REC                       
+*                                                                               
+LDELX    BR    R9                                                               
+                                                                                
+***********************************************************************         
+* EXIT ROUTINE WITH RETURN CODE IN RF                                 *         
+***********************************************************************         
+RCDELETE SR    RF,RF               DELETE THIS RECOVERY RECORD                  
+         B     RCXX                                                             
+                                                                                
+RCERR3   LA    RF,12               ERROR 3 - DISK READ ERROR                    
+         B     RCXX                                                             
+                                                                                
+RCXX     XIT1  REGS=(RF)                                                        
+                                                                                
+***********************************************************************         
+* EQUATES                                                                       
+***********************************************************************         
+ADD      EQU   X'03'                                                            
+CHANGE   EQU   X'02'                                                            
+COPY     EQU   X'01'                                                            
+*                                                                               
+SYSFLES  DC    C'SYSFLES'                                                       
+                                                                                
+         EJECT                                                                  
+***********************************************************************         
+* PROCESS MVS RECOVERY FILE                                           *         
+* R6=A(SJOB HEADER) P3 CONTAINS LENGTH                                *         
+***********************************************************************         
+MVSRCVR  NTR1                                                                   
+         MVC   TXTDSN,RCVHDSN      SET DSN IN DYNALLOC BLOCK                    
+*                                                                               
+         LA    R1,ARBLKCTA                                                      
+         DYNALLOC                  CALL DYNALLOC TO GET SEQ FILE                
+         LTR   RF,RF                                                            
+         JZ    MVSRCVR0                                                         
+*                                                                               
+         MVC   MSGDSN,TXTDSN                                                    
+         GOTO1 =V(HEXOUT),DUB,RBLKERR,ALLOCERR+28,2                             
+         GOTO1 =V(DDWTO),DUB,ALLOCERR                                           
+         MVC   TXTDSN,SPACES       CLEAN UP FIELDS AND CONTINUE                 
+         J     MVSRCVX                                                          
+*                                                                               
+MVSRCVR0 OPEN  (MVSFILE,INPUT)     OPEN SEQ FILE FOR INPUT                      
+         GOTO1 VSORTER,DMCB,SRTCARD,RECCARD                                     
+*                                                                               
+         XR    R7,R7                                                            
+MVSRCV1  GET   MVSFILE             READ FILE INTO SORTER                        
+         LR    R6,R1                                                            
+         ST    R7,RSIN-RECVHDR+4(R6)                                            
+         LA    R7,1(R7)            REPLACE SIN WITH SEQ NUMBER                  
+         GOTO1 VSORTER,DMCB,PUT,(R6)                                            
+         J     MVSRCV1                                                          
+*                                                                               
+ENDOFMVS CLOSE MVSFILE             CLOSE FILE WHEN DONE                         
+         MVC   TXTDSN,SPACES                                                    
+*                                                                               
+MVSRCV2  GOTO1 VSORTER,DMCB,GET    GET BACK FROM SORT                           
+         ICM   R6,15,4(R1)                                                      
+         JZ    MVSRCVY                                                          
+*                                                                               
+         XR    R0,R0                                                            
+         ICM   R0,3,0(R6)          GET LEN IN R0                                
+         AHI   R0,2                ADD 2 TO MATCH RCVR FILE                     
+         ST    R0,P3               SAVE IN P3                                   
+         LA    R6,4(R6)            R6=RECORD                                    
+         GOTO1 PROCESS                                                          
+*                                                                               
+*NOP     MVI   RTASKID,X'FF'       LOGICALLY DELETE RECOVERED RECORD            
+         LH    R1,RCVCRCV                                                       
+         LA    R1,1(R1)            BUMP RECOVERED COUNT                         
+         STH   R1,RCVCRCV                                                       
+*                                                                               
+         LTR   RF,RF               TEST ERROR RETURN                            
+         JZ    MVSRCV2                                                          
+         LH    R1,RCVCERR                                                       
+         LA    R1,1(R1)            BUMP ERROR COUNT                             
+         STH   R1,RCVCERR                                                       
+         J     MVSRCV2             NEXT                                         
+*                                                                               
+MVSRCVX  LTR   RB,RB                                                            
+         J     MVSRCVXT                                                         
+MVSRCVY  CR    RB,RB                                                            
+MVSRCVXT XIT1                                                                   
+*                                                                               
+***********************************************************************         
+* ALLOCATE MVS DATASET - DYNAMIC ALLOCATION                           *         
+***********************************************************************         
+         DS    0F                                                               
+ARBLKCTA DC    X'80',AL3(RBLKCATA) R1 POINTS TO THIS BEFORE DYNALLOC            
+*                                                                               
+RBLKCATA DC    X'14010000'                                                      
+RBLKERR  DC    X'00000000'                                                      
+         DC    A(ACATALLT),X'0000000000000000'                                  
+*                                                                               
+ACATALLT DC    X'00',AL3(TXTDD)                                                 
+         DC    X'00',AL3(TXTDSNH)                                               
+         DC    X'00',AL3(TXTDISP)                                               
+         DC    X'80',AL3(TXTCLOSE) FREE=CLOSE                                   
+*                                                                               
+TXTDD    DC    AL2(DALDDNAM),X'00010008',CL8'MVSFILE ' DDNAME=........          
+TXTDSNH  DC    AL2(DALDSNAM),X'0001002C'               DSN=............         
+TXTDSN   DC    CL44' '                                 DSN=............         
+TXTDISP  DC    AL2(DALSTATS),X'0001000108'             DISP=(SHR,.....)         
+TXTCLOSE DC    AL2(DALCLOSE),X'00000000'               FREE=CLOSE               
+*                                                                               
+         DS    0D                                                               
+*                                                                               
+MVSFILE  DCB   DDNAME=MVSFILE,MACRF=(GL),DSORG=PS,                     *        
+               LRECL=8200,EODAD=ENDOFMVS                                        
+                                                                                
+SRTCARD  DC    C'SORT FIELDS=(9,4,BI,D) '                                       
+RECCARD  DC    C'RECORD TYPE=VB,LENGTH=8190 '                                   
+                                                                                
+ALLOCERR DC    C'<ERR0001D>/ALLOCATION ERROR 0000 DSN='                         
+MSGDSN   DC    CL44' '                                                          
+         DC    C'//H'                                                           
+                                                                                
+PUT      DC    CL8'PUT'                                                         
+GET      DC    CL8'GET'                                                         
+                                                                                
+         EJECT                                                                  
+*===========================================================                    
+* GET ADDRESS OF SYFLES FOR SENUM                                               
+* EXTRACT SYSTEM NAME, SET UTL+4                                                
+* SET @SYSFLES - LIST OF FILES IN DMFILESUS OR DEMFILESUK                       
+* SET @RCVDTF  - RECOVERY FILE DTF                                              
+* SET SENAM                                                                     
+* SET SE IN UTL                                                                 
+* SET SYSOVNAM                                                                  
+*===========================================================                    
+                                                                                
+GETSYSFL NTR1                                                                   
+         XC    @RECBUF,@RECBUF     CLEAR SAVED BUFFER ADDRESS                   
+         XC    @RCVDTF,@RCVDTF                                                  
+         XC    SEFILN,SEFILN                                                    
+         MVI   SHRMEM,NO                                                        
+         MVI   GLOBAL,NO                                                        
+*                                                                               
+         L     R4,=V(SELIST)       MUST HAVE SELIST                             
+         LH    R0,0(R4)            SET BXLE                                     
+         L     R1,2(R4)                                                         
+         LA    R4,6(R4)                                                         
+*                                                                               
+         USING SELISTD,R4                                                       
+GETSYS10 CLC   SESYS,SENUM         TEST NUM                                     
+         BE    GETSYS20                                                         
+         BXLE  R4,R0,GETSYS10      NEXT                                         
+         DC    H'0'                ERROR SE SYS NOT FOUND                       
+*                                                                               
+GETSYS20 MVC   SENAM,SENAME        SAVE NAME                                    
+*                                                                               
+         L     R1,AUTL                                                          
+         MVC   4(1,R1),SENUM       SET UTL                                      
+*                                                                               
+         LA    R1,SYSLST                                                        
+         LH    RE,0(R1)                                                         
+         L     RF,2(R1)                                                         
+         LA    R1,6(R1)                                                         
+         USING SYSLSTD,R1                                                       
+         CLC   SEOVSYS,SYSLNUM     MATCH SYSTEM NUMBER                          
+         BE    *+10                                                             
+         BXLE  R1,RE,*-10                                                       
+         DC    H'0'                                                             
+         MVC   SYSOVNAM,SYSLNAME                                                
+         DROP  R1,R4                                                            
+*                                                                               
+         L     R1,@SYSFLES                                                      
+         USING SYSFLSTD,R1                                                      
+         CLC   SENUM,SYSFSYS#      CONFIRM FILE LIST                            
+         JNE   *+2                                                              
+*                                                                               
+         LA    R4,SEFILN           FILE LIST                                    
+         USING SYSFLSTD,R1                                                      
+         ICM   R0,3,SYSF#FLS       NUMBER OF FILES                              
+         LA    R1,SYSFLIST         POINT TO LIST OF FILE ENTRIES                
+GETSYS30 TM    SYSFIND1,SFNOP      TEST IF FILE IS NO-OPED                      
+         BO    GETSYS40            NEXT FILE IN LIST                            
+                                                                                
+         TM    SYSFIND2,SFUSSMQ    USS QUEUE?                                   
+         BZ    *+8                 NO                                           
+         MVI   SEUSS,YES           YES                                          
+         XR    RF,RF                                                            
+         ICM   RF,7,SYSFADTF       A(DTF)                                       
+         TM    SYSFIND1,SFRCV      RECOVERY FILE                                
+         BZ    GETSYS32                                                         
+         ST    RF,@RCVDTF          SAVE RECOVERY DTF                            
+         USING DTFPHD,RF                                                        
+         MVC   RCVFIL+1(7),DTFDD   SAVE FILE LIST FOR RECOVERY ONLY             
+*                                                                               
+         TM    DTFFLAG,DTFGLOB     RECOVERY FILE MARKED AS GLOBAL?              
+         BZ    *+8                                                              
+         MVI   GLOBAL,YES                                                       
+*                                                                               
+         MVI   VERMONT,VMONTREG    REGULAR OLD VERMONT                          
+         MVC   VMNTRYLN,=AL2(VRCVLNQ)                                           
+         TM    DIND,DINDVRX                                                     
+         BZ    GETSYS32                                                         
+         MVI   VERMONT,VMONTXTN    EXTENDED NEW VERMONT                         
+         MVC   VMNTRYLN,=AL2(VRCXLNQ)                                           
+*                                                                               
+GETSYS32 TM    DTFFLAG,DTFGLOB     MUST BE GLOBAL FOR NOW. AH3?                 
+         BZ    GETSYS40            NEXT FILE IN LIST                            
+         MVI   0(R4),C'U'          UPDATE MODE                                  
+         MVC   1(7,R4),DTFDD       MOVE IN DD NAME                              
+         AHI   R4,8                NEXT FILE IN LIST                            
+*                                                                               
+GETSYS40 LA    R1,SYSFLNQ(,R1)     NEXT FILE IN LIST                            
+         BCT   R0,GETSYS30                                                      
+         MVI   0(R4),C'X'          EOL                                          
+                                                                                
+********************************************************************            
+* SEE IF RECOVERY USES SHARED MEMEORY, IF SO SET IT UP                          
+********************************************************************            
+         L     RF,@RCVDTF          RECOVERY DTF                                 
+         TM    DTFFLAG,DTFSHMEM    TEST SHRMEM RCVBUFF                          
+         JZ    EXIT                                                             
+         MVI   SHRMEM,YES                                                       
+         XR    R0,R0               SET OVERRIDE KEY                             
+         ICM   R0,1,SENUM                                                       
+         GOTO1 =V(DMSHMUSS),DMCB,#ATTACH,#RCVB,0,(R0)                           
+         SAM31                                                                  
+         L     R2,DM3              GET TABLE ADDRESS                            
+         ST    R2,@RECBUF          AND SAVE                                     
+         L     R1,APARMS                                                        
+         ST    R2,4(R1)            RETURN SHRMEM BUFF ADDR IN P2                
+*                                                                               
+         J     EXIT                                                             
+         DROP  R1,RF                                                            
+                                                                                
+*************************************************************                   
+*        UNLOCK ALL LOCKTAB ENTRIES HELD                    *                   
+*************************************************************                   
+UNLOCK   NTR1                                                                   
+*                                                                               
+UNLK010  XC    LOCKCNT,LOCKCNT     CLEAR COUNTER                                
+         SAC   0                                                                
+*                                                                               
+UNLK020  XC    DMCB,DMCB           DSPACE RESOURCE NUMBER                       
+         MVC   DMCB+3(1),SENUM                                                  
+         GOTO1 VLOCKSPC,DMCB                                                    
+*                                                                               
+         L     R2,4(R1)                                                         
+         USING DMSPACED,R2                                                      
+         MVC   ALOCKTAB,DSPECB     SAVE RESOURCE ADDRESS                        
+*                                                                               
+         SAC   512                                                              
+         LAM   AR2,AR2,DMALET                                                   
+         L     R2,ALOCKTAB         R2=A(RESOURCE)                               
+         L     R2,DSYALOCK-DMSYSHDR(,R2)                                        
+         ST    R2,ALOCKTAB         R2=A(LOCKTAB)                                
+         USING LKTABD,R2                                                        
+*                                                                               
+         LH    R7,2(,R2)           R7=NUM OF ACTIVE ENTRIES                     
+         LA    R2,16(,R2)          POINT TO FIRST ACTIVE ENTRY                  
+         LTR   R0,R7               R0=NUM OF ENTRIES AFTER UNLOCK               
+         BZ    UNLK090             EXIT IF NO ENTRIES AT ALL                    
+*                                                                               
+UNLK030  CLI   LKFILE,0            IGNORE BLANKS                                
+         BNE   *+12                                                             
+         LA    R2,L'LKDATA(,R2)                                                 
+         B     UNLK030                                                          
+*                                                                               
+         CLI   ADVNUM,0                                                         
+         BNE   UNLK040                                                          
+         MVC   HALF,LKJOB                                                       
+         CLC   HALF,JNUM           TEST SAME JOB ID                             
+         BNE   UNLK050                                                          
+         B     UNLK045                                                          
+*                                                                               
+UNLK040  CLC   LKJOB(1),ADVNUM     TEST SAME ADV SYSTEM                         
+         BNE   UNLK050                                                          
+*                                                                               
+UNLK045  LH    R1,LOCKCNT          BUMP COUNT OF UNLOCKED RECORDS               
+         LA    R1,1(R1)                                                         
+         STH   R1,LOCKCNT                                                       
+         XC    LKDATA,LKDATA       CLEAR ENTRY FOR THIS RECORD                  
+         BCTR  R0,0                AND UPDATE REMAINING COUNT                   
+*                                                                               
+UNLK050  LA    R2,L'LKDATA(,R2)                                                 
+         BCT   R7,UNLK030          NEXT ENTRY                                   
+*                                                                               
+UNLK060  L     R2,ALOCKTAB                                                      
+         STH   R0,2(,R2)           SET NEW COUNT IN LOCK TABLE                  
+*                                                                               
+UNLK090  BAS   RE,FREESYS          FREE UP SYSTEM                               
+*                                                                               
+         BAS   RE,INFO3            REPORT ON UNLOCKED                           
+*                                                                               
+         SAC   0                                                                
+         CLI   SEFILN,0            SEE IF SET                                   
+         BE    UNLKFREE                                                         
+         GOTO1 =V(DATAMGR),DMCB,CLOSE,SENAM,SEFILN,AIOAREA,0                    
+         B     UNLKFREE                                                         
+*                                                                               
+FREESYS  SAC   0                                                                
+         ST    RE,SAVERE           FREE RESOURCE                                
+         XC    DMCB,DMCB           DSPACE RESOURCE NUMBER                       
+         OI    DMCB,X'11'                                                       
+         MVC   DMCB+3(1),SENUM                                                  
+         GOTO1 VLOCKSPC,DMCB                                                    
+         L     RE,SAVERE                                                        
+         BR    RE                                                               
+                                                                                
+************************************************************                    
+*        FREE ECBS WAITING ON THIS TASK                    *                    
+************************************************************                    
+UNLKFREE SAC   0                                                                
+         ENQ   (UPDMAJ,UPDMIN,E,8,SYSTEM),RET=HAVE                              
+         SAC   512                                                              
+         L     R2,DMOFFS           FREE ECBS FOR THIS LOCKID                    
+         USING DMDSHDR,R2                                                       
+         L     R2,DHAECBS          GET A(ECBS)                                  
+         DROP  R2                                                               
+*                                                                               
+         ICM   RF,15,0(R2)         RF=NUMBER OF ACTIVE ECBS                     
+         BZ    UNLKXXX                                                          
+*                                                                               
+UNLK100  LA    R2,16(,R2)          POINT TO FIRST / NEXT ENTRY                  
+         OC    0(4,R2),0(R2)                                                    
+         BZ    UNLK100             IGNORE ZERO ENTRIES                          
+         CLI   ADVNUM,0                                                         
+         BNE   UNLK110                                                          
+         MVC   HALF,0(R2)                                                       
+         CLC   HALF,JNUM           TEST SAME JOB ID                             
+         BNE   UNLK160                                                          
+         B     UNLK150                                                          
+*                                                                               
+UNLK110  CLC   0(1,R2),ADVNUM      TEST SAME ADV SYSTEM                         
+         BNE   UNLK160                                                          
+*                                                                               
+UNLK150  OI    12(R2),X'40'        POST COMPLETE                                
+*                                                                               
+UNLK160  CLI   ADVNUM,0                                                         
+         BNE   UNLK161                                                          
+         MVC   HALF,2(R2)                                                       
+         CLC   HALF,JNUM           TEST SAME JOB ID                             
+         BNE   UNLK170                                                          
+         B     UNLK162                                                          
+*                                                                               
+UNLK161  CLC   4(1,R2),ADVNUM      TEST SAME ADV SYSTEM                         
+         BNE   UNLK170                                                          
+*                                                                               
+UNLK162  XC    0(16,R2),0(R2)      CLEAR ENTRY                                  
+         ST    R2,FULL                                                          
+         L     R2,DMOFFS                                                        
+         USING DMDSHDR,R2                                                       
+         L     R2,DHAECBS          GET A(ECBS)                                  
+         DROP  R2                                                               
+*                                                                               
+UNLK163  L     R1,0(,R2)           BUMP COUNTER DOWN BY 1                       
+         LR    R0,R1                                                            
+         BCTR  R1,0                                                             
+         CS    R0,R1,0(R2)                                                      
+         BNE   UNLK163                                                          
+         L     R2,FULL                                                          
+*                                                                               
+UNLK170  BCT   RF,UNLK100          NEXT ECB                                     
+*                                                                               
+UNLKXXX  SAC   0                   SET AMODE BACK                               
+         DEQ   (UPDMAJ,UPDMIN,8,SYSTEM),RET=HAVE                                
+*NOP     CLI   ONLINE,NO           ONLINE OR OFFLINE                            
+         B     EXIT                                                             
+         EJECT                                                                  
+*************************************************************                   
+*        INFO OUT TO LOG                                    *                   
+*************************************************************                   
+INFO1    NTR1                                                                   
+         L     R2,@DSYSTEM            PRINT DISCON MESSAGE                      
+         MVC   OPLINE,SPACES                                                    
+         MVC   OPLINE+02(07),SENAM                                              
+         MVC   OPLINE+11(17),=C'DISCONNECTED FROM'                              
+         MVC   OPLINE+30(08),JNAME                                              
+         MVC   OPLINE(2),=H'38'                                                 
+         SAC   0                                                                
+         WTO   TEXT=OPLINE,MCSFLAG=HRDCPY                                       
+         SAC   512                                                              
+         B     EXIT                                                             
+*                                                                               
+INFO2    NTR1                                                                   
+         MVC   OPLINE,SPACES                                                    
+         MVC   OPLINE(2),=H'23'                                                 
+         MVC   OPLINE+02(07),SENAM                                              
+         MVC   OPLINE+11(12),=C'NO RECOVERY '                                   
+         OC    RCVCRCV,RCVCRCV                                                  
+         BZ    INFO2A                                                           
+*                                                                               
+         MVC   OPLINE(2),=H'36'                                                 
+         MVC   OPLINE+11(24),=C'       RECORDS RECOVERED'                       
+         EDIT  (B2,RCVCRCV),(6,OPLINE+10)                                       
+         OC    RCVCERR,RCVCERR                                                  
+         BZ    INFO2A                                                           
+*                                                                               
+         MVC   OPLINE(2),=H'50'                                                 
+         MVC   OPLINE+36(13),=C'...... ERRORS'                                  
+         EDIT  (B2,RCVCERR),(6,OPLINE+35)                                       
+*                                                                               
+INFO2A   WTO   TEXT=OPLINE,MCSFLAG=HRDCPY                                       
+         B     EXIT                                                             
+*                                                                               
+INFO3    NTR1                                                                   
+         MVC   OPLINE,SPACES                                                    
+         MVC   OPLINE(2),=H'25'                                                 
+         MVC   OPLINE+02(07),SENAM                                              
+         MVC   OPLINE+11(14),=C'NO LOCKS FOUND'                                 
+         OC    LOCKCNT,LOCKCNT                                                  
+         BZ    INFO3A                                                           
+*                                                                               
+         MVC   OPLINE(2),=H'36'                                                 
+         MVC   OPLINE+11(21),=C'NO     LOCKS REMOVED.'                          
+         EDIT  (B2,LOCKCNT),(6,OPLINE+11)                                       
+*                                                                               
+INFO3A   WTO   TEXT=OPLINE,MCSFLAG=HRDCPY                                       
+         B     EXIT                                                             
+         EJECT                                                                  
+       ++INCLUDE FASYSLST                                                       
+*&&DO                                                                           
+***********************************************************************         
+* R1 POINTS TO ADDRESS TO DISPLAY                                               
+* CONVERT HEX TO DISPLAYABLE CHARS WITHOUT HEXOUT                               
+***********************************************************************         
+HEXIT    NTR1                                                                   
+         LA    R4,DUB                                                           
+*                                                                               
+HEXIT2   LLC   RE,0(R1)                                                         
+         SRL   RE,4                                                             
+         LLC   RE,HEXTAB(RE)                                                    
+         STC   RE,0(R4)                                                         
+         SRL   RF,28                                                            
+         LLC   RF,HEXTAB(RF)                                                    
+         STC   RF,1(R4)                                                         
+*                                                                               
+         LA    R1,1(R1)                                                         
+         LA    R4,2(R4)                                                         
+         BCT   R0,HEXIT2                                                        
+*                                                                               
+         XIT1                                                                   
+HEXTAB   DC    C'0123456789ABCDEF'                                              
+*                                                                               
+WTO      NTR1                                                                   
+         WTO   TEXT=(R4),MCSFLAG=HRDCPY                                         
+         XIT1                                                                   
+*&&                                                                             
+*************************************************************                   
+*        CONSTANTS & LTORG                                  *                   
+*************************************************************                   
+         LTORG                                                                  
+*                                                                               
+ARZERO   DC    16F'0'                                                           
+VDDSIO   DC    V(DDSIO)                                                         
+ADATAMGR DC    V(DATAMGR)                                                       
+ADMOD000 DC    V(DMOD000)                                                       
+VLOCKUP  DC    V(LOCKUP)                                                        
+VLOCKSPC DC    V(LOCKSPC)                                                       
+VDMFATAB DC    V(DMFATABS)                                                      
+ASSB     DC    V(SSB)                                                           
+AUTL     DC    V(UTL)                                                           
+VSORTER  DC    V(SORTER)                                                        
+DSPACE   DC    C' '                                                             
+*                                                                               
+         CNOP  0,8                                                              
+MYUPDID  DS    0CL16                                                            
+UPDMAJ   DC    CL8'DMGR    '                                                    
+UPDMIN   DC    CL8'ECBTABLE'                                                    
+DMREAD   DC    CL8'DMREAD '                                                     
+OPEN     DC    CL8'DMOPEN'                                                      
+CLOSE    DC    CL8'DMCLSE'                                                      
+#ATTACH  DC    CL8'ATTACH'                                                      
+#RCVB    DC    CL8'RCVB  '                                                      
+SPACES   DC    CL80' '                                                          
+RCVFIL   DC    CL9'NRCVFILEX'                                                   
+         EJECT                                                                  
+YES      EQU   C'Y'                                                             
+NO       EQU   C'N'                                                             
+K        EQU   1024                                                             
+                                                                                
+***********************************************************************         
+*        WORKING STORAGE                                              *         
+***********************************************************************         
+WORKD    DSECT                                                                  
+SAVERD   DS    A                                                                
+MAINRD   DS    A                                                                
+SAVERE   DS    A                                                                
+ADMGRFLS DS    A                                                                
+APARMS   DS    A                                                                
+*                                                                               
+PARMS    DS    6F                                                               
+*                                                                               
+DUB      DS    D                                                                
+FULL     DS    F                                                                
+HALF     DS    H                                                                
+BYTE     DS    X                                                                
+SHRMEM   DS    C                   USES SHARE MEMORY Y/N                        
+SEUSS    DS    C                   USES USS QUEUES   Y/N                        
+GLOBAL   DS    C                   GLOBAL SYSTEM     Y/N                        
+JOBFLG   DS    C                   SAVED DSJOBFLG                               
+VMINDEX  DS    X                   SAVED VERMONT INDEX                          
+VMENTRY  DS    A                   A(VERMONT ENTRY)                             
+VMCOUNT  DS    X                   COUNT OF VERMONT NTRIES FOR TASK             
+VMGINS DS      X                   COUNT OF GINS FOUND SO FAR                   
+         DS    0D                                                               
+WORK     DS    XL64                                                             
+*                                                                               
+SAVEEF01 DS    4F                                                               
+*                                                                               
+         DS    0F                                                               
+DM0      DS    F                                                                
+DMCB     DS    0CL24                                                            
+DM1      DS    F                                                                
+DM2      DS    F                                                                
+DM3      DS    F                                                                
+DM4      DS    F                                                                
+DM5      DS    F                                                                
+DM6      DS    F                                                                
+*                                                                               
+PAGES    DS    F                   NUMBER OF 4K PAGES                           
+AHEADER  DS    A                   ADDRESS OF CURRENT HEADER                    
+@RCVDTF  DS    A                   ADDRESS OF DTF FOR RECOVERY                  
+ALOCKTAB DS    A                   ADDRESS OF LOCKTAB                           
+*                                                                               
+JNAME    DS    CL8                 JOB NAME THAT HAS FAILED                     
+JNUM     DS    CL2                 JOB NUMBER THAT HAS FAILED                   
+JOB#     DS    CL2                 JOB NUMBER FROM VERMONT ENTRY                
+*                                                                               
+LINE     DS    PL3                                                              
+PAGE     DS    PL3                                                              
+WAITER   DS    A                                                                
+*                                                                               
+DMOFFS   DS    A                   DATASPACE OFFSET                             
+DMALET   DS    A                   ALET                                         
+TBALET   DS    A                   ALET                                         
+*                                                                               
+@DSYSTEM DS    A                   CURRENT SYSTEM PROCESSING                    
+@DSYSHDR DS    A                   CURRENT SYS FILE HEADER                      
+@JOBHDR  DS    A                   CURRENT JOB HEADER                           
+@SYSFLES DS    A                                                                
+@SYSTABS DS    A                   CURRENT SYSTEM LIST                          
+*                                                                               
+ASIDFLD  DS    F                                                                
+ISTOR    DS    X                                                                
+AORID    DS    X                                                                
+TRECTY   DS    XL1                 RECORD TYPE                                  
+*                                                                               
+ADVNUM   DS    XL1                 RESOURCE NUMBER                              
+RESNUM   DS    XL1                 RESOURCE NUMBER                              
+SENUM    DS    CL1                 SE NUMBER                                    
+SENAM    DS    CL8                 SE NAME                                      
+SYSOVNAM DS    CL8                 SYSTEM NAME                                  
+SEFILN   DS    CL256               FILENAMES FOR OPEN                           
+*                                                                               
+RECNUMS  DS    256XL2                                                           
+*                                                                               
+VERMONTS DS    (VRCVMAXQ+1)XL4     VERMONTS TO BE RECOVERED                     
+VERMONTL EQU   *-VERMONTS                                                       
+*                                                                               
+GINS     DS    (VRCVMAXQ+1)XL8     GINS THAT WERE RECOVERED                     
+GINL     EQU   *-GINS                                                           
+*                                                                               
+@RECBUF  DS    A                   A(DSPACE BUFFER)                             
+AIOAREA  DS    A                   A(IOAREA)                                    
+PREVDA   DS    F                                                                
+RECDA    DS    F                                                                
+RCVCRCV  DS    H                   RECOVERY COUNT                               
+RCVCERR  DS    H                   ERROR COUNT                                  
+LOCKCNT  DS    H                   LOCK COUNT                                   
+VMNTRYLN DS    H                   VERMONT ENTRY LENGTH                         
+VERMONT  DS    C                                                                
+VMONTREG EQU   C'R'                VERMONT REGULAR                              
+VMONTXTN EQU   C'X'                VERMONT EXTENDED                             
+DFLAG    DS    C                                                                
+ERRORFLG DS    X                   ALLOW EOF ON FIRST WRITEBACK                 
+*                                                                               
+Q0       DS    0XL24                                                            
+Q1       DS    F                                                                
+Q2       DS    F                                                                
+Q3       DS    F                                                                
+Q4       DS    F                                                                
+Q5       DS    F                                                                
+Q6       DS    F                                                                
+*                                                                               
+P0       DS    0XL24                                                            
+P1       DS    F                                                                
+P2       DS    F                                                                
+P3       DS    F                                                                
+P4       DS    F                                                                
+P5       DS    F                                                                
+P6       DS    F                                                                
+*                                                                               
+DMCBUSSQ DS    0XL24                                                            
+P0USS    DS    0XL24                                                            
+P1USS    DS    F                   .  COMMAND                                   
+P2USS    DS    F                   .  SENUM                                     
+P3USS    DS    F                   .  A(GIN)                                    
+P4USS    DS    F                   .  N/D                                       
+P5USS    DS    F                   .  N/D                                       
+P6USS    DS    F                   .  N/D                                       
+*                                                                               
+FILE#NTY DS    X                   # OF ENTRIES                                 
+*ILE#LST DS    CL64                GLOBAL SE LIST FOR SYSTEM                    
+                                                                                
+*                                                                               
+OPLINE   DS    CL80                                                             
+TRCDATA  DS    CL32                                                             
+*                                                                               
+LIVE     DS    H                                                                
+TEST     DS    H                                                                
+*                                                                               
+         DS    0D                                                               
+INPUT    DS    (6*K)C              MAX LOGICAL RECORD SIZE IS 6K                
+         DS    0D                                                               
+IOAREA   DS    (18*K)C             MAX RECOVERY BLOCK SIZE IS 18K               
+*                                                                               
+WORKX    EQU   *                                                                
+         EJECT                                                                  
+*************************************************************                   
+*        RECOVERY RECORD DSECT                              *                   
+*************************************************************                   
+RCVRREC  DSECT                                                                  
+*DMRCVRHDR                                                                      
+       ++INCLUDE DMRCVRHDR                                                      
+HEADER   DS    0C                                                               
+RCVHTYP  DS    CL8                 HEADER TYPE **SJOB** OR **EJOB**             
+RCVHJOB  DS    CL8                 JOBNAME                                      
+RCVHJES  DS    CL8                 JESNAME                                      
+RCVHDSN  DS    CL44                DSN                                          
+RCVHDSNL EQU   *-RCVRREC           HEADER LENGTH WITH DSN                       
+*                                                                               
+         ORG   HEADER                                                           
+RECORD   DS    (6*K)C              MAX LOGICAL RECORD SIZE IS 6K                
+         EJECT                                                                  
+*************************************************************                   
+*        OTHER DSECTS                                       *                   
+*************************************************************                   
+         IEFZB4D0                                                               
+         IEFZB4D2                                                               
+         DCBD  DSORG=PS,DEVD=DA                                                 
+                                                                                
+         PRINT ON                                                               
+* DMLKTABA                                                                      
+         PRINT OFF                                                              
+       ++INCLUDE DMLKTABA                                                       
+         PRINT ON                                                               
+* DMDSYSHDR                                                                     
+         PRINT OFF                                                              
+       ++INCLUDE DMDSYSHDR                                                      
+         PRINT ON                                                               
+* DMDSHDR                                                                       
+         PRINT OFF                                                              
+       ++INCLUDE DMDSHDR                                                        
+         PRINT ON                                                               
+* DMSPACED                                                                      
+         PRINT OFF                                                              
+       ++INCLUDE DMSPACED                                                       
+         PRINT ON                                                               
+* DMDFTPH                                                                       
+         PRINT OFF                                                              
+       ++INCLUDE DMDTFPH                                                        
+         PRINT ON                                                               
+* DMRCVRD                                                                       
+         PRINT OFF                                                              
+       ++INCLUDE DMRCVRD                                                        
+         PRINT ON                                                               
+* DMRCVREXT                                                                     
+         PRINT OFF                                                              
+       ++INCLUDE DMRCVREXT                                                      
+         PRINT ON                                                               
+* DMDTFIS                                                                       
+         PRINT OFF                                                              
+       ++INCLUDE DMDTFIS                                                        
+         PRINT ON                                                               
+* DMSYSFD                                                                       
+         PRINT OFF                                                              
+       ++INCLUDE DMSYSFD                                                        
+         PRINT ON                                                               
+* DDPERVALD                                                                     
+         PRINT OFF                                                              
+       ++INCLUDE DDPERVALD                                                      
+         PRINT ON                                                               
+* DMATABS                                                                       
+         PRINT OFF                                                              
+       ++INCLUDE DMATABS                                                        
+         PRINT ON                                                               
+* DMSYSTABD                                                                     
+         PRINT OFF                                                              
+       ++INCLUDE DMSYSTABD                                                      
+         PRINT ON                                                               
+* DMGREQUS                                                                      
+         PRINT OFF                                                              
+       ++INCLUDE DMGREQUS                                                       
+         PRINT ON                                                               
+* FASSB                                                                         
+         PRINT OFF                                                              
+       ++INCLUDE FASSB                                                          
+         ORG   SSBD                                                             
+       ++INCLUDE FASSBOFF                                                       
+         PRINT ON                                                               
+* FASELIST                                                                      
+         PRINT OFF                                                              
+       ++INCLUDE FASELIST                                                       
+         PRINT ON                                                               
+* FACIDTABD                                                                     
+         PRINT OFF                                                              
+**     ++INCLUDE FACIDTABD                                                      
+         PRINT ON                                                               
+* FAPIGFACD                                                                     
+         PRINT OFF                                                              
+**     ++INCLUDE FAPIGFACD                                                      
+         PRINT ON                                                               
+* FASYSLSTD                                                                     
+         PRINT OFF                                                              
+       ++INCLUDE FASYSLSTD                                                      
+* FADSECTS                                                                      
+         PRINT ON                                                               
+         PRINT OFF                                                              
+**     ++INCLUDE FADSECTS                                                       
+         PRINT ON                                                               
+         EJECT                                                                  
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'145DDRCVR    09/17/20'                                      
+         END                                                                    

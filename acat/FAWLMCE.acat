@@ -1,0 +1,241 @@
+*          DATA SET FAWLMCE    AT LEVEL 001 AS OF 04/26/10                      
+*CATALP FAWLMCE                                                                 
+         TITLE 'WLMCE - INTERFACE TO IBM WLM CREATE/CLASIFY ENCLAVE'            
+********************************************************************            
+* FACPACK - INTERFACE TO WORKLOAD MANAGER ENCLAVE SERVICES                      
+* MODULE:   FAWLMCE                                                             
+* PROPERTIES:                                                                   
+*    PROBLEM STATE                                                              
+*    ADDRESSING MODE= 31                                                        
+*    PRIMARY ASC MODE SAC 0                                                     
+*                                                                               
+* INVOCATION:                                                                   
+*        SAM31                                                                  
+*        SAC   0                                                                
+*        GOTO1 VWLMCE,WLMPARM,C'WLME'                                           
+*                                                                               
+* PROCESSING:                                                                   
+* - ESTABLISH STANDEAD DDS LINKAGE                                              
+* - UPON ENTRY REGISTER 1 CONTAINS THE ADDRESS OF THE PARAMETER                 
+*   REQUEST BLOCK.                                                              
+* - ESTABLISH REGISTER 7 AS THE REQUEST BLOCK BASE REGISTER                     
+* - SWITCH TO SUPERVISOR STATE                                                  
+* - SAVE THE CURRENT PSW KEY                                                    
+* - SWITCH TO PSW KEY AT THE TIME OF WLM CONNECT                                
+* - ISSUE IWMCLSFY TO CLASSIFY WORK REQUEST WITH MF=(M,CLSFYLIST)               
+* - ISSUE IWMCLSFY TO CLASSIFY WORK REQUEST WITH MF=(E,CLSFYLIST)               
+* - ISSUE IWM4ECRE TO CREATE AN INDEPENDANT ENCALVE                             
+* - SWITCH BACK TO ORIGINAL PSW KEY                                             
+* - SWITCH BACK TO PROBLEM STATE                                                
+* - RETURN TO CALLER                                                            
+*                                                                               
+* The purpose of this routine is two fold:                                      
+* 1) factor in available information about an arriving work request             
+*    in order to associate a service class and possibly a                       
+*    report class with it.                                                      
+* 2) create an Enclave where possibly multiple SRBs and/or TCBs                 
+*    may be simultaneously executing or scheduled.                              
+*    For the duration of each Enclave, all SRBs and TCBs associated             
+*    with the Enclave are treated as part of a single work request.             
+*                                                                               
+*                                                                               
+*                                                                               
+********************************************************************            
+FAWLMCE  CSECT                                                                  
+         PRINT NOGEN                                                            
+         NMOD1 0,**WLMCE                                                        
+         USING WLMD,R7                                                          
+         LR    R7,R1              PARAMETER LIST ADDRESS                        
+         XR    R0,R0                                                            
+         ST    R0,WLMECLKEY        CLEAR CURRENT ENCLAVE PSW KEY                
+         ST    R0,WLMSRVCL         Clear Service Class Token                    
+         ST    R0,WLMRETC          Clear Return Code                            
+         ST    R0,WLMRSNC          Clear Reason Code                            
+*                                                                               
+         CP    ERRORS,MAXERRS      Too many errors don't create                 
+         BH    EXITOFF             Don't create enclave                         
+                                                                                
+         LA    R2,SYSMAJ                                                        
+         LA    R3,SYSMIN                                                        
+         ENQ   ((2),(3),E,8,SYSTEMS),LINKAGE=SVC,RET=TEST                       
+         LTR   RF,RF                                                            
+         BZ    EXITOFF                                                          
+*                                                                               
+* Supervisor state                                                              
+* Save protection key                                                           
+* Switch to key 0                                                               
+*                                                                               
+         MODESET MODE=SUP                                                       
+         MODESET SAVEKEY=WLMEKEY,WORKREG=1                                      
+         XR    R4,R4               SET PSW KEY TO KEY ZERO                      
+         MODESET KEYREG=R4         SWITCH TO CONNECT TOKEN KEY                  
+*                                                                               
+         MVC   LASTFUNC,=CL16'IWMCLSFY MF=M'                                    
+         IWMCLSFY TRXNAME=WLMTRXNAME,                                  +        
+               USERID=NO_USERID,                                       +        
+               TRXCLASS=NO_TRXCLASS,                                   +        
+               NETID=NO_NETID,                                         +        
+               CONNTKN=WLMTOKEN,                                       +        
+               PLISTVER=IMPLIED_VERSION,                               +        
+               RETCODE=WLMRETC,                                        +        
+               RSNCODE=WLMRSNC,                                        +        
+               MF=(M,CLSFYLIST,COMPLETE)                                        
+*                                                                               
+         ICM   RF,15,WLMRETC        Check for errors                            
+         JNZ   ERROR10              Return code error           WLM             
+         OC    WLMRSNC,WLMRSNC      Reason code error?          WLM             
+         JNZ   ERROR10              Yes, report                 WLM             
+*                                                                               
+         MVC   LASTFUNC,=CL16'IWMCLSFY MF=E'                                    
+         IWMCLSFY TRXNAME=WLMTRXNAME,                                  +        
+               SERVCLS=WLMSRVCL,                                       +        
+               CONNTKN=WLMTOKEN,                                       +        
+               PLISTVER=IMPLIED_VERSION,                               +        
+               RETCODE=WLMRETC,                                        +        
+               RSNCODE=WLMRSNC,                                        +        
+               MF=(E,CLSFYLIST,NOCHECK)                                         
+*                                                                               
+         ICM   RF,15,WLMRETC        Check for errors                            
+         JNZ   ERROR10              Return code error           WLM             
+         OC    WLMRSNC,WLMRSNC      Reason code error?          WLM             
+         JNZ   ERROR10              Yes, report                 WLM             
+*                                                                               
+         MVC   LASTFUNC,=CL16'IWM4ECRE MF=E'                                    
+         IWM4ECRE TYPE=INDEPENDENT,                                    +        
+               CLSFY=CLSFYLIST,                                        +        
+               ARRIVALTIME=WLMTIME,                                    +        
+               FUNCTION_NAME=WLMFUNCT,                                 +        
+               ETOKEN=WLMETOKEN,                                       +        
+               PLISTVER=IMPLIED_VERSION,                               +        
+               RETCODE=WLMRETC,                                        +        
+               RSNCODE=WLMRSNC,                                        +        
+               MF=(E,ECRELIST,COMPLETE)                                         
+*                                                                               
+* Switch back to original PSW KEY                                               
+* Switch back to problem state                                                  
+*                                                                               
+         L     R4,WLMECLKEY        GET THE ORIGINAL SAVED PSW KEY               
+         MODESET KEYREG=R4         SWITCH BACK TO ORIGINAL PSW KEY              
+         MODESET MODE=PROB                                                      
+*                                                                               
+         ICM   RF,15,WLMRETC       Any errors?                                  
+         JNZ   ERROR20             Yes, return code error      WLM              
+         OC    WLMRSNC,WLMRSNC     REASON CODE OK ?            WLM              
+         JNZ   ERROR20             NO, ABORT                   WLM              
+         J     EXIT                                                             
+         EJECT ,                                                                
+***********************************************************************         
+* Error messages and debug info                                                 
+***********************************************************************         
+ERROR10  STM   R0,RF,DUMPREGS                                                   
+         L     R4,WLMECLKEY        GET THE ORIGINAL SAVED PSW KEY               
+         MODESET KEYREG=R4         SWITCH BACK TO ORIGINAL PSW KEY              
+         MODESET MODE=PROB                                                      
+         MVC   ABEND#,=CL3'912'                                                 
+         CLC   LASTFUNC,=CL16'IWMCLSFY MF=M'                                    
+         BNE   ERROR12                                                          
+         MVC   MSG1TXT,=C'FAWLMCE WLM CLASSIFY-M FAILED U912'                   
+         B     ERROR90                                                          
+*                                                                               
+ERROR12  MVC   ABEND#,=CL3'913'                                                 
+         MVC   MSG1TXT,=C'FAWLMCE WLM CLASSIFY-E FAILED U913'                   
+         B     ERROR90                                                          
+*                                                                               
+ERROR20  STM   R0,RF,DUMPREGS                                                   
+         MVC   ABEND#,=CL3'914'                                                 
+         MVC   MSG1TXT,=C'FAWLMCE CREATE ENCLAVE FAILED U914'                   
+         B     ERROR90                                                          
+*                                                                               
+ERROR90  AP    ERRORS,=P'1'                                                     
+         LA    R0,8                                                             
+         LA    R1,MSGRTC           Format return code                           
+ERROR92  XR    RE,RE                                                            
+         SAM24 ,                   32 bit shift between regs                    
+         SLDL  RE,4                                                             
+         SAM31 ,                                                                
+         LA    RE,HEX2CHR(RE)                                                   
+         MVC   0(1,R1),0(RE)                                                    
+         LA    R1,1(,R1)                                                        
+         BRCT  R0,ERROR92                                                       
+                                                                                
+         L     RF,WLMRSNC          Reason code                                  
+         LA    R0,8                                                             
+         LA    R1,MSGRSNC          Format reason code                           
+ERROR94  XR    RE,RE                                                            
+         SAM24 ,                                                                
+         SLDL  RE,4                                                             
+         SAM31 ,                                                                
+         LA    RE,HEX2CHR(RE)                                                   
+         MVC   0(1,R1),0(RE)                                                    
+         LA    R1,1(,R1)                                                        
+         BRCT  R0,ERROR94                                                       
+                                                                                
+         LA    R3,MSG1                                                          
+         WTO   TEXT=(R3)                                                        
+*                                                                               
+EXITOFF  XC    WLMTIME,WLMTIME     Clear to make inactive                       
+         XC    WLMETOKEN,WLMETOKEN Clear Enclave Token                          
+*                                                                               
+EXIT     XMOD1 1                                                                
+         EJECT ,                                                                
+***********************************************************************         
+* Constants                                                                     
+***********************************************************************         
+         LTORG ,                                                                
+                                                                                
+LASTFUNC DS    CL16                                                             
+         DS    0D                                                               
+SYSMAJ   DC    CL8'ENQDEQ  '                                                    
+SYSMIN   DC    CL8'WLMCALVE'                                                    
+                                                                                
+         DS    0D                                                               
+MAXERRS  DC    PL2'20'             Max errors before we stop                    
+                                                                                
+         DS    0D                                                               
+         DC    CL4'WR#='                                                        
+WARNS    DC    PL8'0'                                                           
+         DC    CL4'ER#='                                                        
+ERRORS   DC    PL8'0'                                                           
+         DC    CL6'ABEND='                                                      
+ABEND#   DC    CL3' '                                                           
+         DC    CL3' '                                                           
+         DC    CL8'DUMPREGS'                                                    
+DUMPREGS DC    18A(0)                                                           
+                                                                                
+HEX2CHR  DC    C'0123456789ABCDEF'                                              
+                                                                                
+MSG1     DC    AL2(MSG1LNQ)                                                     
+MSG1TXT  DC    CL34' '                                                          
+         DC    C' RTC='                                                         
+MSGRTC   DC    C'########'                                                      
+         DC    C' RSN='                                                         
+MSGRSNC  DC    C'########'                                                      
+MSG1LNQ  EQU   *-MSG1TXT                                                        
+*                                                                               
+         DS    0D                  ALIGNMENT                                    
+         IWMCLSFY PLISTVER=MAX,MF=(L,CLSFYLIST)                                 
+*                                                                               
+         DS    0D                  ALIGNMENT                                    
+         IWM4ECRE PLISTVER=MAX,MF=(L,ECRELIST)                                  
+         EJECT                                                                  
+***********************************************************************         
+* DSECTs                                                                        
+***********************************************************************         
+* FASSB                                                                         
+*        PRINT OFF                                                              
+*      ++INCLUDE FASSB                                                          
+*        PRINT ON                                                               
+* FAWLMD                                                                        
+       ++INCLUDE FAWLMD                                                         
+*                                                                               
+* CVT                                                                           
+         CVT DSECT=YES                                                          
+* IWMYCON                                                                       
+         IWMYCON                                                                
+* IKJTCB                                                                        
+         IKJTCB DSECT=YES,LIST=YES                                              
+* IHARB                                                                         
+         IHARB DSECT=YES,LIST=YES                                               
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'001FAWLMCE   04/26/10'                                      
+         END                                                                    

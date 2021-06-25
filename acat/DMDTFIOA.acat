@@ -1,0 +1,444 @@
+*          DATA SET DMDTFIOA   AT LEVEL 002 AS OF 02/16/17                      
+*CATALP DMDTFIOA                                                                
+         TITLE 'INIT/SAVE/RESTORE DTF DATA IN 31 BIT MODE'                      
+***********************************************************************         
+* PARAMETER LIST                                                      *         
+*                                                                     *         
+* CL1    ACTION I=INITIALISE,R=RESTORE,S=SAVE                         *         
+* AL3    A(TCB ENTRY)                                                 *         
+*                                                                     *         
+* FORMAT OF TASK BUFFER SAVE AREA:                                    *         
+*                                                                     *         
+* AL4    A(START OF DTF'S FOR SYSTEM)                                 *         
+* XL1    SYSTEM NUMBER                                                *         
+* XL1    NUMBER OF FILES                                              *         
+* XL2    SIZE OF USED PORTION IN DOUBLE WORDS                         *         
+*                                                                     *         
+* NXL48  DTF SAVE AREA - ONE PER FILE - A(DTF) AND DATA               *         
+*        FIRST BYTE OF SAVE AREA IS AS FOLLOWS:                       *         
+*                                                                     *         
+*        X'01' ON = I/S FILE, OFF = D/A FILE                          *         
+*        X'10' ON = RECOVERY FILE                                     *         
+*        X'20' ON = D/A INDEXED DTF                                   *         
+*        X'40' ON = TWO BUFFERS ASSIGNED FOR D/A FILE                 *         
+*        X'80' ON = END OF LIST                                       *         
+*                                                                     *         
+* NXLN   BUFFER AND KEY SAVE AREAS                                    *         
+***********************************************************************         
+         EJECT                                                                  
+         PRINT NOGEN                                                            
+DTFIOA   CSECT                                                                  
+         ENTRY DTFIOAXX                                                         
+         NMOD1 0,*DTFIOA*                                                       
+         SAM31                                                                  
+         XR    R3,R3               R3=A(TCB ENTRY)                              
+         ICM   R3,7,1(R1)                                                       
+         USING TCBD,R3                                                          
+         L     R8,=V(SSB)          R8=A(SSB)                                    
+         USING SSBD,R8                                                          
+*                                                                               
+         CLI   0(R1),C'I'          INITIALISE                                   
+         BE    DTFI                                                             
+         CLI   0(R1),C'S'          SAVE                                         
+         BE    DTFS                                                             
+         CLI   0(R1),C'R'          RESTORE                                      
+         BE    DTFR                                                             
+         DC    H'0'                                                             
+*                                                                               
+DTFIOAX  XMOD1 1                                                                
+         EJECT                                                                  
+***********************************************************************         
+* INITIALISE TASK SAVE/BUFFER AREA                                    *         
+***********************************************************************         
+DTFI     L     R4,TCBFILES         R4=A(TASK SAVE/BUFFER AREA)                  
+         USING SDDATA,R4                                                        
+         XC    SDDATA(SDHDRLNQ),SDDATA                                          
+         MVC   SDSYSDTF,TCBDTFS    SET A(DTF'S)                                 
+         MVC   SDSYSSEN,TCBSEN     SET SYSTEM NUMBER                            
+         OC    TCBDTFS,TCBDTFS     TEST IF ANY FILES                            
+         BNZ   DTFI0                                                            
+         LA    R5,SDHDRLNQ(R4)     NO-POINT TO END OF BUFFER AREA USED          
+         B     DTFI8                                                            
+*                                                                               
+DTFI0    L     R6,SDSYSDTF         R6=A(START OF DTFS FOR SYSTEM)               
+         USING SYSFLSTD,R6                                                      
+         L     R6,0(R6)            R6=A(SYSFLES LIST)                           
+         LLC   R0,SYSF#FLS+1       R0=NUMBER OF FILES                           
+         STC   R0,SDSYS#FS         SAVE NUMBER OF FILES                         
+         LA    R6,SYSFLIST         START OF LIST OF FILES                       
+*                                                                               
+         LR    R5,R0               GET BUFFER AREA SIZE                         
+         MHI   R5,SDTFLNQ                                                       
+         LA    R5,SDHDRLNQ(R5,R4)  R5=A(NEXT AVAIL BUFFER AREA)                 
+         LA    R4,SDHDRLNQ(R4)     BUMP PAST HEADER                             
+*                                                                               
+DTFI1    XC    SDDATA(SDTFLNQ),SDDATA CLEAR CURRENT ENTRY                       
+         XR    R7,R7                                                            
+         ICM   R7,7,SYSFADTF       R7=A(DTF)                                    
+         ST    R7,SDDTF            SAVE A(DTF)                                  
+         TM    SYSFIND1,SFISF      TEST IS FILE                                 
+         BO    DTFI3                                                            
+*                                                                               
+         USING DTFPHD,R7           INIT FOR DA FILE                             
+DTFI2    TM    SYSFIND1,SFRCV      TEST RECOVERY FILE                           
+         BZ    DTFI2A                                                           
+         OI    SDTFIND,SDTFRCVR    SET RECOVERY FLAG                            
+         B     DTFI7                                                            
+*                                                                               
+DTFI2A   TM    DIND,DINDXAM        TEST HIGH CORE EXTENT MATRIX                 
+         BZ    *+8                 NO                                           
+         OI    SDTFIND,SDTFXAM     MAKE SURE WE DONT LOSE INDICATION            
+         TM    DBLKSZ,DBLK_NO      TEST BLOCKED                                 
+         BO    DTFI7                                                            
+         LH    R1,DBLKSZ           BLOCK SIZE                                   
+         LTR   R1,R1                                                            
+         BZ    DTFI7                                                            
+         ST    R5,SDBLK            SET A(CORE BUFFER)                           
+         TM    DTFTYPE,DTFTKCL+DTFTKCR TEST KEY COMPRESSED                      
+         BZ    *+8                                                              
+         AHI   R1,64               ALLOW ROOM FOR SAVE AREA                     
+         TM    DIND,DINDNDX        TEST D/A INDEXED                             
+         BZ    *+8                                                              
+         AHI   R1,4                ALLOW ROOM FOR SAVE AREA (NOW 68)            
+         AR    R5,R1               R5=END OF STORAGE AREA BUFFER                
+         TM    DIND,DIND2BU        TEST TWO BLOCKS                              
+         BZ    DTFI7                                                            
+         ST    R5,SDNDX            SET A(SECOND CORE BUFFER)                    
+         AR    R5,R1                                                            
+         OI    SDTFIND,SDTF2BUF    INDICATE 2 CORE BUFFERS                      
+         TM    DIND,DINDNDX        TEST DANDX FILE                              
+         BZ    DTFI7                                                            
+         OI    SDTFIND,SDTFDNDX    INDICATE D/A INDEXED DTF                     
+         B     DTFI7                                                            
+*                                                                               
+         USING ISDTF,R7            INIT FOR IS FILE                             
+DTFI3    OI    SDTFIND,SDTFISF     SET IS ENTRY FLAG                            
+         TM    ISFFLAG,ISFVSAM     TEST IF VSAM IS FILE (KSDS)                  
+         BO    DTFI6               YES, GO TO VSAM CODE                         
+         MVC   SIRECLN,ISRECLN                                                  
+         LH    R1,ISPDLN                                                        
+         XC    SITIBUFF,SITIBUFF                                                
+         TM    ISFTYPE,ISFTBIGF    BIG FILES USE TIBUFF IN IS                   
+         BZ    *+10                                                             
+         ST    R5,SITIBUFF                                                      
+         AR    R5,R1                                                            
+         XC    ISTITRKL,ISTITRKL                                                
+         ST    R5,SIBUFF1          SET A(PD BUFFER 1)                           
+         AR    R5,R1                                                            
+         LR    RF,R5                                                            
+         BCTR  RF,0                                                             
+         ST    RF,SIBUFF1X                                                      
+         MVC   SIBUFF2,SIBUFF1                                                  
+         TM    ISCMPRSW,X'40'      TEST IF SECOND BUFFER REQUIRED               
+         BO    DTFI4                                                            
+         ST    R5,SIBUFF2          SET A(PD BUFFER 2)                           
+         AR    R5,R1                                                            
+*                                                                               
+DTFI4    LH    R1,ISKEYLN                                                       
+         LH    R2,ISKEYLN1                                                      
+         ST    R5,SIPDKEY          SET A(LAST KEY SAVE AREA)                    
+         EX    R2,DTFI5                                                         
+         AR    R5,R1                                                            
+         ST    R5,SIPDPRKY         SET A(PRIOR KEY SAVE AREA)                   
+         EX    R2,DTFI5                                                         
+         AR    R5,R1                                                            
+         ST    R5,SITIHIKY         SET A(TI ENTRY SAVE AREA)                    
+         EX    R2,DTFI5                                                         
+         AR    R5,R1                                                            
+         B     DTFI7                                                            
+*                                                                               
+DTFI5    XC    0(0,R5),0(R5)       EXECUTED                                     
+*                                                                               
+DTFI6    OI    SDTFIND,SDTFVSAM    SET VSAM ENTRY FLAG                          
+*                                  ALL DONE FOR VSAM IS (FOR NOW)               
+*                                                                               
+DTFI7    LA    R4,SDTFLNQ(R4)      BUMP TO NEXT SAVE ENTRY                      
+         LA    R6,SYSFLNQ(R6)      BUMP TO NEXT FILE                            
+         BCT   R0,DTFI1                                                         
+*                                                                               
+         SHI   R4,SDTFLNQ          GO BACK ONE ENTRY                            
+         OI    SDTFIND,SDTFEOT     SET LAST ENTRY FLAG                          
+         DROP  R6                                                               
+*                                                                               
+DTFI8    LA    R5,7(R5)            SET NEXT LOCN IN BUFFER MODULO 8             
+         SRL   R5,3                                                             
+         SLL   R5,3                                                             
+         L     R4,TCBFILES                                                      
+         LA    R4,0(R4)                                                         
+         SR    R5,R4               R5=TOTAL BYTES USED IN BUFFER                
+         LA    R5,7(R5)                                                         
+         SRL   R5,3                                                             
+         STH   R5,SDDATALN         SET LENGTH IN DBL WDS IN HEADER              
+*                                                                               
+DTFIX    B     DTFR                                                             
+         EJECT                                                                  
+***********************************************************************         
+* RESTORE DATA FROM TASK SAVE AREA TO DTF'S                           *         
+***********************************************************************         
+DTFR     OC    TCBDTFS,TCBDTFS     EXIT IF NO FILES                             
+         BZ    DTFIOAX                                                          
+         L     R4,TCBFILES                                                      
+         LA    R4,SDHDRLNQ(R4)     R4=A(TASK SAVE FILE ENTRY)                   
+*                                                                               
+DTFR1    XR    R7,R7               R7=A(DTF)                                    
+         ICM   R7,7,SDTF                                                        
+         TM    SDTFIND,SDTFISF     TEST IS FILE                                 
+         BO    DTFR2                                                            
+*                                                                               
+         USING DTFPHD,R7           RESTORE DIRECT ACCESS FILE                   
+         TM    SDTFIND,SDTFRCVR    SKIP IF RECOVERY FILE                        
+         BO    DTFR4                                                            
+         MVC   DBLK(8),SDBLK                                                    
+         MVC   DIND,SDIND                                                       
+         TM    SDTFIND,SDTFXAM     MAKE SURE WE DONT LOSE INDICATION            
+         BZ    *+8                                                              
+         OI    DIND,DINDXAM        HIGH CORE EXTENT MATRIX ON                   
+         TM    SDTFIND,SDTF2BUF    TEST IF 2 CORE BUFFERS ASSIGNED              
+         BZ    DTFR4                                                            
+         OI    DIND,DIND2BU                                                     
+         MVC   DNDX(8),SDNDX                                                    
+         TM    SDTFIND,SDTFDNDX    TEST IF A D/A INDEXED DTF                    
+         BZ    DTFR4                                                            
+         OI    DIND,DINDNDX                                                     
+         MVC   DBLKNUM,SDBLKNUM                                                 
+         MVC   DMTXNUM,SDMTXNUM                                                 
+         MVC   DNDXPTR(8),SDNDXPTR                                              
+         B     DTFR4                                                            
+*                                                                               
+         USING ISDTF,R7            RESTORE INDEX SEQUENTIAL FILE                
+DTFR2    TM    SDTFIND,SDTFVSAM    TEST IF VSAM IS FILE (KSDS)                  
+         BO    DTFR4               YES, NOTHING TO RESTORE (FOR NOW)            
+         MVC   ISRECLN,SIRECLN                                                  
+         MVC   ISBUFF1(16),SIBUFF1                                              
+         MVC   ISPDDA(24),SIPDDA                                                
+         XC    ISTITRKL,ISTITRKL                                                
+*                                                                               
+DTFR4    TM    SDTFIND,SDTFEOT     TEST LAST ENTRY                              
+         BO    DTFRX                                                            
+         LA    R4,SDTFLNQ(R4)      BUMP TO NEXT SAVE ENTRY                      
+         B     DTFR1                                                            
+         EJECT                                                                  
+***********************************************************************         
+* WLM REJOIN ENCLAVE - CALL FAWLMQE TO QUERY THE STATE OF THE ENCLAVE.*         
+* WE MUST ENSURE THAT THE ENCLAVE TOKEN DOES NOT MATCH THE ENCLAVE    *         
+* WE WISH TO REJOIN.                                                  *         
+* CALL FAWLMJN TO JOIN THE ENCLAVE.                                   *         
+***********************************************************************         
+DTFRX    TM    SSBSTAT5,SSB5WLM     EXIT IF WLM NOT ACTIVE                      
+         BZ    DTFIOAX                                                          
+         TM    SSBSTAT1,SSBUII      EXIT IF NOT ACCEPTING TRANSACTIONS          
+         BO    DTFIOAX                                                          
+*                                                                               
+         ICM   R1,15,TCBWLMBF       EXIT IF NO REQUEST BLOCK                    
+         USING WLMD,R1                                                          
+         BZ    DTFIOAX                                                          
+         LA    R2,ELCVPARM          R2=A(ENCLAVE WORK AREA)                     
+         USING WLMED,R2                                                         
+         ICM   R0,15,WLMTIME        EXIT IF TIME NOT SET                        
+         BZ    DTFIOAX                                                          
+*                                                                               
+         MVC   ECLVTOKEN,WLMETOKEN  ENCLAVE TOKEN                               
+         XC    FWORD,FWORD                                                      
+         MVC   FWORD+2(1),TCBPRG                                                
+         ICM   R0,15,FWORD                                                      
+         CVD   R0,BYTES8                                                        
+         UNPK  BYTES8(5),BYTES8+5(3)                                            
+         MVC   ECLPRG,BYTES8+1      PROGRAM IDENTIFIER                          
+*                                                                               
+         GOTO1 VWLMQE,ELCVPARM,C'WLQE'                                          
+         CLC   ECLQTOKEN,ECLVTOKEN  ALREADY IN THE SAME ENCLAVE                 
+         BE    DTFIOAX                                                          
+*                                                                               
+         GOTO1 VWLMJN,ELCVPARM,C'WLRJ'                                          
+         B     DTFIOAX                                                          
+         DROP  R1,R2                                                            
+         EJECT                                                                  
+***********************************************************************         
+* SAVE DATA FROM DTF'S TO TASK SAVE AREA                              *         
+***********************************************************************         
+DTFS     OC    TCBDTFS,TCBDTFS     EXIT IF NO FILES                             
+         BZ    DTFIOAX                                                          
+         L     R4,TCBFILES                                                      
+         LA    R4,8(R4)            R4=A(TASK SAVE FILE ENTRY)                   
+*                                                                               
+DTFS1    XR    R7,R7               R7=A(DTF)                                    
+         ICM   R7,7,SDTF                                                        
+         TM    SDTFIND,SDTFISF     TEST IS FILE                                 
+         BO    DTFS2                                                            
+*                                                                               
+         USING DTFPHD,R7           SAVE DIRECT ACCESS FILE DATA                 
+         MVC   SDBLK(8),DBLK                                                    
+         MVC   SDIND,DIND                                                       
+         TM    SDTFIND,SDTF2BUF    TEST IF 2 CORE BUFFERS ASSIGNED              
+         BZ    DTFS4                                                            
+         MVC   SDNDX(8),DNDX                                                    
+         TM    SDTFIND,SDTFDNDX    TEST IF A D/A INDEXED DTF                    
+         BZ    DTFS4                                                            
+         MVC   SDBLKNUM,DBLKNUM                                                 
+         MVC   SDMTXNUM,DMTXNUM                                                 
+         MVC   SDNDXPTR(8),DNDXPTR                                              
+         B     DTFS4                                                            
+*                                                                               
+         USING ISDTF,R7            SAVE INDEX SEQUENTIAL FILE DATA              
+DTFS2    TM    SDTFIND,SDTFVSAM    TEST IF VSAM IS FILE (KSDS)                  
+         BO    DTFS4               YES, NOTHING TO SAVE (FOR NOW)               
+         MVC   SIRECLN,ISRECLN                                                  
+         MVC   SIBUFF1(16),ISBUFF1                                              
+         MVC   SIPDDA(24),ISPDDA                                                
+         XC    ISTITRKL,ISTITRKL                                                
+*                                                                               
+DTFS4    TM    SDTFIND,SDTFEOT     TEST LAST ENTRY                              
+         BO    DTFSX                                                            
+         LA    R4,SDTFLNQ(R4)      BUMP LAST ENTRY                              
+         B     DTFS1                                                            
+         EJECT                                                                  
+***********************************************************************         
+* WLM LEAVE ENCLAVE - CALL FAWLMQE TO QUERY THE STATE OF THE ENCLAVE. *         
+* WE MUST ENSURE THAT THE ENCLAVE TOKEN MATCHES THE ENCLAVE TOKEN     *         
+* RETURNED AS WE ARE LEAVING.                                         *         
+* CALL FAWLMLV TO LEAVE THE CURRENT ENCLAVE.                          *         
+***********************************************************************         
+DTFSX    TM    SSBSTAT5,SSB5WLM     EXIT IF WLM NOT ACTIVE                      
+         BZ    DTFIOAX                                                          
+         TM    SSBSTAT1,SSBUII      EXIT IF NOT ACCEPTING TRANSACTIONS          
+         BO    DTFIOAX                                                          
+*                                                                               
+         ICM   R1,15,TCBWLMBF       EXIT IF NO REQUEST BLOCK                    
+         USING WLMD,R1                                                          
+         BZ    DTFIOAX                                                          
+         LA    R2,ELCVPARM          R2=A(ENCLAVE WORK AREA)                     
+         USING WLMED,R2                                                         
+         ICM   R0,15,WLMTIME                                                    
+         BZ    DTFIOAX                                                          
+*                                                                               
+         MVC   ECLVTOKEN,WLMETOKEN  ENCLAVE TOKEN                               
+         MVC   ECLPRG,TCBPRG        PROGRAM IDENTIFIER                          
+         XC    FWORD,FWORD                                                      
+         MVC   FWORD+2(1),TCBPRG                                                
+         ICM   R0,15,FWORD                                                      
+         CVD   R0,BYTES8                                                        
+         UNPK  BYTES8(5),BYTES8+5(3)                                            
+         MVC   ECLPRG,BYTES8+1      PROGRAM IDENTIFIER                          
+*                                                                               
+         GOTO1 VWLMQE,ELCVPARM,C'WLQE'                                          
+         CLC   ECLQTOKEN,ECLVTOKEN  ARE WE WITHIN THE SAME ENCLAVE              
+         BNE   WARN921                                                          
+*                                                                               
+         GOTO1 VWLMLV,ELCVPARM,C'WLLV'                                          
+         B     DTFIOAX                                                          
+         DROP  R1,R2                                                            
+*&&DO                                                                           
+WARN920  CNOP  2,4                                                              
+         STM   R0,RF,DUMPREGS                                                   
+         WTO  'FAWLMQE ENCLAVES DO NOT MATCH ABEND920'                          
+         B     DTFIOAX                                                          
+*&&                                                                             
+WARN921  STM   R0,RF,DUMPREGS                                                   
+         AP    WARNS,=P'1'                                                      
+         CP    WARNS,=P'50'                                                     
+         BH    DTFIOAX                                                          
+         MVC   ABEND#,=C'921'                                                   
+         WTO   'DMTFIOA ENCLAVES DO NOT MATCH U921'                             
+         B     DTFIOAX                                                          
+                                                                                
+DTFIOAXX EQU   *-1                 DEFINE END OF PROGRAM                        
+         EJECT                                                                  
+***********************************************************************         
+* LITERALS AND CONSTANTS                                              *         
+***********************************************************************         
+         LTORG                                                                  
+         DS    0D                                                               
+         DC    C'DUMPREGS'                                                      
+DUMPREGS DC    16A(0)                                                           
+*                                                                               
+         DC    CL4'WR#='                                                        
+WARNS    DC    PL8'0'                                                           
+         DC    CL4'ER#='                                                        
+ERRORS   DC    PL8'0'                                                           
+         DC    CL6'ABEND='                                                      
+ABEND#   DC    CL3' '                                                           
+         DC    CL3' '                                                           
+*                                                                               
+VWLMQE   DC    V(FAWLMQE)                                                       
+VWLMJN   DC    V(FAWLMJN)                                                       
+VWLMLV   DC    V(FAWLMLV)                                                       
+         DS    0A                                                               
+ELCVPARM DS    CL(ECLVWNQ)         WLM JOIN/LEAVE/QUERY STORAGE                 
+BYTES8   DS    PL8                                                              
+FWORD    DS    CL4                                                              
+         EJECT                                                                  
+***********************************************************************         
+* DSECT FOR SAVE AREA                                                 *         
+***********************************************************************         
+SDDATA   DSECT                     SAVE DTF DATA ENTRY                          
+SDSYSDTF DS    AL4                                                              
+SDSYSSEN DS    X                                                                
+SDSYS#FS DS    X                                                                
+SDDATALN DS    XL2                                                              
+SDHDRLNQ EQU   *-SDDATA                                                         
+*                                                                               
+         ORG   SDDATA                                                           
+SDTFIND  DS    X                   ENTRY FLAGS                                  
+SDTFEOT  EQU   X'80'               END OF TABLE                                 
+SDTF2BUF EQU   X'40'               2 CORE BUFFERS                               
+SDTFDNDX EQU   X'20'               D/A INDEX FILE (DANDX)                       
+SDTFRCVR EQU   X'10'               RECOVERY  FILE                               
+SDTFVSAM EQU   X'04'               FILE IS VSAM (KSDS IF SDTFISF ON)            
+SDTFXAM  EQU   X'02'               HIGH CORE EXTENT MATRIX DA FILE              
+SDTFISF  EQU   X'01'               IS TYPE FILE                                 
+*                                                                               
+SDTF     DS    AL3                                                              
+         ORG   SDDATA                                                           
+SDDTF    DS    A                   DIRECT ACCESS FILE SAVE ENTRY                
+SDBLK    DS    A                                                                
+SDBLKDA  DS    F                                                                
+SDIND    DS    C                                                                
+         DS    C                                                                
+SDBLKNUM DS    C                                                                
+SDMTXNUM DS    C                                                                
+SDNDX    DS    A                                                                
+SDNDXDA  DS    F                                                                
+SDNDXPTR DS    F                                                                
+SDBLKPTR DS    F                                                                
+*                                                                               
+         ORG   SDDATA                                                           
+SIDTF    DS    A                   INDEX SEQUENTIAL FILE SAVE ENTRY             
+SIRECLN  DS    H                                                                
+         DS    H                                                                
+SIBUFF1  DS    A                                                                
+SIBUFF1X DS    A                                                                
+SIBUFF2  DS    A                                                                
+SITIBUFF DS    A                                                                
+SIPDDA   DS    F                                                                
+SIOVDA   DS    F                                                                
+SIPDPTR  DS    A                                                                
+SIPDKEY  DS    A                                                                
+SIPDPRKY DS    A                                                                
+SITIHIKY DS    A                                                                
+         ORG                                                                    
+SDTFLNQ  EQU   *-SDDATA                                                         
+         EJECT                                                                  
+*FATCB                                                                          
+       ++INCLUDE FATCB                                                          
+         EJECT                                                                  
+*DMDTFPH                                                                        
+       ++INCLUDE DMDTFPH                                                        
+         EJECT                                                                  
+*DMDTFIS                                                                        
+       ++INCLUDE DMDTFIS                                                        
+         EJECT                                                                  
+*DMSYSFD                                                                        
+       ++INCLUDE DMSYSFD                                                        
+         EJECT                                                                  
+*FASSB                                                                          
+       ++INCLUDE FASSB                                                          
+         EJECT                                                                  
+*FAWLMD                                                                         
+       ++INCLUDE FAWLMD                                                         
+         EJECT                                                                  
+*FAWLMED                                                                        
+       ++INCLUDE FAWLMED                                                        
+                                                                                
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'002DMDTFIOA  02/16/17'                                      
+         END                                                                    

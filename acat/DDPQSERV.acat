@@ -1,0 +1,941 @@
+*          DATA SET DDPQSERV   AT LEVEL 003 AS OF 04/08/20                      
+*CATALP PQSERV                                                                  
+**********************************************************************          
+* PQSERV - PRINT QUEUE SERVICES                                      *          
+* PARAMETERS:                                                        *          
+*                                                                    *          
+* AL1 N/D                                                            *          
+* AL3 ADR PQSERVD - PRINT QUEUE SERVICES DATA BLOCK                  *          
+*                                                                    *          
+* AL1 RETURN CODE                                                    *          
+*     VALUES:  0 - OK, ELSE IO ERROR CODE                            *          
+* AL3 ADR COMFACS                                                    *          
+**********************************************************************          
+         TITLE 'DDPQSERV - PRINTER QUEUE SERVICES'                              
+PQSERV   CSECT                                                                  
+         PRINT NOGEN                                                            
+         NMOD1 WORKX-WORKD,*PQSERV*,CLEAR=YES,RA,R9                             
+*                                                                               
+         USING WORKD,RC            CONTROLLER COMMON STORAGE                    
+         ST    R1,APARM                                                         
+         ST    RA,RELO                                                          
+         MVC   PARM,0(R1)                                                       
+         ICM   R8,15,APQSERVD                                                   
+         USING PQSERVD,R8                                                       
+         XC    PQSRETC,PQSRETC                                                  
+         ICM   RE,15,ACOMFACS                                                   
+         USING COMFACSD,RE         ADDRESS COMFACS                              
+         MVC   VDATAMGR,CDATAMGR                                                
+         MVC   VDATCON,CDATCON                                                  
+         MVC   VGETDAY,CGETDAY                                                  
+         MVC   VGETRET,CGETRET                                                  
+         MVC   VHEXOUT,CHEXOUT                                                  
+         MVC   VHEXIN,CHEXIN                                                    
+         DROP  RE                                                               
+*                                                                               
+***********************************************************************         
+* UPON ENTRY, RF HOLDS A(PQSERV) IN ITS LOW ORDER THREE BYTES AND               
+* THE ROUTINE NUMBER IN ITS HIGH ORDER BYTE.  THE ROUTINE NUMBER                
+* IS USED TO BRANCH TO THE DESIRED ROUTINE.                                     
+* ROUTINE NUMBER OF 0 IS THE START UP ROUTINE.                                  
+***********************************************************************         
+         SRL   RF,24               BRANCH TO DESIRED ROUTINE                    
+         SLL   RF,2                                                             
+         B     VBRANCH(RF)                                                      
+***********************************************************************         
+* TABLE OF BRANCH ADDRESSES TO APPLICATION ROUTINES                             
+***********************************************************************         
+VBRANCH  B     VSTARTUP                                                         
+         B     VGETFILL                                                         
+         B     VINITBUF                                                         
+         B     VGETNDX                                                          
+         B     VGETNXT                                                          
+         B     VREPATTR                                                         
+         B     VSETFORM                                                         
+         B     VRNDPAGE                                                         
+         B     VFIRSTLN                                                         
+         B     VNEXTLN                                                          
+         EJECT                                                                  
+***********************************************************************         
+* THIS ROUTINE IS CALLED AT THE START TIO SET ADDERSSES OF PQSERV     *         
+* ROUTINES IN PQSERVD DATA BLOCK.                                     *         
+***********************************************************************         
+VSTARTUP DS    0H                                                               
+         LA    R2,PQSERV           R2 = A(PQSERV ROUTINE)                       
+         SR    R3,R3               R3 = ROUTINE NUMBER = 0                      
+         LA    R4,PQSROUT          R4 = A(FIRST ROUTINE ADDRESS)                
+         LA    R5,PQSROUTN         R5 = NUMBER OF APPLICATION ROUTINES          
+*                                                                               
+         LTR   R5,R5               IF NO APPL ROUTINES THEN DONE                
+         BZ    SUYES                                                            
+*                                                                               
+SU010    ST    R2,0(R4)            SAVE A(PQSERV) IN LAST 3 BYTES               
+         STC   R3,0(R4)            SAVE ROUTINE NUMBER IN FIRST BYTE            
+*                                                                               
+         LA    R3,1(R3)            BUMP ROUTINE NUMBER                          
+         LA    R4,4(R4)            BUMP TO NEXT ROUTINE ADDRESS                 
+         BCT   R5,SU010            LOOP BACK                                    
+         B     SUYES                                                            
+*                                                                               
+SUNO     B     NO                                                               
+SUYES    B     YES                                                              
+         EJECT                                                                  
+***********************************************************************         
+* THIS ROUTINE GETS THE PRINT QUEUE FILE NUMBER LIST INTO PQSFLIST    *         
+***********************************************************************         
+VGETFILL DS    0H                                                               
+*                                                                               
+         CLI   PQSDSET,C'Y'        IGNORE IF PQ TO MVS DATA SET                 
+         BE    GFYES                                                            
+         LA    R5,PQSINDX          R5 = A(INDEX)                                
+         USING UKRECD,R5                                                        
+         GOTO1 VDATAMGR,DMCB,(X'00',GLIST),PRTQUE,PQSINDX,             +        
+               PQSIOL,PQSBUFF                                                   
+         L     RE,UKUSRINF                                                      
+         CLI   0(RE),0             CHECK NUM OF PRTQ FILES                      
+         BE    GFERR1                                                           
+         CLI   0(RE),PQSFNUMQ      MAXIMUM NUMBER                               
+         BH    GFERR1                                                           
+         SR    R1,R1               R1=NUM OF FILES IN LIST                      
+         IC    R1,0(RE)                                                         
+         LA    R1,2(R1)            ADD TWO FOR HDR AND TRL                      
+         SLL   R1,3                                                             
+         BCTR  R1,0                                                             
+         EX    R1,*+8                                                           
+         B     *+10                                                             
+         MVC   PQSFLIST(0),0(RE)   COPY PRTQ LIST TO MY OWN AREA                
+         XC    PQSFLSTX,PQSFLSTX   SET END OF MAXIMUM LIST                      
+         B     GFYES               RETURN 'YES'                                 
+*                                                                               
+*                                  PQSRGFIL ERROR 1                             
+GFERR1   MVC   PQSRETC,=Y(PQSRGF1Q)                                             
+         B     IBNO                                                             
+*                                                                               
+GFNO     B     NO                                                               
+GFYES    B     YES                                                              
+         DROP  R5                                                               
+         EJECT                                                                  
+***********************************************************************         
+* THIS ROUTINE INITIALIZES THE BUFFER USED TO CALL VDATAMGR WITH PRINT*         
+* QUEUE COMMANDS.  EITHER USES PQ FILE ID IN PQSPQID OR GETS PQ FILE  *         
+* ID USING THE USER ID PASSED IN PQSUSER WITH 'GFILE' CALL.           *         
+* IT THEN ISSUES A 'BUFFER' CALL TO VDATAMGR WITH THE PQ BUFFER       *         
+* AREA.  THE BUFFER MUST ALSO BE PASSED TO VDATAMGR ON ALL PRINT      *         
+* QUEUE COMMANDS.  IT THEN SAVES THE DISPLACEMENT TO THE SAVE DATA AND*         
+* THE LABEL FOR THIS TASK WHICH ARE BOTH FOUND IN THE BUFFER. THE     *         
+* ROUTINE WILL RETURN 'NO' IF VDATAMGR RETURNS AN ERROR AND 'YES'     *         
+* OTHERWISE.                                                          *         
+***********************************************************************         
+VINITBUF DS    0H                                                               
+         CLI   PQSDSET,C'Y'        IGNORE IF PQ TO MVS DATA SET                 
+         BE    GFYES                                                            
+         XC    PQSINDX,PQSINDX     GET PRTQ FILE FOR THIS USER ID               
+         OC    PQSUSER,PQSUSER                                                  
+         BZ    IB10                                                             
+         MVC   PQSINDX+UKSRCID-UKINDEX(2),PQSUSER                               
+         GOTO1 VDATAMGR,DMCB,(X'00',GFILE),PRTQUE,PQSINDX,             +        
+               PQSIOL,PQSBUFF                                                   
+         CLI   8(R1),0                                                          
+         BNE   IBPQID              DISK ERROR                                   
+         MVC   PQSPQID,PQSINDX+UKUSRINF-UKINDEX                                 
+*                                                                               
+IB10     EQU   *                   INITIALIZE BUFFER                            
+         OC    PQSPQID,PQSPQID                                                  
+         BZ    IBPARM                                                           
+         GOTO1 VDATAMGR,DMCB,(X'00',BUFFER),PQSPQID,PQSINDX,           +        
+               PQSIOL,PQSBUFF,0                                                 
+         CLI   8(R1),0                                                          
+         BNE   IBBUF               DISK ERROR                                   
+*                                                                               
+         L     R5,PQSBUFF          R5 = A(PQ BUFFER)                            
+         USING PQRECD,R5                                                        
+*                                                                               
+         MVC   PQSSVD,8(R5)        SAVE DISPLACEMENT TO SAVE DATA               
+*                                                                               
+         L     RF,PQSSVD           R7 = A(SAVE DATA AT END OF BUFFER)           
+         AR    RF,R5                                                            
+         USING SKBUFFD,RF                                                       
+         MVC   PQSLABEL,SKLABEL    SAVE PQ BUFFER LABEL FOR THIS TASK           
+         DROP  RF                                                               
+*                                                                               
+* ??     MVC   PQSNLXTB,VALOCHRS   MOVE VALOCHRS TO NEXTLIN XLATE TAB           
+*                                                                               
+         MVI   PQSNLXTB,X'40'      SET NULLS TO SPACES                          
+*                                                                               
+         LA    RF,PQSNLXTB         ADD BOX DRAW CHAR MASK TO PQSNLXTB           
+         LA    RE,BOXMASK                                                       
+         LA    R1,256                                                           
+*                                                                               
+IB50     CLI   0(RE),0             IF MASK CHAR IS NOT ZERO                     
+         BE    IB52                                                             
+*NOP     CLI   0(RF),X'A1'         IGNORE CHECK WRITE CHR FOR GER               
+*NOP     BNE   IB51                                                             
+*NOP     L     R6,AUTL                                                          
+*NOP     CLI   TCTRY-UTLD(R6),3                                                 
+*NOP     BE    IB52                                                             
+*                                                                               
+IB51     MVC   0(1,RF),0(RE)       THEN SAVE IT IN PQSNLXTB                     
+IB52     LA    RF,1(RF)                                                         
+         LA    RE,1(RE)                                                         
+         BCT   R1,IB50             REPEAT FOR EACH MASK                         
+*                                                                               
+         MVI   PQSEOF,C'N'         INITIALISE END OF FILE INDICATOR             
+         B     IBYES               RETURN 'YES'                                 
+*                                                                               
+*                                  MISSING INPUT PARAMETER                      
+IBPARM   MVC   PQSRETC,=Y(PQSRIB1Q)                                             
+         B     IBNO                                                             
+*                                  DISK ERROR DURING PQ ID CALL                 
+IBPQID   MVC   PQSRETC,=Y(PQSRIB2Q)                                             
+         B     IBNO                                                             
+*                                  DISK ERROR DURING PQ BUFFER CALL             
+IBBUF    MVC   PQSRETC,=Y(PQSRIB3Q)                                             
+*                                                                               
+IBNO     B     NO                                                               
+*                                                                               
+IBYES    B     YES                                                              
+         EJECT                                                                  
+***********************************************************************         
+* THIS ROUTINE CALLS VDATAMGR WITH AN 'INDEX' CALL.                             
+* IT BUILDS THE INDEX KEY FROM THE VALUES PASSED IN THE                         
+* PQSERVD DATA BLOCK. NULL REPORT ID CAUSES SEQUENTIAL READ OF INDEX            
+* ELSE READ INDEX FOR SPECIFIC PQ ID                                            
+* UPON RETURNING FROM VDATAMGR, THE END OF FILE AND DISK ERROR                  
+* CONDITIONS ARE CHECKED.  IF THERE IS AN ERROR, THE ROUTINE RETURNS            
+* 'NO'.  OTHERWISE, IT FILLS THE PQSERVD DATA BLOCK WITH THE REPORT'S           
+* USER-ID, SUB-ID, AND SEQUENCE NUMBER AND RETURNS 'YES'.                       
+***********************************************************************         
+VGETNDX  DS    0H                                                               
+         CLI   PQSDSET,C'Y'        IGNORE IF PQ TO MVS DATA SET                 
+         BE    GFYES                                                            
+         MVI   PQSEOF,C'N'         END OF FILE INDICATOR = 'N'                  
+*                                                                               
+         LA    R5,PQSINDX          R5 = A(INDEX)                                
+         USING UKRECD,R5                                                        
+*                                                                               
+         XC    PQSINDX,PQSINDX                                                  
+         MVC   UKSRCID,PQSUSER                                                  
+         MVC   UKSUBID,PQSSUBID                                                 
+         MVC   UKREPNO,PQSREPNO                                                 
+*                                  READ REPORT INDEX                            
+GX10     EQU   *                                                                
+         GOTO1 VDATAMGR,DMCB,(X'08',INDEX),PQSPQID,PQSINDX,            +        
+               PQSIOL,PQSBUFF,0                                                 
+         TM    8(R1),X'80'                                                      
+         BO    GXEOF               END OF FILE                                  
+         CLI   8(R1),0                                                          
+         BNE   GXIND               DISK ERROR                                   
+*                                                                               
+* ??     L     RF,ATWA             DON'T ALLOW AGENCIES TO SEE REPORTS          
+*        CLC   UKSRCID,10(RF)          THAT ARE NOT THEIRS                      
+*        BNE   GX10                                                             
+*                                  RETURN REPORT INDEX PARAMETERS               
+         MVC   PQSUSER,UKSRCID                                                  
+         MVC   PQSSUBID,UKSUBID                                                 
+         MVC   PQSREPNO,UKREPNO                                                 
+*                                                                               
+         MVC   PQSCLASS,UKCLASS                                                 
+         MVC   PQSTYPE,UKTYPE                                                   
+         MVC   PQSATTB,UKATTB                                                   
+         MVC   PQSSTAT,UKSTAT                                                   
+*                                                                               
+         L     RF,PQSBUFF          POINT R7 TO END OF BUFFER                    
+         A     RF,PQSSVD                                                        
+         USING SKBUFFD,RF                                                       
+         MVC   PQSSAVEB,SKBCTRL    SAVE WHOLE END OF BUFFER                     
+         DROP  RF                                                               
+*                                  SAVE OFFICE ID IN 8-BYTE EBCDIC              
+* ??     GOTO1 CONVOFF,DMCB,UKSRCID,IQOFFICE                                    
+*        BNE   GXOFF                                                            
+*                                                                               
+         MVC   PQSSUBID,UKSUBID    SAVE SUB ID                                  
+*                                                                               
+         MVC   PQSREPNO,UKREPNO                                                 
+         B     GXYES                                                            
+*                                                                               
+GXEOF    MVI   PQSEOF,C'Y'         END OF FILE INDICATOR = 'Y'                  
+         B     GXNO                                                             
+*                                  DISK ERROR DURING PQ INDEX CALL              
+GXIND    MVC   PQSRETC,=Y(PQSRGX1Q)                                             
+         B     GXNO                                                             
+*                                  UNABLE TO FIND OFFICE IN CTFILE              
+GXOFF    MVC   PQSRETC,=Y(PQSRGX2Q)                                             
+*                                                                               
+GXNO     B     NO                                                               
+*                                                                               
+GXYES    B     YES                                                              
+         EJECT                                                                  
+***********************************************************************         
+* THIS ROUTINE CALLS VDATAMGR WITH AN 'INDEX' CALL TO READ THE NEXT             
+* ENTRY IN SEQUENCE                                                             
+*                                                                               
+* UPON RETURNING FROM VDATAMGR, THE END OF FILE AND DISK ERROR                  
+* CONDITIONS ARE CHECKED.  IF THERE IS AN ERROR, THE ROUTINE RETURNS            
+* 'NO'.  OTHERWISE, IT FILLS THE PQSERVD DATA BLOCK WITH THE REPORT'S           
+* USER-ID, SUB-ID, AND SEQUENCE NUMBER AND RETURNS 'YES'.                       
+***********************************************************************         
+VGETNXT  DS    0H                                                               
+         CLI   PQSDSET,C'Y'        IGNORE IF PQ TO MVS DATA SET                 
+         BE    GNYES                                                            
+         MVI   PQSEOF,C'N'         END OF FILE INDICATOR = 'N'                  
+*                                                                               
+         LA    R5,PQSINDX          R5 = A(INDEX)                                
+         USING UKRECD,R5                                                        
+*                                  READ REPORT INDEX                            
+GN10     EQU   *                                                                
+         GOTO1 VDATAMGR,DMCB,(X'08',INDEX),PQSPQID,PQSINDX,            +        
+               PQSIOL,PQSBUFF,0                                                 
+         TM    8(R1),X'80'                                                      
+         BO    GNEOF               END OF FILE                                  
+         CLI   8(R1),0                                                          
+         BNE   GNIND               DISK ERROR                                   
+*                                                                               
+* ??     L     RF,ATWA             DON'T ALLOW AGENCIES TO SEE REPORTS          
+*        CLC   UKSRCID,10(RF)          THAT ARE NOT THEIRS                      
+*        BNE   GN10                                                             
+*                                  RETURN REPORT INDEX PARAMETERS               
+         MVC   PQSUSER,UKSRCID                                                  
+         MVC   PQSSUBID,UKSUBID                                                 
+         MVC   PQSREPNO,UKREPNO                                                 
+*                                                                               
+         MVC   PQSCLASS,UKCLASS                                                 
+         MVC   PQSTYPE,UKTYPE                                                   
+         MVC   PQSATTB,UKATTB                                                   
+         MVC   PQSSTAT,UKSTAT                                                   
+*                                                                               
+         L     RF,PQSBUFF          POINT R7 TO END OF BUFFER                    
+         A     RF,PQSSVD                                                        
+         USING SKBUFFD,RF                                                       
+         MVC   PQSSAVEB,SKBCTRL    SAVE WHOLE END OF BUFFER                     
+         DROP  RF                                                               
+*                                  SAVE OFFICE ID IN 8-BYTE EBCDIC              
+* ??     GOTO1 CONVOFF,DMCB,UKSRCID,IQOFFICE                                    
+*        BNE   GNOFF                                                            
+*                                                                               
+         MVC   PQSSUBID,UKSUBID    SAVE SUB ID                                  
+*                                                                               
+         MVC   PQSREPNO,UKREPNO                                                 
+         B     GNYES                                                            
+*                                                                               
+GNEOF    MVI   PQSEOF,C'Y'         END OF FILE INDICATOR = 'Y'                  
+         B     GNNO                                                             
+*                                  DISK ERROR DURING PQ INDEX CALL              
+GNIND    MVC   PQSRETC,=Y(PQSRGN1Q)                                             
+         B     GNNO                                                             
+*                                  UNABLE TO FIND OFFICE IN CTFILE              
+GNOFF    MVC   PQSRETC,=Y(PQSRGN2Q)                                             
+*                                                                               
+GNNO     B     NO                                                               
+*                                                                               
+GNYES    B     YES                                                              
+         EJECT                                                                  
+***********************************************************************         
+* THIS ROUTINE READS THE HEADER PAGE OF THE REPORT AND FILLS THE                
+* PQSERVD DATA BLOCK WITH SOME OF ITS ATTRIBUTES.                               
+***********************************************************************         
+VREPATTR DS    0H                                                               
+         CLI   PQSDSET,C'Y'        IGNORE IF PQ TO MVS DATA SET                 
+         BE    RAYES                                                            
+*                                                                               
+         MVC   PQSPAGE,=F'0'                                                    
+         ICM   RF,15,ACOMFACS                                                   
+         GOTO1 PQSRRPAG,DMCB,PQSERVD,(RF)                                       
+         BNE   RAHDR                                                            
+*                                                                               
+         L     R5,PQSBUFF          R5 = A(REPORT HEADER RECORD)                 
+         USING PQRECD,R5                                                        
+         MVI   PQSREPS,0           PQXREPS NO LONGER EXISTS                     
+         MVC   PQSATTB,PQATTB      SAVE REPORT ATTRIBUTES IN STORAGE            
+         MVC   PQSSTAT,PQSTAT      SAVE REPORT STATUS IN STORAGE                
+         TM    PQTYPE,PQTYNEW                                                   
+         BZ    VREOAT1                                                          
+                                                                                
+VREPAT1  SR    RF,RF               SAVE NUMBER OF PAGES IN STORAGE              
+         ICM   RF,3,PQPAGES                                                     
+         ST    RF,PQSPAGES                                                      
+         SR    RF,RF               SAVE NUMBER OF LINES IN STORAGE              
+         ICM   RF,7,PQLINES                                                     
+         ST    RF,PQSLINES                                                      
+*                                  CONVERT START DATE TO 6-BYTE FORM            
+         GOTO1 VDATCON,DMCB,(2,PQDATEL),(0,WORK)                                
+*                                  SET DATE/TIME CREATED (MMDDHHMM)             
+         MVC   PQSCREAT(4),WORK+2                                               
+         LA    R3,PQSCREAT+4                                                    
+         LA    R4,PQTIMEL                                                       
+         EDIT  (1,0(R4)),(2,0(R3)),FILL=0                                       
+         EDIT  (1,1(R4)),(2,2(R3)),FILL=0                                       
+*                                                                               
+         LA    R2,BLOCK            CALL GETRET TO CALCULATE DATE/TIME           
+         USING GETRETD,R2              EXPIRES (MMDDHHMM)                       
+         GOTO1 VDATCON,DMCB,(0,WORK),(3,GRDIDY)                                 
+         MVC   GRDITH(2),PQTIMEL                                                
+         MVC   GRDHRS,PQRETNL      SET LIVE RETAIN                              
+         TM    PQSTAT,PQSTLIVE     TEST LIVE                                    
+         BNZ   *+10                                                             
+         MVC   GRDHRS,PQRETND      SET DEAD RETAIN                              
+         GOTO1 VGETRET,(R2)                                                     
+*                                  SET DATE/TIME EXPIRES (MMDDHHMM)             
+         GOTO1 VDATCON,DMCB,(3,GRDODY),(0,WORK)                                 
+         MVC   PQSEXPIR(4),WORK+2                                               
+         LA    R3,PQSEXPIR+4                                                    
+         LA    R4,GRDOTH                                                        
+         EDIT  (1,0(R4)),(2,0(R3)),FILL=0                                       
+         EDIT  (1,1(R4)),(2,2(R3)),FILL=0                                       
+*                                                                               
+         MVC   PQSDESC,PQDESC      SAVE REPORT DESCRIPTION                      
+*                                  DETERMINE REPORT FORMAT                      
+         ICM   RF,15,ACOMFACS                                                   
+         GOTO1 PQSRFORM,DMCB,PQSERVD,(RF)                                       
+         BNE   RANO                                                             
+*                                                                               
+         GOTO1 VHEXOUT,DMCB,PQTYPE,PQSHTYPE,1                                   
+         EDIT  (B1,PQPRCNT),(2,PQSSCNT),FILL=0                                  
+         MVC   PQSSLUID,PQPRSYM                                                 
+         GOTO1 VDATCON,DMCB,(2,PQDATED),(0,WORK)                                
+*                                  SET DATE/TIME SENT (MMDDHHMM)                
+         MVC   PQSSENT(4),WORK+2                                                
+         LA    R3,PQSSENT+4                                                     
+         LA    R4,PQTIMED                                                       
+         EDIT  (1,0(R4)),(2,0(R3)),FILL=0                                       
+         EDIT  (1,1(R4)),(2,2(R3)),FILL=0                                       
+         MVC   PQSMAKER,PQMAKER                                                 
+         GOTO1 VHEXOUT,DMCB,PQAGES,PQSSIZE,1                                    
+*                                                                               
+         B     RAYES               RETURN 'YES'                                 
+                                                                                
+VREOAT1  SR    RF,RF               SAVE NUMBER OF PAGES IN STORAGE              
+         ICM   RF,3,OQPAGES                                                     
+         ST    RF,PQSPAGES                                                      
+         SR    RF,RF               SAVE NUMBER OF LINES IN STORAGE              
+         ICM   RF,7,OQLINES                                                     
+         ST    RF,PQSLINES                                                      
+*                                  CONVERT START DATE TO 6-BYTE FORM            
+         GOTO1 VDATCON,DMCB,(2,OQDATEL),(0,WORK)                                
+*                                  SET DATE/TIME CREATED (MMDDHHMM)             
+         MVC   PQSCREAT(4),WORK+2                                               
+         LA    R3,PQSCREAT+4                                                    
+         LA    R4,OQTIMEL                                                       
+         EDIT  (1,0(R4)),(2,0(R3)),FILL=0                                       
+         EDIT  (1,1(R4)),(2,2(R3)),FILL=0                                       
+*                                                                               
+         LA    R2,BLOCK            CALL GETRET TO CALCULATE DATE/TIME           
+         USING GETRETD,R2              EXPIRES (MMDDHHMM)                       
+         GOTO1 VDATCON,DMCB,(0,WORK),(3,GRDIDY)                                 
+         MVC   GRDITH(2),OQTIMEL                                                
+         MVC   GRDHRS,OQRETNL      SET LIVE RETAIN                              
+         TM    PQSTAT,PQSTLIVE     TEST LIVE                                    
+         BNZ   *+10                                                             
+         MVC   GRDHRS,OQRETND      SET DEAD RETAIN                              
+         GOTO1 VGETRET,(R2)                                                     
+*                                  SET DATE/TIME EXPIRES (MMDDHHMM)             
+         GOTO1 VDATCON,DMCB,(3,GRDODY),(0,WORK)                                 
+         MVC   PQSEXPIR(4),WORK+2                                               
+         LA    R3,PQSEXPIR+4                                                    
+         LA    R4,GRDOTH                                                        
+         EDIT  (1,0(R4)),(2,0(R3)),FILL=0                                       
+         EDIT  (1,1(R4)),(2,2(R3)),FILL=0                                       
+*                                                                               
+         MVC   PQSDESC,OQDESC      SAVE REPORT DESCRIPTION                      
+*                                  DETERMINE REPORT FORMAT                      
+         ICM   RF,15,ACOMFACS                                                   
+         GOTO1 PQSRFORM,DMCB,PQSERVD,(RF)                                       
+         BNE   RANO                                                             
+*                                                                               
+         GOTO1 VHEXOUT,DMCB,PQTYPE,PQSHTYPE,1                                   
+         EDIT  (B1,OQPRCNT),(2,PQSSCNT),FILL=0                                  
+         MVC   PQSSLUID,OQPRSYM                                                 
+         GOTO1 VDATCON,DMCB,(2,OQDATED),(0,WORK)                                
+*                                  SET DATE/TIME SENT (MMDDHHMM)                
+         MVC   PQSSENT(4),WORK+2                                                
+         LA    R3,PQSSENT+4                                                     
+         LA    R4,OQTIMED                                                       
+         EDIT  (1,0(R4)),(2,0(R3)),FILL=0                                       
+         EDIT  (1,1(R4)),(2,2(R3)),FILL=0                                       
+         MVC   PQSMAKER,OQMAKER                                                 
+         GOTO1 VHEXOUT,DMCB,PQAGES,PQSSIZE,1                                    
+*                                                                               
+         B     RAYES                RETURN 'YES'                                
+                                                                                
+RAHDR    MVC   PQSRETC,=Y(PQSRRA1Q) DISK ERROR DURING READ OF HEADER            
+*                                                                               
+RANO     B     NO                                                               
+*                                                                               
+RAYES    B     YES                                                              
+         EJECT                                                                  
+***********************************************************************         
+* THIS ROUTINE DETERMINES WHETHER THE REPORT IS IN DATA OR TEXT FORMAT.         
+* IT DOES SO BY READING THROUGH THE SECOND PAGE (IF IT HAS ONE) AND             
+* LOOKING FOR A LINE THAT ENDS WITH ' ;'.  IF IT FINDS SUCH A LINE,             
+* THEN THE REPORT IS IN DATA FORMAT.  OTHERWISE IT IS IN TEXT FORMAT.           
+* THE ROUTINE SETS THE VARIABLE PQSFORM TO 'D' FOR DATA FORMAT AND 'T'          
+* FOR TEXT FORMAT. THE ROUTINE RETURNS 'NO' IF ONE OF THE ROUTINES IT           
+* CALLS HAS A PROBLEM.  OTHERWISE IT RETURNS 'YES'.                             
+***********************************************************************         
+VSETFORM DS    0H                                                               
+         MVI   PQSFORM,C'T'        INIT FORMAT TO TEXT                          
+*                                                                               
+         CLC   PQSPAGES,=F'2'      IF REPORT DOESN'T HAVE EXACTLY TWO           
+         BNE   SFYES                   PAGES THEN NOT DATA FORMAT               
+*                                                                               
+         MVC   PQSPAGE,=F'2'       READ SECOND PAGE OF REPORT                   
+         ICM   RF,15,ACOMFACS                                                   
+         GOTO1 PQSRRPAG,DMCB,PQSERVD,(RF)                                       
+         BNE   SFNO                                                             
+*                                                                               
+SF10     EQU   *                   READ NEXT LINE                               
+         ICM   RF,15,ACOMFACS                                                   
+         GOTO1 PQSRNLIN,DMCB,PQSERVD,(RF)                                       
+         BNE   SFNO                                                             
+*                                                                               
+         CLI   PQSEOF,C'Y'         IF END OF FILE THEN NOT DATA FORMAT          
+         BE    SFYES                                                            
+*                                                                               
+         L     RF,PQSLEN           ELSE IF PQ LINE ENDS WITH SPACE AND          
+         SH    RF,=H'2'                A SEMICOLON THEN REPORT IS IN            
+         LA    RF,PQSIOL+1(RF)         DATA FORMAT                              
+         CLC   0(2,RF),=X'405E'                                                 
+         BE    SF20                                                             
+*                                                                               
+         B     SF10                ELSE TRY NEXT LINE                           
+*                                                                               
+SF20     MVI   PQSFORM,C'D'        REPORT IS IN DATA FORMAT                     
+         B     SFYES               RETURN 'YES'                                 
+*                                                                               
+SFNO     B     NO                                                               
+*                                                                               
+SFYES    B     YES                                                              
+         EJECT                                                                  
+***********************************************************************         
+* THIS ROUTINE READS FOR THE BEGINNING OF THE PAGE SPECIFIED IN                 
+* PQSPAGE.                                                                      
+* IT SETS PQSLINE TO 0, AND PQSEJECT TO 'N'. IT THEN SAVES THE SAVE             
+* DATA AT THE END OF THE BUFFER.  A CALL TO FIRSTLIN WILL NOW RETURN            
+* THE FIRST PRINT LINE OF THIS PAGE.                                            
+***********************************************************************         
+VRNDPAGE DS    0H                                                               
+         MVC   PQSLINE,=F'0'       PQSLINE = 0                                  
+         MVI   PQSEJECT,C'N'       PQSEJECT = 'N'                               
+*                                                                               
+         CLI   PQSDSET,C'Y'        IGNORE IF PQ TO MVS DATA SET                 
+         BE    RPDSET                                                           
+*                                                                               
+         XC    PQSIOL,PQSIOL       READ TO BEGINNING OF PAGE                    
+         MVC   PQSIOL+0(4),PQSPAGE                                              
+         MVC   PQSIOL+4(4),=C'PAGE'                                             
+         GOTO1 VDATAMGR,DMCB,(X'01',RANDOM),PQSPQID,PQSINDX,           +        
+               PQSIOL,PQSBUFF,0                                                 
+         CLI   8(R1),0                                                          
+         BNE   RPPAGE              DISK ERROR                                   
+*                                                                               
+         L     RF,PQSBUFF          POINT R7 TO END OF BUFFER                    
+         A     RF,PQSSVD                                                        
+         USING SKBUFFD,RF                                                       
+         MVC   PQSSAVEB,SKBCTRL    SAVE WHOLE END OF BUFFER                     
+         B     RPYES               RETURN 'YES'                                 
+         DROP  RF                                                               
+*                                                                               
+RPDSET   EQU   *                                                                
+         CLI   PQSDSOPN,C'Y'                                                    
+         BNE   RPDS010                                                          
+         L     R2,=A(PQDSET)                                                    
+         CLOSE ((R2))                                                           
+*                                                                               
+RPDS010  EQU   *                                                                
+         L     R2,=A(PQDSET)                                                    
+         OPEN  ((R2),(INPUT))                                                   
+         LTR   RF,RF                                                            
+         BZ    *+6                                                              
+         DC    H'0'                                                             
+         MVI   PQSDSOPN,C'Y'                                                    
+         MVC   PAGESAVE,PQSPAGE                                                 
+         MVC   PQSPAGE,=F'0'                                                    
+*                                  READ NEXT LINE                               
+RPDS012  EQU   *                                                                
+         ICM   RF,15,ACOMFACS                                                   
+         GOTO1 PQSRNLIN,DMCB,PQSERVD,(RF)                                       
+         BNE   RPNO                                                             
+         CLI   PQSEOF,C'Y'                                                      
+         BE    RPYES                                                            
+         CLC   PQSPAGE,PAGESAVE                                                 
+         BH    RPPAGE                                                           
+         CLC   PQSPAGE,PAGESAVE                                                 
+         BE    RPYES                                                            
+         B     RPDS012                                                          
+*                                  DISK ERROR DURING READ OF PAGE               
+RPPAGE   MVC   PQSRETC,=Y(PQSRRP1Q)                                             
+         BE    RPNO                                                             
+*                                                                               
+RPNO     B     NO                                                               
+*                                                                               
+RPYES    B     YES                                                              
+         EJECT                                                                  
+***********************************************************************         
+* READ FIRST PRINT LINE FOR THIS TRANSACTION.  DO SO BY RESTORING THE           
+* PQ BUFFER TO ITS STATE FOLLOWING EITHER THE RANDOM READ OF A PAGE             
+* OR THE LAST READ OF THE PREVIOUS TRANSACTION.  THEN READ                      
+* SEQUENTIALLY FOR THE NEXT PRINT LINE.                                         
+***********************************************************************         
+VFIRSTLN DS    0H                                                               
+         L     R5,PQSBUFF          R5 = A(TIA)                                  
+         USING PQRECD,R5                                                        
+*                                                                               
+         CLI   PQSDSET,C'Y'        IGNORE IF PQ TO MVS DATA SET                 
+         BE    FLDSET                                                           
+*                                                                               
+FLPQ     EQU   *                                                                
+         L     R6,PQSSVD           RESTORE END OF BUFFER                        
+         AR    R6,R5                                                            
+         USING SKBUFFD,R6                                                       
+         MVC   SKBUFFD(SKEND-SKBCTRL),PQSSAVEB                                  
+         MVC   SKLABEL,PQSLABEL                                                 
+         XC    SKFCTRL,SKFCTRL                                                  
+         MVC   SKFSTCI,PQSSAVEB+SKFSTCI-SKLABEL                                 
+*                                                                               
+         XC    PQSINDX,PQSINDX     RESTORE INDEX                                
+         MVC   PQSINDX(L'SKINDEX),SKINDEX                                       
+*                                                                               
+         XC    PQSIOL(4),PQSIOL    READ HEADER RECORD FOR REPORT                
+         MVC   PQSIOL+4(4),=C'PAGE'                                             
+         GOTO1 VDATAMGR,DMCB,(X'00',RANDOM),PQSPQID,PQSINDX,           +        
+               PQSIOL,(R5),0                                                    
+         CLI   8(R1),0                                                          
+         BNE   FLCONT1             DISK ERROR                                   
+*                                                                               
+         CLC   PQSUSER,PQSRCID     ERROR IF NOT SAME REPORT AS BEFORE           
+         BNE   FLCONT2                                                          
+         CLC   PQSSUBID,PQSUBID                                                 
+         BNE   FLCONT2                                                          
+         CLC   PQSREPNO,PQREPNO                                                 
+         BNE   FLCONT2                                                          
+*                                  READ LAST BLOCK INTO BUFFER                  
+         MVC   SKBUFFD(SKEND-SKLABEL),PQSSAVEB                                  
+         MVC   SKLABEL,PQSLABEL                                                 
+         MVC   FULL,SKADDR                                                      
+         OC    FULL,FULL                                                        
+         BZ    FLCONT3                                                          
+         GOTO1 VDATAMGR,DMCB,(X'01',DMREAD),PQSPQID,FULL,(R5),0                 
+         CLI   8(R1),0                                                          
+         BNE   FLCONT4             DISK ERROR                                   
+*                                                                               
+         CLC   PQSUSER,PQSRCID     ERROR IF NOT SAME REPORT AS BEFORE           
+         BNE   FLCONT5                                                          
+         CLC   PQSSUBID,PQSUBID                                                 
+         BNE   FLCONT5                                                          
+*********CLC   PQSREPNO,PQREPNO    COMMENTED OUT BECAUSE REPNO COULD            
+*********BNE   FLCONT5                 CHANGE DURING PQMAINT                    
+         B     FLNEXT                                                           
+*                                                                               
+FLDSET   EQU   *                                                                
+         CLI   PQSDSOPN,C'Y'                                                    
+         BE    FLDS010                                                          
+         L     R2,=A(PQDSET)                                                    
+         OPEN  ((R2),(INPUT))                                                   
+         LTR   RF,RF                                                            
+         BZ    *+6                                                              
+         DC    H'0'                                                             
+         MVI   PQSDSOPN,C'Y'                                                    
+*                                                                               
+FLDS010  EQU   *                                                                
+*                                  READ NEXT LINE                               
+FLNEXT   EQU   *                                                                
+         ICM   RF,15,ACOMFACS                                                   
+         GOTO1 PQSRNLIN,DMCB,PQSERVD,(RF)                                       
+         BNE   FLNO                                                             
+         B     FLYES               RETURN 'YES'                                 
+*                                                                               
+*                                  UNABLE TO CONTINUE READING REPORT            
+FLCONT1  MVC   PQSRETC,=Y(PQSRFL1Q)                                             
+         DC    H'0'                                                             
+FLCONT2  MVC   PQSRETC,=Y(PQSRFL2Q)                                             
+         DC    H'0'                                                             
+FLCONT3  MVC   PQSRETC,=Y(PQSRFL3Q)                                             
+         DC    H'0'                                                             
+FLCONT4  MVC   PQSRETC,=Y(PQSRFL4Q)                                             
+         DC    H'0'                                                             
+FLCONT5  MVC   PQSRETC,=Y(PQSRFL5Q)                                             
+         DC    H'0'                                                             
+*                                                                               
+FLNO     B     NO                                                               
+FLYES    B     YES                                                              
+         DROP  R6                                                               
+         EJECT                                                                  
+***********************************************************************         
+* READ THE PRINT QUEUE SEQUENTIALLY FOR THE NEXT PRINT LINE.  UPDATE            
+* PQSPAGE AND PQSLINE WITH THE PAGE AND LINE NUMBERS OF THE NEW PRINT           
+* LINE.                                                                         
+*                                                                               
+* PQSEOF WILL INDICATE IF END OF FILE WAS REACHED (Y/N).                        
+***********************************************************************         
+VNEXTLN  DS    0H                                                               
+         MVI   PQSEOF,C'N'         END OF FILE = 'N'                            
+*                                                                               
+         CLI   PQSEJECT,C'Y'       IF LAST PRINT LINE HAD A DATA BEFORE         
+         BNE   NL10                    PQSEJECT CC CHAR                         
+*                                                                               
+         AF    PQSPAGE,=F'1'       THEN BUMP PAGE AND RESET LINE NUMBER         
+         MVC   PQSLINE,=F'0'                                                    
+         MVI   PQSEJECT,C'N'       RESET PQSEJECT FLAG                          
+*                                                                               
+*                                  READ NEXT LINE FROM PRINT QUEUE              
+NL10     EQU   *                                                                
+         CLI   PQSDSET,C'Y'        IGNORE IF PQ TO MVS DATA SET                 
+         BE    NLDSET                                                           
+*                                                                               
+NLPQ     EQU   *                                                                
+         GOTO1 VDATAMGR,DMCB,(X'01',READL),PQSPQID,PQSINDX,            +        
+               PQSIOL,PQSBUFF,0                                                 
+         TM    8(R1),X'80'                                                      
+         BO    NLEOF               END OF REPORT ENCOUNTERED                    
+         CLI   8(R1),0                                                          
+         BNE   NLLIN               DISK ERROR                                   
+*                                                                               
+         L     RF,PQSBUFF          POINT R7 TO END OF BUFFER                    
+         A     RF,PQSSVD                                                        
+         USING SKBUFFD,RF                                                       
+         MVC   PQSSAVEB,SKBCTRL    SAVE WHOLE END OF BUFFER                     
+         DROP  RF                                                               
+*                                                                               
+         SR    RF,RF               GET LINE LENGTH FROM RETURN VALUE            
+         ICM   RF,3,22(R1)             AND SUBTRACT ONE FOR CARRIAGE            
+         BCTR  RF,0                    CONTROL CHAR                             
+         ST    RF,PQSLEN                                                        
+*                                                                               
+         LTR   RF,RF               IF LENGTH NON-ZERO                           
+         BZ    NL30                                                             
+         B     NLGET                                                            
+*                                                                               
+NLDSET   EQU   *                                                                
+         CLI   PQSDSOPN,C'Y'                                                    
+         BE    NLDS010                                                          
+         L     R2,=A(PQDSET)                                                    
+         OPEN  ((R2),(INPUT))                                                   
+         LTR   RF,RF                                                            
+         BZ    *+6                                                              
+         DC    H'0'                                                             
+         MVI   PQSDSOPN,C'Y'                                                    
+*                                                                               
+NLDS010  EQU   *                                                                
+         L     R3,PQSBUFF                                                       
+         L     R2,=A(PQDSET)                                                    
+         GET   (R2),(R3)                                                        
+*                                  GET DATA LENGTH                              
+         LA    RF,198(R3)                                                       
+         LA    R1,199                                                           
+*                                                                               
+NLDS011  EQU   *                                                                
+         CLI   0(RF),0                                                          
+         BNE   NLDS012                                                          
+         BCTR  RF,0                                                             
+         BCT   R1,NLDS011                                                       
+         B     NLEDS               OVERFLOW ERROR                               
+*                                                                               
+NLDS012  EQU   *                                                                
+         SR    RF,R3                                                            
+* ??     LA    RF,1(RF)                                                         
+*                                                                               
+NLDS014  EQU   *                                                                
+         MVC   PQSIOL(1),0(R3)                                                  
+         ST    RF,PQSLEN                                                        
+         LTR   RF,RF               IF LENGTH NON-ZERO                           
+         BZ    NL30                                                             
+         BCTR  RF,0                                                             
+         EX    RF,*+8                                                           
+         B     *+10                                                             
+         MVC   PQSIOL+1(0),1(R3)                                                
+         B     NLGET                                                            
+*                                                                               
+NLGET    EQU   *                                                                
+*                                                                               
+* ??     BCTR  RF,0                TRANSLATE TO SCREEN DISPLAYABLE              
+*        EX    RF,*+8                                                           
+*        B     *+10                                                             
+*        TR    PQSIOL+1(0),PQSNLXTB                                             
+*                                                                               
+         L     RF,PQSLEN           ADJUST PRINT LINE LENGTH TO POINT            
+         LA    RE,PQSIOL(RF)           TO LAST NON-SPACE CHARACTER              
+         CLI   0(RE),X'40'                                                      
+         BH    *+10                                                             
+         BCTR  RE,0                                                             
+         BCT   RF,*-10                                                          
+         LA    RF,1(RF)                                                         
+         ST    RF,PQSLEN                                                        
+*                                                                               
+         LTR   RF,RF               IF NEW LENGTH NON-ZERO                       
+         BZ    NL30                                                             
+*                                                                               
+NL20     CLI   PQSFORM,C'D'        THEN IF REPORT IS IN DATA FORMAT             
+*        BNE   NL30                *TEMPORARILY REMOVED BY JOMU*                
+         CLI   PQSDSET,C'Y'        ANY PAGE IF PQ TO MVS DATA SET               
+         BE    *+14                                                             
+         CLC   PQSPAGE,=F'2'       AND PAGE NUMBER IS 2                         
+         BNE   NL30                                                             
+         L     RF,PQSLEN           AND LINE ENDS WITH A COLON                   
+         BCTR  RF,0                                                             
+         LA    RF,PQSIOL(RF)                                                    
+         CLI   0(RF),C':'                                                       
+         BNE   NL30                                                             
+         CLI   PQSDSET,C'Y'        IGNORE IF PQ TO MVS DATA SET                 
+         BE    NL10                                                             
+         CLI   PQSREPS,0           AND NO EMBEDDED REPORTS                      
+         BE    NLEOF               THEN END OF REPORT REACHED                   
+         B     NL10                ELSE IGNORE IT                               
+*                                                                               
+NL30     CLI   PQSIOL,X'8B'        IF CC CHAR IS EJECT BEFORE DATA              
+         BNE   NL40                                                             
+         AF    PQSPAGE,=F'1'       THEN BUMP PAGE AND RESET LINE NUMBER         
+         MVC   PQSLINE,=F'0'                                                    
+*                                                                               
+NL40     CLI   PQSIOL,X'89'        IF CC CHAR IS DATA BEFORE EJECT              
+         BNE   NL50                                                             
+         MVI   PQSEJECT,C'Y'       THEN SET FLAG TO PQSEJECT NEXT TIME          
+*                                                                               
+NL50     AF    PQSLINE,=F'1'       BUMP LINE NUMBER                             
+         B     NLYES                                                            
+*                                                                               
+NLEOF    MVI   PQSEOF,C'Y'         END OF FILE = 'Y'                            
+         B     NLYES                                                            
+*                                                                               
+PQDSEOF  EQU   *                                                                
+         L     R2,=A(PQDSET)                                                    
+         CLOSE ((R2))                                                           
+         MVI   PQSDSOPN,C'N'                                                    
+         MVI   PQSEOF,C'Y'         END OF FILE = 'Y'                            
+         B     NLYES                                                            
+*                                  DISK ERROR DURING SEQUENTIAL READ            
+NLLIN    MVC   PQSRETC,=Y(PQSRNL1Q)                                             
+         B     NLYES                                                            
+*                                  ERROR READING DATA SET REPORT                
+NLEDS    MVC   PQSRETC,=Y(PQSRNL2Q)                                             
+         DC    H'0'                                                             
+         B     NLYES                                                            
+*                                                                               
+NLNO     B     NO                                                               
+*                                                                               
+NLYES    B     YES                                                              
+         EJECT                                                                  
+***********************************************************************         
+*        VARIOUS EXIT POINTS USED BY THE ROUTINES IN THIS FILE.                 
+***********************************************************************         
+YES      SR    RC,RC               RETURN CC EQUAL                              
+NO       LTR   RC,RC               RETURN CC NOT EQUAL                          
+XIT      XIT1                                                                   
+***********************************************************************         
+*        CONSTANTS USED FOR VDATAMGR CALLS                                      
+***********************************************************************         
+BUFFER   DC    CL8'BUFFER'                                                      
+GLIST    DC    CL8'GLIST'                                                       
+GFILE    DC    CL8'GFILE'                                                       
+INDEX    DC    CL8'INDEX'                                                       
+RANDOM   DC    CL8'RANDOM'                                                      
+READL    DC    CL8'READ'                                                        
+DMREAD   DC    CL8'DMREAD'                                                      
+DMWRT    DC    CL8'DMWRT'                                                       
+PRTQUE   DC    CL8'PRTQUE'                                                      
+SPACES   DC    CL80' '                                                          
+         EJECT                                                                  
+***********************************************************************         
+* THE FOLLOWING IS A TABLE OF LASER SPECIAL CHARACTERS, THEIR                   
+* DESCRIPTIONS, THE VALUE THEY TRANSLATE INTO AFTER BEING READ FROM             
+* THE PRINT QUEUE, AND THE VALUES THEY AGAIN ARE TRANSLATED INTO BEFORE         
+* GOING OUT TO THE DATA FRAME IN A SPECIAL CHARACTERS ITEM.                     
+*                                                                               
+* CHAR  DESCRIPTION                       REPLACEMENT   DATA FRAME              
+* ----  -----------                       -----------   ----------              
+* AC    TOP LEFT HAND CORNER              00            'A'                     
+* BC    TOP RIGHT HAND CORNER             01            'B'                     
+* AB    BOTTOM LEFT HAND CORNER           02            'C'                     
+* BB    BOTTOM RIGHT HAND CORNER          03            'D'                     
+* FA    VERTICAL                          04            'E'                     
+* BF    HORIZONTAL                        05            'F'                     
+* CC    TOP TEE                           06            'G'                     
+* CB    BOTTOM TEE                        07            'H'                     
+* EB    LEFT TEE                          08            'I'                     
+* EC    RIGHT TEE                         09            'J'                     
+* 8F    INTERSECTION                      0A            'K'                     
+* A1    SQUARE S SHAPED CHR               0B            'L'                     
+* 9F    SCRIPT LITTLE SQUARE              0C            'M'                     
+* AF    SCRIPT LITTLE DIAMOND             0D            'N'                     
+* 6D    SQUARE Y SHAPED CHR               0E            'O'                     
+* 79    SQUARE BACKWARD LITTLE H CHR      0F            'P'                     
+***********************************************************************         
+BOXMASK  DC    XL16'00000000000000000000000000000000'  00-0F                    
+         DC    XL16'00000000000000000000000000000000'  10-1F                    
+         DC    XL16'00000000000000000000000000000000'  20-2F                    
+         DC    XL16'00000000000000000000000000000000'  30-3F                    
+         DC    XL16'00000000000000000000000000000000'  40-4F                    
+         DC    XL16'00000000000000000000000000000000'  50-5F                    
+         DC    XL16'000000000000000000000000000E0000'  60-6F                    
+         DC    XL16'0000000000000000000F000000000000'  70-7F                    
+         DC    XL16'0000000000000000000000000000000A'  80-8F                    
+         DC    XL16'0000000000000000000000000000000C'  90-9F                    
+         DC    XL16'000B000000000000000000020000000D'  A0-AF                    
+         DC    XL16'00000000000000000000000301000005'  B0-BF                    
+         DC    XL16'00000000000000000000000706000000'  C0-CF                    
+         DC    XL16'00000000000000000000000000000000'  D0-D1                    
+         DC    XL16'00000000000000000000000809000000'  E0-EF                    
+         DC    XL16'00000000000000000000040000000000'  F0-FF                    
+         EJECT                                                                  
+         LTORG                                                                  
+*                                                                               
+         DS    0D                                                               
+PQDSET   DCB   DDNAME=REPORT,DSORG=PS,RECFM=FBM,                       *        
+               MACRF=(GM),EODAD=PQDSEOF                                         
+*                                                                               
+WORKD    DSECT                                                                  
+*                                                                               
+DMCB     DS    6F                                                               
+RELO     DS    A                                                                
+DUB      DS    D                                                                
+FULL     DS    F                                                                
+APARM    DS    A                   A(PARAMETER LIST)                            
+*                                                                               
+PARM     DS    0XL12               PARAMETER LIST                               
+*                                                                               
+APQSERVD DS    AL4                 A(PQSERVD DATA BLOCK)                        
+*                                                                               
+ACOMFACS DS    AL4                 A(COMFACS)                                   
+*                                                                               
+         DS    0D                                                               
+VDATAMGR DS    A                                                                
+VDATCON  DS    A                                                                
+VGETRET  DS    A                                                                
+VGETDAY  DS    A                                                                
+VHEXOUT  DS    A                                                                
+VHEXIN   DS    A                                                                
+*                                                                               
+COMPLEN  DS    AL4                 LENGTH COMPRESSED DATA                       
+PAGESAVE DS    FL4                                                              
+BYTE     DS    XL1                                                              
+WORK     DS    XL256               TRANSLATION TABLE FOR NEXTLIN CALL           
+BLOCK    DS    XL256               TRANSLATION TABLE FOR NEXTLIN CALL           
+*                                                                               
+WORKX    EQU   *                                                                
+         EJECT                                                                  
+* DDPQSERVD                                                                     
+       ++INCLUDE DDPQSERVD                                                      
+         EJECT                                                                  
+         PRINT OFF                                                              
+* DNPRTQD                                                                       
+       ++INCLUDE DNPRTQD                                                        
+         EJECT                                                                  
+* DMPRTQK                                                                       
+       ++INCLUDE DMPRTQK                                                        
+         EJECT                                                                  
+* DMPRTQL                                                                       
+       ++INCLUDE DMPRTQL                                                        
+         EJECT                                                                  
+* DMPRTQS                                                                       
+       ++INCLUDE DMPRTQS                                                        
+         EJECT                                                                  
+* DDGETRETD                                                                     
+       ++INCLUDE DDGETRETD                                                      
+         EJECT                                                                  
+* DDCOMFACS                                                                     
+       ++INCLUDE DDCOMFACS                                                      
+         EJECT                                                                  
+* FAUTL                                                                         
+       ++INCLUDE FAUTL                                                          
+         EJECT                                                                  
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'003DDPQSERV  04/08/20'                                      
+         END                                                                    

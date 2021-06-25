@@ -1,0 +1,2192 @@
+*          DATA SET DDSHFIMON  AT LEVEL 009 AS OF 11/12/20                      
+*CATALP SHFIMON                                                                 
+*                                                                               
+         TITLE 'SHFIMON - SHARED MEMORY FILE INDEX MONITOR'                     
+*                                                                               
+***********************************************************************         
+* INPUT CARD   DEFAULT    EXAMPLE / DESCRIPTION                                 
+* ------------ ---------- ---------------------------------------------         
+* DSPACE=      A          DATA SPACE VALUE                                      
+* DDSIO=       DDSIO      DDSIO VERSION                                         
+* MODE=        MONITOR    MONITOR/INIT/BUILD - PROGRAM MODE                     
+* MEMORY=      <REQUIRED> WRKF/PRTQ - SHARED MEMORY AREA NAME                   
+* FILE=        <REQUIRED> WRKF1/WRKF2 - FILE TO BE MONITORED/MAINTAINED         
+*                         . UP TO 16 FILE= CARDS ALLOWED                        
+*                         . MODE=INIT/MONITOR ALL FILES NEEDED                  
+*                         . MODE=BUILD ONLY INCLUDE FILES TO BE REBUILT         
+* WRITE=       YES        YES/NO - SUPPRESS WRITING TO FILES                    
+* ESTAE=       NO         YES/NO - RECOVER AFTER PROGRAM FAILURE                
+* POP=         5          MINUTE INTERVAL FOR PROGRAM WAKE UP                   
+* SCAN=        15         MINUTE INTERVAL FOR FILE SCAN                         
+* NOTIFY=      AWIL       EMAIL NOTIFICATION RECIPIENT                          
+* DNOTIFY=     DAREALERT  EMAIL NOTIFICATION RECIPIENT FOR DARE WARNING         
+* DWARN=       18         HOURS PASSED BEFORE DARE WARNING SENT                 
+*                                                                               
+* MODIFY (/F) COMMAND     EXAMPLE / DESCRIPTION                                 
+* ----------------------- ---------------------------------------------         
+* BUILD=                  WRKF1 - REBUILD THE INDEX FOR FILE                    
+* FREE1=                  PRTQ1 - SCAN & FREE PART1S FOR FILE                   
+* FREE2=                  WRKF1 - SCAN & FREE PART2S FOR FILE                   
+* TREEBAL=                PRTQ1 - BALANCE THE INDEX TREE FOR FILE               
+***********************************************************************         
+                                                                                
+         PRINT NOGEN                                                            
+SHFIMON  CSECT                                                                  
+         ENTRY UTL                                                              
+         ENTRY SSB                                                              
+*                                                                               
+         ENTRY TIMEOUT             ROUTINES NEEDED BY CONTROLLER                
+         ENTRY PRINTL                                                           
+         ENTRY READCI                                                           
+         ENTRY WRITECI                                                          
+         ENTRY PACALC                                                           
+         ENTRY NOTYMSG                                                          
+         ENTRY BADREP                                                           
+*                                                                               
+         NMOD1 0,**SFIM**                                                       
+         L     RC,0(R1)                                                         
+         USING WORKD,RC                                                         
+         ST    RD,SAVERD                                                        
+*                                                                               
+         LARL  RA,COMMON           COMMON STORAGE AREA                          
+         USING COMMON,RA                                                        
+*                                                                               
+         USING SIHDRD,R8           SHARED MEMORY HEADER                         
+         USING SITABD,R9           SHARED MEMORY INDEX TABLE HEADER             
+         USING PLINED,PLINE        PRINT LINE                                   
+*                                                                               
+         BRAS  RE,INIT             READ CARDS ECT                               
+         BRAS  RE,SETESTAE         SET UP ERROR HANDLING                        
+*                                                                               
+         LA    R1,RESTART          R1=RESTART POINT AFTER ABEND                 
+         L     RF,=A(MYREGS)       SAVE CURRENT REGS FOR RESTARTING             
+         STM   R0,RF,0(RF)                                                      
+*                                                                               
+RESTART  SAM24 ,                   MAKE SURE WE RESTART IN 24 BIT               
+         CLI   ENDTASK,C'Y'        DO WE WANT TO CANCEL                         
+         BE    ENDOFJOB                                                         
+*                                                                               
+         BRAS  RE,SETWAIT          SET WAIT, TIME AND DATES                     
+         BRAS  RE,TIMECHK          CHECK TIMES                                  
+         BRAS  RE,MEMEXAM          EXAMINE MEMORY                               
+         BRAS  RE,MAIN             PERFORM ACTIONS                              
+*                                                                               
+         B     RESTART                                                          
+*                                                                               
+ENDOFJOB GOTO1 VDATAMGR,DMCB,DMCLSE,CONTROL,FLIST,AIOAREA                       
+*                                                                               
+         BRAS  RE,PRINTL                                                        
+         MVC   PMMSG,=CL12'END OF JOB'                                          
+         BRAS  RE,PRINTMSG                                                      
+         BRAS  RE,PRINTX           CLOSE SYSPRINT                               
+         J     EXITOP                                                           
+         EJECT                                                                  
+                                                                                
+***********************************************************************         
+* MAIN PROGRAM LOOP                                                             
+***********************************************************************         
+MAIN     NTR1  ,                                                                
+*                                                                               
+         GOTO1 VISGENQ,DMCB,C'TASK' CLEAN-UP TASK ENQUEUES CALL                 
+*                                                                               
+         BRAS  RE,RBUILD            INIT/REBUILD THE INDEXES                    
+         BE    MAIN10               DONE IF INIT OR BUILD MODE                  
+         BRAS  RE,BALTREE           BALANCE THE INDEX TREE                      
+         BE    MAIN10               DONE IF TREE BALANCE MODE                   
+         BRAS  RE,RSCAN             SCAN TO FREE UP REPORT ENTRIES              
+*                                                                               
+MAIN10   GOTO1 VISGENQ,DMCB,C'TASK' CLEAN-UP TASK ENQUEUES CALL                 
+*                                                                               
+         CLI   MODE,C'M'            MAINTENANCE AND MONITOR MODE?               
+         JE    EXIT                 YES: CONTINUE                               
+         MVI   ENDTASK,C'Y'         END JOB IF NOT MONITORING                   
+         J     EXIT                                                             
+         EJECT                                                                  
+                                                                                
+***********************************************************************         
+* INITIALISE                                                                    
+***********************************************************************         
+INIT     NTR1  ,                                                                
+*                                                                               
+         LHI   R1,L'MSGW           INIT WTO MESSAGE                             
+         STH   R1,MSGWLEN                                                       
+         MVC   MSGWTXT,SPACES                                                   
+*                                                                               
+         BRAS  RE,PRINTI           INIT PRINTING                                
+*                                                                               
+         L     R1,=A(CTREC-WORKD)  IO AREAS                                     
+         ALR   R1,RC                                                            
+         ST    R1,ACTREC                                                        
+         L     R1,=A(CIREC-WORKD)                                               
+         ALR   R1,RC                                                            
+         ST    R1,ACIREC                                                        
+         L     R1,=A(IOAREA-WORKD)                                              
+         ALR   R1,RC                                                            
+         ST    R1,AIOAREA                                                       
+*                                                                               
+         LA    R3,CARD             PROCESS INPUT CARDS                          
+INIT02   GOTO1 =V(CARDS),DMCB,(R3),=C'RE00'                                     
+         CLC   =C'/*',0(R3)                                                     
+         BE    INIT04                                                           
+*                                                                               
+         MVC   PLINE+1(80),0(R3)                                                
+         BRAS  RE,PRINTL           PRINT THE PARAMETER CARD                     
+*                                                                               
+         LR    R1,R3               PASS TO VALCARD                              
+         MVI   CARDFROM,C'S'       CARD COMING FROM START OF JOB                
+         BRAS  RE,VALCARD          READ KEYWORD=VALUES                          
+         JNE   EXITOP              NEQ MEANS INVALID KEYWORD                    
+*                                                                               
+         MVC   SETCDATW,SETCDAT    COPY TO WS                                   
+         MVC   BACKUPW,BACKUP      COPY TO WS                                   
+*                                                                               
+         L     RF,=V(DDSIO)        DDSIO VERSION SPECIFICATION                  
+         MVC   0(8,RF),DDSIO                                                    
+         B     INIT02                                                           
+*                                                                               
+INIT04   BRAS  RE,SETOPS           SET UP OPER COMMS                            
+*                                                                               
+         CLC   MEMORY,SPACES       MAKE SURE SHARED MEMORY IS INIT'ED           
+         JNH   *+2                 DEATH IF NOT INITIALIZED                     
+*                                                                               
+         GOTO1 VSHMUSS,DMCB,ATTACH,MEMORY,0,0                                   
+         ICM   R1,15,DMCB+8        A(SHARED TABLE)                              
+         JZ    *+2                 DEATH IF CAN'T ATTACH TO MEMORY              
+         ST    R1,FIWSHA                                                        
+*                                                                               
+         ICM   R1,15,DMCB+12       MAX TABLE SIZE                               
+         JZ    *+2                 DEATH IF TABLE SIZE IS ZERO                  
+         ST    R1,SHMSIZE                                                       
+*                                                                               
+         MVC   FIWENQ,VISGENQ      A(ISGENQ)                                    
+*                                                                               
+         GOTO1 VDATAMGR,DMCB,DMOPEN,CONTROL,FLIST,AIOAREA                       
+         CLI   8(R1),0                                                          
+         JNE   *+2                 DEATH IF OPEN ERROR                          
+*                                                                               
+         EXTRACT RESULTS,'S',FIELDS=(TIOT,ASID)                                 
+         ALESERV EXTRACTH,STOKEN=RXSTOKEN                                       
+*                                                                               
+         L     RF,RXTIOT                                                        
+         MVC   RXJOB,0(RF)                                                      
+*                                                                               
+         CLI   MODE,C'M'                                                        
+         BNE   INIT050                                                          
+*                                                                               
+         SAM31                                                                  
+         L     R8,FIWSHA           SAVE JOB INFO IN SHARED MEMORY               
+         MVC   SIHMNAME,RXJOB      JOB NAME                                     
+         MVC   SIHMSTOK,RXSTOKEN   STOKEN                                       
+         MVC   SIHMASID,RXASID+2   ASID                                         
+         MVC   SIHMECB,ALERTECB    A(ECB)                                       
+         SAM24                                                                  
+*                                                                               
+INIT050  MVC   WRTFIL,RCWRITE      UPDATIVE?                                    
+*                                                                               
+         LHI   R0,4                MAKE JOB NON SWAPPABLE                       
+         LNR   R0,R0                                                            
+         SVC   247                                                              
+         J     EXITOK                                                           
+*                                                                               
+***********************************************************************         
+* CARD HANDLING ROUTINE                                                         
+***********************************************************************         
+VALCARD  NTR1  ,                                                                
+*                                                                               
+         ST    RD,CARDRD                                                        
+         LR    R2,R1                                                            
+         LA    R1,79(R1)                                                        
+         ST    R1,CARDEND          SAVE LAST CHR ADDR                           
+         CLI   0(R2),C'*'          * IN COL 1 IS A COMMENT                      
+         JE    EXITOK                                                           
+*                                                                               
+VALC001  LA    R4,CARDTAB                                                       
+         ST    R2,CARDR2                                                        
+VALC010  XR    R1,R1               GET LEN FOR COMPARE                          
+         IC    R1,7(R4)                                                         
+         EX    R1,*+8              EXECUTE KEYWORD TEST                         
+         B     *+10                                                             
+         CLC   0(0,R2),0(R4)                                                    
+         BE    VALC016                                                          
+VALC015  LA    R4,14(R4)           TRY NEXT ENTRY                               
+         CLI   0(R4),0                                                          
+         BNE   VALC010                                                          
+         B     CERRKEY             ERROR INVALID KEYWORD                        
+*                                                                               
+VALC016  TM    10(R4),X'01'        START UP ONLY?                               
+         BZ    VALC017                                                          
+         CLI   CARDFROM,C'S'       FROM START?                                  
+         BE    VALC020              YES                                         
+         B     CERRKEY                                                          
+*                                                                               
+VALC017  TM    10(R4),X'02'        OPS MODIFY ONLY?                             
+         BZ    VALC020                                                          
+         CLI   CARDFROM,C'F'       FROM MODIFY?                                 
+         BE    VALC020              YES                                         
+         B     CERRKEY                                                          
+*                                                                               
+VALC020  LA    R2,1(R2,R1)         POINT TO DELIMITER                           
+*                                                                               
+         TM    10(R4),X'80'        KEYWORD ONLY                                 
+         JO    VALC025                                                          
+*                                                                               
+         LA    RF,VALCDELS         DELIMITER TABLE                              
+         B     *+8                                                              
+VALC022  LA    RF,5(RF)                                                         
+         CLI   0(RF),0                                                          
+         BE    CERRDEL             END OF TABLE INVALID DELIMITER               
+*                                                                               
+         MVC   BYTE,4(RF)          AUTH BIT MUST BE ON                          
+         CLI   BYTE,0              EXCEPT WHEN ZERO                             
+         BE    *+14                                                             
+         NC    BYTE,9(R4)                                                       
+         BZ    VALC022                                                          
+*                                                                               
+         XR    R1,R1                                                            
+         IC    R1,2(RF)            GET EX LEN                                   
+         EX    R1,*+8                                                           
+         B     *+10                                                             
+         CLC   0(0,R2),0(RF)       TEST DELIMITERS                              
+         BNE   VALC022                                                          
+*                                                                               
+         MVC   BYTE,3(RF)          SAVE COMPARE CHR                             
+         LA    R2,1(R1,R2)                                                      
+         B     VALC025                                                          
+*                                                                               
+VALCDELS DC    C'= ',AL1(0),X'80',X'00'                                         
+         DC    C'>=',AL1(1),X'B0',X'20'                                         
+         DC    C'<=',AL1(1),X'D0',X'20'                                         
+         DC    C'/=',AL1(1),X'70',X'40'                                         
+         DC    C'< ',AL1(0),X'40',X'20'                                         
+         DC    C'> ',AL1(0),X'20',X'20'                                         
+         DC    X'00'                                                            
+*                                                                               
+VALC025  LR    R1,R2               GET LEN FOR MOVE                             
+VALC026  CLI   0(R1),C','                                                       
+         BE    VALC030                                                          
+         CLI   0(R1),C' '                                                       
+         BE    VALC030                                                          
+         CLI   0(R1),0                                                          
+         BE    VALC030                                                          
+         LA    R1,1(R1)                                                         
+         B     VALC026                                                          
+*                                                                               
+VALC030  SR    R1,R2                                                            
+*                                                                               
+VALC031  BCTR  R1,0                                                             
+         XR    RF,RF                                                            
+         ICM   RF,7,11(R4)         GET ADDRESS FOR MOVE                         
+*                                                                               
+         TM    9(R4),X'80'         IF ROUTINE                                   
+         BZ    *+10                                                             
+         BASR  RE,RF               GOTO ROUTINE                                 
+         B     VALC500                                                          
+*                                                                               
+         TM    9(R4),X'04'         IF LIST                                      
+         BNO   VALC050                                                          
+VALC040  CLI   0(RF),X'FF'         CHECK NOT FULL                               
+         BE    CERRMAN                                                          
+         CLI   0(RF),0             EMPTY ENTRY                                  
+         BE    VALC050                                                          
+         CLC   0(2,RF),=C'  '      EMPTY ENTRY                                  
+         BE    VALC050                                                          
+         XR    R0,R0                                                            
+         IC    R0,8(R4)                                                         
+         AR    RF,R0                                                            
+         TM    9(R4),X'60'         /<=>                                         
+         BZ    VALC040                                                          
+         LA    RF,1(RF)            ONE MORE FOR CODE                            
+         B     VALC040                                                          
+*                                                                               
+VALC050  TM    9(R4),X'60'         IF /<=>                                      
+         BZ    *+14                                                             
+         MVC   0(1,RF),BYTE        SAVE COMP CODE                               
+         LA    RF,1(RF)                                                         
+*                                                                               
+         TM    9(R4),X'10'         HEX INPUT                                    
+         BNO   VALC060                                                          
+         LA    R0,1(R1)            SET R0 HEX INPUT LEN                         
+         GOTO1 =V(HEXIN),DMCB,(R2),(RF),(R0)                                    
+         ICM   R1,15,12(R1)                                                     
+         BZ    CERRHEX                                                          
+         B     VALC500                                                          
+*                                                                               
+VALC060  TM    9(R4),X'08'         DEC INPUT                                    
+         BZ    VALC070                                                          
+         LR    R4,R2                                                            
+         LA    R3,1(R1)                                                         
+         BRAS  RE,VALNUM           VALIDATE NUMBER                              
+         CLI   DUB,X'FF'                                                        
+         BE    CERRDEC                                                          
+         CVB   R1,DUB                                                           
+         STH   R1,0(RF)            SAVE HALFWORD (DEFAULT)                      
+         B     VALC500                                                          
+*                                                                               
+VALC070  TM    9(R4),X'02'         TIME INPUT                                   
+         BZ    VALC080                                                          
+         BRAS  RE,VALTIME                                                       
+         MVC   0(4,RF),FULL                                                     
+         B     VALC500                                                          
+*                                                                               
+VALC080  TM    9(R4),X'01'         DATE INPUT                                   
+         BZ    VALC400                                                          
+         LA    R0,1(R1)            SET R0 INPUT LEN                             
+         ST    RF,FULL                                                          
+         GOTO1 =V(PERVAL),DMCB,((R0),(R2)),(X'60',WORK)                         
+         L     RF,FULL                                                          
+         CLI   4(R1),X'04'                                                      
+         BNE   CERRDAT                                                          
+         MVC   0(2,RF),WORK+PVALNSTA-PERVALD NEW CMPRSD DATE                    
+         B     VALC500                                                          
+*                                                                               
+VALC400  CLI   8(R4),0             DONT CARE                                    
+         BE    VALC410                                                          
+         CLM   R1,1,8(R4)          CHECK MAX LEN                                
+         BNL   CERRMAX                                                          
+         XR    RE,RE                                                            
+         IC    RE,8(R4)            PAD OUT TO SPACES                            
+         EX    RE,*+8                                                           
+         B     *+10                                                             
+         MVC   0(0,RF),SPACES                                                   
+VALC410  EX    R1,*+8                                                           
+         B     *+10                                                             
+         MVC   0(0,RF),0(R2)       MOVE TO OUTPUT AREA                          
+*                                                                               
+VALC500  CLI   0(R2),C','          TEST FOR ANOTHER                             
+         LA    R2,1(R2)                                                         
+         BE    VALC001             GO FIND TABLE ENTRY                          
+         C     R2,CARDEND          TEST FOR END OF CARD                         
+         BL    VALC500                                                          
+         J     EXITOK                                                           
+*                                                                               
+CERRDEC  LA    R1,=C'MUST BE HEX     '                                          
+         B     CERRX                                                            
+CERRHEX  LA    R1,=C'MUST BE DECIMAL '                                          
+         B     CERRX                                                            
+CERRKEY  LA    R1,=C'INVALID KEYWORD '                                          
+         B     CERRX                                                            
+CERRDEL  LA    R1,=C'INVALID DELIMITR'                                          
+         B     CERRX                                                            
+CERRMAX  LA    R1,=C'VALUE TOO LONG  '                                          
+         B     CERRX                                                            
+CERRMAN  LA    R1,=C'TOO MANY FILTERS'                                          
+         B     CERRX                                                            
+CERRTIM  LA    R1,=C'INVALID TIME    '                                          
+         B     CERRX                                                            
+CERRDAT  LA    R1,=C'INVALID DATE    '                                          
+         B     CERRX                                                            
+CERRSES  LA    R1,=C'INVALID SYSTEM  '                                          
+         B     CERRX                                                            
+*                                                                               
+CERRX    L     RD,CARDRD                                                        
+         L     R2,CARDR2                                                        
+         LA    RF,PLINE+1                                                       
+CERRX1   MVC   0(1,RF),0(R2)                                                    
+         CLI   0(RF),C' '                                                       
+         BE    CERRX2                                                           
+         CLI   0(RF),C','                                                       
+         BE    CERRX2                                                           
+         LA    R2,1(R2)                                                         
+         LA    RF,1(RF)                                                         
+         B     CERRX1                                                           
+*                                                                               
+CERRX2   LA    RF,1(RF)                                                         
+         MVC   0(13,RF),=C'*** ERROR ***'                                       
+         LA    RF,14(RF)                                                        
+         MVC   0(16,RF),0(R1)                                                   
+         BRAS  RE,PRINTL                                                        
+         J     EXITL                                                            
+*                                                                               
+***********************************************************************         
+* GET TIME FROM 0(R2) (R1)=EX LEN  TIME=HH:MM:SS.TU                             
+***********************************************************************         
+VALTIME  NTR1  ,                                                                
+*                                                                               
+         MVC   HALF,=C'00'         FIRST MAY BE 1:00 OR 02:00                   
+         CLI   1(R2),C':'                                                       
+         BNE   VALT010                                                          
+*                                                                               
+         MVC   HALF+1(1),0(R2)     ASSUME 1:00                                  
+         LA    R2,2(R2)                                                         
+         B     VALT020                                                          
+*                                                                               
+VALT010  MVC   HALF+0(2),0(R2)     ASSUME 02:00                                 
+         LA    R2,3(R2)                                                         
+*                                                                               
+VALT020  LA    R3,2                PREPARE FULL AND HALF                        
+         LA    R4,HALF                                                          
+         XC    FULL,FULL                                                        
+*                                                                               
+         BRAS  RE,VALNUM           VALIDATE HOURS                               
+         L     RF,=A(60*60*100)                                                 
+         BRAS  RE,VALTADD                                                       
+*                                                                               
+         MVC   HALF,0(R2)          VALIDATE MINUTES                             
+         BRAS  RE,VALNUM                                                        
+         L     RF,=A(60*100)                                                    
+         BRAS  RE,VALTADD                                                       
+*                                                                               
+         CLI   2(R2),C':'          TEST FOR SECS                                
+         JNE   EXITOK                                                           
+         LA    R2,3(R2)                                                         
+         MVC   HALF,0(R2)                                                       
+         BRAS  RE,VALNUM           VALIDATE SECS                                
+         L     RF,=F'100'                                                       
+         BRAS  RE,VALTADD                                                       
+*                                                                               
+         CLI   2(R2),C'.'          TEST FOR TUS                                 
+         JNE   EXITOK                                                           
+         LA    R2,3(R2)                                                         
+         MVC   HALF,0(R2)                                                       
+         BRAS  RE,VALNUM           VALIDATE TUS                                 
+         LA    RF,1                                                             
+         BRAS  RE,VALTADD                                                       
+         J     EXITOK                                                           
+*                                                                               
+VALTADD  CLI   DUB,X'FF'           TEST FOR INVALID NUMERIC                     
+         BE    CERRTIM                                                          
+         XR    R0,R0               CONVERT AND MULTIPLY BY RF                   
+         CVB   R1,DUB                                                           
+         MR    R0,RF                                                            
+         A     R1,FULL                                                          
+         ST    R1,FULL             ADD TO FULL                                  
+         BR    RE                                                               
+*                                                                               
+       ++INCLUDE DDVALNUM                                                       
+*                                                                               
+***********************************************************************         
+* SET UP OPERATOR COMMS                                                         
+***********************************************************************         
+SETOPS   NTR1  ,                                                                
+*                                                                               
+         EXTRACT ACOMM,FIELDS=COMM                                              
+*                                                                               
+         L     RF,ACOMM                                                         
+         USING COMLIST,RF                                                       
+         MVC   AOPERECB+1(3),COMECBPT+1                                         
+         L     R2,COMCIBPT         GET A(CIB)                                   
+         USING CIBNEXT,R2                                                       
+         LA    R3,COMCIBPT         SET A(A(CIB))                                
+         DROP  RF                                                               
+         CLI   CIBVERB,CIBSTART    TEST FOR 'S JOBNAME' (IE NOT BATCH)          
+         BNE   SETOP2                                                           
+         DROP  R2                                                               
+*                                                                               
+         QEDIT ORIGIN=(R3),BLOCK=(R2)        RELEASE THE CIB                    
+*                                                                               
+SETOP2   QEDIT ORIGIN=(R3),CIBCTR=1          ACCEPT MODIFY COMMANDS             
+*                                                                               
+         J     EXITOK                                                           
+*                                                                               
+***********************************************************************         
+* INITIALISE ERROR HANDLING                                                     
+***********************************************************************         
+SETESTAE NTR1  ,                                                                
+*                                                                               
+         CLI   USEESTAE,C'Y'                                                    
+         JNE   EXITOK                                                           
+         WTO   'ESTAE ON'                                                       
+         ESTAEX ERREXIT,CT,ASYNCH=YES,TERM=NO                                   
+         LTR   RF,RF                                                            
+         BZ    *+6                                                              
+         DC    H'0'                                                             
+         J     EXITOK                                                           
+*                                                                               
+***********************************************************************         
+* SETWAIT - SET TIMER AND WAIT                                                  
+* RETURN WHEN AN INTERUPT IS DETECTED                                           
+***********************************************************************         
+SETWAIT  NTR1  ,                                                                
+         MVI   HOWPOP,0                                                         
+*                                                                               
+         OC    DATENOW,DATENOW     FIRST TIME IN, DON'T WAIT                    
+         BZ    SW100                                                            
+         CLI   MODE,C'M'           ARE WE RUNNING IN MONITORING MODE?           
+         BNE   SW100                NO, THEN DON'T WAIT                         
+*                                                                               
+         XR    R0,R0                                                            
+         LH    R1,POP                                                           
+         MHI   R1,60*100           (WAIT TIME)*(1 MINUTE IS 60*100)             
+         ST    R1,TIME                                                          
+         XC    TIMRECB,TIMRECB                                                  
+         STIMERM SET,ID=STIMERID,BINTVL=TIME,EXIT=TIMRXIT                       
+         LTR   RF,RF               WAIT THE REQUESTED INTERVAL                  
+         BZ    *+6                                                              
+         DC    H'0'                                                             
+*                                                                               
+         WAIT  1,ECBLIST=ECBLST    WAIT FOR TIMER, OPERATOR, OR PROGRAM         
+*                                                                               
+         L     RF,ALERTECB         A(PROGRAM ECB)                               
+         TM    0(RF),X'40'         IS IT A PROGRAMMATIC INTERRUPT?              
+         BZ    SW010                NO                                          
+         STIMERM CANCEL,ID=STIMERID YES, SO CANCEL THE TIMER                    
+         LTR   RF,RF                                                            
+         BZ    *+6                                                              
+         DC    H'0'                UNSUCCESSFUL TIMER CANCEL                    
+         BRAS  RE,CHKALERT         EXAMINE THE ALERT INTERRUPT                  
+         MVI   HOWPOP,C'A'         ALERT                                        
+         B     SW100                                                            
+*                                                                               
+SW010    L     RF,AOPERECB         A(OPERATOR ECB)                              
+         TM    0(RF),X'40'         DID THE OPERATOR INTERRUPT?                  
+         BZ    SW020                NO                                          
+         STIMERM CANCEL,ID=STIMERID YES, SO CANCEL THE TIMER                    
+         LTR   RF,RF                                                            
+         BZ    *+6                                                              
+         DC    H'0'                UNSUCCESSFUL TIMER CANCEL                    
+         BRAS  RE,CHKOPER          EXAMINE THE OPERATOR INTERRUPT               
+         MVI   HOWPOP,C'O'         OPERATOR COMMAND                             
+         B     SW100                                                            
+*                                                                               
+SW020    TM    TIMRECB,X'40'       DID THE TIMER POP?                           
+         BO    *+6                  YES                                         
+         DC    H'0'                HOW DID WE EXIT THE WAIT THEN?               
+         MVI   HOWPOP,C'T'         TIMER                                        
+*                                                                               
+SW100    MVC   TIMEOLD,TIMENOW     SET THE PREVIOUS TIME                        
+         MVC   DATEOLD,DATENOW                                                  
+         MVC   TIMEOLDC,TIMENOWC                                                
+*                                                                               
+         TIME  BIN                 GET THE CURRENT TIME                         
+         ST    R1,DATENOW                                                       
+         ST    R0,TIMENOW                                                       
+         LR    R1,R0                                                            
+         XR    R0,R0                                                            
+         D     R0,=F'60000'        GET 10 MINUTE INTERVALS FROM .01 SEC         
+         STC   R1,TIMENOWM         TIME NOW BIN 10MINS                          
+*                                                                               
+         TIME  TU                  R0=TIME IN 1/38400 SECS                      
+         SRDL  R0,32                                                            
+         D     R0,=F'38400'        R1=TIME IN SECONDS                           
+         MHI   R1,3                                                             
+         SRL   R1,2                R1=(SECS*3)/4                                
+         STCM  R1,3,TIMENOWC       TIMEC=TIME IN SPECIAL UNITS                  
+*                                                                               
+         CLC   DATEOLD,DATENOW     HAS DATE CHANGED                             
+         JE    EXITOK              NO                                           
+*                                                                               
+         GOTO1 VDATCON,DMCB,(5,0),(0,DUB)                                       
+         GOTO1 VADDAY,DMCB,(C'D',DUB),DUBDUB,F'-1'                              
+         GOTO1 VDATCON,DMCB,(0,DUBDUB),(30,YESTRDAY)  NEW CMPRSD                
+         GOTO1 (RF),(R1),(0,DUBDUB),(2,YESTRO)        OLD CMPRSD                
+*                                                                               
+         GOTO1 VADDAY,DMCB,(C'D',DUB),DUBDUB,F'-15'                             
+         GOTO1 VDATCON,DMCB,(0,DUBDUB),(30,TWOWEEKS)  NEW CMPRSD                
+         GOTO1 (RF),(R1),(0,DUBDUB),(2,TODM2WO)    OLD CMPRSD                   
+*                                                                               
+         GOTO1 VGETDAY,DMCB,(0,DUB),FULL                                        
+         MVC   DAYNOW,0(R1)                                                     
+         MVC   DAYNOWA,FULL                                                     
+*                                                                               
+         GOTO1 VDATCON,DMCB,(5,0),(01,DUB)                                      
+         MVC   DATNOW(1),DUB+2                                                  
+         MVC   MONNOW(1),DUB+1                                                  
+*                                                                               
+         GOTO1 VDATCON,DMCB,(5,0),(13,TODAYA)         C'MM.DD.YY'               
+         GOTO1 VDATCON,DMCB,(5,0),(30,TODAY)          NEW CMPRSD                
+         GOTO1 VDATCON,DMCB,(5,0),(2,TODAYO)          OLD CMPRSD                
+*                                                                               
+         J     EXITOK                                                           
+*                                                                               
+***********************************************************************         
+* PROGRAMMATIC ALERT ECB RECEIVED, CHECK CONDITIONS                             
+***********************************************************************         
+CHKALERT NTR1  ,                                                                
+         BRAS  RE,PRINTL                                                        
+         MVC   PMMSG,=CL12'ALERTED'                                             
+         BRAS  RE,PRINTMSG                                                      
+*NOP     BRAS  RE,ALERTMSG         ALERT MESSAGE                                
+         XC    LERTECB,LERTECB     CLEAR ALERT ECB                              
+         J     EXITOK                                                           
+*                                                                               
+***********************************************************************         
+* CHECK OPER INTERRUPT                                                          
+***********************************************************************         
+CHKOPER  NTR1  ,                                                                
+*                                                                               
+         BRAS  RE,PRINTL                                                        
+         MVC   PMMSG,=CL12'OPERATOR'                                            
+         BRAS  RE,PRINTMSG                                                      
+*                                                                               
+         L     RF,ACOMM            SET RF TO COMM BLOCK                         
+         USING COMLIST,RF                                                       
+         L     R2,COMCIBPT         A(CIB)                                       
+         DROP  RF                                                               
+*                                                                               
+         USING CIBNEXT,R2                                                       
+         CLI   CIBVERB,CIBSTOP     DID OPERATOR ENTER 'STOP'?                   
+         BNE   CHEK010                                                          
+         J     ENDOFJOB                                                         
+*                                                                               
+CHEK010  CLI   CIBVERB,CIBMODFY    DID OPERATOR ENTER 'MODIFY'?                 
+         BE    *+6                  YES                                         
+         DC    H'0'                                                             
+*                                                                               
+         XR    R1,R1               GET DATA LEN IN R1                           
+         ICM   R1,3,CIBDATLN                                                    
+         BCTR  R1,0                                                             
+*                                                                               
+         MVC   CARD,SPACES         MOVE DATA TO WORK AND SCAN IT                
+         EX    R1,*+8                                                           
+         B     *+10                                                             
+         MVC   CARD(0),CIBDATA                                                  
+*                                                                               
+         LA    R1,CARD                                                          
+         MVI   CARDFROM,C'F'       CARD COMING FROM OPERATOR INTERUPT           
+         BRAS  RE,VALCARD          VALIDATE CARD INPUT                          
+         BE    CHEK020              NEQ SO TRY GROUP COMMAND                    
+         MVC   PLINE(32),=C'INVALID KEYWORD               //'                   
+         MVC   PLINE+16(13),CARD                                                
+         GOTO1 =V(DDWTO),DMCB,PLINE,0                                           
+         MVC   PLINE,SPACES                                                     
+         B     CHEKRSET                                                         
+*                                                                               
+CHEK020  MVC   PLINE(L'CARD),CARD                                               
+         BRAS  RE,PRINTL                                                        
+         MVC   SETCDATW,SETCDAT    COPY TO WS                                   
+         MVC   BACKUPW,BACKUP      COPY TO WS                                   
+*                                                                               
+CHEKRSET L     RF,ACOMM                RESET OPER COMMS                         
+         USING COMLIST,RF                                                       
+         ICM   R2,15,COMCIBPT          A(CIB)                                   
+         BZ    EXITOK                                                           
+         LA    R3,COMCIBPT             A(A(CIB))                                
+         QEDIT ORIGIN=(R3),BLOCK=(R2)  FREE THE CIB                             
+         DROP  RF                                                               
+         DROP  R2                                                               
+         J     EXITOK                                                           
+*                                                                               
+***********************************************************************         
+* CHECK TIMERS - SEE IF ANYTHING TO DO                                          
+***********************************************************************         
+TIMECHK  NTR1  ,                                                                
+*                                                                               
+         LA    RF,TIMETAB                                                       
+*                                                                               
+TIMECHK0 MVI   0(RF),C'N'          LETS ASSUME NOT                              
+         L     R1,TIMENOW          R1 = TIME NOW                                
+         XR    R0,R0                                                            
+         S     R1,4(RF)            SUBTRACT LAST TIME                           
+         BM    TIMECHK1            -VE MUST BE MIDNIGHT                         
+*                                                                               
+         XR    RE,RE                                                            
+         ICM   RE,3,2(RF)                                                       
+         MHI   RE,60*100           CALCULATE MINUTES                            
+         CR    R1,RE               IS IT > TIME FREQ                            
+         BL    TIMECHK2                                                         
+*                                                                               
+TIMECHK1 MVI   0(RF),C'Y'          OK DO IT                                     
+         MVC   4(4,RF),TIMENOW     SET TIME WE DID IT                           
+*                                                                               
+TIMECHK2 LA    RF,8(RF)            NEXT                                         
+         CLI   0(RF),X'FF'                                                      
+         BNE   TIMECHK0                                                         
+*                                                                               
+TIMECHKX J     EXITOK                                                           
+*                                                                               
+***********************************************************************         
+* EXAMINE MEMORY AND DECIDE IF WE NEED BUILD OR SCAN                            
+***********************************************************************         
+MEMEXAM  NTR1  ,                                                                
+         MVI   MINDI,0                                                          
+*                                                                               
+         SAM31 ,                                                                
+         L     R8,FIWSHA           A(SHARED MEMORY FILE INDEX HEADER)           
+         LA    R9,L'SIHDR(,R8)     A(FIRST RESOURCE TABLE HEADER)               
+*                                                                               
+         ICM   R5,15,SIHNOFR       PICK UP NUMBER OF RESOURCES                  
+         BZ    MEX010               NONE, INIT                                  
+         TM    SIHLOCK,X'80'       RESET INDICATOR                              
+         BO    MEX010               INIT                                        
+         CLI   SIHEYE,X'00'        EYECATCHER RESET                             
+         BE    MEX010               INIT                                        
+         CLI   MODE,C'I'           INITIALIZING MODE                            
+         BNE   MEX020               YES                                         
+MEX010   OI    MINDI,MIINIT        INITIALIZE ALL INDEXES                       
+         CLI   MODE,C'I'           INIT MODE OK                                 
+         JE    MEXX                                                             
+         CLI   MODE,C'M'           MONITORING MODE OK                           
+         JE    MEXX                                                             
+         WTO   '**INITIALIZATION NEEDED**'                                      
+         DC    H'0'                DEATH IF WE'RE TRYING SOMETHING ELSE         
+*                                                                               
+MEX020   MVC   FIWRES,SITFIL       RESOURCE NAME                                
+*                                                                               
+         CLI   MODE,C'B'           WITH MODE=BUILD                              
+         BNE   MEX030                                                           
+         LA    R1,FILES            LOOK FOR FILE CARD(S)                        
+MEX025   CLC   0(L'FILES,R1),SPACES                                             
+         BNH   MEX030                                                           
+         CLC   FIWRES,0(R1)                                                     
+         BE    MEX040                                                           
+         LA    R1,L'FILES(R1)                                                   
+         B     MEX025                                                           
+MEX030   CLC   FIWRES,BUILD        WITH BUILD= INPUT CARD                       
+         BE    *+12                                                             
+         TM    SITRIND,SITRBLD     WITH MEMORY INDICATOR                        
+         BZ    *+12                                                             
+MEX040   OI    SITRIND,SITRBLD                                                  
+         OI    MINDI,MIBUILD                                                    
+*                                  TREE BALANCING REQUESTED?                    
+         NI    SITRIND,X'FF'-SITRBAL CANNOT BE TRIGGERED,ONLY REQUESTED         
+*                                                                               
+         CLI   MODE,C'T'           WITH MODE=TREEBAL                            
+         BNE   MEX060                                                           
+         LA    R1,FILES            LOOK FOR FILE CARD(S)                        
+MEX055   CLC   0(L'FILES,R1),SPACES                                             
+         BNH   MEX060                                                           
+         CLC   FIWRES,0(R1)                                                     
+         BE    MEX070                                                           
+         LA    R1,L'FILES(R1)                                                   
+         B     MEX055                                                           
+MEX060   CLC   FIWRES,TREEBAL      WITH TREEBAL= INPUT CARD                     
+         BNE   *+12                                                             
+MEX070   OI    SITRIND,SITRBAL                                                  
+         OI    MINDI,MITREBAL                                                   
+*                                                                               
+         CLC   FIWRES,FREE1        WITH FREE1= INPUT CARD                       
+         BE    *+12                                                             
+         TM    SITRIND,SITRP1S     WITH MEMORY INDICATOR                        
+         BZ    *+12                                                             
+         OI    SITRIND,SITRP1S                                                  
+         OI    MINDI,MIFREE1                                                    
+*                                  PART1 SCAN REQUESTED?                        
+         CLC   FIWRES,FREE2        WITH FREE2= INPUT CARD                       
+         BE    *+12                                                             
+         TM    SITRIND,SITRP2S     WITH MEMORY INDICATOR                        
+         BZ    *+12                                                             
+         OI    SITRIND,SITRP2S                                                  
+         OI    MINDI,MIFREE2                                                    
+*                                  PART1 SCAN REQUESTED?                        
+         LA    R9,L'SITAB(,R9)     NEXT RESOURCE                                
+         BCT   R5,MEX020                                                        
+*                                                                               
+MEXX     J     EXITOK                                                           
+*                                                                               
+                                                                                
+***********************************************************************         
+* BUILD SHARED MEMORY FILE INDEXES                                              
+***********************************************************************         
+RBUILD   NTR1  BASE=*,LABEL=*                                                   
+*                                                                               
+         TM    MINDI,MIINIT+MIBUILD  ARE WE LOOKING TO INIT/BUILD?              
+         BZ    RBX                    NO                                        
+*                                                                               
+         BRAS  RE,PRINTL                                                        
+         MVC   PMMSG,=CL12'BUILDING'                                            
+         TM    MINDI,MIINIT                                                     
+         BZ    *+10                                                             
+         MVC   PMMSG,=CL12'INITIALIZING'                                        
+         BRAS  RE,PRINTMSG                                                      
+*                                                                               
+         SAM31                                                                  
+         L     R8,FIWSHA           R8= A(START OF SHARED MEMORY)                
+         LA    R9,L'SIHDR(,R8)     R9= A(START OF RESOURCE HEADERS)             
+*                                                                               
+         TM    MINDI,MIINIT                                                     
+         BZ    *+12                                                             
+         BRAS  RE,LOCKFI                                                        
+         BRAS  RE,BLDHDR           BUILD SHARED MEMORY HEADER                   
+*                                                                               
+         ICM   R5,15,SIHNOFR       NUMBER OF RESOURCES IN MEMORY                
+         JZ    *+2                                                              
+*                                                                               
+RB050    MVC   FIWRES,SITFIL       RESOURCE FILE NAME                           
+         BRAS  RE,BLDTAB           BUILD RESOURCE SHARED MEMORY INDEX           
+         LA    R9,L'SITAB(,R9)     NEXT RESOURCE                                
+         BCT   R5,RB050                                                         
+*                                                                               
+         BRAS  RE,PRINTTOT         PRINT TOTALS                                 
+*                                                                               
+         TM    MINDI,MIINIT        JUST INITIALIZED                             
+         BZ    *+14                NO                                           
+         BRAS  RE,UNLKFI           YES: UNLOCK ALL OF THE RESOURCES             
+         MVC   SIHEYE,EYESFI       SET EYECATCHER "**SHFI****SHFI**"            
+*                                                                               
+         MVC   PMMSG,=CL12'END OF BUILD'                                        
+         BRAS  RE,PRINTMSG                                                      
+*                                                                               
+         NI    MINDI,X'FF'-MIINIT-MIBUILD   RESET INDICATORS                    
+         MVC   BUILD,=CL8'NO'               RESET BUILD INPUT CARD              
+*                                                                               
+RBX      CLI   MODE,C'B'           BUILD MODE                                   
+         JE    EXIT                                                             
+         CLI   MODE,C'I'           OR INIT MODE, ALL DONE, EXIT EQUAL           
+         J     EXIT                                                             
+*                                                                               
+                                                                                
+***********************************************************************         
+* BUILD SHARED MEMORY FILE QUEUE HEADER                                         
+***********************************************************************         
+BLDHDR   NTR1  BASE=*,LABEL=*                                                   
+*                                                                               
+         L     R8,FIWSHA           R8= A(START OF SHARED MEMORY)                
+         LA    R9,L'SIHDR(,R8)     R9= A(START OF RESOURCE HEADERS)             
+         ST    R9,FIWRHA                                                        
+                                                                                
+*----------------------------------                                             
+* MVCL LOOP IS USED BECAUSE MVCLE                                               
+* DOESN'T WORK ON USS SHARED MEMORY                                             
+*----------------------------------                                             
+         L     RE,FIWSHA           START OF SHARED MEMORY                       
+         L     RF,SHMSIZE          MEMORY SIZE                                  
+BHDR1    XR    R0,R0                                                            
+         XR    R1,R1                                                            
+         MVCL  RE,R0               CLEAR AS MUCH AS MVCL WILL ALLOW             
+         LTR   RF,RF               IS LENGTH ZERO?                              
+         BZ    BHDR2               YES: THEN FINISHED                           
+         MVI   0(RE),0             NO: CLEAR ONE MORE BYTE                      
+         LA    RE,1(RE)            ADJUST MEMORY LOCATION                       
+         AHI   RF,-1               AND LENGTH BY ONE                            
+         B     BHDR1               THEN GO CLEAR SOME MORE                      
+BHDR2    DS    0H                                                               
+*----------------------------------                                             
+* END OF MVCL LOOP                                                              
+*----------------------------------                                             
+                                                                                
+         MVC   SIHSIZE,SHMSIZE     ALLOCATED SIZE OF SHARED MEMORY              
+         MVC   SIHMNAME,RXJOB      MONITORING JOB NAME                          
+         MVC   SIHMSTOK,RXSTOKEN   MONITORING JOB STOKEN                        
+         MVC   SIHMASID,RXASID+2   MONITORING JOB ASID                          
+         MVC   SIHMECB,ALERTECB    A(ALERT ECB)                                 
+*                                                                               
+         XR    R1,R1               INIT NUMBER OF RESOURCES                     
+         LA    R4,FILES            FILES DEFINED IN PARAMETERS                  
+BHDR040  CLI   0(R4),C' '          END OF LIST                                  
+         BE    BHDR050                                                          
+         MVC   SITFIL,0(R4)        RESOURCE NAME                                
+         AHI   R1,1                BUMP RESOURCE NUMBER                         
+         STC   R1,SITNUM                                                        
+         LA    R9,L'SITAB(,R9)                                                  
+         LA    R4,L'FILES(,R4)                                                  
+         B     BHDR040                                                          
+*                                                                               
+BHDR050  ST    R9,ASFIPARN         A(FIRST PART1 AREA)                          
+         ST    R1,SIHNOFR          NUMBER OF RESOURCES                          
+         SLR   R9,R8               A(END OF HEADERS-START OF MEMORY)            
+         ST    R9,SIHPARS          DISPLACEMENT TO START OF PART1 AREA          
+*                                                                               
+         L     R1,SIHNOFR          NUMBER OF RESOURCES                          
+         MHI   R1,L'SITAB                                                       
+         AHI   R1,L'SIHDR                                                       
+         ST    R1,SIHUSED          STORAGE USED SO FAR                          
+*                                                                               
+         J     EXITOK                                                           
+*                                                                               
+                                                                                
+***********************************************************************         
+* BUILD SHARED MEMORY TABLE FOR RESOURCE FILE                                   
+***********************************************************************         
+BLDTAB   NTR1  BASE=*,LABEL=*                                                   
+*                                                                               
+         BRAS  RE,FIRSET           SET A(RESOURCE HEADER) AND A(PARTS)          
+         BE    BT010                                                            
+*                                                                               
+         LA    R3,MSGW                                                          
+         MVC   MSGWMSG,=CL40'*ERROR* RESOURCE NOT FOUND'                        
+         MVC   MSGWDET(5),=C'FILE='                                             
+         MVC   MSGWDET+5(L'FIWRES),FIWRES                                       
+         WTO   TEXT=(R3),MCSFLAG=HRDCPY                                         
+         DC    H'0'                                                             
+*                                                                               
+BT010    L     R9,FIWRHA           R9= A(RESOURCE HEADER)                       
+*                                                                               
+         TM    MINDI,MIINIT        INITIALIZING MEMORY?                         
+         BO    BT030                YES                                         
+*                                                                               
+         TM    SITRIND,SITRBLD     REBUILD NEEDED FOR THIS RESOURCE?            
+         BZ    BLDTX                NO, EXIT                                    
+         BRAS  RE,FIRFLOCK          YES, LOCK THE RESOURCE                      
+*                                                                               
+BT030    MVI   PRMARK,C'-'                                                      
+         MVC   PRRESO(8),=C'RESOURCE'                                           
+         LLC   R3,SITNUM                                                        
+         EDIT  (R3),PRNUM                                                       
+         MVC   PRNAME,FIWRES                                                    
+         MVC   PRDESC(8),=C'BUILDING'                                           
+         BRAS  RE,PRINTL                                                        
+*                                                                               
+         BRAS  RE,SETFI            SET FILE INFORMATION                         
+*                                                                               
+         MVC   FIWCIA,SIT1STT      FIRST PART1 DISK ADDRESS                     
+         L     R4,SIT1CIC          TOTAL NUMBER OF PART1 CIS                    
+*                                                                               
+BT100    BRAS  RE,READCI           READ THE CI FROM FILE                        
+         BRAS  RE,ADDFI            ADD FILE TO SHARED STORAGE AND TREE          
+         L     R1,FIWCIA                                                        
+         AL    R1,SIT1TPT          BUMP TRACK TO NEXT CI                        
+         ST    R1,FIWCIA                                                        
+         BCT   R4,BT100            PROCESS THE NEXT PART1                       
+*                                                                               
+         BRAS  RE,CHP1AV           CHAIN AVAILABLE PART1S                       
+         BRAS  RE,CHP2AV           CHAIN AVAILABLE PART2S                       
+*                                                                               
+         TM    MINDI,MIINIT        INITIALIZING MEMORY?                         
+         BO    BLDTX                YES, UNLOCK HANDLED LATER                   
+         BRAS  RE,FIRFUNLK         UNLOCK THE RESOURCE                          
+*                                                                               
+BLDTX    J     EXITOK                                                           
+*                                                                               
+                                                                                
+***********************************************************************         
+* SET FILE INFORMATION                                                          
+***********************************************************************         
+SETFI    NTR1  BASE=*,LABEL=*                                                   
+*                                                                               
+         XC    RINFO(RINFOL),RINFO CLEAR RESOURCE FILE INFORMATION              
+*                                                                               
+         SAM24                                                                  
+         GOTO1 VDATAMGR,DMCB,FFINI,FIWRES,FIWNDX,FIWCIA,ACIREC                  
+         CLI   8(R1),0                                                          
+         BE    *+6                 FILE INIT                                    
+         DC    H'0'                                                             
+         SAM31                                                                  
+*                                                                               
+         GOTO1 =V(SETFINF)         SET FILE INFORMATION ROUTINE                 
+*                                                                               
+         OC    RINFO(RINFOL),RINFO                                              
+         JZ    *+2                 DEATH IF NO FILE INFORMATION                 
+*                                                                               
+         SAM24                                                                  
+         GOTO1 VDYNALLO,DMCB,(C'D',FIWRES),RIDSN                                
+         OC    RIDSN,SPACES                                                     
+         CLC   RIDSN,SPACES        DATA SET NAME                                
+         JNH   *+2                 DEATH IF NO DATA SET NAME                    
+         SAM31                                                                  
+*                                                                               
+         MVC   SITFXID,RIFXID      FILE EXTERNAL ID (TST/ADV/REP)               
+         MVC   SITDSN,RIDSN                                                     
+         MVC   SITDBS,RIBLKLN      DATA SET BLOCK LENGTH                        
+         MVC   SITXCIC,RIXCIC      INDEX TOTAL NUMBER OF CIS                    
+         MVC   SITXCIT,RIXCIT                                                   
+         MVC   SIT1CIC,RI1CIC      PART1 TOTAL NUMBER OF CI                     
+         MVC   SIT1CIT,RI1CIT                                                   
+         MVC   SIT2CIC,RI2CIC      PART2 TOTAL NUMBER OF CI                     
+         MVC   SIT2CIT,RI2CIT                                                   
+         MVC   SIT1TPC,RI1TPC      NUMBER OF TRACKS PER PART1 CI                
+         MVC   SIT1TPT,RI1TPT                                                   
+         MVC   SIT2TPC,RI2TPC      NUMBER OF TRACKS PER PART2 CI                
+         MVC   SIT2TPT,RI2TPT                                                   
+         MVC   SITRFDA,RIFTRK                                                   
+         MVC   SIT1STT,RIFTRK1                                                  
+         MVC   SIT2STT,RIFTRK2                                                  
+         MVC   SITRFHR,RIHIREC     HIGHEST RECORD NUMBER                        
+         MVC   SIT2HREC,RIHIREC2   BLOCKS PER PART 2 20 BIT                     
+*                                                                               
+         MVC   SITXKP,RIDXKEY      DISPL  TO KEY IN INDEX                       
+         MVC   SITXKL,RILKEY       LENGTH OF KEY                                
+         MVC   SITXRL,RILREF       LENGTH OF REF#                               
+*                                                                               
+         L     R1,SIT1CIC                                                       
+         MHI   R1,L'SI1PAR         SIZE OF RESOURCE PART1 AREA                  
+         L     R2,SIT2CIC                                                       
+         MHI   R2,L'SI2PAR         SIZE OF RESOURCE PART2 AREA                  
+*                                                                               
+         L     RF,ASFIPARN         A(NEXT AVAILABLE INDEX AREA                  
+         TM    MINDI,MIINIT        ARE WE INITIALIZING                          
+         BO    *+8                  YES                                         
+         L     RF,FIWP1A           A(RESOURCE PART1 INDEXES)                    
+*                                                                               
+         ST    RF,FIWP1A                                                        
+         ALR   RF,R1                                                            
+         ST    RF,FIWP2A                                                        
+         ALR   RF,R2                                                            
+         ST    RF,ASFIPARN         A(NEXT RESOURCE PART AREA)                   
+*                                                                               
+         AR    R1,R2               STORAGE USED FOR INDEXES                     
+*                                                                               
+         TM    MINDI,MIINIT        ARE WE IN INIT MODE                          
+         BO    SF100                YES                                         
+         C     R1,SITSIZE           NO, BE SURE SIZE HASN'T CHANGED             
+         BE    SF090                EQUAL, WE'RE GOOD                           
+*                                                                               
+         LA    R3,MSGW                                                          
+         MVC   MSGWMSG,=CL40'*ERROR* IN REBUILD, SIZE MISMATCH'                 
+         MVC   MSGWDET(5),=C'FILE='                                             
+         MVC   MSGWDET+5(L'FIWRES),FIWRES                                       
+         WTO   TEXT=(R3),MCSFLAG=HRDCPY                                         
+         DC    H'0'                                                             
+*                                                                               
+SF090    XR    R0,R0               CLEAR RESOURCE INDEX AREA                    
+         XR    R1,R1                                                            
+         L     RE,FIWP1A                                                        
+         L     RF,SITSIZE                                                       
+         MVCL  RE,R0                                                            
+         LTR   RF,RF                                                            
+         JNZ   *+2                 FAIL IF COULD NOT CLEAR ALL STORAGE          
+*                                                                               
+         XC    SITP1AV,SITP1AV     RESET COUNTS, QUEUE & TREE POINTERS          
+         XC    SITP2AV,SITP2AV                                                  
+         XC    SITP1VU,SITP1VU                                                  
+         XC    SITP2VU,SITP2VU                                                  
+         XC    SITP1HD,SITP1HD                                                  
+         XC    SITP1TL,SITP1TL                                                  
+         XC    SITP2HD,SITP2HD                                                  
+         XC    SITP2TL,SITP2TL                                                  
+         XC    SITTREE,SITTREE     ROOT OF INDEX KEY TREE                       
+         B     SF120                                                            
+*                                                                               
+SF100    ST    R1,SITSIZE          RESOURCE TOTAL SIZE OF TABLE                 
+*                                                                               
+         A     R1,SIHUSED          STORAGE USED SO FAR                          
+         C     R1,SIHSIZE          BE SURE IT CAN FIT                           
+         BNH   SF110                ALL GOOD                                    
+*                                                                               
+         LA    R3,MSGW                                                          
+         MVC   MSGWMSG,=CL40'*ERROR* NOT ENOUGH SHARED STORAGE'                 
+         WTO   TEXT=(R3),MCSFLAG=HRDCPY                                         
+         DC    H'0'                                                             
+*                                                                               
+SF110    ST    R1,SIHUSED          IT IS NOW ACCOUNTED FOR                      
+*                                                                               
+SF120    L     R1,FIWP1A                                                        
+         SLR   R1,R8               SUBTRACT START OF SHARED MEMORY              
+         ST    R1,SITP1ST          DISPLACEMENT TO PART1S                       
+*                                                                               
+         L     R1,FIWP2A                                                        
+         SLR   R1,R8               SUBTRACT START OF SHARED MEMORY              
+         ST    R1,SITP2ST          DISPLACEMENT TO PART2S                       
+*                                                                               
+         XC    CNTPAR1,CNTPAR1     CLEAR PART COUNTERS                          
+         XC    CNTPAR2,CNTPAR2                                                  
+*                                                                               
+         J     EXITOK                                                           
+*                                                                               
+                                                                                
+***********************************************************************         
+* ADD FILE INFORMATION TO SHARED QUEUE                                          
+***********************************************************************         
+ADDFI    NTR1  BASE=*,LABEL=*                                                   
+*                                                                               
+         MVC   FIRSTCI,FIWCIA      SAVE PART1 FIWCIA                            
+         MVC   THISCI,FIWCIA       THIS CI UNDER INSPECTION                     
+         MVC   GOODCI,FIWCIA       CI IS ALL GOOD                               
+*                                                                               
+         BRAS  RE,FIRCN            CONVERT A(CI) TO A(NODE)                     
+         MVC   ACURPAR1,FIWNDA     CURRENT PART1 IS FIRST CI                    
+         XC    ACURPAR2,ACURPAR2   NO PART2 YET                                 
+*                                                                               
+         GOTO1 =V(ADDFINF)         ADD FILE INFORMATION TO INDEX                
+         BNE   AF100               INDEX EMPTY AND AVAILABLE                    
+*                                                                               
+         MVC   FIWNDA,ACURPAR1                                                  
+         BRAS  RE,FIRITN           INSERT REPORT INTO THE TREE                  
+         BE    AF100               SUCCESS                                      
+*                                                                               
+         L     R1,ACIREC                                                        
+         MVC   FIWNDX,0(R1)                                                     
+         BRAS  RE,BADREP           BAD REPORT FOUND, OUTPUT CI/INDEX            
+*                                                                               
+AF100    MVC   FIWCIA,FIRSTCI      RESET CI ADDRESS                             
+         J     EXITOK                                                           
+*                                                                               
+                                                                                
+***********************************************************************         
+* CHAIN AVAILABLE PART1S                                                        
+***********************************************************************         
+CHP1AV   NTR1  BASE=*,LABEL=*                                                   
+*                                                                               
+         XC    CNTP1AV,CNTP1AV                                                  
+         XC    CNTP1VU,CNTP1VU                                                  
+*                                                                               
+         L     R2,FIWP1A           LINK THE AVAILABLE PART1S                    
+         L     R4,SIT1CIC          TOTAL NUMBER OF PART1S                       
+         LR    R1,R4                                                            
+         AHI   R1,-1                                                            
+         MHI   R1,L'SI1PAR                                                      
+         AR    R2,R1               POINT TO LAST PART1 FOR RESOURCE             
+*                                                                               
+         USING SI1PARD,R2                                                       
+C1010    ST    R2,ACURPAR1         CURRENT PART1                                
+         ST    R4,SI1NUM                                                        
+*                                                                               
+         LA    R5,SI1NDX                                                        
+         LLC   R1,RIDSTAT                                                       
+         LA    R1,0(R1,R5)                                                      
+         MVC   BYTE,0(R1)          STATUS BYTE                                  
+*                                                                               
+         CLI   BYTE,0              ADD EMPTY/PURGED CI TO AVAILABLE             
+         BE    C1030                                                            
+*                                                                               
+         NC    BYTE,RIVULN         LOOK FOR VULNERABLE REPORTS                  
+         BZ    C1050                                                            
+         L     R0,CNTP1VU          COUNT VULNERABLE PART1                       
+         AHI   R0,1                                                             
+         ST    R0,CNTP1VU                                                       
+         B     C1050                                                            
+*                                                                               
+C1030    L     R0,CNTP1AV          COUNT TOTAL AVAILABLE PART1S                 
+         AHI   R0,1                                                             
+         ST    R0,CNTP1AV                                                       
+*                                                                               
+         LR    R3,R2               CURRENT PART1                                
+         SLR   R3,R8               SUBTRACT START OF SHARED MEMORY              
+*                                                                               
+         OC    SITP1HD,SITP1HD     DO WE HAVE A NEXT AVAILABLE?                 
+         BNZ   C1040               YES                                          
+         ST    R3,SITP1HD          MAKE THIS FIRST AVAILABLE                    
+         ST    R3,SITP1TL          AND LAST AVAILABLE                           
+         B     C1050                                                            
+C1040    MVC   SI1NAV,SITP1HD      LINK TO NEXT AVAILABLE                       
+         ST    R3,SITP1HD          MAKE THIS ONE NEXT AVAILABLE                 
+         B     C1050                                                            
+*                                                                               
+C1050    AHI   R2,-(L'SI1PAR)      BUMP BACK                                    
+         BCT   R4,C1010                                                         
+*                                                                               
+         MVC   SITP1AV,CNTP1AV     STORE NUMBER OF AVAILABLE PART1S             
+         MVC   SITP1VU,CNTP1VU     AND NUMBER OF VULNERABLE PART1S              
+         J     EXITOK                                                           
+         DROP  R2                                                               
+*                                                                               
+***********************************************************************         
+* CHAIN AVAILABLE PART2S                                                        
+***********************************************************************         
+CHP2AV   NTR1  BASE=*,LABEL=*                                                   
+*                                                                               
+         XC    CNTP2AV,CNTP2AV                                                  
+         XC    CNTP2VU,CNTP2VU                                                  
+*                                                                               
+         L     R2,FIWP2A           LINK THE AVAILABLE PART2S                    
+         L     R4,SIT2CIC          TOTAL NUMBER OF PART2S                       
+         LR    R1,R4                                                            
+         AHI   R1,-1                                                            
+         MHI   R1,L'SI2PAR                                                      
+         AR    R2,R1               POINT TO LAST PART2 FOR RESOURCE             
+*                                                                               
+         USING SI2PARD,R2                                                       
+C2010    ST    R2,ACURPAR2         CURRENT PART2                                
+         LR    R0,R4                                                            
+         A     R0,SIT1CIC                                                       
+         ST    R0,SI2NUM           STORE SLOT NUMBER                            
+*                                                                               
+         OC    SI2PRV,SI2PRV       IS THIS PART2 AVAILABLE?                     
+         BZ    C2030               YES                                          
+*                                                                               
+         LA    R5,SI2NDX                                                        
+         LLC   R1,RIDSTAT                                                       
+         LA    R1,0(R1,R5)         STATUS BYTE                                  
+         MVC   BYTE,0(R1)                                                       
+*                                                                               
+         NC    BYTE,RIVULN         LOOK FOR VULNERABLE REPORTS                  
+         BZ    C2050               NO                                           
+         L     R0,CNTP2VU          COUNT VULNERABLE PART2                       
+         AHI   R0,1                                                             
+         ST    R0,CNTP2VU                                                       
+         B     C2050                                                            
+*                                                                               
+C2030    L     R0,CNTP2AV          COUNT TOTAL AVAILABLE PART2S                 
+         AHI   R0,1                                                             
+         ST    R0,CNTP2AV                                                       
+*                                                                               
+         LR    R3,R2               CURRENT PART2                                
+         SLR   R3,R8               SUBTRACT START OF SHARED MEMORY              
+*                                                                               
+         OC    SITP2HD,SITP2HD     DO WE HAVE A NEXT AVAILABLE?                 
+         BNZ   C2040               YES                                          
+         ST    R3,SITP2HD          MAKE THIS FIRST AVAILABLE                    
+         ST    R3,SITP2TL          AND LAST AVAILABLE                           
+         B     C2050                                                            
+C2040    MVC   SI2NAV,SITP2HD      LINK TO NEXT AVAILABLE                       
+         ST    R3,SITP2HD          MAKE THIS ONE NEXT AVAILABLE                 
+*                                                                               
+C2050    AHI   R2,-(L'SI2PAR)      BUMP BACK                                    
+         BCT   R4,C2010                                                         
+*                                                                               
+         MVC   SITP2AV,CNTP2AV     STORE NUMBER OF AVAILABLE PART2S             
+         MVC   SITP2VU,CNTP2VU     AND NUMBER OF VULNERABLE PART2S              
+         J     EXITOK                                                           
+         DROP  R2                                                               
+                                                                                
+***********************************************************************         
+* READ A CONTROL INTERVAL                                                       
+***********************************************************************         
+READCI   NTR1  BASE=*,LABEL=*                                                   
+*                                                                               
+         SAM24                                                                  
+         LA    RF,FIWCIA                                                        
+         GOTO1 VDATAMGR,DMCB,DMREAD,FIWRES,(RF),ACIREC                          
+         CLI   DMCB+8,0                                                         
+         JE    EXITOK                                                           
+*                                                                               
+         LA    R3,MSGW                                                          
+         MVC   MSGWMSG,=CL40'*ERROR* UNABLE TO READ CI '                        
+         MVC   MSGWDET(5),=C'FILE='                                             
+         MVC   MSGWDET+5(L'FIWRES),FIWRES                                       
+         WTO   TEXT=(R3),MCSFLAG=HRDCPY                                         
+         DC    H'0'                                                             
+                                                                                
+***********************************************************************         
+* WRITE A CONTROL INTERVAL                                                      
+***********************************************************************         
+WRITECI  NTR1  BASE=*,LABEL=*                                                   
+*                                                                               
+         SAM24                                                                  
+         CLI   RCWRITE,C'Y'                                                     
+         BNE   WCIERR                                                           
+*                                                                               
+         LA    RF,FIWCIA                                                        
+         GOTO1 VDATAMGR,DMCB,DMWRT,FIWRES,(RF),ACIREC                           
+         CLI   DMCB+8,0                                                         
+         JE    EXITOK                                                           
+*                                                                               
+WCIERR   LA    R3,MSGW                                                          
+         MVC   MSGWMSG,=CL40'*ERROR* UNABLE TO FIX CI '                         
+         MVC   MSGWDET(5),=C'FILE='                                             
+         MVC   MSGWDET+5(L'FIWRES),FIWRES                                       
+         WTO   TEXT=(R3),MCSFLAG=HRDCPY                                         
+         DC    H'0'                                                             
+                                                                                
+***********************************************************************         
+* PRINT TOTALS                                                                  
+***********************************************************************         
+PRINTTOT NTR1  BASE=*,LABEL=*                                                   
+*                                                                               
+         L     R8,FIWSHA           R8= A(START OF SHARED MEMORY)                
+         LA    R9,L'SIHDR(,R8)     START OF RESOURCES                           
+*                                                                               
+         L     R4,SIHNOFR          NUMBER OF RESOURCES                          
+*                                                                               
+         TM    MINDI,MIINIT                                                     
+         BZ    PT010                                                            
+         MVI   PIPART,C'-'                                                      
+         MVC   PIPART+1(PIEND-PIPART-1),PIPART                                  
+         BRAS  RE,PRINTL                                                        
+         MVC   PTDESC,=CL28'TOTAL NUMBER OF RESOURCES='                         
+         EDIT  (R4),PTCOUNT                                                     
+         BRAS  RE,PRINTL                                                        
+         MVI   PIPART,C'='                                                      
+         MVC   PIPART+1(PIEND-PIPART-1),PIPART                                  
+         BRAS  RE,PRINTL                                                        
+*                                                                               
+PT010    TM    MINDI,MIINIT                                                     
+         BO    PT020                                                            
+         TM    SITRIND,SITRBLD     WAS THIS JUST BUILT                          
+         BZ    PT100                  NO, DON'T PRINT                           
+         NI    SITRIND,X'FF'-SITRBLD  YES, TURN OFF BIT AND CONTINUE            
+         NI    SITRIND,X'FF'-SITRBAL  IF BUILDING DON'T BALANCE                 
+*                                                                               
+PT020    MVC   PRRESO(8),=C'RESOURCE'                                           
+         LLC   R2,SITNUM                                                        
+         EDIT  (R2),PRNUM                                                       
+         MVC   PRNAME,SITFIL                                                    
+         MVC   PRDESC(16),=C'INDEX TABLE SIZE'                                  
+         L     R2,SITSIZE                                                       
+         EDIT  (R2),(8,PRVALU),ZERO=NOBLANK                                     
+         BRAS  RE,PRINTL                                                        
+         MVI   PIPART,C'-'                                                      
+         MVC   PIPART+1(PIEND-PIPART-1),PIPART                                  
+         BRAS  RE,PRINTL                                                        
+*                                                                               
+         MVC   PICIS,=CL12'# OF CIS'                                            
+         MVC   PIAV,=CL12'AVAILABLE'                                            
+         MVC   PIPAV,=CL12'% AVAILABLE'                                         
+         MVC   PIVU,=CL12'VULNERABLE'                                           
+         MVC   PIPVU,=CL12'% VULNERABLE'                                        
+         BRAS  RE,PRINTL                                                        
+*                                                                               
+         MVC   PICIS,=CL20'------------'                                        
+         MVC   PIAV,=CL20'------------'                                         
+         MVC   PIPAV,=CL20'------------'                                        
+         MVC   PIVU,=CL20'------------'                                         
+         MVC   PIPVU,=CL20'------------'                                        
+         BRAS  RE,PRINTL                                                        
+*                                                                               
+         MVC   PIPART(5),=C'PART1'                                              
+*                                                                               
+         L     R2,SIT1CIC                                                       
+         EDIT  (R2),(8,PICIS),ZERO=NOBLANK                                      
+         L     R2,SITP1AV                                                       
+         EDIT  (R2),(8,PIAV),ZERO=NOBLANK                                       
+         L     R2,SITP1VU                                                       
+         EDIT  (R2),(8,PIVU),ZERO=NOBLANK                                       
+*                                                                               
+         XR    R0,R0                                                            
+         L     R1,SITP1AV          NUMBER OF AVAILABLE PART1S                   
+         MHI   R1,10000                                                         
+         D     R0,SIT1CIC          NUMBER OF PART1S FOR THIS RESOURCE           
+         ST    R1,FULL             PART1 % AVAILABLE                            
+         EDIT  (B4,FULL),(8,PIPAV),2,ZERO=NOBLANK,TRAIL=C'%'                    
+*                                                                               
+         XR    R0,R0                                                            
+         L     R1,SITP1VU          NUMBER OF VULNERABLE PART1S                  
+         MHI   R1,10000                                                         
+         D     R0,SIT1CIC          NUMBER OF PART1S FOR THIS RESOURCE           
+         ST    R1,FULL             PART1 % VULNERABLE                           
+         EDIT  (B4,FULL),(8,PIPVU),2,ZERO=NOBLANK,TRAIL=C'%'                    
+*                                                                               
+         BRAS  RE,PRINTL                                                        
+*                                                 PAPART1                       
+         MVC   PIPART(5),=C'PART2'                                              
+*                                                                               
+         L     R2,SIT2CIC                                                       
+         EDIT  (R2),(8,PICIS),ZERO=NOBLANK                                      
+         L     R2,SITP2AV                                                       
+         EDIT  (R2),(8,PIAV),ZERO=NOBLANK                                       
+         L     R2,SITP2VU                                                       
+         EDIT  (R2),(8,PIVU),ZERO=NOBLANK                                       
+*                                                                               
+         XR    R0,R0                                                            
+         L     R1,SITP2AV          NUMBER OF AVAILABLE PART1S                   
+         MHI   R1,10000                                                         
+         D     R0,SIT2CIC          NUMBER OF PART2S FOR THIS RESOURCE           
+         ST    R1,FULL             PART1 % AVAILABLE                            
+         EDIT  (B4,FULL),(8,PIPAV),2,ZERO=NOBLANK,TRAIL=C'%'                    
+*                                                                               
+         XR    R0,R0                                                            
+         L     R1,SITP2VU          NUMBER OF VULNERABLE PART1S                  
+         MHI   R1,10000                                                         
+         D     R0,SIT2CIC          NUMBER OF PART2S FOR THIS RESOURCE           
+         ST    R1,FULL             PART2 % VULNERABLE                           
+         EDIT  (B4,FULL),(8,PIPVU),2,ZERO=NOBLANK,TRAIL=C'%'                    
+         BRAS  RE,PRINTL                                                        
+*                                                                               
+         MVI   PIPART,C'='                                                      
+         MVC   PIPART+1(PIEND-PIPART-1),PIPART                                  
+         BRAS  RE,PRINTL                                                        
+*                                                                               
+PT100    LA    R9,L'SITAB(,R9)                                                  
+         BCT   R4,PT010                                                         
+         J     EXITOK                                                           
+                                                                                
+***********************************************************************         
+* LOCK RESOURCES BEING BUILT/REBUILT                                            
+***********************************************************************         
+LOCKFI   NTR1  BASE=*,LABEL=*                                                   
+*                                                                               
+         XR    R5,R5               INIT NUMBER OF RESOURCES                     
+         LA    R4,FILES            FILES DEFINED IN PARAMETERS                  
+LF040    CLI   0(R4),C' '          END OF LIST                                  
+         BE    LF050                                                            
+*                                                                               
+         MVC   FIWRES,0(R4)        RESOURCE NAME                                
+         BRAS  RE,FIRFLOCK         LOCK THE RESOURCE                            
+*                                                                               
+         LA    R4,L'FILES(,R4)                                                  
+         AHI   R5,1                BUMP RESOURCE NUMBER                         
+         CHI   R5,MAXFILES                                                      
+         BNH   LF040               MAY NEED TO INCREASE TABLE FOR MORE          
+         WTO   '**ERROR** TOO MANY FILE PARAMETERS ',MCSFLAG=HRDCPY             
+         DC    H'0'                                                             
+*                                                                               
+LF050    LTR   R5,R5               ANY RESOURCES DEFINED IN PARAMETERS?         
+         JNZ   EXITOK                                                           
+         WTO   '**ERROR** NO FILE PARAMETERS ',MCSFLAG=HRDCPY                   
+         DC    H'0'                                                             
+                                                                                
+***********************************************************************         
+* UNLOCK RESOURCES JUST BUILT/REBUILT                                           
+***********************************************************************         
+UNLKFI   NTR1  BASE=*,LABEL=*                                                   
+*                                                                               
+         LA    R4,FILES            FILES DEFINED IN PARAMETERS                  
+UF010    CLI   0(R4),C' '          END OF LIST                                  
+         JE    EXITOK                                                           
+*                                                                               
+         MVC   FIWRES,0(R4)        RESOURCE NAME                                
+         BRAS  RE,FIRFUNLK         UNLOCK THE RESOURCE                          
+*                                                                               
+         LA    R4,L'FILES(,R4)                                                  
+         B     UF010                                                            
+                                                                                
+***********************************************************************         
+* RESOURCE SCAN TO FREE UP REPORT ENTRIES                                       
+***********************************************************************         
+RSCAN    NTR1  BASE=*,LABEL=*                                                   
+*                                                                               
+         TM    MINDI,MIFREE1+MIFREE2  SCAN REQUESTED/POSTED                     
+         BNZ   RX010                  YES                                       
+         CLI   TIMESCAN,C'N'          TIMER POP CI SCAN                         
+         BE    RSX                    NO: EXIT                                  
+*                                                                               
+RX010    BRAS  RE,PRINTL                                                        
+         MVC   PMMSG,=CL12'SCANNING'                                            
+         BRAS  RE,PRINTMSG                                                      
+*                                                                               
+         SAM31 ,                                                                
+         L     R8,FIWSHA           A(SHARED MEMORY FILE INDEX HEADER)           
+         LA    R9,L'SIHDR(,R8)     A(FIRST RESOURCE TABLE HEADER)               
+*                                                                               
+         ICM   R5,15,SIHNOFR       PICK UP NUMBER OF RESOURCES                  
+         JZ    *+2                 NONE, HUH                                    
+*                                                                               
+RS020    MVC   FIWRES,SITFIL       RESOURCE NAME                                
+         BRAS  RE,FIRSET           SET FIW ADDRESSES                            
+*                                                                               
+         CLI   TIMESCAN,C'N'            TIMER POP CI SCAN                       
+         BNE   *+12                     YES: THEN SCAN EVERYTHING               
+         TM    SITRIND,SITRP1S+SITRP2S  SCAN REQUESTED FOR RESOURCE             
+         BZ    *+12                     NO: THEN SKIP                           
+         BRAS  RE,GOSCAN                SCAN RESOURCE                           
+         NI    SITRIND,X'FF'-SITRP1S-SITRP2S                                    
+*                                                                               
+         LA    R9,L'SITAB(,R9)          NEXT RESOURCE                           
+         BCT   R5,RS020                                                         
+*                                                                               
+         MVC   PMMSG,=CL12'END OF SCAN'                                         
+         BRAS  RE,PRINTMSG                                                      
+*                                                                               
+RSX      NI    MINDI,X'FF'-MIFREE1-MIFREE2                                      
+         MVC   FREE1,=CL8'NO'                                                   
+         MVC   FREE2,=CL8'NO'                                                   
+*                                                                               
+         J     EXITOK                                                           
+                                                                                
+***********************************************************************         
+* POPULATE AVAILABLE QUEUE FOR THE GIVEN RESOURCE                               
+***********************************************************************         
+GOSCAN   NTR1  BASE=*,LABEL=*                                                   
+*                                                                               
+         CLI   HOWPOP,C'A'         DID WE GET HERE VIA AN ALERT?                
+         BNE   GS010                                                            
+*                                                                               
+         TM    MINDI,MIFREE1       DO WE NEED TO FREE A CI?                     
+         BZ    *+8                 NO                                           
+         BRAS  RE,FIR1LOCK         YES: LOCK THE PART1 QUEUE                    
+*                                                                               
+         TM    MINDI,MIFREE2       DO WE NEED TO FREE A CII?                    
+         BZ    *+8                 NO                                           
+         BRAS  RE,FIR2LOCK         YES: LOCK THE PART2 QUEUE                    
+*                                                                               
+GS010    XC    CNTP1VU,CNTP1VU     INIT PART1 VULNERABLE COUNT                  
+         XC    CNTP2VU,CNTP2VU     INIT PART2 VULNERABLE COUNT                  
+         MVI   SINDI,0             SCAN INDICATOR                               
+*                                                                               
+         L     R5,=A(RVTAB)        INIT VULNERABLE REPORT TABLE                 
+         ST    R5,ARVTAB                                                        
+         XC    0(2,R5),0(R5)                                                    
+         LA    R5,2(,R5)                                                        
+         USING RVTABD,R5                                                        
+         XC    0(RVTABL,R5),0(R5)                                               
+*                                                                               
+         BRAS  RE,PACALC           CALCULATE % AVAILABLE                        
+         BRAS  RE,PAPRINT          PRINT % AVAILABLE                            
+*                                                                               
+         SAM24 ,                                                                
+         GOTO1 VDATAMGR,DMCB,BUFFER,FIWRES,APINDEX,ACTREC,ACIREC                
+         BE    *+6                                                              
+         DC    H'0'                                                             
+         SAM31 ,                                                                
+*                                                                               
+         L     R2,FIWP1A           POINT TO PART1S                              
+         L     R4,SIT1CIC          TOTAL NUMBER OF PART1S                       
+*                                                                               
+*&&US*&& MVC   WARNDARE,DWARN      COPY NEEDED FILSCAN VARIABLES                
+         MVC   WARNPQ1,PQ1WARN                                                  
+         MVC   WARNPQ2,PQ2WARN                                                  
+         MVC   PUVUPQ1,PQ1PUVU                                                  
+         MVC   PUVUPQ2,PQ2PUVU                                                  
+*                                                                               
+         GOTO1 =V(FILSCAN)         SCAN FOR EXPIRED AND VULNERABLES             
+*                                                                               
+         MVC   SITP1VU,CNTP1VU     UPDATE VULNERABLE COUNTS IN MEMORY           
+         MVC   SITP2VU,CNTP2VU                                                  
+*                                                                               
+         BRAS  RE,FIR1UNLK         MAKE SURE TO UNLOCK THE PART1 QUEUE          
+         BRAS  RE,FIR2UNLK         AND UNLOCK THE PART2 QUEUE                   
+*                                                                               
+         TM    SINDI,SIPURGE       WAS ANYTHING PURGED?                         
+         BZ    GSPQX               NO: DON'T PRINT AGAIN                        
+         BRAS  RE,PACALC           CALCULATE % AVAILABLE                        
+         BRAS  RE,PAPRINT          PRINT % AVAILABLE                            
+*                                                                               
+GSPQX    J     EXITOK                                                           
+                                                                                
+***********************************************************************         
+* CALCULATE PERCENT AVAILABLE                                                   
+***********************************************************************         
+PACALC   NTR1  BASE=*,LABEL=*                                                   
+*                                                                               
+         XR    R0,R0                                                            
+         L     R1,SITP1AV          NUMBER OF AVAILABLE PART1S                   
+         MHI   R1,10000                                                         
+         D     R0,SIT1CIC          NUMBER OF PART2S FOR THIS RESOURCE           
+         ST    R1,PAPART1          PART1 % AVAILABLE                            
+*                                                                               
+         XR    R0,R0                                                            
+         L     R1,SITP2AV          NUMBER OF AVAILABLE PART2S                   
+         MHI   R1,10000                                                         
+         D     R0,SIT2CIC          NUMBER OF PART2S FOR THIS RESOURCE           
+         ST    R1,PAPART2          PART2 % AVAILABLE                            
+*                                                                               
+         J     EXITOK                                                           
+                                                                                
+***********************************************************************         
+* PRINT PERCENT AVAILABLE                                                       
+***********************************************************************         
+PAPRINT  NTR1  BASE=*,LABEL=*                                                   
+*                                                                               
+         TM    SINDI,SIPURGE                                                    
+         BO    *+8                                                              
+         MVI   PLINE+3,C'-'                                                     
+*                                                                               
+         MVC   PLINE+5(L'FIWRES),FIWRES                                         
+         MVC   PLINE+13(12),=CL12'PART1 AVAIL='                                 
+         EDIT  (B4,PAPART1),(8,PLINE+26),2,TRAIL=C'%'                           
+         MVC   PLINE+38(12),=CL12'PART2 AVAIL='                                 
+         EDIT  (B4,PAPART2),(8,PLINE+51),2,TRAIL=C'%'                           
+         BRAS  RE,PRINTL                                                        
+*                                                                               
+         J     EXITOK                                                           
+                                                                                
+***********************************************************************         
+* CALL DDTREE AND BALANCE THE INDEX BINARY SEARCH TREE                          
+***********************************************************************         
+BALTREE  NTR1  BASE=*,LABEL=*                                                   
+*                                                                               
+         TM    MINDI,MITREBAL      TREE BALANCE REQUESTED                       
+         BZ    BALTX               YES                                          
+*                                                                               
+         BRAS  RE,PRINTL                                                        
+         MVC   PMMSG,=CL12'BALANCE TREE'                                        
+         BRAS  RE,PRINTMSG                                                      
+*                                                                               
+*        SKIP THIS FOR NOW                                                      
+*&&DO                                                                           
+*                                                                               
+         SAM31 ,                                                                
+         L     R8,FIWSHA           A(SHARED MEMORY FILE INDEX HEADER)           
+         LA    R9,L'SIHDR(,R8)     A(FIRST RESOURCE TABLE HEADER)               
+*                                                                               
+         ICM   R5,15,SIHNOFR       PICK UP NUMBER OF RESOURCES                  
+         JZ    *+2                 NONE, HUH                                    
+*                                                                               
+BALT020  MVC   FIWRES,SITFIL       RESOURCE NAME                                
+         BRAS  RE,FIRSET           SET FIW ADDRESSES                            
+*                                                                               
+         TM    SITRIND,SITRBAL     TREE BALANCE REQUESTED FOR RESOURCE          
+         BZ    BALT040             NO: THEN SKIP                                
+*                                                                               
+         MVC   PMMSG+4(L'FIWRES),FIWRES                                         
+         BRAS  RE,PRINTL                                                        
+*                                                                               
+         BRAS  RE,FIRSLOCK         SHARED FILE LOCK                             
+         BRAS  RE,FIRTLOCK         EXCLUSIVE TREE LOCK                          
+*                                                                               
+         XC    BIGWORK,BIGWORK                                                  
+         LA    R1,BIGWORK                                                       
+         USING TREED,R1                                                         
+         MVC   TRENAME(L'FIWRES),FIWRES                                         
+         MVC   TRABASE,FIWSHA                                                   
+         MVC   TRAHEAD,FIWRHA                                                   
+         MVC   TREMAX,SIT1CIC                                                   
+         MVC   TRDROOT,=AL2(SITTREE-SITABD)                                     
+         MVC   TRDKEY,SITXKP       DISPL TO KEY IN INDEX                        
+         MVC   TREKEYL,SITXKL      LENGTH OF KEY                                
+         MVC   TRDPAREN,=AL2(SI1PTP-SI1PARD)                                    
+         MVC   TRDLEFT,=AL2(SI1LTP-SI1PARD)                                     
+         MVC   TRDRIGHT,=AL2(SI1RTP-SI1PARD)                                    
+         DROP  R1                                                               
+*                                                                               
+         GOTO1 VTREE,DMCB,BALANCE,BIGWORK                                       
+*                                                                               
+         NI    SITRIND,X'FF'-SITRBAL                                            
+         BRAS  RE,FIRTUNLK         RELEASE EXCLUSIVE TREE LOCK                  
+         BRAS  RE,FIRSUNLK         RELEASE SHARED FILE LOCK                     
+*                                                                               
+         LA    R1,BIGWORK                                                       
+         USING TREED,R1                                                         
+         TM    TRERF,TRFBINC       WAS IT A COMPLETE BALANCE?                   
+         BZ    BALT040                                                          
+         DROP  R1                                                               
+*                                                                               
+         MVC   PMMSG(18),=CL18'BALANCE INCOMPLETE'                              
+         BRAS  RE,PRINTMSG                                                      
+*                                                                               
+BALT040  LA    R9,L'SITAB(,R9)     NEXT RESOURCE                                
+         BCT   R5,BALT020                                                       
+*                                                                               
+*&&                                                                             
+*        NOT BALANCING YET                                                      
+*                                                                               
+         MVC   PMMSG,=CL12'BALANCE DONE'                                        
+         BRAS  RE,PRINTMSG                                                      
+*                                                                               
+         NI    MINDI,X'FF'-MITREBAL                                             
+         MVC   TREEBAL,=CL8'NO'                                                 
+*                                                                               
+BALTX    CLI   MODE,C'T'           TREE BALANCE MODE, THEN ALL DONE             
+         J     EXIT                EXIT EQUAL                                   
+                                                                                
+***********************************************************************         
+* FORMAT THE TIME                                                               
+***********************************************************************         
+TIMEOUT  XC    DUB+2(6),DUB+2      EXPAND BINARY TIME IN DUB(2)                 
+         CLI   DUB,23                                                           
+         JH    TIMEOUTX                                                         
+         CLI   DUB+1,59                                                         
+         JH    TIMEOUTX                                                         
+*                                                                               
+         XR    R0,R0                                                            
+         IC    R0,DUB                                                           
+         CVD   R0,DUBDUB                                                        
+         OI    DUBDUB+7,X'0F'                                                   
+         UNPK  DUB+2(2),DUBDUB+6(2)                                             
+*                                                                               
+         MVI   DUB+4,C':'                                                       
+         XR    R0,R0                                                            
+         IC    R0,DUB+1                                                         
+         CVD   R0,DUBDUB                                                        
+         OI    DUBDUB+7,X'0F'                                                   
+         UNPK  DUB+5(2),DUBDUB+6(2)                                             
+         MVI   DUB+7,C':'                                                       
+         MVC   DUB+8(2),=C'00'                                                  
+*                                                                               
+TIMEOUTX BR    RE                                                               
+                                                                                
+***********************************************************************         
+* BAD REPORT                                                                    
+***********************************************************************         
+BADREP   NTR1  BASE=*,LABEL=*                                                   
+         STC   R1,BYTE                                                          
+*                                                                               
+         MVC   PRRESO(10),=C'BAD REPORT'                                        
+         CLI   BYTE,3              DID WE GET HERE ON A BAD PURGE?              
+         BNE   *+10                NO                                           
+         MVC   PRRESO(10),=C'PURGE ERR '                                        
+         MVC   PRRESO+11(7),FIWRES                                              
+         MVC   PRRESO+19(3),=C'CI='                                             
+         MVC   FULL,FIWCIA                                                      
+         GOTO1 VHEXOUT,DMCB,FULL,PRRESO+22,L'FULL,0                             
+         L     R1,ACIREC                                                        
+         MVC   PRRESO+31(6),=C'INDEX='                                          
+         MVC   PRRESO+37(16),FIWNDX                                             
+         GOTO1 VHEXOUT,DMCB,FIWNDX,PRRESO+55,16,0                               
+         BRAS  RE,PRINTL                                                        
+*                                                                               
+         TM    SINDI,SIBADREP      DID I ALREADY SEND A WARNING NOTE?           
+         JO    EXITOK              YES: DON'T SEND ANOTHER                      
+         OI    SINDI,SIBADREP                                                   
+*                                                                               
+         LA    R1,L'NOTIFY                                                      
+         LA    R2,NOTIFY                                                        
+BR005    CLI   0(R2),C';'          REPLACE SEMICOLONS WITH COMMAS               
+         BNE   *+8                                                              
+         MVI   0(R2),C','                                                       
+         LA    R2,1(,R2)                                                        
+         BCT   R1,BR005                                                         
+*                                                                               
+         MVC   MSGWTXT,SPACES                                                   
+         MVC   MSGWTXT(9),=C'AUTONOTE*'                                         
+         MVC   MSGWTXT+9(L'NOTIFY),NOTIFY                                       
+         LA    R2,MSGWTXT+9+L'NOTIFY-1                                          
+*                                                                               
+BR010    CLI   0(R2),C' '                                                       
+         BH    BR020                                                            
+         BCT   R2,BR010                                                         
+*                                                                               
+BR020    MVI   1(R2),C':'                                                       
+         MVC   2(11,R2),=CL11' *WARNING* '                                      
+         MVC   2+11(16,R2),=CL16'BAD REPORT FOUND'                              
+         CLI   BYTE,3            DID WE GET HERE ON A BAD PURGE?                
+         BNE   *+10              NO                                             
+         MVC   2+11(16,R2),=CL16'PURGE ERROR'                                   
+         LA    R2,2+11+16(,R2)                                                  
+         LA    R1,MSGW                                                          
+         SLR   R2,R1                                                            
+         STCM  R2,3,MSGWLEN                                                     
+         WTO   TEXT=MSGW                                                        
+*                                                                               
+         J     EXITOK                                                           
+                                                                                
+***********************************************************************         
+* NOTIFICATION MESSAGE                                                          
+***********************************************************************         
+NOTYMSG  NTR1  BASE=*,LABEL=*                                                   
+         STC   R1,BYTE                                                          
+*                                                                               
+         LA    R3,NOTIFY           GENERAL PRINT QUEUE NOTIFICATION             
+*&&US*&& CLI   BYTE,NTYDARE                                                     
+*&&US*&& BNE   NM000                                                            
+*&&US*&& LA    R3,DNOTIFY          DARE NOTIFICATION                            
+*                                                                               
+NM000    LA    R1,L'NOTIFY                                                      
+         LR    R2,R3                                                            
+NM005    CLI   0(R2),C';'          REPLACE SEMICOLONS WITH COMMAS               
+         BNE   *+8                                                              
+         MVI   0(R2),C','                                                       
+         LA    R2,1(,R2)                                                        
+         BCT   R1,NM005                                                         
+*                                                                               
+         MVC   MSGWTXT,SPACES                                                   
+         MVC   MSGWTXT(9),=C'AUTONOTE*'                                         
+         MVC   MSGWTXT+9(L'NOTIFY),0(R3)                                        
+         LA    R2,MSGWTXT+9+L'NOTIFY-1                                          
+*                                                                               
+NM010    CLI   0(R2),C' '                                                       
+         BH    NM020                                                            
+         BCT   R2,NM010                                                         
+NM020    MVI   1(R2),C':'                                                       
+         LA    R2,2(,R2)                                                        
+*                                                                               
+         MVC   0(L'NTYMSGT,R2),NTYMSGT   *WARNING*                              
+         LA    R2,L'NTYMSGT(,R2)                                                
+         MVC   0(L'NTYMSGF,R2),FIWRES    FILEX                                  
+         LA    R2,L'NTYMSGF(,R2)                                                
+*                                                                               
+         CLI   BYTE,NTYPART1                                                    
+         BNE   NM030                                                            
+         MVC   0(L'NTYMSG1,R2),NTYMSG1   PART1S AT                              
+         LA    R2,L'NTYMSG1(,R2)                                                
+         MVC   0(L'NTYMSG1P,R2),NTYMSG1P XX.XX %                                
+         EDIT  (B4,PAPART1),(5,(R2)),2,ZERO=NOBLANK                             
+         LA    R2,L'NTYMSG1P(,R2)                                               
+         B     NM100                                                            
+*                                                                               
+NM030    CLI   BYTE,NTYPART2                                                    
+         BNE   NM040                                                            
+         MVC   0(L'NTYMSG2,R2),NTYMSG2   PART2S AT                              
+         LA    R2,L'NTYMSG2(,R2)                                                
+         MVC   0(L'NTYMSG2P,R2),NTYMSG2P XX.XX %                                
+         EDIT  (B4,PAPART2),(5,(R2)),2,ZERO=NOBLANK                             
+         LA    R2,L'NTYMSG2P(,R2)                                               
+         B     NM100                                                            
+*                                                                               
+NM040    CLI   BYTE,NTYDARE                                                     
+         BNE   NM100                                                            
+         MVC   0(L'NTYMSG3,R2),NTYMSG3   DARE WARNING                           
+         LA    R2,L'NTYMSG3(,R2)                                                
+         MVC   0(L'NTYMSG3R,R2),BIGWORK                                         
+         LA    R2,L'NTYMSG3R(,R2)                                               
+         B     NM100                                                            
+*                                                                               
+NM100    TIME  BIN                                                              
+         LR    R1,R0                                                            
+         S     R1,TIMEMSG          SUBTRACT LAST TIME FROM NOW                  
+         JM    *+12                MINUS MUST HAVE PAST MIDNIGHT                
+         CHI   R1,6000             LESS THAN 6000 (1 MIN)                       
+         JL    EXITOK              JUST EXIT                                    
+         ST    R0,TIMEMSG          SAVE TIME OF THIS MESSAGE                    
+NM101    LA    R1,MSGW                                                          
+         SLR   R2,R1                                                            
+         STCM  R2,3,MSGWLEN                                                     
+         CLC   MSGWTXT(9),=C'AUTONOTE*'                                         
+         BNE   NM110                                                            
+         WTO   TEXT=MSGW                                                        
+         J     EXITOK                                                           
+*                                                                               
+NM110    WTO   TEXT=MSGW,MCSFLAG=HRDCPY                                         
+         J     EXITOK                                                           
+*                                                                               
+NTYMSGT  DC    C'*WARNING* '                                                    
+NTYMSGF  DC    C'FILEX  '                                                       
+NTYMSG1  DC    C'PART1S AT '                                                    
+NTYMSG1P DC    C'XX.XX % '                                                      
+NTYMSG2  DC    C'PART2S AT '                                                    
+NTYMSG2P DC    C'XX.XX % '                                                      
+NTYMSGE  DC    C' '                                                             
+*                                                                               
+NTYMSG3  DC    C'DARE REPORT NOT PROCESSED '                                    
+NTYMSG3R DC    C'DAR,00001  JAN01/2001  11:11'                                  
+*                                                                               
+TIMEMSG  DC    F'0'                TIME OF LAST MESSAGE                         
+***********************************************************************         
+* ALERT MESSAGE                                                                 
+***********************************************************************         
+ALERTMSG NTR1  BASE=*,LABEL=*                                                   
+*                                                                               
+         MVC   MSGWTXT,SPACES                                                   
+         MVC   MSGWTXT(40),=CL40'AUTONOTE*AWIL: *WARNING* JOB ALERTED'          
+         LA    R2,MSGWTXT+40                                                    
+         LA    R1,MSGW                                                          
+         SLR   R2,R1                                                            
+         STCM  R2,3,MSGWLEN                                                     
+         WTO   TEXT=MSGW                                                        
+         J     EXITOK                                                           
+                                                                                
+***********************************************************************         
+* SHARED MEMORY FILE INDEX COMMON ROUTINES                                      
+***********************************************************************         
+         DROP  R8,R9                                                            
+       ++INCLUDE DDSHFIR                                                        
+                                                                                
+***********************************************************************         
+* EXITS AND COMMON STORAGE                                                      
+***********************************************************************         
+COMMON   DS    0D                                                               
+*                                                                               
+EXITL    LHI   RF,0                                                             
+         J     EXITCC                                                           
+EXITH    LHI   RF,2                                                             
+         J     EXITCC                                                           
+EXITOK   LHI   RF,1                                                             
+EXITCC   CHI   RF,1                                                             
+EXIT     XIT1  ,                                                                
+*                                                                               
+EXITOP   L     RD,SAVERD           EXIT FROM TOP                                
+         XMOD1                                                                  
+                                                                                
+***********************************************************************         
+* PRINT ROUTINES                                                                
+***********************************************************************         
+PRINTI   ST    RE,SAVERE                                                        
+         MVC   PLINE,SPACES                                                     
+         OPEN  (SYSPRINT,OUTPUT)   PRINT INIT                                   
+         ZAP   LINE,=PL1'0'                                                     
+         ZAP   PAGE,=PL1'1'                                                     
+         L     RE,SAVERE                                                        
+         BR    RE                                                               
+*                                                                               
+PRINTT   ST    RE,SAVERE           PRINT TITLES                                 
+         ZAP   LINE,=PL1'0'        RESET LINECOUNT                              
+         AP    PAGE,=PL1'1'        BUMP PAGECOUNT                               
+         PUT   SYSPRINT,TITLE      PRINT TITLE                                  
+         L     RE,SAVERE                                                        
+         BR    RE                                                               
+*                                                                               
+PRINTL   ST    RE,SAVERE           PRINT LINE                                   
+         AP    LINE,=PL1'1'        BUMP LINECOUNT                               
+         CP    LINE,MAXLINE        TEST FOR MAX LINES                           
+         BL    PRINTL2                                                          
+*                                                                               
+PRINTL1  ZAP   LINE,=PL1'3'        RESET LINECOUNT                              
+         AP    PAGE,=PL1'1'        BUMP PAGECOUNT                               
+         PUT   SYSPRINT,TITLE      PRINT TITLE                                  
+*                                                                               
+PRINTL2  PUT   SYSPRINT,PLINE      PRINT LINE                                   
+         MVC   PLINE,SPACES                                                     
+         L     RE,SAVERE                                                        
+         BR    RE                  EXIT                                         
+*                                                                               
+PRINTX   ST    RE,SAVERE           CLOSE PRINT                                  
+         CLOSE SYSPRINT                                                         
+         L     RE,SAVERE                                                        
+         BR    RE                                                               
+                                                                                
+PRINTMSG ST    RE,SAVERX                                                        
+         MVI   PMMARK,C'*'                                                      
+         MVI   PMLP,C'('                                                        
+         EDIT  (TIME,NOW),(8,PMTIME)                                            
+         MVC   PMDAYA,DAYNOWA                                                   
+         MVC   PMDATEA,TODAYA                                                   
+         MVI   PMRP,C')'                                                        
+         BRAS  RE,PRINTL                                                        
+         L     RE,SAVERX                                                        
+         BR    RE                                                               
+                                                                                
+***********************************************************************         
+* PARAMETER CARDS AND HANDLING ROUTINE                                          
+***********************************************************************         
+*                                                                               
+*        CL7'KEYWORD',AL1(KEYWRD LEN-1,OP LEN),X'FLAGS',AL3(OUTPUT)             
+*                                                                               
+* FLAGS  X'8000'                   A(OUTPUT) IS A(ROUTINE)                      
+*        X'4000'                   ACCEPT =,/=                                  
+*        X'2000'                   ACCEPT <,>,<=,=>                             
+*        X'1000'                   HEX VALUE                                    
+*        X'0800'                   DEC VALUE                                    
+*        X'0400'                   OUTPUT IS A LIST                             
+*        X'0200'                   TIME VALUE                                   
+*        X'0100'                   DATE VALUE                                   
+*        X'0080'                   NO DELIMITER KEYWORD ONLY                    
+*        X'0002'                   ONLY VALID ON OPS MODIFY                     
+*        X'0001'                   ONLY VALID ON START                          
+*----------------------------------------------------------------------         
+CARDTAB  DS    0F                                                               
+         DC    C'DDSIO  ',AL1(4,09),X'0001',AL3(DDSIO)                          
+         DC    C'DSPACE ',AL1(5,00),X'0001',AL3(SSB+SSODSPAC-SSOOFF)            
+         DC    C'MEMORY ',AL1(5,07),X'0001',AL3(MEMORY)                         
+         DC    C'WRITE  ',AL1(4,03),X'0001',AL3(RCWRITE)                        
+         DC    C'MODE   ',AL1(3,09),X'0001',AL3(MODE)                           
+         DC    C'ESTAE  ',AL1(4,02),X'0001',AL3(USEESTAE)                       
+         DC    C'FILE   ',AL1(3,07),X'0401',AL3(FILES)                          
+         DC    C'POP    ',AL1(2,02),X'0800',AL3(POP)                            
+         DC    C'NOW    ',AL1(2,00),X'8080',AL3(SCANNOW)                        
+         DC    C'SCAN   ',AL1(3,02),X'0800',AL3(TIMESCAN+2)                     
+         DC    C'BUILD  ',AL1(4,07),X'0000',AL3(BUILD)                          
+         DC    C'FREE1  ',AL1(4,07),X'0000',AL3(FREE1)                          
+         DC    C'FREE2  ',AL1(4,07),X'0000',AL3(FREE2)                          
+         DC    C'TREEBAL',AL1(6,07),X'0000',AL3(TREEBAL)                        
+         DC    C'NOTIFY ',AL1(5,49),X'0000',AL3(NOTIFY)                         
+         DC    C'PQ1W%  ',AL1(4,02),X'0800',AL3(PQ1WARN)                        
+         DC    C'PQ2W%  ',AL1(4,02),X'0800',AL3(PQ2WARN)                        
+         DC    C'PQ1P%  ',AL1(4,02),X'0800',AL3(PQ1PUVU)                        
+         DC    C'PQ2P%  ',AL1(4,02),X'0800',AL3(PQ2PUVU)                        
+         DC    C'CDATE  ',AL1(4,00),X'0000',AL3(SETCDAT)                        
+         DC    C'BACKUP ',AL1(5,00),X'0000',AL3(BACKUP)                         
+*&&US*&& DC    C'DNOTIFY',AL1(6,49),X'0000',AL3(DNOTIFY)                        
+*&&US*&& DC    C'DWARN  ',AL1(4,02),X'0800',AL3(DWARN)                          
+         DC    X'0000'                                                          
+*                                                                               
+SCANNOW  MVC   TIMESCAN+4(4),=F'0'                                              
+         BR    RE                                                               
+*----------------------------------------------------------------------         
+* CARD OUTPUT AREAS SET WITH DEFAULTS                                           
+*----------------------------------------------------------------------         
+DDSIO    DC    CL10'DDSIO'                                                      
+MEMORY   DC    CL10' '           SHARED MEMORY NAME                             
+MODE     DC    CL10'MONITOR'     PROGRAM RUN MODE                               
+USEESTAE DC    CL3'NO '                                                         
+RCWRITE  DC    CL3'YES'                                                         
+FILES    DC    (MAXFILES)CL7' '  FILES TO BE INDEXED IN MEMORY                  
+FILESX   DC    CL7' '            END OF FILES LIST                              
+*                                                                               
+SETCDAT  DC    C'X'                                                             
+BACKUP   DC    C'Y'              DEFAULT TO Y ASSUME BACKUP JOB RUNS            
+*                                                                               
+POP      DC    H'5'              TIMER POP EVERY X MINUTES                      
+*                                                                               
+BUILD    DC    CL8'NO'           (FILE NAME)                                    
+FREE1    DC    CL8'NO'           (FILE NAME)                                    
+FREE2    DC    CL8'NO'           (FILE NAME)                                    
+TREEBAL  DC    CL8'NO'           (FILE NAME)                                    
+*&&US                                                                           
+NOTIFY   DC    CL50'AWIL'                                                       
+DNOTIFY  DC    CL50'DAREALERT'                                                  
+DWARN    DC    H'18'             DARE WARNING FOR HOURS OLD REPORTS             
+*&&                                                                             
+*&&UK                                                                           
+NOTIFY   DC    CL50'RMOR,TCLE'                                                  
+*&&                                                                             
+PQ1WARN  DC    H'6'              PRINT QUEUE PART 1 AVAIABLE WARNING %          
+PQ2WARN  DC    H'16'             PRINT QUEUE PART 2 AVAIABLE WARNING %          
+PQ1PUVU  DC    H'11'             PQ PART 1 AVAIABLE VULNERABLE PURGE %          
+PQ2PUVU  DC    H'21'             PQ PART 2 AVAIABLE VULNERABLE PURGE %          
+*                                                                               
+MAXFILES EQU   16                                                               
+         EJECT                                                                  
+***********************************************************************         
+* TIMER TABLES  CL1'Y/N',SPARE,AL2(FREQ IN MINUTES),AL4(LAST TIME)              
+***********************************************************************         
+TIMETAB  DS    0F                                                               
+TIMESCAN DC    CL1'N',AL1(0),AL2(15),AL4(0)                                     
+TIMEEOT  DC    X'FFFFFFFF'                                                      
+         EJECT                                                                  
+                                                                                
+***********************************************************************         
+*        CONSTANTS & LTORG                                            *         
+***********************************************************************         
+SPACES   DC    CL166' '                                                         
+STARS    DC    16C'*'                                                           
+EFFS     DC    16X'FF'                                                          
+ZEROS    DC    16X'00'                                                          
+MAXLINE  DC    PL3'60'                                                          
+*                                                                               
+CONTROL  DC    CL8'CONTROL'                                                     
+CTFILE   DC    CL8'CTFILE'                                                      
+ATTACH   DC    CL8'ATTACH'                                                      
+DMOPEN   DC    CL8'DMOPEN'                                                      
+DMCLSE   DC    CL8'DMCLSE'                                                      
+DMREAD   DC    CL8'DMREAD'                                                      
+DMWRT    DC    CL8'DMWRT'                                                       
+BUFFER   DC    CL8'BUFFER'                                                      
+FFINI    DC    CL8'FFINI'          FORCED FILE INITIALIZATION                   
+INDEX    DC    CL8'INDEX'                                                       
+PURGE    DC    CL8'PURGE'                                                       
+BALANCE  DC    CL8'BALANCE'                                                     
+*                                                                               
+T1HOUR   DC    AL2(2700)           1 HOUR  IN (SECS*3)/4                        
+T1205AM  DC    AL2(225)            12:05AM IN (SECS*3)/4                        
+T1155PM  DC    AL2(64500)          11:55PM IN (SECS*3)/4                        
+*                                                                               
+EYESFI   DC    CL16'**SHFI****SHFI**'                                           
+*                                                                               
+FLIST    DC    CL8'NCTFILE'                                                     
+         DC    CL8'X'                                                           
+*                                                                               
+ABENDSOK DC    AL2(20)             ABENDS ALLOWED BEFORE JOB STOPPED            
+*                                                                               
+         LTORG                                                                  
+         EJECT                                                                  
+                                                                                
+***********************************************************************         
+* DCBS & ADCONS                                                                 
+***********************************************************************         
+SYSPRINT DCB   DSORG=PS,MACRF=PM,DDNAME=SYSPRINT,RECFM=FBA,LRECL=(166)          
+*                                                                               
+VDATAMGR DC    V(DATAMGR)                                                       
+VHEXOUT  DC    V(HEXOUT)                                                        
+VDATCON  DC    V(DATCON)                                                        
+VGETDAY  DC    V(GETDAY)                                                        
+VADDAY   DC    V(ADDAY)                                                         
+VSHMUSS  DC    V(DMSHMUSS)                                                      
+VISGENQ  DC    V(DMISGENQ)                                                      
+VDYNALLO DC    V(DYNALLOC)                                                      
+*                                                                               
+ACOMM    DC    A(0)                                                             
+*                                                                               
+UTL      DC    F'0',AL1(10),XL250'00'                                           
+SSB      DC    H'0',X'FF',X'14',1022X'00'                                       
+         EJECT                                                                  
+                                                                                
+***********************************************************************         
+* EXTRACT RESULTS, ECBS, AND TIMER FIELDS                                       
+***********************************************************************         
+         DS    0D                                                               
+         DC    CL8'EXTRACT '                                                    
+RESULTS  DS    0X                                                               
+RXTIOT   DC    A(0)                TIOT                                         
+RXASID   DC    A(0)                ASID                                         
+*                                                                               
+RXSTOKEN DC    D'0'                STOKEN                                       
+RXJOB    DC    D'0'                JOB NAME                                     
+*                                                                               
+         DS    0D                                                               
+         DC    CL8'ECBLIST '                                                    
+ECBLST   DS    0X                  ECB LIST                                     
+AOPERECB DC    A(0)                . OPERATOR ISSUE COMMAND                     
+ALERTECB DC    A(LERTECB)          . PROGRAM INITIATED ALERT                    
+ATIMRECB DC    X'80',AL3(TIMRECB)  . TIMER                                      
+*                                                                               
+         DS    0D                                                               
+STIMERID DS    XL4                                                              
+TIME     DS    XL4                                                              
+*                                                                               
+LERTECB  DC    F'0'                PROGRAM INITIATED ALERT ECB                  
+         EJECT                                                                  
+                                                                                
+***********************************************************************         
+* THE TIMER EXIT ROUTINE.  IT POSTS AN ECB.                                     
+***********************************************************************         
+TIMRXIT  SAVE  (14,12),,*                                                       
+         LR    RB,RF                                                            
+         USING TIMRXIT,RB                                                       
+         POST  TIMRECB                                                          
+         LM    RE,RC,12(RD)                                                     
+         BR    RE                                                               
+*                                                                               
+TIMRECB  DC    F'0'                ECB OF TASK TIMER                            
+         EJECT                                                                  
+                                                                                
+***********************************************************************         
+* VULNERABLE REPORTS TABLE                                                      
+***********************************************************************         
+         DS    0D                                                               
+         DC    CL8'**RVTB**'                                                    
+RVTAB    DC    XL2'00'             NUMBER OF ENTRIES                            
+         DC    (RVMAX*RVTABL)X'00' VULNERABLE REPORT TABLE                      
+                                                                                
+***********************************************************************         
+* ERROR HANDLER                                                                 
+***********************************************************************         
+         DROP  RB                                                               
+ERREXIT  DS    0D                                                               
+         USING *,RB                                                             
+         LR    RB,RF                                                            
+         C     R0,=F'12'           TEST SDWA ACQUIRED                           
+         BNE   *+8                 NO, JUST LET MVS PERC                        
+         XR    RF,RF                                                            
+         BR    RE                                                               
+*                                                                               
+         STM   RE,RC,12(RD)        SAVE CALLING REGS                            
+         ST    RD,ESTAERD          AND POINTER                                  
+         ST    R1,ESTAER1          AND POINTER TO SDWA                          
+*                                                                               
+         MVC   MYSDWA,0(R1)                                                     
+         LA    R2,MYSDWA           COPY START OF SDWA                           
+         USING SDWA,R2                                                          
+         L     RC,MYRC             RELOAD RC FROM SAVED COPY                    
+         USING WORKD,RC                                                         
+*                                                                               
+         ICM   R1,15,SDWAGR13      FIND ABENDING RD                             
+         BNZ   *+6                                                              
+         DC    H'0'                                                             
+         C     R1,MYRD             MUST BE BEYOND MAIN                          
+         BH    *+6                                                              
+         DC    H'0'                                                             
+*                                                                               
+         ICM   R1,15,SDWAGR11      FIND ABENDING RB                             
+         BNZ   *+6                                                              
+         DC    H'0'                                                             
+*                                                                               
+         MVI   ENDTASK,C'A'        INDICATE WE HAVE BEEN THROUGH ABEND          
+*                                                                               
+         LH    RF,ABENDS           COUNT THEM                                   
+         AHI   RF,1                                                             
+         STH   RF,ABENDS                                                        
+         CHI   RF,20               20 = NUMBER OF ABENDS WE'LL ALLOW            
+         BL    *+8                                                              
+         MVI   ENDTASK,C'Y'        END JOB AFTER 20 ABENDS                      
+*                                                                               
+         XC    PLINE,PLINE                                                      
+         MVC   PLINE(2),=X'0020'                                                
+         MVC   PLINE+2(L'MESSAGE),MESSAGE                                       
+         MVC   PLINE+14(8),22(R1)                                               
+         CLC   16(4,R1),=X'A7F40006'                                            
+         JNE   *+10                                                             
+         MVC   PLINE+14(8),20(R1)                                               
+*                                                                               
+         XR    RF,RF               CALCULATE OFFSET                             
+         ICM   RF,7,SDWANXTP                                                    
+         JNZ   *+8                                                              
+         ICM   RF,7,SDWAADD1                                                    
+         XR    RE,RE                                                            
+         ICM   RE,15,SDWAGR11                                                   
+         SLL   RE,1                                                             
+         SRL   RE,1                                                             
+         SR    RF,RE                                                            
+*                                                                               
+         LA    R0,8                QUICK HEXOUT                                 
+         XR    R5,R5                                                            
+         XR    R4,R4                                                            
+HEXOUT1  SLDL  R4,8                                                             
+         XR    RE,RE                                                            
+         SLDL  RE,4                                                             
+         IC    R5,HEXTAB(RE)                                                    
+         BCT   R0,HEXOUT1                                                       
+         STCM  R4,15,PLINE+26                                                   
+         STCM  R5,15,PLINE+30                                                   
+*                                                                               
+         WTO   TEXT=PLINE,MCSFLAG=HRDCPY                                        
+         B     ERR000                                                           
+*                                                                               
+HEXTAB   DC    C'0123456789ABCDEF'                                              
+MESSAGE  DC    C'YOU DIED IN **????** AT 00000000'                              
+         DROP  R2                                                               
+*                                                                               
+         USING SDWA,R1                                                          
+ERR000   L     R1,ESTAER1          R1 MUST POINT TO SDWA                        
+         L     RD,ESTAERD                                                       
+         LA    R2,ERRRETN          SET 'RETRY' ADDRESS                          
+         SETRP DUMP=YES,RC=4,RETADDR=(2),FRESDWA=YES                            
+         LM    RE,RC,12(RD)                                                     
+         BR    RE                  CONTROL SHOULD RETURN TO ERRRETN             
+*                                                                               
+         USING *,RF                                                             
+ERRRETN  LM    R0,RF,MYREGS        LOAD REGS SAVED BEFORE RESTART               
+         BR    R1                  BRANCH TO RESTART                            
+*                                                                               
+         DROP  R1                                                               
+         DROP  RF                                                               
+*                                                                               
+         DS    0D                                                               
+         DC    C'**SDWA**'                                                      
+MYSDWA   DS    CL256                                                            
+*                                                                               
+ESTAERD  DS    F                                                                
+ESTAER1  DS    F                                                                
+*                                                                               
+         DS    0D                                                               
+         DC    C'**REGS**'                                                      
+MYREGS   DS    15F                 SAVED REGS FROM RESTART POINT                
+         ORG   MYREGS                                                           
+MYR0     DS    F                                                                
+MYR1     DS    F                                                                
+MYR2     DS    F                                                                
+MYR3     DS    F                                                                
+MYR4     DS    F                                                                
+MYR5     DS    F                                                                
+MYR6     DS    F                                                                
+MYR7     DS    F                                                                
+MYR8     DS    F                                                                
+MYR9     DS    F                                                                
+MYRA     DS    F                                                                
+MYRB     DS    F                                                                
+MYRC     DS    F                                                                
+MYRD     DS    F                                                                
+MYRE     DS    F                                                                
+MYRF     DS    F                                                                
+         LTORG                                                                  
+*                                                                               
+ERRWORK  DC    600D'00'                                                         
+         EJECT                                                                  
+                                                                                
+***********************************************************************         
+* WORKING STORAGE AND SHARED DSECTS                                             
+***********************************************************************         
+       ++INCLUDE DDSHFIWRK                                                      
+         EJECT                                                                  
+*                                                                               
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'009DDSHFIMON 11/12/20'                                      
+         END                                                                    

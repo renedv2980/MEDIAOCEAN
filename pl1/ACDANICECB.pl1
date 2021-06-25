@@ -1,0 +1,536 @@
+        /* DATA SET ACDANICECB AT LEVEL 009 AS OF 08/18/17    */                
+       ++INCLUDE IEBUPDTHDR                                                     
+                                                                                
+**** TEST=Y IS FOR DEBUGGING OR REGRESSION TESTING ONLY.                        
+* SET DEFAULT TO TEST=N. CAN BE OVERRIDDEN IN THE JCL TO TEST=Y.                
+*&&      SET   TEST=N                                                           
+                                                                                
+***********************************************************************         
+                                                                                
+       DAN MEDIA CLIENT BILLING EXPORT: DELIMITED FILE GENERATION               
+                                                                                
+IMPORTANT NOTE: this ICETOOL application sets RC=4 if there are no data         
+records in the generated output file. We do this by using the NULLOFL           
+option. The JCL downstream from this ICETOOL step tests for RC=4, and           
+does not transmit the file if this step completes with a non-zero               
+return code. Therefore, if any COUNT operators are added to this                
+program which may set the return code to a non-zero value, then the             
+JCL may need to be changed!                                                     
+                                                                                
+***********************************************************************         
+./ ADD NAME=SYMNAMES   ** SYMBOLICS USED IN CONTROL CARDS                       
+*                                                                               
+PIPE,C'|'                          DELIMITER                                    
+*                                                                               
+F1_ONLY,C'1'                       JOIN RESULT INDICATORS (AS PER IBM)          
+F2_ONLY,C'2'                                                                    
+BOTH_F1_AND_F2,C'B'                                                             
+*                                                                               
+* Parsed record variables (for the ACC extract dataset)                         
+*                                                                               
+P_AXG$GIN,%105                     GIN                                          
+P_AXG$ACCD,%107                    ACCOUNT CODE                                 
+P_AXG$OFFC,%109                    OFFICE CODE                                  
+P_AXG$TRDT,%110                    TRANSACTION DATE                             
+P_AXG$TRRF,%111                    REFNUM                                       
+P_AXG$TRSR,%112                    SUB-REFNUM                                   
+P_AXG$SYS,%113                     SYSTEM CODE                                  
+P_AXG$MED,%114                     MEDIA                                        
+P_AXG$PRD,%116                     CLIENT/PRODUCT                               
+P_AXG$EST,%117                     ESTIMATE                                     
+P_AXG$ACDT,%122                    ACTIVITY DATE                                
+P_AXG$MOS,%124                     MONTH OF SERVICE                             
+P_AXG$BNET,%126                    Net Billing                                  
+P_AXG$BINC,%127                    BILLING INCOME                               
+P_AXG$DUDT,%133                    DUE DATE                                     
+P_AXG$INV,%134                     INVOICE NUMBER (LONG)                        
+P_AXG$MSYS,%147                    SAP MEDIA SYSTEM                             
+P_AXG$MSYS_AGY,%201                SAP MEDIA AGY                                
+P_AXG$VCH#,%148                    SAP VOUCHER NUMBER                           
+P_AXG$CURR,%149                    SAP CURRENCY (USD/CND)                       
+P_AXG$XCHR,%150                    SAP EXCHANGE RATE                            
+P_AXG$NETA,%154                    SAP NET AMOUNT                               
+P_AXG$TAXA,%155                    SAP TAX AMOUNT                               
+P_AXG$TAXC,%156                    SAP TAX CODE                                 
+P_AXG$KEY,%157                     SAP MEDIAOCEAN A/R KEY                       
+P_AXG$SINV,%158                    INVOICE NUMBER (SHORT)                       
+P_AXG$MEDT,%160                    SAP MEDIA TYPE                               
+P_AXG$SMED,%161                    SAP SUBMEDIA                                 
+P_AXG$MATL,%162                    SAP MATERIAL                                 
+P_AXG$INS#,%163                    SAP INSERTION NUMBER                         
+P_AXG$TAXM,%164                    SAP TAX MATERIAL CODE                        
+*                                                                               
+*                                                                               
+./ ADD NAME=TOOLIN     ** CONTROL CARDS FOR ICETOOL                             
+*                                                                               
+* Parse the ACC extract file.                                                   
+COPY FROM(XTRACTIN) USING(PARS)                                                 
+*                                                                               
+* Sort the Vendor records in the Support file, and catch any dups.              
+SELECT FROM(SUPPORT) -                                                          
+       TO(SUPPSORT) -                                                           
+       DISCARD(SUPPDUPS) -                                                      
+       ON(SAPRKEY) -                                                            
+       USING(COP1) -                                                            
+       FIRST                                                                    
+*                                                                               
+* Confirm that there are no duplicate keys in the support file.                 
+COUNT FROM(SUPPDUPS) NOTEMPTY RC8                                               
+*                                                                               
+* Produce an FB dataset of transactions to be joined with vendor data.          
+* This is the "detail work file".                                               
+COPY FROM(ALLRECS) TO(GOODTRNS) USING(COPG)                                     
+*                                                                               
+* Copy GOODTRNS to another dataset, so we can join it with itself.              
+COPY FROM(GOODTRNS) TO(TEMP1)                                                   
+*                                                                               
+* Seed the invoice gross $ into the detail work file.                           
+COPY JKFROM TO(JOINVEND) USING(JONG)                                            
+*                                                                               
+* Join the support and billing extract files on Vendor (entire field).          
+COPY JKFROM TO(VENDOR$) USING(JONV)                                             
+*                                                                               
+* Join the Vendor and ACC transaction files together by Invoice/MOS.            
+COPY JKFROM TO(JOINVEN2) USING(JONT)                                            
+*                                                                               
+* Produce variance addendum records.                                            
+SORT FROM(JOINVEN2) TO(SPECIALS) USING(SRTV)                                    
+*                                                                               
+* Concatenate the addendum records with the detail work file.                   
+COPY FROM(SPECIALS) TO(JOINVEN2)                                                
+*                                                                               
+* Sort the detail work file by invoice number.                                  
+SORT FROM(JOINVEN2) TO(FINAL) USING(SRTI)                                       
+*                                                                               
+* Append the original ACC transaction record to the detail file.                
+COPY JKFROM TO(TEMP3) USING(COPE)                                               
+*                                                                               
+* Copy FINAL to a delimited file we can import into Excel.                      
+COPY FROM(TEMP3) TO(JOINTAB) USING(JTAB)                                        
+                                                                                
+                                                                                
+./ ADD NAME=PARSCNTL                                                            
+*                                                                               
+ INCLUDE COND=(5,5,CH,EQ,C'05061')  Note: RECTYPE is always in column 5         
+*                                                                               
+ INREC PARSE=(%=(ENDBEFR=PIPE,REPEAT=5),                                        
+           P_AXG$GIN=(ENDBEFR=PIPE,FIXLEN=LEN_AXG$GIN),                         
+           %=(ENDBEFR=PIPE),                                                    
+           P_AXG$ACCD=(ENDBEFR=PIPE,FIXLEN=LEN_AXG$ACCD), for debugging         
+           %=(ENDBEFR=PIPE),                                                    
+           P_AXG$OFFC=(ENDBEFR=PIPE,FIXLEN=LEN_AXG$OFFC),                       
+           P_AXG$TRDT=(ENDBEFR=PIPE,FIXLEN=LEN_AXG$TRDT),                       
+           P_AXG$TRRF=(ENDBEFR=PIPE,FIXLEN=LEN_AXG$TRRF),                       
+           P_AXG$TRSR=(ENDBEFR=PIPE,FIXLEN=LEN_AXG$TRSR),                       
+           P_AXG$SYS=(ENDBEFR=PIPE,FIXLEN=LEN_AXG$SYS),                         
+           P_AXG$MED=(ENDBEFR=PIPE,FIXLEN=LEN_AXG$MED),                         
+           %=(ENDBEFR=PIPE),                                                    
+           P_AXG$PRD=(ENDBEFR=PIPE,FIXLEN=LEN_AXG$PRD),  CLIENT/PRODUCT         
+           P_AXG$EST=(ENDBEFR=PIPE,FIXLEN=3),    (*only first 3 bytes*)         
+           %=(ENDBEFR=PIPE,REPEAT=4),                                           
+           P_AXG$ACDT=(ENDBEFR=PIPE,FIXLEN=LEN_AXG$ACDT),                       
+           %=(ENDBEFR=PIPE),                                                    
+           P_AXG$MOS=(ENDBEFR=PIPE,FIXLEN=LEN_AXG$MOS),                         
+           %=(ENDBEFR=PIPE),                                                    
+           P_AXG$BNET=(ENDBEFR=PIPE,FIXLEN=14), (*only first 14 bytes*)         
+           P_AXG$BINC=(ENDBEFR=PIPE,FIXLEN=14), (*only first 14 bytes*)         
+           %=(ENDBEFR=PIPE,REPEAT=5),                                           
+           P_AXG$DUDT=(ENDBEFR=PIPE,FIXLEN=LEN_AXG$DUDT),                       
+           P_AXG$INV=(ENDBEFR=PIPE,FIXLEN=LEN_AXG$INV),                         
+           %=(ENDBEFR=PIPE,REPEAT=12),                                          
+           P_AXG$MSYS=(ENDBEFR=PIPE,FIXLEN=LEN_AXG$MSYS),                       
+           %=(SUBPOS=1),                *** back up before the pipe             
+           P_AXG$MSYS_AGY=(SUBPOS=LEN_AXG$MSYS_AGY,ENDBEFR=PIPE,                
+            FIXLEN=LEN_AXG$MSYS_AGY),   *** back up and reparse agency          
+           P_AXG$VCH#=(ENDBEFR=PIPE,FIXLEN=LEN_AXG$VCH#),                       
+           P_AXG$CURR=(ENDBEFR=PIPE,FIXLEN=LEN_AXG$CURR),                       
+           P_AXG$XCHR=(ENDBEFR=PIPE,FIXLEN=LEN_AXG$XCHR),                       
+           %=(ENDBEFR=PIPE,REPEAT=2),                                           
+           P_AXG$NETA=(ENDBEFR=PIPE,FIXLEN=LEN_AXG$NETA),                       
+           P_AXG$TAXA=(ENDBEFR=PIPE,FIXLEN=LEN_AXG$TAXA),                       
+           P_AXG$TAXC=(ENDBEFR=PIPE,FIXLEN=LEN_AXG$TAXC),                       
+           P_AXG$KEY=(ENDBEFR=PIPE,FIXLEN=LEN_AXG$KEY),                         
+           P_AXG$SINV=(ENDBEFR=PIPE,FIXLEN=LEN_AXG$SINV),                       
+           %=(ENDBEFR=PIPE),                                                    
+           P_AXG$MEDT=(ENDBEFR=PIPE,FIXLEN=LEN_AXG$MEDT),                       
+           P_AXG$SMED=(ENDBEFR=PIPE,FIXLEN=LEN_AXG$SMED),                       
+           P_AXG$MATL=(ENDBEFR=PIPE,FIXLEN=LEN_AXG$MATL),                       
+           P_AXG$INS#=(ENDBEFR=PIPE,FIXLEN=LEN_AXG$INS#),                       
+           P_AXG$TAXM=(ENDBEFR=PIPE,FIXLEN=LEN_AXG$TAXM)),                      
+    BUILD=(AXG$LEN,                                                             
+           AXG$GIN:P_AXG$GIN,                                                   
+           AXG$ACCD:P_AXG$ACCD,                                                 
+           AXG$OFFC:P_AXG$OFFC,                                                 
+           AXG$TRDT:P_AXG$TRDT,                                                 
+           AXG$TRRF:P_AXG$TRRF,                                                 
+           AXG$TRSR:P_AXG$TRSR,                                                 
+           AXG$SYS:P_AXG$SYS,                                                   
+           AXG$MED:P_AXG$MED,                                                   
+           AXG$PRD:P_AXG$PRD,                                                   
+           AXG$EST_EST:P_AXG$EST,                                               
+           AXG$ACDT:P_AXG$ACDT,                                                 
+           AXG$MOS:P_AXG$MOS,                                                   
+           AXG$BNET_CL14:P_AXG$BNET,SFF,TO=ZD,                                  
+           AXG$BINC_CL14:P_AXG$BINC,SFF,TO=ZD,                                  
+           AXG$DUDT:P_AXG$DUDT,                                                 
+           AXG$INV:P_AXG$INV,                                                   
+           AXG$MSYS:P_AXG$MSYS,                                                 
+           AXG$VCH#:P_AXG$VCH#,                                                 
+           AXG$CURR:P_AXG$CURR,                                                 
+           AXG$XCHR:P_AXG$XCHR,                                                 
+           AXG$NETA:P_AXG$NETA,SFF,TO=ZD,                                       
+           AXG$TAXA:P_AXG$TAXA,SFF,TO=ZD,                                       
+           AXG$TAXC:P_AXG$TAXC,                                                 
+           AXG$KEY:P_AXG$KEY,                                                   
+           AXG$SINV:P_AXG$SINV,                                                 
+           AXG$MEDT:P_AXG$MEDT,                                                 
+           AXG$SMED:P_AXG$SMED,                                                 
+           AXG$MATL:P_AXG$MATL,                                                 
+           AXG$INS#:P_AXG$INS#,                                                 
+           AXG$TAXM:P_AXG$TAXM,                                                 
+           A_RESOURCES_AGY:P_AXG$MSYS_AGY,                                      
+           A_ACC_SEQNUM:SEQNUM,LEN_A_ACC_SEQNUM,PD,                             
+           A_ORIGINAL_REC_VL:5)   *** Original record starts in col. 5          
+*                                                                               
+ OUTFIL FNAMES=ALLRECS,                                                         
+* Include only media system receivables.                                        
+*                                                                               
+   INCLUDE=((AXG$SYS,EQ,SAPKSYS_SPOT,OR,                                        
+             AXG$SYS,EQ,SAPKSYS_PRNT,OR,                                        
+             AXG$SYS,EQ,SAPKSYS_NET),AND,                                       
+             AXG$UNIT_LEDGER,EQ,C'SR'),                                         
+   VTOF,                                                                        
+** Start building in column 5, to account for the absence of the RDW !          
+   BUILD=(5:AXG$RECORD,              *** start in column 5                      
+          A_RESOURCES_AGY:A_RESOURCES_AGY,                                      
+          A_ACC_SEQNUM:A_ACC_SEQNUM)                                            
+                                                                                
+ OUTFIL FNAMES=ACCSAVE,                                                         
+   BUILD=(1,4,                                                                  
+          O_ACC_SEQNUM:A_ACC_SEQNUM,                                            
+          O_ORIGINAL_REC_VL:A_ORIGINAL_REC_VL)                                  
+                                                                                
+                                                                                
+./ ADD NAME=COP1CNTL                                                            
+*                                                                               
+ INCLUDE COND=(SAPKTYPE,EQ,SAPKTYPE_VNDR)                                       
+                                                                                
+                                                                                
+./ ADD NAME=COPGCNTL                                                            
+*                                                                               
+ OUTFIL VTOF,BUILD=(D_AXG$SYS:AXG$SYS,                                          
+                    D_AXG$MED:AXG$MED,                                          
+                    D_AXG$CLT:AXG$PRD_CLT,                                      
+                    D_AXG$PRD:AXG$PRD_PRD,                                      
+                    D_AXG$EST:AXG$EST_EST,                                      
+                    D_AXG$INV:AXG$INV,                                          
+                    D_AXG$GIN:AXG$GIN,                                          
+                    D_AXG$ACCD:AXG$ACCD,                                        
+                    D_AXG$OFFC:AXG$OFFC,                                        
+                    D_AXG$TRDT:AXG$TRDT,                                        
+                    D_AXG$TRRF:AXG$TRRF,                                        
+                    D_AXG$TRSR:AXG$TRSR,                                        
+                    D_AXG$ACDT:AXG$ACDT,Y2T,DT=(MDY/),                          
+                    D_AXG$SINV:AXG$SINV,                                        
+*                   D_AXG$MOS_CENT:C'20',   *** HARD-CODED CENTURY ***          
+                    D_AXG$MOS:AXG$MOS,                                          
+                    D_AXG$BNET:AXG$BNET_CL14,                                   
+                    D_AXG$BINC:AXG$BINC_CL14,                                   
+                    D_AXG$DUDT:AXG$DUDT,Y2T,DT=(MDY/),                          
+                    D_AXG$MSYS:AXG$MSYS,                                        
+                    D_RESOURCES_AGY:A_RESOURCES_AGY,                            
+*&!TEST                                                                         
+                    D_AXG$VCH#:AXG$VCH#,                                        
+*&!                                                                             
+*&&TEST                                                                         
+                    D_AXG$VCH#:14C'*',      *** FOR REGRESSION TESTING          
+*&&                                                                             
+********************D_AXG$CURR:AXG$CURR,                                        
+                    D_AXG$CURR:C'USD',      *** TEMPORARY ***                   
+                    D_AXG$XCHR:AXG$XCHR,                                        
+                    D_AXG$NETA:AXG$NETA,                                        
+                    D_AXG$TAXA:AXG$TAXA,                                        
+                    D_AXG$TAXC:AXG$TAXC,                                        
+                    D_AXG$MEDT:AXG$MEDT,                                        
+                    D_AXG$SMED:AXG$SMED,                                        
+                    D_AXG$MATL:AXG$MATL,                                        
+                    D_AXG$INS#:AXG$INS#,                                        
+                    D_AXG$TAXM:AXG$TAXM,                                        
+                    D_AXG$KEY:AXG$KEY,                                          
+                    D_ACC_SEQNUM:A_ACC_SEQNUM,                                  
+                    D_JOINED_DATA_X:1X)     ** FORCE FULL RECORD LENGTH         
+                                                                                
+                                                                                
+./ ADD NAME=JONGCNTL                                                            
+*                                                                               
+* Produce gross $ totals across months-of-service for each invoice.             
+*                                                                               
+ JOINKEYS F1=GOODTRNS,                                                          
+             FIELDS=(D_AXG$SYS,A,                                               
+                     D_AXG$MED,A,                                               
+                     D_AXG$CLT,A,                                               
+                     D_AXG$PRD,A,                                               
+                     D_AXG$EST,A,                                               
+                     D_AXG$INV,A)                                               
+ JOINKEYS F2=TEMP1,                                                             
+             TASKID=T1,          <<<< SEE T1F2CNTL                              
+             FIELDS=(D_AXG$SYS,A,                                               
+                     D_AXG$MED,A,                                               
+                     D_AXG$CLT,A,                                               
+                     D_AXG$PRD,A,                                               
+                     D_AXG$EST,A,                                               
+                     D_AXG$INV,A)                                               
+ REFORMAT FIELDS=(F2:D_AXG$NETA,      ** computed GROSS$ (from totals)          
+                  F1:D_ACC_SEQNUM,    ** in case there is an exception          
+                     D_JOINED_DATA)   ** all other data                         
+*                                                                               
+* Build our work record from the reformatted fields.                            
+ INREC BUILD=(D_GROSS$:REFG_D_AXG$NETA,                                         
+              D_JOINED_DATA:REFG_D_JOINED_DATA)                                 
+                                                                                
+                                                                                
+./ ADD NAME=T1F2CNTL                                                            
+*                                                                               
+* This collapses F2 *after* the sort (where the sort key is defined             
+* by the F2 JOINKEYS fields above), retaining only the first duplicate.         
+* The gross $ (i.e., the SUM) winds up in the totalled record.                  
+*                                                                               
+ SUM FIELDS=(D_AXG$BNET,                                                        
+             D_AXG$NETA)                                                        
+                                                                                
+                                                                                
+./ ADD NAME=JONVCNTL                                                            
+*                                                                               
+* Join the support dataset with the vendor billing dataset.                     
+*                                                                               
+ JOINKEYS F1=SUPPSORT,                                                          
+             FIELDS=(SAPKSYS,A,                                                 
+                     SAPKMED,A,                                                 
+                     SAPKVJN,A),                                                
+             SORTED                                                             
+ JOINKEYS F2=VENDORS,                                                           
+             FIELDS=(SAMBKSYS,A,                                                
+*********************SAMBKOVRD,A,                                               
+                     SAMBKMED,A,                                                
+                     SAMBVJN,A)                                                 
+ JOIN UNPAIRED,F2  *** keep *both* matched and unmatched vendor details         
+ REFORMAT FIELDS=(F2:SAMBREC,            ** from vendor file                    
+                  F1:SAPRNAME)           ** from support file                   
+*                                                                               
+* Build our work record from the reformatted fields.                            
+ INREC BUILD=(SAMBREC:SAMBREC,                                                  
+              V_SAPRNAME:REFV_SAPRNAME)                                         
+*                                                                               
+ OUTREC OVERLAY=(V_SAMBDOLS:SAMBDOLS,TO=ZD,                                     
+                 V_SAMBGRS$:SAMBGRS,TO=ZD)                                      
+                                                                                
+                                                                                
+./ ADD NAME=JONTCNTL                                                            
+*                                                                               
+* Join the vendor details together with the ACC transactions.                   
+*                                                                               
+ JOINKEYS F1=VENDOR$,                                                           
+             FIELDS=(SAMBKSYS,A,                                                
+                     SAMBKMED,A,                                                
+                     SAMBKCLT,A,                                                
+                     SAMBKPRD,A,                                                
+                     SAMBKEST,A,                                                
+                     SAMBKINV,A,                                                
+                     SAMBMOS,A)                                                 
+ JOINKEYS F2=JOINVEND,                                                          
+             FIELDS=(D_AXG$SYS,A,                                               
+                     D_AXG$MED,A,                                               
+                     D_AXG$CLT,A,                                               
+                     D_AXG$PRD,A,                                               
+                     D_AXG$EST,A,                                               
+                     D_AXG$SINV,A,                                              
+                     D_AXG$MOS,A)                                               
+*&&DO                                                                           
+ JOIN UNPAIRED,F2    *** keep *both* matched and unmatched transactions         
+*&&                                                                             
+ REFORMAT FIELDS=(?,                   ** JOIN result indicator                 
+                  F2:D_GROSS$,         ** computed earlier                      
+                  F1:SAMBVNDR,         ** from vendor file                      
+                     SAMBTYPE,         ** from vendor file                      
+                     V_SAMBDOLS,       ** from vendor file                      
+                     V_SAMBGRS$,       ** from vendor file                      
+                     V_SAPRNAME,       ** from vendor file                      
+                  F2:D_JOINED_DATA)    ** all other data                        
+*                                                                               
+* Build our work record from the reformatted fields.                            
+ INREC BUILD=(D_JOIN_RESULT:REFT_JOIN_RESULT_INDICATOR,                         
+              D_GROSS$:REFT_D_GROSS$,                                           
+              D_NETWORK:REFT_SAMBVNDR,                                          
+              D_SAMBDOLS:REFT_V_SAMBDOLS,                                       
+              D_SAMBGRS$:REFT_V_SAMBGRS$,                                       
+              D_SAPRNAME:REFT_V_SAPRNAME,                                       
+              D_SAMBTYPE:REFT_SAMBTYPE,                                         
+              D_JOINED_DATA:REFT_D_JOINED_DATA)                                 
+*                                                                               
+ OUTFIL FNAMES=JOINVEN2,                                                        
+        IFTHEN=(WHEN=(D_JOIN_RESULT,EQ,F2_ONLY),                                
+                   OVERLAY=(D_NETWORK:C'NETWORK',                               
+                            D_SAMBDOLS:D_AXG$BNET_ZL11,                         
+                            D_SAPRNAME:C'NOVNAME'))                             
+                                                                                
+                                                                                
+./ ADD NAME=SRTVCNTL                                                            
+*                                                                               
+* Produce a file of variance addendum records per invoice.                      
+* To calculate the variance, we use the "SUM" operator to calculate             
+* vendor billing totals by invoice/MOS. That total, plus any commission         
+* and/or tax amounts, is subtracted from the ACC extract net bill               
+* amount, yielding the variance.                                                
+* Note: because the XML file will be sorted by SAP vendor code within           
+* an invoice, we force hex values into that field for these addendum            
+* records, so that they will sort after the true vendor details.                
+*                                                                               
+ SORT FIELDS=(D_AXG$MSYS_AGY,A,                                                 
+              D_AXG$SYS,A,                                                      
+              D_AXG$MED,A,                                                      
+              D_AXG$CLT,A,                                                      
+              D_AXG$PRD,A,                                                      
+              D_AXG$EST,A,                                                      
+              D_AXG$INV,A,                                                      
+              D_AXG$MOS,A),EQUALS          * (makes debugging easier!)          
+*                                                                               
+ SUM FIELDS=(D_SAMBDOLS)                                                        
+*                                                                               
+ OUTFIL BUILD=(D_VARIANCE:D_AXG$BNET,SUB,D_SAMBDOLS,                            
+                          TO=ZD,LENGTH=LEN_D_VARIANCE,                          
+               D_GROSS$:D_GROSS$,                                               
+               D_SORT_SEQUENCE:C'4',                    ** variance             
+               D_JOINED_DATA:D_JOINED_DATA)                                     
+                                                                                
+                                                                                
+./ ADD NAME=SRTICNTL                                                            
+*                                                                               
+* Sort the detail records into the sequence that we want them to appear         
+* in the output file, and fill in all other relevant data fields.               
+* Discard any record with a zero amount in its relevant amount                  
+* field. Assign the Item_Number value to each remaining detail line.            
+* The Item_Number restarts with "001" at the beginning of each Invoice          
+* (System, Media, Client, Product, Estimate, Invoice#).                         
+*                                                                               
+ INREC IFTHEN=(WHEN=INIT,OVERLAY=(D_AXG$STYP:C'INV')),                          
+       IFTHEN=(WHEN=(D_GROSS$,LT,0),OVERLAY=(D_AXG$STYP:C'CRM'))                
+*                                                                               
+ SORT FIELDS=(D_AXG$MSYS_AGY,A,                                                 
+              D_AXG$SYS,A,                                                      
+              D_AXG$MED,A,                                                      
+              D_AXG$CLT,A,                                                      
+              D_AXG$PRD,A,                                                      
+              D_AXG$EST,A,                                                      
+              D_AXG$INV,A,                                                      
+              D_AXG$MOS,A,                                                      
+*             D_SAPRNAME,A,                                                     
+              D_SAMBTYPE,A,                                                     
+              D_SORT_SEQUENCE,A),                                               
+      EQUALS                               * (makes debugging easier!)          
+                                                                                
+*                                                                               
+ OUTREC IFTHEN=(WHEN=INIT,                 *** initialization                   
+         OVERLAY=(X_AXG$CLT:D_AXG$CLT,          *** FROM AXG$PRD                
+                  X_AXG$PRD:D_AXG$PRD,          *** FROM AXG$PRD                
+                  X_MATERIAL:D_AXG$MATL)),                                      
+*                                          VARIANCE                             
+        IFTHEN=(WHEN=(D_SORT_SEQUENCE,EQ,C'4'),                                 
+         OVERLAY=(X_NET_AMOUNT:D_VARIANCE,                                      
+                   EDIT=(SIIIIIIIIIIIT.TT),SIGNS=(,-),                          
+                  D_AXG$INS#:C'VAR',                                            
+                  D_NETWORK:C'NETWORK',                                         
+                  D_SAPRNAME:C'NOVNAME',                                        
+                  X_MATERIAL:C'M00025        '),HIT=NEXT),                      
+*                                                                               
+        IFTHEN=(WHEN=NONE,             *** all *other* records                  
+         OVERLAY=(X_NET_AMOUNT:D_SAMBDOLS,                                      
+                   EDIT=(SIIIIIIIIIIIT.TT),SIGNS=(,-),                          
+                  X_GROSS_AMOUNT:D_SAMBGRS$,                                    
+                   EDIT=(SIIIIIIIIIIIT.TT),SIGNS=(,-)))                         
+*                                                                               
+ OUTFIL OMIT=((D_AXG$INS#,EQ,C'VAR',AND,D_VARIANCE,EQ,0),OR,                    
+              (D_AXG$MSYS_AGY,EQ,C'UB',AND,D_NETWORK,EQ,C'NETWORK',AND,         
+               D_SAMBDOLS,EQ,0),OR,                                             
+              (D_AXG$MSYS_AGY,EQ,C'CH',AND,D_NETWORK,EQ,C'NETWORK',AND,         
+               D_SAMBDOLS,EQ,0),OR,                                             
+              (D_AXG$MSYS_AGY,EQ,C'CL',AND,D_NETWORK,EQ,C'NETWORK',AND,         
+               D_SAMBDOLS,EQ,0),OR,                                             
+              (D_AXG$MSYS_AGY,EQ,C'*B',AND,D_NETWORK,EQ,C'NETWORK',AND,         
+               D_SAMBDOLS,EQ,0)),                                               
+        OVERLAY=(D_ITEM_NUMBER:SEQNUM,3,ZD,RESTART=(D_ITEM_#_KEY),              
+                 D_GROSS$:D_GROSS$,EDIT=(SIIIIIIIIIT.TT),SIGNS=(,-))            
+                                                                                
+                                                                                
+./ ADD NAME=COPECNTL                                                            
+*                                                                               
+* Append the original ACC transaction record its associated record in           
+* the detail output file.                                                       
+*                                                                               
+ JOINKEYS F1=FINAL,                                                             
+             FIELDS=(D_ACC_SEQNUM,A)                                            
+ JOINKEYS F2=ACCSAVE,                                                           
+             SORTED,                                                            
+             FIELDS=(O_ACC_SEQNUM,A)                                            
+*                                                                               
+ REFORMAT FIELDS=(F2:1,4,               ** RDW                                  
+                  F1:D_ENTIRE_RECORD,                                           
+                  F2:O_ORIGINAL_REC_VL) ** Original pipe-delimited rec.         
+*                                                                               
+* Build our work record from the reformatted fields.                            
+ INREC BUILD=(F_RDW:REFD_RDW,                                                   
+              F_D_ENTIRE_RECORD:REFD_D_ENTIRE_RECORD,                           
+              F_DELIMITER:PIPE,       ** delimit the original ACC rec.          
+              F_O_ORIGINAL_RECORD:REFD_O_ORIGINAL_REC_VL)                       
+*                                                                               
+ OUTFIL VTOF,BUILD=(5,2600)           ** so we can use our symbols              
+*                                                                               
+./ ADD NAME=JTABCNTL                                                            
+*                                                                               
+* Produce a delimited output file (which can be imported into Excel).           
+*                                                                               
+ OUTFIL REMOVECC,                                                               
+        FTOV,                           *** we do not need symbols now          
+        VLTRIM=C' ',                    *** chop off trailing blanks            
+        NULLOFL=RC4,          *** SET RC=4 IF THERE ARE NO DATA RECORDS         
+        HEADER1=('AGENCY',PIPE,                                                 
+                 'OFFICE',PIPE,                                                 
+                 'SYSTEM',PIPE,                                                 
+                 'MEDIA',PIPE,                                                  
+                 'CLT',PIPE,                                                    
+                 'PRD',PIPE,                                                    
+                 'EST',PIPE,                                                    
+                 'MOS',PIPE,                                                    
+                 'INVOICE #',PIPE,                                              
+                 'INVOICE DATE',PIPE,                                           
+                 'INVOICE TOTAL',PIPE,                                          
+                 'SR ACCOUNT',PIPE,                                             
+                 'ITEM#',PIPE,                                                  
+                 'VENDOR NET $',PIPE,                                           
+                 'VENDOR CODE',PIPE,                                            
+                 'VENDOR NAME',PIPE,                                            
+                 'ACTIVITY DATE',PIPE,                                          
+                 'GIN',PIPE,                                                    
+                 'BILL TYPE',PIPE,                                              
+                 'VENDOR GROSS $',PIPE),                                        
+       BUILD=(D_RESOURCES_AGY,PIPE,                                             
+              D_AXG$OFFC,PIPE,                                                  
+              D_AXG$SYS,PIPE,                                                   
+              D_AXG$MED,PIPE,                                                   
+              X_AXG$CLT,PIPE,                                                   
+              X_AXG$PRD,PIPE,                                                   
+              D_AXG$EST,PIPE,                                                   
+              D_AXG$MOS,PIPE,                                                   
+              D_AXG$INV,PIPE,                                                   
+              D_AXG$TRDT,PIPE,                                                  
+              D_GROSS$,PIPE,                                                    
+              D_AXG$ACCD,PIPE,                                                  
+              D_ITEM_NUMBER,PIPE,                                               
+              X_NET_AMOUNT,PIPE,                                                
+              D_NETWORK,PIPE,                                                   
+              D_SAPRNAME,PIPE,                                                  
+              D_AXG$ACDT,PIPE,                                                  
+              D_AXG$GIN,PIPE,                                                   
+              D_SAMBTYPE,PIPE,                                                  
+              X_GROSS_AMOUNT,PIPE)                                              
+                                                                                
+                                                                                

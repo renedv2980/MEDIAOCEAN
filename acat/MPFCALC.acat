@@ -1,0 +1,1501 @@
+*          DATA SET MPFCALC    AT LEVEL 014 AS OF 05/01/02                      
+*CATALP MPFCALC                                                                 
+         TITLE 'MPFCALC - PERFORM CALCS AS DEFINED IN FORMULAE'                 
+         PRINT NOGEN                                                            
+MPFCALC  CSECT                                                                  
+         SPACE 2                                                                
+*                                                                               
+*        INPUT IS THREE FULLWORDS :-                                            
+*        PARAM 1 - PROGRAM NUMBER                                               
+*        PARAM 2 - ADDRESS OF READREX CONTROL BLOCK                             
+*        PARAM 3 - ADDRESS OF WORKING STORAGE FOR INTERNAL TABLES               
+*        RETURNS FILLED IN DATA VECTORS                                         
+*                                                                               
+*        ASSUMPTIONS  - A FORUMLA WITH 'CUME' IN IT HAS ONLY ONE                
+*                       BASE QUALIFIER. I.E NO 2ND/3RD BASE/QUAL                
+*                     - LIKEWISE RANK                                           
+*                     - ANY CUME VALUE HAS SAME FORMAT/LEN/SCALING              
+*                       AS THE VECTOR BEING CUME'D                              
+*                     - FREQUENCY RELATED FIELDS ARE BINARY 4 BYTES             
+*                                                                               
+         SPACE 3                                                                
+         NMOD1 WORKX-WORKD,MPFCALC                                              
+         LR    R7,RC                                                            
+         USING WORKD,R7                                                         
+         SH    RC,=H'4'                                                         
+         L     RC,0(RC)                                                         
+         USING GEND,RC                                                          
+         EJECT                                                                  
+         L     R8,0(R1)            SAVE CALLING PROGRAM NUMBER                  
+         L     R2,4(R1)            A(READREX CONTROL BLOCK)                     
+         L     R3,8(R1)            A(CALCTAB) FROM ROOTS DYNAMIC ALLOC          
+         MVC   LCALCTAB,0(R3)      LENGTH OF CALC TABLE                         
+         LA    R3,4(R3)            ADRRESS OF USABLE AREA                       
+         ST    R3,ACALCTAB                                                      
+         ST    R2,ARXCTL           SAVE READREX CONTROL BLOCK ADDR              
+         MVC   PCSTART,RXPCMTAB-RXCTLD(R2) A(PROCESSING COMMAND TABLE)          
+         MVC   VTSTART,RXDVTAB-RXCTLD(R2)  A(DATA VECTOR TABLE)                 
+         USING PCMDD,R4                                                         
+         USING CALCTABD,R2                                                      
+         USING VTABD,R3                                                         
+         L     R3,VTSTART          POINT TO VECTOR TABLE                        
+         CLC   VTLEN,=H'0'         ANY DATA                                     
+         BE    XIT                 NO - DON'T DO ANYTHING                       
+*                                                                               
+         BAS   RE,TOTDEF           DEFINE A TOTALS VECTOR                       
+*                                                                               
+         BAS   RE,SUBRDEF          GENERATE ALL FIELDS THAT REQUIRE             
+*                                  SUBROUTINES TO DEFINE THEM                   
+*                                                                               
+         BAS   RE,TOTALS           ACCUMULATE TOTALS VECTOR                     
+*                                                                               
+         MVC   VTSTART,TOTVEC                                                   
+*                                                                               
+*        THE ABOVE MVC WILL FOOL THE ROUTINE SO THAT THE VECTOR                 
+*        TABLE WILL LOOK LIKE A SINGLE VECTOR WHICH IS BOTH THE                 
+*        DATA VECTOR AND THE TOTAL VECTOR THUS ALLOWING THE FORMULAE            
+*        TO BE APPLIED TO THE TOTALS FOR LATER USE.                             
+*        SOME OF THE FORMULAE MAY BE POINTLESS (I.E. % CALCS WILL               
+*        GIVE 100 ETC.)                                                         
+*                                                                               
+*        ON COMPLETION OF THIS PASS THE TRUE VECTOR TABLE ADDRESS               
+*        WILL BE RESET AND THE ROUTINE EXECUTED AGAIN.                          
+*                                                                               
+CTL010   DS    0H                                                               
+         L     R2,ACALCTAB         ADDR CALC TABLE                              
+         L     R3,LCALCTAB         LENGTH CALC TABLE                            
+         SR    R4,R4               ADDR OF 'FROM' FIELD                         
+         SR    R5,R5               LENGTH AND FILL OF ZEROS                     
+         MVCL  R2,R4               INIT INTERNAL TABLE                          
+*                                                                               
+CTL020   DS    0H                                                               
+         MVI   DONE,X'FF'          INIT AS COMPLETED                            
+         BAS   RE,CALCFORM         CALCULATE FORMULAE RESULTS                   
+*                                  IGNORING CUME,CUME%,RANK                     
+*                                                                               
+         CLI   DONE,0              IS DONE FLAG UNSET                           
+         BE    CTL020              YES - RE PASS PROC TABLE                     
+*                                                                               
+         CLC   VTSTART,TOTVEC      IS THIS THE 'TOTALS' PASS                    
+         BNE   CTL030              NO - GENERATE CUMES ETC                      
+         L     R1,ARXCTL           GET TRUE VECTOR TABLE ADDRESS                
+         MVC   VTSTART,RXDVTAB-RXCTLD(R1)                                       
+         B     CTL010              BACK TO PROCESS TABLE                        
+*                                                                               
+*        NOW THAT ALL FORMULAE ARE SATISFIED IT IS POSSIBLE TO                  
+*        GENERATE 'CUME' , 'REVERSE CUME' 'CUME%' AND RANK ITEMS                
+*                                                                               
+CTL030   DS    0H                                                               
+*                                                                               
+         BAS   RE,CUME             PERFORM ALL CUME / REVERSE CUMES             
+*                                                                               
+         BAS   RE,CUMEPCT          PERFORM ALL CUME %'S                         
+*                                                                               
+         BAS   RE,RANK             SET RANKINGS                                 
+*                                                                               
+         B     XIT                 COMPLETED                                    
+*                                                                               
+         EJECT                                                                  
+**********************************************************************          
+*                                                                    *          
+*        ROUTINE TO CONTROL AND PERFORM CALCS.                       *          
+*        TABLE CALCTAB IS BUILT WITH ONE ENTRY FOR EACH B/Q PAIR     *          
+*        IN THE PROCESSING TABLE.                                    *          
+*        FOR EACH PROC TAB ENTRY THIS TABLE IS SCANNED TO SEE IF ALL *          
+*        B/Q'S IN IT'S FORMULA HAVE BEEN CALCULATED THEMSELVES HENCE *          
+*        PERMITTING CALCULATION OF THIS PROC TAB ENTRY.              *          
+*        THE ROUTINE WILL BE RE-EXECUTED UNTIL ALL FORMULAE HAVE     *          
+*        BEEN SATISFIED.                                             *          
+*        NOTE:- CUME, REVERSE CUME, CUME % AND RANK ENTRIES ARE      *          
+*        IGNORED AT THIS STAGE.                                      *          
+*                                                                    *          
+**********************************************************************          
+*                                                                               
+CALCFORM DS    0H                                                               
+         ST    RE,CFRET            SAVE RETURN ADDRESS                          
+         L     R4,PCSTART          START OF PROC TABLE                          
+CF10     DS    0H                                                               
+         CLI   PCLNTH,0            END OF PROC TABLE                            
+         BE    CFXIT               COMPLETED A PASS                             
+         CLI   PCTYP,MPVTYPV       A DATA VECTOR PROC TABLE ENTRY ?             
+         BE    CF20                YES - PROCESS                                
+         CLI   PCTYP,MPVTYPF       A FIXED DATA VECTOR PROC TAB ENTRY ?         
+         BE    CF20                YES - PROCESS                                
+         CLI   PCTYP,MPVTYPG       A GLOBAL VALUE ?                             
+         BNE   CF40                NO -IGNORE                                   
+CF20     DS    0H                                                               
+         MVC   BQPAIR,PCBASE       LOAD BASE / QUAL FOR SCAN                    
+         MVC   SUFFIX,PCSFX        LOAD SUFFIX FOR SCAN                         
+         BAS   RE,CTSCAN           SCAN CALC TABLE FOR ENTRY                    
+         BNZ   CF30                SKIP IF FOUND                                
+         BAS   RE,CTGEN            GENERATE NEW ENTRY                           
+         CLI   PCFORM,0            ANY FORMULA ?                                
+         BE    CF40                NO - NO ACTION REQUIRED                      
+CF30     DS    0H                                                               
+         CLI   CTFLAG,0            CALC'D ? (OR CUME/RANK/CUME%)                
+         BNE   CF40                YES - NO ACTION REQUIRED                     
+*                                                                               
+         BAS   RE,CTREADY          SEE IF READY TO HONOUR FORMULA               
+         BZ    CF40                NO - GET NEXT PROC TABLE ENTRY               
+         BAS   RE,CALC             PERFORM CALCULATIONS                         
+*                                                                               
+CF40     DS    0H                                                               
+         LA    R4,PCLEN(R4)        BUMP TO NEXT PROC TAB ENTRY                  
+         B     CF10                                                             
+*                                                                               
+CFXIT    DS    0H                                                               
+         L     RE,CFRET            RESTORE RETURN ADDRESS                       
+         BR    RE                                                               
+         EJECT                                                                  
+**********************************************************************          
+*                                                                    *          
+*        GENERATE AN ENTRY IN CALC TABLE                             *          
+*                                                                    *          
+**********************************************************************          
+*                                                                               
+CTGEN    DS    0H                                                               
+         MVC   CTBASE(2),BQPAIR                                                 
+         MVC   CTSFX,PCSFX                                                      
+         MVC   CTDATFMT,PCDATFMT                                                
+         MVC   CTDATLEN,PCDATLEN                                                
+         MVC   CTDATSCF,PCDATSCF                                                
+         MVC   CTTYP,PCTYP                                                      
+         CLI   PCFOP1,MPOPRNK      IS FORMULA 'RANK ON OP1'                     
+         BE    CTG10               YES - FLAG AS SUCH                           
+         CLI   PCFOP1,MPOPRRNK     IS FORMULA 'REV RANK ON OP1'                 
+         BE    CTG10               YES - FLAG AS SUCH                           
+         CLI   PCFOP1,MPOPCUM      IS FORMULA 'CUME OF OP1'                     
+         BE    CTG20               YES - FLAG AS SUCH                           
+         CLI   PCFOP1,MPOPRCUM     IS FORMULA 'REVERSE CUME OP1'                
+         BE    CTG30               YES - FLAG AS SUCH                           
+         CLI   PCFORM,0            ANY FORMULA                                  
+         BNE   CTG40               YES - REQUIRES A CALCULATION                 
+         OI    CTFLAG,X'80'        ELSE - FLAG AS 'CALCULATED'                  
+         B     CTGEX                                                            
+CTG10    DS    0H                  FLAG AS RANK                                 
+         OI    CTFLAG,X'10'                                                     
+         B     CTGEX                                                            
+CTG20    DS    0H                  FLAG AS CUME                                 
+         OI    CTFLAG,X'20'                                                     
+         B     CTGEX                                                            
+CTG30    DS    0H                  FLAG AS REVERSE CUME                         
+         OI    CTFLAG,X'40'                                                     
+         B     CTGEX                                                            
+CTG40    DS    0H                  CHECK FOR CUME%  (QUAL 12 - 16 )             
+         CLI   PCQUAL,MPQCPC       CUME% REQUEST                                
+         BL    CTGEX               NO -IGNORE                                   
+         CLI   PCQUAL,MPQCPCR      CUME%REACH REQUEST                           
+         BH    CTGEX               TOO HIGH - IGNORE                            
+         OI    CTFLAG,X'08'        FLAG AS CUME%                                
+CTGEX    DS    0H                                                               
+         BR    RE                                                               
+         EJECT                                                                  
+**********************************************************************          
+*                                                                    *          
+*        ROUTINE TO CHECK IF ALL ENTRIES WITHIN A FORMULA            *          
+*        HAVE THEMSELVES BEEN CALCULATED HENCE PERMITTING THIS       *          
+*        FORMULA TO BE HONOURED.                                     *          
+*        RETURNS CC NON ZERO IF READY TO GO.                         *          
+*        UNSETS FLAG 'DONE' IF NOT READY                             *          
+*                                                                    *          
+**********************************************************************          
+*                                                                               
+CTREADY  DS    0H                                                               
+         ST    RE,SAVERE                                                        
+         MVC   BQPAIR,PCFB1        LOAD BASE / QUALIFIER PAIR FOR SCAN          
+         MVC   SUFFIX,PCSFX        LOAD SUFFIX (ALREADY LOADED)                 
+         BAS   RE,CTSCAN           LOOK FOR ENTRY                               
+         BZ    CTRNO               NOT IN TABLE YET SO CAN'T PROCESS            
+         TM    CTFLAG,X'80'        HAS ENTRY BEEN CALCULATED                    
+         BZ    CTRNO               NO - CAN'T PROCESS                           
+         CLI   PCFB2,0             ANY SECOND BAS / QUALIFER                    
+         BE    CTRYES              NO MORE B/Q SO READY TO PROCESS              
+*                                                                               
+         MVC   BQPAIR,PCFB2        LOAD BASE / QUALIFIER PAIR FOR SCAN          
+         BAS   RE,CTSCAN           LOOK FOR ENTRY                               
+         BZ    CTRNO               NOT IN TABLE YET SO CAN'T PROCESS            
+         TM    CTFLAG,X'80'        HAS ENTRY BEEN CALCULATED                    
+         BZ    CTRNO               NO - CAN'T PROCESS                           
+         CLI   PCFB3,0             ANY THIRD BASE / QUALIFER                    
+         BE    CTRYES              NO MORE B/Q SO READY TO PROCESS              
+*                                                                               
+         MVC   BQPAIR,PCFB3        LOAD BASE / QUALIFIER PAIR FOR SCAN          
+         BAS   RE,CTSCAN           LOOK FOR ENTRY                               
+         BZ    CTRNO               NOT IN TABLE YET SO CAN'T PROCESS            
+         TM    CTFLAG,X'80'        HAS ENTRY BEEN CALCULATED                    
+         BZ    CTRNO               NO - CAN'T PROCESS                           
+*                                                                               
+CTRYES   DS    0H                  ALL FORMULA B/Q'S AVAILABLE                  
+         LTR   RE,RE               FORCE CC NON ZERO                            
+         B     CTREX                                                            
+CTRNO    DS    0H                  NOT ALL FORMULA B/Q'S AVAILABLE              
+         NI    DONE,0              SWITCH OFF FLAG (FORCES CC ZERO)             
+CTREX    DS    0H                                                               
+         L     RE,SAVERE                                                        
+         BR    RE                                                               
+         EJECT                                                                  
+**********************************************************************          
+*                                                                    *          
+*        ROUTINE TO PERFORM CALCULATIONS REQUIRED TO HONOUR          *          
+*        FORMULAE .                                                  *          
+*        PROCESSES ONE PROCTAB ENTRY FOR THE ENTIRE DATA VECTOR      *          
+*        TABLE.                                                      *          
+*                                                                    *          
+**********************************************************************          
+*                                                                               
+CALC     DS    0H                                                               
+         ST    RE,SAVERE                                                        
+         MVC   BQPAIR,PCBASE                                                    
+         MVC   SUFFIX,PCSFX                                                     
+         BAS   RE,CTSCAN           RE - GET CALC TABLE ENTRY                    
+         BNZ   *+6                 SKIP IF FOUND                                
+         DC    H'0'                FATAL ERROR - LOST CALCTAB ENTRY !           
+         OI    CTFLAG,X'80'        FLAG PROC TAB ENTRY AS DONE                  
+         L     R3,VTSTART          VECTOR TABLE BASE ADDRESS                    
+         CLC   VTSTART,TOTVEC      IS THIS THE 'TOTALS' PASS                    
+         BE    CAL005              YES - IGNORE VECTOR TYPE                     
+CAL001   DS    0H                                                               
+         CLI   VTTYPE,C'T'         REACHED TOTALS VECTOR                        
+         BE    CALCEX                                                           
+         CLI   VTTYPE,C'D'         A DATA VECTOR                                
+         BNE   CAL990              NO - IGNORE                                  
+*                                                                               
+CAL005   DS    0H                                                               
+*                                                                               
+*        BUILD PARAMETER LIST FOR CALC ROUTINE  OP1 ? OP2                       
+*                                                                               
+*        LOAD FIRST OPERAND INTO PARAMETER LIST                                 
+*                                                                               
+         XC    PARAMLST,PARAMLST                                                
+         MVC   BQPAIR,PCFB1        LOAD FORMULA BASE / QUALIFIER                
+*                                  NOTE - SUFFIX ALREADY LOADED                 
+         BAS   RE,CTSCAN           LOOK FOR ENTRY IN CALC TABLE                 
+         BNZ   *+6                 SKIP IF FOUND                                
+         DC    H'0'                FATAL ERROR - LOST CALCTAB ENTRY !           
+         ICM   R5,15,PCFINDX1      OFFSET INTO VECTOR TABLE (OP1)               
+         CLI   CTTYP,MPVTYPG       OPERAND 1 A GLOBAL VALUE                     
+         BE    CAL006              YES - OFFSET FROM GLOBAL VECTOR              
+         AR    R5,R3               ADDRESS OF B/Q IN THIS VECTOR                
+         B     CAL007                                                           
+CAL006   DS    0H                                                               
+         L     R0,ARXCTL           GET START OF READREX CTL BLOCK               
+         AR    R5,R0               HENCE ADDRESS OF GLOBAL VALUE                
+CAL007   DS    0H                                                               
+         STCM  R5,15,AOP1          PUT IN PARAM LIST                            
+         MVC   LEN1,CTDATLEN       LEN OF OP1                                   
+         MVC   FMT1,CTDATFMT       FORMAT OF OP1                                
+         MVC   SCF1,CTDATSCF       SCALING OF OP1                               
+         MVC   OPERATOR,PCFOP1     OPERAND                                      
+         EJECT                                                                  
+*                                                                               
+*        LOAD SECOND OPERAND INTO PARAMETER LIST                                
+*                                                                               
+         MVC   BQPAIR,PCFB2        LOAD FORMULA BASE / QUALIFIER                
+*                                  NOTE - SUFFIX ALREADY LOADED                 
+         BAS   RE,CTSCAN           LOOK FOR ENTRY IN CALC TABLE                 
+         BNZ   *+6                 SKIP IF FOUND                                
+         DC    H'0'                FATAL ERROR - LOST CALCTAB ENTRY !           
+         ICM   R5,15,PCFINDX2      OFFSET INTO VECTOR TABLE (OP2)               
+         CLI   PCFOP1,MPOPPCTT     % OF TOTAL                                   
+         BE    CAL010              YES - OFFSET IS FROM TOTAL VECTOR            
+         CLI   PCFOP1,MPOPNDX      INDEX ON TOTAL                               
+         BE    CAL010              YES - OFFSET IS FROM TOTAL VECTOR            
+         CLI   CTTYP,MPVTYPG       IS THIS A GLOBAL VALUE                       
+         BE    CAL015              YES - OFFSET FROM GLOBAL VECTOR              
+         AR    R5,R3               ADDRESS OF B/Q IN THIS DATA VECTOR           
+         B     CAL020                                                           
+CAL010   DS    0H                                                               
+         L     R0,TOTVEC           ADDRESS OF TOTALS VECTOR                     
+         AR    R5,R0               + OFFSET INTO VECTOR                         
+         B     CAL020                                                           
+CAL015   DS    0H                                                               
+         L     R0,ARXCTL           GET ADDRESS OF READREX CONTROL BLOCK         
+         AR    R5,R0               HENCE OFFSET FOR GLOBAL VALUE                
+CAL020   DS    0H                                                               
+         STCM  R5,15,AOP2          PUT IN PARAM LIST                            
+         MVC   LEN2,CTDATLEN       LEN OF OP2                                   
+         MVC   FMT2,CTDATFMT       FORMAT OF OP2                                
+         MVC   SCF2,CTDATSCF       SCALING OF OP2                               
+*                                                                               
+*        LOAD OUTPUT FIELD TO PARAM LIST                                        
+*                                                                               
+CAL030   DS    0H                                                               
+         ICM   R5,15,PCWHERE       OFFSET FOR O/P                               
+         AR    R5,R3               ADDR OF O/P                                  
+         STCM  R5,15,AOUT          PUT IN PARAM LIST                            
+         MVC   LENOUT,PCDATLEN     LEN OF O/P                                   
+         MVC   FMTOUT,PCDATFMT     FORMAT OF O/P                                
+         MVC   SCFOUT,PCDATSCF     SCALING OF O/P                               
+*                                                                               
+         BAS   RE,ARITH            DO ARITHMETIC                                
+         CLI   PCFOP2,0            ANY FURTHER CALC                             
+         BE    CAL990              FINISHED THIS VECTOR ENTRY                   
+         EJECT                                                                  
+*                                                                               
+*        A 2ND OPERATOR EXISTS SO USE RESULT FROM                               
+*        1ST CALC AS OPERAND 1 AND 3RD BASE / QUALIFIER AS                      
+*        OPERAND 2. NOTE- OUTPUT FROM ABOVE IS MOVED TO A TEMP                  
+*        INTERMEDIATE RESULT AREA.                                              
+*                                                                               
+         ICM   R5,15,AOUT          ADDRESS OF OUTPUT FIELD                      
+         ZIC   R1,PCDATLEN         LENGTH OF OUTPUT FIELD                       
+         BCTR  R1,0                LESS 1 FOR EXECUTE MOVE                      
+         EX    R1,*+8              EXECUTE MOVE TO INTERMEDIATE RESULT          
+         B     *+10                                                             
+         MVC   INTRES(0),0(R5)     SAVE INTERMEDIATE RESULT                     
+*                                                                               
+*        BUILD PARAMETER LIST FOR CALC ROUTINE  RESULT(OP1 ? OP2) ? OP3         
+*                                                                               
+*        LOAD RESULT OF OP1 ? OP2 AS OPERAND1                                   
+*                                                                               
+         LA    R1,INTRES           ADDR OF INTERMEDIATE RESULT                  
+         STCM  R1,15,AOP1          SAVE AS OPERAND 1                            
+         MVC   LEN1,LENOUT         LEN OF INT RESULT                            
+         MVC   FMT1,FMTOUT         FORMAT INT RESULT                            
+         MVC   SCF1,SCFOUT         SCALING OF INT RESULT                        
+         MVC   OPERATOR,PCFOP2     OPERATOR                                     
+*                                                                               
+*        USE THIRD BASE / QUALIFIER AS SECOND OPERAND                           
+*        LOAD INTO PARAMETER LIST                                               
+*                                                                               
+         MVC   BQPAIR,PCFB3        LOAD FORMULA BASE / QUALIFIER                
+*                                  NOTE - SUFFIX ALREADY LOADED                 
+         BAS   RE,CTSCAN           LOOK FOR ENTRY IN CALC TABLE                 
+         BNZ   *+6                 SKIP IF FOUND                                
+         DC    H'0'                FATAL ERROR - LOST CALCTAB ENTRY !           
+         ICM   R5,15,PCFINDX3      OFFSET INTO VECTOR TABLE (OP2)               
+         CLI   PCFOP2,MPOPPCTT     % OF TOTAL                                   
+         BE    CAL040              YES - OFFSET IS FROM TOTAL VECTOR            
+         CLI   PCFOP2,MPOPNDX      INDEX ON TOTAL                               
+         BE    CAL040              YES - OFFSET IS FROM TOTAL VECTOR            
+         CLI   CTTYP,MPVTYPG       IS THIS A GLOBAL VALUE                       
+         BE    CAL045              YES - OFFSET FROM GLOBAL VECTOR              
+         AR    R5,R3               ADDRESS OF B/Q IN THIS DATA VECTOR           
+         B     CAL050                                                           
+         EJECT                                                                  
+CAL040   DS    0H                                                               
+         L     R0,TOTVEC           ADDRESS OF TOTALS VECTOR                     
+         AR    R5,R0               + OFFSET INTO VECTOR                         
+         B     CAL050                                                           
+CAL045   DS    0H                                                               
+         L     R0,ARXCTL           GET ADDRESS OF READREX CONTROL BLOCK         
+         AR    R5,R0               HENCE ADDR OF GLOBAL VALUE                   
+CAL050   DS    0H                                                               
+         STCM  R5,15,AOP2          PUT IN PARAM LIST                            
+         MVC   LEN2,CTDATLEN       LEN OF OP2                                   
+         MVC   FMT2,CTDATFMT       FORMAT OF OP2                                
+         MVC   SCF2,CTDATSCF       SCALING OF OP2                               
+         MVC   OPERATOR,PCFOP2     OPERATOR                                     
+*                                                                               
+*        OUTPUT FIELD ALREADY LOADED IN PARAMETER LIST                          
+*                                                                               
+*                                                                               
+CAL060   DS    0H                                                               
+         BAS   RE,ARITH            DO ARITHMETIC                                
+*                                                                               
+CAL990   DS    0H                                                               
+         CLC   VTSTART,TOTVEC      IS THIS THE 'TOTALS' PASS                    
+         BE    CALCEX              YES - ONLY 1 VECTOR TO ACTION                
+         LH    R1,0(R3)            LENGTH OF VECTOR TABLE ENTRY                 
+         AR    R3,R1               ADDRESS NEXT ENTRY                           
+         B     CAL001              PROCESS NEXT VECTOR                          
+*                                                                               
+*                                                                               
+CALCEX   DS    0H                                                               
+         L     RE,SAVERE                                                        
+         BR    RE                                                               
+         EJECT                                                                  
+**********************************************************************          
+*                                                                    *          
+*        ROUTINE TO DEFINE AN EMPTY TOTALS VECTOR AT CURRENT END OF  *          
+*        TABLE.                                                      *          
+*                                                                    *          
+**********************************************************************          
+*                                                                               
+TOTDEF   DS    0H                                                               
+         L     R3,VTSTART                                                       
+         LH    R1,VTLEN            SAVE LENGTH OF VECTOR                        
+TD010    DS    0H                                                               
+         CLC   VTLEN,=H'0'         END REACHED                                  
+         BE    TD020               YES , GENERATE TOTALS VECTOR                 
+         AR    R3,R1               BUMP TO NEXT ENTRY                           
+         B     TD010               SEARCH FOR END                               
+TD020    DS    0H                                                               
+         ST    R3,TOTVEC           TOTALS VECTOR ADDRESS                        
+         BCTR  R1,0                LEN FOR EX CLEAR                             
+         EX    R1,*+8              EXECUTE XC                                   
+         B     *+10                                                             
+         XC    VTLEN(0),VTLEN      CLEAR TOTALS ENTRY                           
+*                                                                               
+         LA    R1,1(R1)            RESET TO ENTRY LENGTH                        
+         STH   R1,VTLEN            DEFINE TOT VECTOR LEN                        
+         MVI   VTTYPE,C'T'         T - TOTAL VECTOR                             
+         AR    R3,R1               BUMP TO NEXT POSN IN VEC TAB                 
+         XC    VTLEN,VTLEN         REDEFINE END OF TABLE                        
+TDEX     DS    0H                                                               
+         BR    RE                                                               
+         EJECT                                                                  
+**********************************************************************          
+*                                                                    *          
+*        ROUTINE TO FILL IN PRIMARY ENTRIES IN TOTALS VECTOR.        *          
+*        ANY NON-FORMULA PROCESSING TABLE ENTRY WILL BE TOTALLED     *          
+*        - SOME MAY BE MEANINGLESS                                   *          
+*                                                                    *          
+**********************************************************************          
+*                                                                               
+TOTALS   DS    0H                                                               
+         L     R4,PCSTART          START OF PROC TABLE                          
+TOT010   DS    0H                                                               
+         CLI   PCLNTH,0            REACHED END                                  
+         BE    TOTEX                                                            
+         CLI   PCTYP,MPVTYPV       A DATA VECTOR PROC TABLE ENTRY               
+         BE    TOT012              YES - PROCESS                                
+         CLI   PCTYP,MPVTYPF       A FIXED DATA VECTOR PROC TAB ENTRY           
+         BNE   TOT090              NO -IGNORE GLOBAL AND TEXT ENTRIES           
+TOT012   DS    0H                                                               
+         CLI   PCFORM,0            ANY FORMULA                                  
+         BE    TOT016              NO PROCEED WITH TOTALING                     
+*                                                                               
+*        IF A FORMULA EXISTS THEN JUST INITIALISE TOTALS VECTOR                 
+*                                                                               
+         CLI   PCDATFMT,C'P'       PACKED DATA                                  
+         BNE   TOT090              NO - IGNORE (BINARY ZEROS ALREADY)           
+         L     R3,TOTVEC           POINT TO TOTALS VECTOR                       
+         B     TOT050              AND FORCE PACKED ZERO TO IT                  
+*                                                                               
+TOT016   DS    0H                                                               
+         L     R3,VTSTART          START OF VECTOR TABLE                        
+         CLI   PCDATFMT,C'B'       BINARY DATA                                  
+         BNE   TOT050              NO - MUST BE PACKED                          
+         SR    R2,R2               INIT ACCUMULATOR                             
+         MVC   MASKCHR,PCDATLEN    DATA LENGTH                                  
+         CLI   MASKCHR,X'04'       CHECK NOT > 4 BYTE BINARY FIELD              
+         BNH   TOT018              O.K.                                         
+         DC    H'0'                DIE - BINARY MAX 4 BYTES                     
+*                                                                               
+TOT018   DS    0H                                                               
+         TR    MASKCHR,TRTAB       TRANSLATE TO ICM MASK                        
+         ZIC   R5,MASKCHR          SAVE FOR EXECUTE'S                           
+         LA    R1,MPFREQ           MUST TREAT FREQ PROG TOT'S DIFFERENT         
+         CR    R8,R1               COMAPRE WITH CALLING PROG NUMBER             
+         BNE   TOT020                                                           
+         CLI   PCBASE,MPBCOUNT     COUNT (N,0-N,1-N,N+ ALL SAME)                
+         BE    TOT019                                                           
+         CLI   PCBASE,MPBIMP       IMPS (N,0-N,1-N,N+ ALL SAME)                 
+         BNE   TOT020              ELSE PROCESS AS FOR ANY OTHER PROG           
+*                                                                               
+         L     R2,TOTIMP           TOTAL IMPRESSIONS (FROM FRQDEF)              
+         L     R3,TOTVEC           POINT TO TOTALS VECTOR                       
+         B     TOT040              PUT IN VECTOR                                
+TOT019   L     R2,TOTCNT           TOTAL COUNT  (FROM FRQDEF)                   
+         L     R3,TOTVEC           POINT TO TOTALS VECTOR                       
+         B     TOT040              PUT IN VECTOR                                
+*                                                                               
+TOT020   DS    0H                                                               
+         CLI   VTTYPE,C'T'         REACHED THE TOTALS VECTOR                    
+         BE    TOT040              DONE THIS VECTOR 'COLUMN'                    
+         CLI   VTTYPE,C'D'         A DATA VECTOR                                
+         BNE   TOT030              NO -IGNORE                                   
+         ICM   R6,15,PCWHERE       GET VECTOR OFFSET                            
+         AR    R6,R3               HENCE DATA ITEM ADDRESS                      
+         SR    R1,R1                                                            
+         EX    R5,*+8              EXECUTE INSERT                               
+         B     *+8                                                              
+         ICM   R1,0,0(R6)                                                       
+         AR    R2,R1               ACCUMULATE                                   
+TOT030   DS    0H                                                               
+         LH    R1,VTLEN                                                         
+         AR    R3,R1               BUMP TO NEXT VECTOR                          
+         B     TOT020                                                           
+TOT040   DS    0H                  DONE A COLUMN SO INSERT TOTAL                
+         ICM   R6,15,PCWHERE       GET VECTOR OFFSET                            
+         AR    R6,R3               HENCE TOTAL ITEM ADDRESS                     
+         EX    R5,*+8              STORE IN TOTAL VECTOR                        
+         B     TOT090              BUMP TO NEXT PROC TABLE ENTRY                
+         STCM  R2,0,0(R6)                                                       
+         EJECT                                                                  
+TOT050   DS    0H                  PACKED FORMAT                                
+         ZAP   ACCUM,=P'0'         INIT ACCUMULATOR                             
+         ZIC   R5,PCDATLEN                                                      
+         BCTR  R5,0                LESS 1 FOR EXECUTE INSTRS                    
+         CLI   PCDATLEN,X'08'      CHECK LEN OF PACKED FIELD                    
+         BNH   *+6                 SKIP OF O.K.                                 
+         DC    H'0'                DIE - PACKED MAX 8 BYTES                     
+         LA    R1,MPFREQ           MUST TREAT FREQ PROG TOT'S DIFFERENT         
+         CR    R8,R1               COMAPRE WITH CALLING PROG NUMBER             
+         BNE   TOT060                                                           
+         CLI   PCBASE,MPBCOUNT     COUNT (N,0-N,1-N,N+ ALL SAME)                
+         BE    TOT055                                                           
+         CLI   PCBASE,MPBIMP       IMPS (N,0-N,1-N,N+ ALL SAME)                 
+         BNE   TOT060              ELSE PROCESS AS FOR ANY OTHER PROG           
+*                                                                               
+         L     R1,TOTIMP           TOTAL IMPRESSIONS (FROM FRQDEF)              
+         B     *+8                                                              
+TOT055   L     R1,TOTCNT           TOTAL COUNT  (FROM FRQDEF)                   
+         CVD   R1,ACCUM                                                         
+         L     R3,TOTVEC           POINT TO TOTALS VECTOR                       
+         B     TOT080              PUT IN VECTOR                                
+*                                                                               
+TOT060   DS    0H                                                               
+         CLI   VTTYPE,C'T'         REACHED THE TOTALS VECTOR                    
+         BE    TOT080              DONE THIS VECTOR 'COLUMN'                    
+         CLI   VTTYPE,C'D'         A DATA VECTOR                                
+         BNE   TOT070              NO -IGNORE                                   
+         ICM   R6,15,PCWHERE       GET VECTOR OFFSET                            
+         AR    R6,R3               HENCE DATA ITEM ADDRESS                      
+         EX    R5,*+8              EXECUTE ADD                                  
+         B     TOT070                                                           
+         AP    ACCUM,0(0,R6)       ACCUMULATE                                   
+TOT070   DS    0H                                                               
+         LH    R1,VTLEN                                                         
+         AR    R3,R1               BUMP TO NEXT VECTOR                          
+         B     TOT060                                                           
+TOT080   DS    0H                                                               
+         ICM   R6,15,PCWHERE       GET OFFSET FOR DATA ITEM                     
+         AR    R6,R3               DATA POSN IN TOTAL VECTOR                    
+         LR    R1,R5               EXECUTABLE LEN                               
+         SLL   R1,4                SHIFT MASK TO BE LEN OF OP1                  
+         EX    R1,*+8              MOVE TO TOTAL VECTOR                         
+         B     TOT090                                                           
+         ZAP   0(0,R6),ACCUM                                                    
+         EJECT                                                                  
+TOT090   DS    0H                                                               
+         LA    R4,PCLEN(R4)        BUMP TO NEXT PROC TAB ENTRY                  
+         B     TOT010                                                           
+TOTEX    DS    0H                                                               
+         BR    RE                                                               
+         SPACE 5                                                                
+TRTAB    DC    X'000103070F'      TRANSLATE TABLE FOR BINARY FIELD              
+*                                 LENGTH TO ICM STCM MASK CHARACTER             
+         EJECT                                                                  
+**********************************************************************          
+*                                                                    *          
+*        ROUTINE TO FILL IN ALL FIELDS THAT REQUIRE A SUBROUTINE     *          
+*        TO DEFINE THEM. THE FIELDS MUST BE 'PRIMARY' FIELDS.        *          
+*        THE ROUTINE SHOULD DIFFERENTIATE BETWEEN LOCAL AND GENERAL  *          
+*        SUBROUTINES BUT CURRENTLY ONLY HANDLES LOCALS.              *          
+*                                                                    *          
+**********************************************************************          
+*                                                                               
+SUBRDEF  DS    0H                                                               
+         ST    RE,SDRET            SAVE RETURN ADDRESS                          
+         L     R4,PCSTART          START OF PROCESSING TABLE                    
+         XC    IMP00,IMP00         OFFSET FOR IMP - NO SUFFIX (REACH)           
+SD10     DS    0H                                                               
+         CLI   PCLNTH,0            END OF TABLE                                 
+         BE    SDEX                YES - ALL DONE                               
+         CLI   PCTYP,MPVTYPV       VARIABLE DATA ENTRY                          
+         BE    SD20                YES -SEE IF SUBR REQUIRED                    
+         CLI   PCTYP,MPVTYPF       FIXED DATA ENTRY                             
+         BNE   SD30                NO - IGNORE (NOTE DOUBT IF FIXED             
+*                                       ENTRIES WILL EVER NEED A SUBR)          
+SD20     DS    0H                                                               
+         CLI   PCFHOW,MPOPSUBR     IS A SUBROUTINE REQUIRED                     
+         BNE   SD30                NO -IGNORE                                   
+         ICM   R1,15,PCFASUBR      SUBROUTINE NUMBER *LOCAL SUBRS ONLY*         
+         BCTR  R1,0                OFFSET FROM ZERO                             
+         SLL   R1,2                X 4                                          
+         C     R1,MAXSUBR          CHECK SUBR VALUE IS IN RANGE                 
+         BL    *+6                                                              
+         DC    H'0'                DIE - SUBR NO. FROM MPDITAB > MAX            
+         LA    RE,SD30             LOAD A RETURN ADDRESS                        
+         B     SUBRLIST(R1)        BRANCH TO ROUTINE - (RETURN TO SD30)         
+SD30     DS    0H                                                               
+         LA    R4,PCLEN(R4)        POINT TO NEXT PROCTAB ENTRY                  
+         B     SD10                AND PROCESS IT                               
+*                                                                               
+SDEX     DS    0H                                                               
+         L     RE,SDRET            RESTORE RETURN ADDRESS                       
+         BR    RE                                                               
+         SPACE 5                                                                
+SUBRLIST B     FRQDEF              1=GENERATE FREQUENCY COUNT 'N'               
+         B     FRQDEF              2=GENERATE FREQUENCY COUNT '0-N'             
+         B     FRQDEF              3=GENERATE FREQUENCY COUNT '1-N'             
+         B     FRQDEF              4=GENERATE FREQUENCY COUNT 'N+'              
+         B     FRQDEF              5=GENERATE IMPRESSIONS 'N'                   
+         B     FRQDEF              6=GENERATE IMPRESSIONS '0-N'                 
+         B     FRQDEF              7=GENERATE IMPRESSIONS '1-N'                 
+         B     FRQDEF              8=GENERATE IMPRESSIONS 'N+'                  
+         B     RCHIMP              9=IMPRESSIONS FOR REACH PROG                 
+SUBREND  EQU   *                                                                
+         EJECT                                                                  
+**********************************************************************          
+*                                                                    *          
+*        LOCAL ROUTINE TO DEFINE FREQUENCY COUNT AND IMPRESSIONS     *          
+*        FROM FREQUENCY TABLE RETURNED BY RDREX. THE ROUTINE FILLS   *          
+*        IN THE RELEVANT SLOTS IN THE VECTOR TABLE.                  *          
+*                                                                    *          
+**********************************************************************          
+*                                                                               
+FRQDEF   DS    0H                                                               
+         LA    R1,MPFREQ           MUST BE FREQ PROG                            
+         CR    R8,R1               COMPARE WITH CALLING PROGRAM                 
+         BE    *+6                                                              
+         DC    H'0'                SHOULDN'T BE HERE IF NOT FREQ PROG           
+         SPACE 1                                                                
+         L     R1,ARXCTL           TOTAL INSERTIONS FROM READREX CTL            
+         MVC   INSERTS,RXINS-RXCTLD(R1)                                         
+         CLI   OFFLINE,C'Y'                                                     
+         BE    FD001                                                            
+         CLC   INSERTS,=F'19'      ONLINE - TEST MODE MAX ARRAY = 20            
+         BL    FD001               IE 0-19                                      
+         MVC   INSERTS,=F'19'      FORCE NO OVERFLOW                            
+*                                                                               
+FD001    L     R3,VTSTART          START OF VECTOR TABLE                        
+         CLI   PCDATFMT,C'B'       BINARY DATA                                  
+         BNE   FD010               NO -SKIP                                     
+         MVC   MASKCHR,PCDATLEN    ELSE DEFINE STCM MASK CHR                    
+         CLI   MASKCHR,X'04'       CHECK NOT > 4 BYTE BINARY FIELD              
+         BNH   FD005               SKIP IF O.K.                                 
+         DC    H'0'                DIE - BINARY MAX 4 BYTES                     
+*                                                                               
+FD005    DS    0H                                                               
+         TR    MASKCHR,TRTAB       TRANSLATE TO ICM MASK                        
+FD010    DS    0H                                                               
+         CLI   VTTYPE,C'T'         REACHED TOTALS VECTOR                        
+         BE    FD600               YES - FINISHED                               
+         CLI   VTTYPE,C'D'         DATA VECTOR                                  
+         BNE   FD500               NO - IGNORE VECTOR                           
+         SR    R2,R2               INIT ACCUMULATOR                             
+         ICM   RF,15,PCFASUBR      GET SUBROUTINE NUMBER                        
+         BCTR  RF,0                LESS 1 FOR AN OFFSET                         
+         SLL   RF,2                X 4                                          
+         B     FD020(RF)           BRANCH TO RELEVANT BRANCH STATEMENT          
+*                                  TO DEFINE START/END LEVELS                   
+FD020    DS    0H                                                               
+         B     FD030               COUNT 'N'                                    
+         B     FD040               COUNT '0-N'                                  
+         B     FD050               COUNT '1-N'                                  
+         B     FD060               COUNT 'N'                                    
+         B     FD030               IMPRESSIONS 'N'                              
+         B     FD040               IMPRESSIONS '0-N'                            
+         B     FD050               IMPRESSIONS '1-N'                            
+         B     FD060               IMPRESSIONS 'N+'                             
+*                                                                               
+FD030    DS    0H                  COUNT/IMPS 'N' TIMES                         
+         ZIC   R6,VTFQLVLF         'FROM' LEVEL AS DEFINED IN VECTOR            
+         ZIC   R1,VTFQLVLT         'TO' LEVEL AS DEFINED IN VECTOR              
+         L     R0,INSERTS          'TO' END OF INSERTION COUNT                  
+         CR    R0,R6               IS 'FROM' FIELD BEYOND END OF TABLE          
+         BL    FD200               YES - N+ = ZERO                              
+         B     FD100               GO TO GENERALISED INIT                       
+*                                                                               
+FD040    DS    0H                  COUNT/IMPS '0-N' TIMES                       
+         SR    R6,R6               START AT COUNT 0                             
+         ZIC   R1,VTFQLVLT         'TO' LEVEL AS DEFINED IN VECTOR              
+         B     FD100               GO TO GENERALISED INIT                       
+*                                                                               
+FD050    DS    0H                  COUNT/IMPS '1-N' TIMES                       
+         CLI   VTFQLVLT,0          ARE WE ON A 0 TO 0 LEVEL VECTOR              
+         BE    FD200               YES - FORCE ZERO TO IT                       
+         LA    R6,1                START AT COUNT 1                             
+         ZIC   R1,VTFQLVLT         'TO' LEVEL AS DEFINED IN VECTOR              
+         B     FD100               GO TO GENERALISED INIT                       
+FD060    DS    0H                  COUNT/IMPS 'N+' TIMES                        
+         ZIC   R6,VTFQLVLF         'FROM' LEVEL AS DEFINED IN VECTOR            
+         L     R1,INSERTS          'TO' END OF INSERTION COUNT                  
+         CR    R1,R6               IS 'FROM' FIELD BEYOND END OF TABLE          
+         BL    FD200               YES - N+ = ZERO                              
+         B     FD100               GO TO GENERALISED INIT                       
+FD100    DS    0H                  GENERALISED INIT                             
+         LR    RF,R1               SAVE HIGHEST LEVEL NO                        
+         SR    R1,R6               NUMBER OF LEVELS                             
+         LA    R1,1(R1)            - INCLUSIVE                                  
+         L     R5,ARXCTL           GET ADDR OF RESP FN RECORD                   
+         L     R5,RXRESPR-RXCTLD(R5)                                            
+         LTR   R5,R5               CHECK IF WEIGHTED ARRAY EXISTS               
+         BZ    FD101                                                            
+         L     R5,ARXCTL           GET ADDR OF RESP FN WEIGHTED ARRAY           
+         L     R5,RXFQRF-RXCTLD(R5)                                             
+         B     FD102                                                            
+FD101    L     R5,ARXCTL           GET ADDR OF BASIC FREQ ARRAY                 
+         L     R5,RXFQA-RXCTLD(R5)                                              
+FD102    SLL   R6,2                X 4   (NOTE OFFSET FROM LVL0)                
+         AR    R5,R6               START POSN                                   
+         SRL   R6,2                / 4   BACK TO 'FROM' LEVEL NO                
+FD110    DS    0H                                                               
+         CLC   PCFASUBR,=F'5'      WORKING ON IMPRESSIONS                       
+*                                  I.E FORMULA 5-8                              
+         BL    FD120               NO - JUST ACCUMULATE FIELD                   
+         L     R1,0(R5)            FREQ COUNT FROM RXFQA                        
+         MR    R0,R6               X NUMBER EXPOSURES = IMPS                    
+         AR    R2,R1               ACCUMULATE                                   
+         B     FD130                                                            
+FD120    DS    0H                  WORKING ON STRAIGHT EXPOSURE COUNT           
+         A     R2,0(R5)            ACCUMULATE                                   
+FD130    DS    0H                  CHECK IF ALL LEVELS DONE                     
+         LA    R6,1(R6)            INCR CURRENT LEVEL                           
+         CR    R6,RF               BEYOND RANGE                                 
+         BH    FD200               YES - SAVE VALUE IN DATA VECTOR              
+         C     R6,INSERTS          BEYOND END OF SCHEDULE                       
+         BH    FD200               YES - SAVE VALUE IN DATA VECTOR              
+         LA    R5,4(R5)            POINT TO NEXT RXFREQP ENTRY                  
+         B     FD110                                                            
+*                                                                               
+FD200    DS    0H                  INSERT VALUE IN DATA VECTOR                  
+         ICM   R6,15,PCWHERE                                                    
+         AR    R6,R3               POINT TO SLOT IN DATA VECTOR                 
+         CLI   PCDATFMT,C'B'       BINARY O/P FIELD                             
+         BNE   FD300               NO - MUST BE PACKED                          
+         ZIC   R1,MASKCHR          SET UP STCM MASK                             
+         EX    R1,*+8              STORE VALUE                                  
+         B     FD500               ON TO NEXT DATA VECTOR                       
+         STCM  R2,0,0(R6)                                                       
+*                                                                               
+FD300    DS    0H                  INSERT PACKED FORMAT                         
+         CVD   R2,ACCUM            CONVERT TO PACKED FORMAT                     
+         CLI   PCDATLEN,8          CHECK NOT > 8 BYTE PACKED                    
+         BNH   FD310               SKIP IF OK                                   
+         DC    H'0'                DIE - PACKED MAX 8 BYTES                     
+*                                                                               
+FD310    DS    0H                                                               
+         ZIC   R1,PCDATLEN         GET LENGTH OF PACKED FIELD                   
+         BCTR  R1,0                LESS 1 FOR EXECUTE                           
+         SLL   R1,4                MASK FOR 1ST OPERAND                         
+         EX    R1,*+8              STORE PACKED FIELD                           
+         B     FD500                                                            
+         ZAP   0(0,R6),ACCUM                                                    
+*                                                                               
+FD500    DS    0H                  POINT TO NEXT DATA VECTOR                    
+         LH    R1,VTLEN                                                         
+         AR    R3,R1                                                            
+         B     FD010               PROCESS THIS VECTOR                          
+*                                                                               
+FD600    DS    0H                  SAVE TOTAL COUNT AND IMPS                    
+         SR    R2,R2               ACCUMULATOR FOR COUNT                        
+         SR    R3,R3               ACCUMULATOR FOR IMPS                         
+         SR    R6,R6               START LEVEL NUMBER                           
+         L     R5,ARXCTL           GET ADDR OF RESP FN RECORD                   
+         L     R5,RXRESPR-RXCTLD(R5)                                            
+         LTR   R5,R5               CHECK IF WEIGHTED ARRAY EXISTS               
+         BZ    FD601                                                            
+         L     R5,ARXCTL           GET ADDR OF RESP FN WEIGHTED ARRAY           
+         L     R5,RXFQRF-RXCTLD(R5)                                             
+         B     FD610                                                            
+FD601    L     R5,ARXCTL           GET ADDR OF BASIC FREQ ARRAY                 
+         L     R5,RXFQA-RXCTLD(R5)                                              
+*                                                                               
+FD610    L     R1,0(R5)            FREQ COUNT FROM RXFQA                        
+         A     R2,0(R5)            ACCUMULATE COUNT                             
+         MR    R0,R6               X NUMBER EXPOSURES = IMPS                    
+         AR    R3,R1               ACCUMULATE IMPS                              
+         LA    R6,1(R6)            INCR CURRENT LEVEL                           
+         LA    R5,4(R5)            POINT TO NEXT RXFREQP ENTRY                  
+         C     R6,INSERTS          BEYOND END OF SCHEDULE                       
+         BNH   FD610               NO -BACK FOR NEXT                            
+*                                                                               
+         ST    R2,TOTCNT           SAVE FOR TOTALS VECTORS                      
+         ST    R3,TOTIMP                                                        
+*                                                                               
+FDEX     DS    0H                                                               
+         BR    RE                                                               
+         EJECT                                                                  
+***********************************************************************         
+*                                                                     *         
+*        ROUTINE TO DEFINE IMPACTS FOR THE 'NTH' ISSUE                *         
+*        WITHIN THER REACH EXTRAPOLATION PROGRAM.                     *         
+*        N ISSUE IMPACTS = 1ST ISSUE IMPACTS X ISSUE NUMBER           *         
+***********************************************************************         
+*                                                                               
+RCHIMP   LA    R1,MPREACH          MUST BE REACH PROG                           
+         CR    R8,R1               COMPARE WITH CALLING PROGRAM                 
+         BE    *+6                                                              
+         DC    H'0'                SHOULDN'T BE HERE IF NOT REACH PROG          
+         SPACE 1                                                                
+         CLI   PCBASE,MPBIMP       CHECK IF ENTRY IS IMP(#) NO SUFFIX           
+         BNE   RI05                                                             
+         CLI   PCQUAL,MPQ#                                                      
+         BNE   RI05                                                             
+         NC    PCSFX,PCSFX                                                      
+         BNZ   RI05                                                             
+         MVC   IMP00,PCWHERE       SAVE IMP(#) NO SUFFIX OFFSET                 
+         B     RIEX                VALUE ALREADY SET BY READREX                 
+*                                                                               
+RI05     NC    IMP00,IMP00         HAVE WE FOUND IMP 00 SUFFIX POSN             
+         BNZ   RI10                YES - NO NEED TO RE-FIND                     
+         LR    R6,R4               SAVE CURRENT PROC TAB POSN                   
+         L     R4,PCSTART          POINT TO START OF PROC TABLE                 
+*                                                                               
+RI01     CLI   PCLNTH,0            HAVE WE REACHED END OF TABLE                 
+         BNE   *+6                 NO - CONTINUE SEARCH                         
+         DC    H'0'                CAN'T FIND IMPS WITH NO SUFFIX               
+         CLI   PCTYP,MPVTYPV       WILL BE A VARIABLE ENTRY                     
+         BNE   RI02                ELSE IGNORE THIS ENTRY                       
+         CLI   PCBASE,MPBIMP       HAVE WE REACHED IMPRESSIONS                  
+         BNE   RI02                NO - TRY NEXT ENTRY                          
+         CLI   PCQUAL,MPQ#         HAVE WE REACHED IMPS AS A NUMBER             
+         BNE   RI02                NO - TRY NEXT ENTRY                          
+         NC    PCSFX,PCSFX         IS THIS THE ZERO SUFFIX ENTRY                
+         BZ    RI03                YES - SAVE IT'S OFFSET                       
+RI02     LA    R4,PCLEN(R4)        POINT TO NEXT PROC TABLE ENTRY               
+         B     RI01                                                             
+*                                                                               
+RI03     MVC   IMP00,PCWHERE       SAVE POSN OF IMPS - NO SUFFIX                
+         LR    R4,R6               RESTORE CURRENT PROC TAB ENTRY               
+         SPACE 2                                                                
+RI10     L     R3,VTSTART          ADDRESS START OF VECTOR TABLE                
+         ZIC   R9,PCDATLEN         GET DATA LENGTH                              
+         BCTR  R9,0                LESS 1 FOR PACKED ARITH                      
+         CLI   PCDATFMT,C'B'       IS DATA FORMAT BINARY                        
+         BNE   RI20                NO - R5 = EX LENGTH                          
+         MVC   MASKCHR,PCDATLEN    GET DATA LENGTH                              
+         TR    MASKCHR,TRTAB       TRANSLATE TO ICM MASK                        
+         ZIC   R9,MASKCHR          SET FOR EXECUTED ICM/STCM                    
+*                                                                               
+RI20     CLI   VTTYPE,C'T'         REACHED TOTALS VECTOR                        
+         BE    RIEX                                                             
+         CLI   VTTYPE,C'D'         IS IT A DATA VECTOR                          
+         BNE   RI90                NO - GET NEXT VECTOR                         
+         ICM   R6,15,PCWHERE       OFFSET INTO VECTOR OF RESULT FIELD           
+         AR    R6,R3               + VECTOR ADDRESS                             
+         ICM   R5,15,IMP00         OFFSET INTO VECTOR OF IMPS 0 SUFFIX          
+         AR    R5,R3               + VECTOR ADDRESS                             
+         CLI   PCDATFMT,C'B'       IS DATA FORMAT BINARY                        
+         BNE   RI30                NO - PERFORM PACKED ARITH                    
+         SR    R1,R1               INIT RESULTS REGISTER                        
+         EX    R9,*+8              GET IMPS 00                                  
+         B     *+8                                                              
+         ICM   R1,0,0(R5)          LOAD IMPS 00 SUFFIX                          
+*                                                                               
+         LH    R2,PCSFX            GET CURRENT SUFFIX                           
+         MR    R0,R2                                                            
+         EX    R9,*+8              PUT RESULT IN O/P FIELD                      
+         B     RI90                GET NEXT VECTOR                              
+         STCM  R1,0,0(R6)          STORE IMPS 'NN' SUFFIX                       
+*                                                                               
+RI30     EX    R9,*+8              GET IMPS 00                                  
+         B     *+10                                                             
+         ZAP   WORK15,0(0,R5)      LOAD IMPS 00                                 
+*                                                                               
+         LH    R2,PCSFX            GET SUFFIX VALUE                             
+         CVD   R2,WORKB8                                                        
+         MP    WORK15,WORKB8                                                    
+         SLL   R9,4                MOVE MASK TO BE 1ST OPERAND                  
+         EX    R9,*+12             PUT RESULT IN O/P                            
+         SRL   R9,4                RESTORE MASK                                 
+         B     RI90                GET NEXT VECTOR                              
+         ZAP   0(0,R6),WORK15      STORE IMPS 'NN' SUFFIX                       
+         SPACE 1                                                                
+RI90     LH    R1,VTLEN            GET VECTOR LENGTH                            
+         AR    R3,R1               POINT TO NEXT                                
+         B     RI20                BACK TO  PROCESS IT                          
+         SPACE 2                                                                
+RIEX     BR    RE                                                               
+         EJECT                                                                  
+**********************************************************************          
+*                                                                    *          
+*        ROUTINE TO FILL IN CUME AND REVERSE CUME ENTRIES IN         *          
+*        DATA VECTORS.                                               *          
+*                                                                    *          
+**********************************************************************          
+*                                                                               
+CUME     DS    0H                                                               
+         L     R4,PCSTART          START OF PROC TABLE                          
+CUM010   DS    0H                                                               
+         CLI   PCLNTH,0            REACHED END OF PROC TABLE                    
+         BE    CUMEX               YES - DONE                                   
+         CLI   PCTYP,MPVTYPV       A DATA VECTOR PROC TABLE ENTRY               
+         BE    CUM012              YES - CHECK FOR CUME                         
+         CLI   PCTYP,MPVTYPF       A FIXED DATA VECTOR PROC TAB ENTRY           
+         BNE   CUM090              NO -IGNORE GLOBAL OR TEXT ENTRIES            
+CUM012   DS    0H                                                               
+         CLI   PCFOP1,MPOPCUM      CUME REQUEST                                 
+         BE    CUM014              YES - PROCESS                                
+         CLI   PCFOP1,MPOPRCUM     REV CUME REQUEST                             
+         BNE   CUM090              NO - IGNORE                                  
+*                                                                               
+CUM014   DS    0H                                                               
+         CLI   PCDATFMT,C'B'       BINARY DATA                                  
+         BNE   CUM050              NO - MUST BE PACKED                          
+         SR    R2,R2               INIT ACCUMULATOR                             
+         MVC   MASKCHR,PCDATLEN    DATA LENGTH                                  
+         CLI   MASKCHR,X'04'       CHECK NOT > 4 BYTE BINARY FIELD              
+         BNH   CUM018              O.K.                                         
+         DC    H'0'                DIE - BINARY MAX 4 BYTES                     
+*                                                                               
+CUM018   DS    0H                                                               
+         TR    MASKCHR,TRTAB       TRANSLATE TO ICM MASK                        
+         ZIC   R5,MASKCHR          SAVE FOR EXECUTE'S                           
+*                                                                               
+         CLI   PCFOP1,MPOPRCUM     REV CUME REQUEST                             
+         BNE   CUM019              NO - CONITNUE                                
+*                                                                               
+*        REVERSE CUME - SO GET TOTAL IN REG F                                   
+*                                                                               
+         L     R3,TOTVEC           GET TOTALS VECTOR ADDR                       
+         ICM   R6,15,PCFINDX1      GET VECTOR OFFSET FOR OPERAND1               
+         AR    R6,R3               HENCE TOTAL ITEM ADDRESS                     
+         SR    RF,RF                                                            
+         EX    R5,*+8              EXECUTE INSERT                               
+         B     *+8                                                              
+         ICM   RF,0,0(R6)          SAVE TOTAL VALUE IN RF                       
+         EJECT                                                                  
+CUM019   DS    0H                                                               
+         L     R3,VTSTART          START OF VECTOR TABLE                        
+CUM020   DS    0H                                                               
+         CLI   VTTYPE,C'T'         REACHED THE TOTALS VECTOR                    
+         BE    CUM090              DONE THIS VECTOR 'COLUMN'                    
+         CLI   VTTYPE,C'D'         A DATA VECTOR                                
+         BNE   CUM030              NO -IGNORE                                   
+         ICM   R6,15,PCFINDX1      GET VECTOR OFFSET FOR OPERAND1               
+         AR    R6,R3               HENCE DATA ITEM ADDRESS                      
+         SR    R1,R1                                                            
+         EX    R5,*+8              EXECUTE INSERT                               
+         B     *+8                                                              
+         ICM   R1,0,0(R6)                                                       
+         AR    R2,R1               ACCUMULATE                                   
+         ICM   R6,15,PCWHERE       GET VECTOR OFFSET FOR RESULT                 
+         AR    R6,R3               HENCE VECTOR ITEM ADDRESS                    
+         CLI   PCFOP1,MPOPRCUM     REVERSE CUME                                 
+         BE    CUM025              YES - SUBRTACT FROM TOTAL                    
+*                                                                               
+         EX    R5,*+8              STORE CUME IN VECTOR                         
+         B     CUM030              BUMP TO NEXT VECTOR                          
+         STCM  R2,0,0(R6)                                                       
+*                                                                               
+CUM025   DS    0H                                                               
+         LR    R1,RF               TOTAL (FROM TOT VECTOR)                      
+         SR    R1,R2               LESS CUME                                    
+         EX    R5,*+8              SAVE REVERSE CUME                            
+         B     CUM030              BUMP TO NEXT VECTOR                          
+         STCM  R1,0,0(R6)                                                       
+*                                                                               
+CUM030   DS    0H                                                               
+         LH    R1,VTLEN                                                         
+         AR    R3,R1               BUMP TO NEXT VECTOR                          
+         B     CUM020                                                           
+         EJECT                                                                  
+CUM050   DS    0H                  PACKED FORMAT                                
+         ZAP   ACCUM,=P'0'         INIT ACCUMULATOR                             
+         ZIC   R5,PCDATLEN                                                      
+         BCTR  R5,0                LESS 1 FOR EX LEN                            
+         CLI   PCDATLEN,X'08'      CHECK LEN OF PACKED FIELD                    
+         BNH   CUM052              SKIP OF O.K.                                 
+         DC    H'0'                DIE - PACKED MAX 8 BYTES                     
+         DC    C'**PACKED MAX 8**'                                              
+CUM052   DS    0H                                                               
+         CLI   PCFOP1,MPOPRCUM     REVERSE CUME                                 
+         BNE   CUM055              NO - CONT                                    
+*                                  ELSE GET TOTAL                               
+         L     R3,TOTVEC           TOTALS VECTOR ADDRESS                        
+         ICM   R6,15,PCFINDX1      GET VECTOR OFFSET FOR OPERAND 1              
+         AR    R6,R3               HENCE TOTAL ITEM ADDRESS                     
+         EX    R5,*+8              EXECUTE ZAP                                  
+         B     CUM055                                                           
+         ZAP   TOTAL,0(0,R6)       SAVE TOTAL                                   
+*                                                                               
+CUM055   DS    0H                                                               
+         L     R3,VTSTART          START OF VECTOR TABLE                        
+CUM060   DS    0H                                                               
+         CLI   VTTYPE,C'T'         REACHED THE TOTALS VECTOR                    
+         BE    CUM090              DONE THIS VECTOR 'COLUMN'                    
+         CLI   VTTYPE,C'D'         A DATA VECTOR                                
+         BNE   CUM070              NO -IGNORE                                   
+         ICM   R6,15,PCFINDX1      GET VECTOR OFFSET FOR OPERAND 1              
+         AR    R6,R3               HENCE DATA ITEM ADDRESS                      
+         EX    R5,*+8              EXECUTE ADD                                  
+         B     *+10                                                             
+         AP    ACCUM,0(0,R6)       ACCUMULATE                                   
+         ICM   R6,15,PCWHERE       GET OFFSET FOR DATA ITEM                     
+         AR    R6,R3               DATA POSN IN DATA VECTOR                     
+         LR    R1,R5               EXECUTABLE LEN                               
+         SLL   R1,4                SHIFT MASK TO BE LEN OF OP1                  
+         CLI   PCFOP1,MPOPRCUM     REVERSE CUME                                 
+         BE    CUM065              YES - SUBRTACT FROM TOTAL                    
+*                                                                               
+         EX    R1,*+8              MOVE TO DATA VECTOR                          
+         B     CUM070                                                           
+         ZAP   0(0,R6),ACCUM       MOVE CUME TO DATA VECTOR                     
+*                                                                               
+CUM065   DS    0H                                                               
+         ZAP   WORK8,TOTAL                                                      
+         SP    WORK8,ACCUM         REVERSE CUME                                 
+         EX    R1,*+8              MOVE TO DATA VECTOR                          
+         B     CUM070                                                           
+         ZAP   0(0,R6),WORK8       MOVE REV CUME TO DATA VECTOR                 
+*                                                                               
+CUM070   DS    0H                                                               
+         LH    R1,VTLEN                                                         
+         AR    R3,R1               BUMP TO NEXT VECTOR                          
+         B     CUM060                                                           
+         EJECT                                                                  
+CUM090   DS    0H                                                               
+         LA    R4,PCLEN(R4)        BUMP TO NEXT PROC TAB ENTRY                  
+         B     CUM010                                                           
+CUMEX    DS    0H                                                               
+         BR    RE                                                               
+         EJECT                    SIZE TO ICM STCM MASK CHARACTER               
+**********************************************************************          
+*                                                                    *          
+*        ROUTINE TO FILL IN CUME% ENTRIES IN DATA VECTORS.           *          
+*                                                                    *          
+**********************************************************************          
+*                                                                               
+CUMEPCT  DS    0H                                                               
+         ST    RE,CPCRET           SAVE RETURN ADDRESS                          
+         L     R4,PCSTART          START OF PROC TABLE                          
+CPC010   DS    0H                                                               
+         CLI   PCLNTH,0            REACHED END OF PROC TABLE                    
+         BE    CPCEX               YES - DONE                                   
+         CLI   PCTYP,MPVTYPV       A DATA VECTOR PROC TABLE ENTRY               
+         BE    CPC020              YES - CHECK FOR CUME                         
+         CLI   PCTYP,MPVTYPF       A FIXED DATA VECTOR PROC TAB ENTRY           
+         BNE   CPC090              NO -IGNORE GLOBAL AND TEXT ENTRIES           
+CPC020   DS    0H                  CUME % QUALS ARE IN RANGE 12 - 16            
+         CLI   PCQUAL,MPQCPC       CUME% REQUEST                                
+         BL    CPC090              NO -IGNORE                                   
+         CLI   PCQUAL,MPQCPCR      CUME%RCH  REQUEST                            
+         BH    CPC090              TOO HIGH - IGNORE                            
+*                                                                               
+         BAS   RE,CALC             CARRY OUT CALCS                              
+*                                                                               
+CPC090   DS    0H                                                               
+         LA    R4,PCLEN(R4)        BUMP TO NEXT PROC TAB ENTRY                  
+         B     CPC010                                                           
+CPCEX    DS    0H                                                               
+         L     RE,CPCRET           RESTORE RETURN ADDRESS                       
+         BR    RE                                                               
+         EJECT                                                                  
+**********************************************************************          
+*                                                                    *          
+*        ROUTINE TO FILL IN RANKING ENTRIES IN DATA VECTORS.         *          
+*        NOTE MPOPRNK RANKS HIGHEST VALUE AS 1.                      *          
+*             MPOPRRNK RANKS LOWEST VALUE AS 1.                      *          
+*                                                                    *          
+**********************************************************************          
+*                                                                               
+RANK     DS    0H                                                               
+         ST    RE,SAVERE           SAVE RETURN ADDRESS                          
+         L     R4,PCSTART          START OF PROC TABLE                          
+RNK010   DS    0H                                                               
+         CLI   PCLNTH,0            REACHED END OF PROC TABLE                    
+         BE    RANKEX              YES - DONE                                   
+         CLI   PCTYP,MPVTYPV       A DATA VECTOR PROC TABLE ENTRY               
+         BE    RNK020              YES - CHECK FOR RANK                         
+         CLI   PCTYP,MPVTYPF       A FIXED DATA VECTOR PROC TAB ENTRY           
+         BNE   RNK900              NO -IGNORE GLOBAL AND TEXT ENTRIES           
+RNK020   DS    0H                                                               
+         CLI   PCFOP1,MPOPRNK      RANK REQUEST                                 
+         BE    RNK025              YES -PROCESS                                 
+         CLI   PCFOP1,MPOPRRNK     REVERSE RANK REQUEST                         
+         BNE   RNK900              NO - IGNORE                                  
+*                                                                               
+*        GET THE DATA ITEMS PROC TAB ENTRY TO FIND ITS FORMAT/SIZE              
+*                                                                               
+RNK025   MVC   BQPAIR,PCFB1        LOAD BASE QUALIFIER PAIR FOR SCAN            
+         MVC   SUFFIX,PCSFX        LOAD SUFFIX FOR SCAN                         
+         BAS   RE,CTSCAN                                                        
+         BNZ   *+6                 SKIP IF FOUND                                
+         DC    H'0'                CAN'T FIND CALCTAB ENTRY                     
+         MVC   DATAFMT,CTDATFMT    SAVE DATA FORMAT                             
+*                                                                               
+         CLI   DATAFMT,C'B'        BINARY DATA                                  
+         BNE   RNK040              NO - MUST BE PACKED                          
+         MVC   MASKCHR,CTDATLEN    DATA LENGTH OF RANKING FIELD                 
+         CLI   MASKCHR,X'04'       CHECK NOT > 4 BYTE BINARY FIELD              
+         BNH   RNK030              O.K.                                         
+         DC    H'0'                DIE - BINARY MAX 4 BYTES                     
+*                                                                               
+RNK030   DS    0H                                                               
+         TR    MASKCHR,TRTAB       TRANSLATE TO ICM MASK                        
+         ZIC   R5,MASKCHR          SAVE FOR EXECUTE'S (ICM/STCM'S)              
+         B     RNK050                                                           
+RNK040   DS    0H                  PACKED DATA                                  
+         ZIC   R5,CTDATLEN         SAVE DATA LENGTH                             
+         BCTR  R5,0                LESS 1 FOR EXECUTE COMPARES                  
+RNK050   DS    0H                                                               
+         MVC   MASKCHR,PCDATLEN    DATA LENGTH OF RANKING FIELD                 
+         CLI   MASKCHR,X'04'       CHECK NOT > 4 BYTE BINARY FIELD              
+         BNH   RNK060              O.K.                                         
+         DC    H'0'                DIE - BINARY MAX 4 BYTES                     
+*                                                                               
+RNK060   DS    0H                                                               
+         TR    MASKCHR,TRTAB       TRANSLATE TO ICM MASK                        
+         XC    RANKNO,RANKNO       INIT RANKING COUNTER                         
+         XC    LSTHIGHB,LSTHIGHB   INIT PREVIOUS HIGH VAL..                     
+         ZAP   LSTHIGHP,=P'0'      .. USED TO CHECK RANK= COND                  
+         LA    R1,1                                                             
+         ST    R1,LSTRANK          INCASE 1ST HIGH VALUE = INIT !               
+         EJECT                                                                  
+RNK100   DS    0H                                                               
+         XC    RNKSEQ,RNKSEQ       ADDR OF RANKED VECTOR                        
+         L     R3,VTSTART          START OF VECTOR TABLE                        
+         L     R2,=X'80000000'     INIT RANK AS LOW AS POSSIBLE                 
+         ZAP   WORK8,=P'-999999999'                                             
+         CLI   PCFOP1,MPOPRRNK     REVERSE RANKING                              
+         BNE   RNK120              NO - LEAVE INIT VALUES LOW                   
+         L     R2,=X'7FFFFFFF'     INIT AS HIGH AS POSSIBLE                     
+         ZAP   WORK8,=P'999999999'                                              
+*                                                                               
+RNK120   DS    0H                                                               
+         CLI   VTTYPE,C'T'         REACHED THE TOTALS VECTOR                    
+         BE    RNK200              COMPLETED A PASS OF VECTOR TABLE             
+         CLI   VTTYPE,C'D'         A DATA VECTOR                                
+         BNE   RNK140              NO -IGNORE                                   
+         ICM   R6,15,PCWHERE       GET VECTOR OFFSET FOR RESULT                 
+         AR    R6,R3               HENCE VECTOR ITEM ADDRESS                    
+         ZIC   R1,PCDATLEN         GET LENGTH OF RANK FIELD                     
+         BCTR  R1,0                LESS 1 FOR EXECUTED 'AND'                    
+         EX    R1,*+12             SEE IF ALREADY RANKED                        
+         BNZ   RNK140              YES - BUMP TO NEXT                           
+         B     *+10                                                             
+         NC    0(0,R6),0(R6)       EXECUTED AND - ALREADY RANKED                
+*                                                                               
+         ICM   R6,15,PCFINDX1      GET OFFSET OF RANKED FIELD                   
+         AR    R6,R3               HENCE ADDRESS OF RANKED FIELD                
+         CLI   DATAFMT,C'B'        BINARY DATA                                  
+         BNE   RNK130              NO - PROCESS PACKED FIELD                    
+         SR    R1,R1                                                            
+         EX    R5,*+8              LOAD DATA VALUE                              
+         B     *+8                                                              
+         ICM   R1,0,0(R6)                                                       
+*                                                                               
+         CLI   PCFOP1,MPOPRRNK     REVERSE RANK                                 
+         BNE   RNK125                                                           
+         CR    R1,R2               COMPARE WITH CURRENT LOW                     
+         B     *+6                                                              
+RNK125   CR    R2,R1               COMPARE WITH CURRENT HIGH (BINARY)           
+         BNL   RNK140              CURRENT HIGH STILL VALID                     
+         LR    R2,R1               SAVE NEW HIGHEST/LOWEST                      
+         ST    R3,RNKSEQ           SAVE ADDR OF DATA VECTOR                     
+         B     RNK140              BUMP TO NEXT DATA VECTOR                     
+RNK130   DS    0H                                                               
+         LR    R1,R5               PACKED FIELD LENGTH                          
+         SLL   R1,4                GENERATE MASK FOR OP 1 OF COMPARE            
+         CLI   PCFOP1,MPOPRRNK     REVERSE RANK - LOWEST FIRST                  
+         BE    RNK132                                                           
+         EX    R1,RNKCP            COMPARE WITH CURRENT HIGH (PACKED)           
+         BNH   RNK140              CURRENT HIGHEST STILL VALID                  
+         B     RNK136              SAVE NEW HIGHEST                             
+RNK132   EX    R1,RNKCP            COMPARE WITH CURRENT LOW  (PACKED)           
+         BNL   RNK140              CURRENT LOW STILL VALID                      
+         B     RNK136              SAVE NEW LOW                                 
+RNKCP    CP    0(0,R6),WORK8                                                    
+*                                                                               
+RNK136   ST    R3,RNKSEQ           SAVE ADDR OF DATA VECTOR                     
+         EX    R5,*+8                                                           
+         B     RNK140              BUMP TO NEXT DATA VECTOR                     
+         ZAP   WORK8,0(0,R6)                                                    
+         EJECT                                                                  
+RNK140   DS    0H                                                               
+         LH    R1,VTLEN                                                         
+         AR    R3,R1               BUMP TO NEXT VECTOR                          
+         B     RNK120                                                           
+         SPACE 2                                                                
+RNK200   DS    0H                                                               
+         L     R3,RNKSEQ           POINT TO HIGHEST RANKED VECTOR               
+         LTR   R3,R3               ALL DONE                                     
+         BZ    RNK900              YES - SKIP TO NEXT PROC TAB ENTRY            
+         ICM   R6,15,PCWHERE       GET OFFSET FOR RANK                          
+         AR    R6,R3               HENCE ADDRESS FOR RANK                       
+         L     R3,RANKNO           GET RANK NUMBER                              
+         LA    R3,1(R3)            INCREMENT RANKING COUNT                      
+         ST    R3,RANKNO           SAVE CURRENT VALUE (TOTAL                    
+*                                  RANK VALUE IGNORING EQUALS)                  
+*                                                                               
+*        CHECK IF THIS RANKED VALUE IS SAME AS LAST AND RANK                    
+*        EQUAL IF SO.                                                           
+*                                                                               
+         CLI   DATAFMT,C'B'        BINARY RANKED FIELD                          
+         BNE   RNK210              NO - CHECK PACKED                            
+         C     R2,LSTHIGHB         NEW HIGH EQUAL TO LAST                       
+         BNE   RNK220              NO - USE NEW RANK NUMBER                     
+         L     R3,LSTRANK          ELSE  USE LAST RANK NUMBER                   
+         B     RNK220                                                           
+RNK210   DS    0H                                                               
+         CP    WORK8,LSTHIGHP      NEW HIGH EQUAL LAST                          
+         BNE   RNK220              NO - USE NEW RANK NUMBER                     
+         L     R3,LSTRANK          ELSE USE LAST RANK NUMBER                    
+RNK220   DS    0H                                                               
+         ST    R2,LSTHIGHB         SAVE LAST HIGHEST..                          
+         MVC   WORK8,LSTHIGHP      ... (NOT WORTH CHECKING 'B' OR 'P')          
+         ST    R3,LSTRANK          SAVE LAST RANK INSERTED                      
+         ZIC   R1,MASKCHR          EXECUTED STCM MASK                           
+         EX    R1,*+8              PUT VALUE IN RANK SLOT                       
+         B     RNK100              PASS VECTOR TABLE AGAIN                      
+         STCM  R3,0,0(R6)                                                       
+         EJECT                                                                  
+RNK900   DS    0H                                                               
+         LA    R4,PCLEN(R4)        BUMP TO NEXT PROC TAB ENTRY                  
+         B     RNK010                                                           
+RANKEX   DS    0H                                                               
+         L     RE,SAVERE           RESTORE RETURN ADDRESS                       
+         BR    RE                                                               
+         EJECT                                                                  
+***********************************************************************         
+*                                                                     *         
+*        ROUTINE TO PERFORM THE ARITHMETIC. THE INPUT IS PARAMETER    *         
+*        BLOCK PARAMLST WHICH DEFINES IN/OUT FORMAT SCALING ETC.     *          
+*                                                                     *         
+***********************************************************************         
+         SPACE 2                                                                
+ARITH    DS    0H                                                               
+         STM   R1,R6,REGSAVE                                                    
+         SR    R1,R1                                                            
+         SR    R2,R2                                                            
+         IC    R2,SCF1             GET SCALING FACTOR                           
+         TM    SCF1,X'80'          DECIMAL PLACES                               
+         BZ    CL010               YES - BRANCH                                 
+         N     R2,=XL4'7F'                                                      
+         LNR   R2,R2                                                            
+CL010    DS    0H                                                               
+         SR    R1,R2                                                            
+         SPACE                                                                  
+         SR    R2,R2                                                            
+         IC    R2,SCF2             GET SCALING FACTOR                           
+         TM    SCF2,X'80'          DECIMAL PLACES                               
+         BZ    CL020               YES - BRANCH                                 
+         N     R2,=XL4'7F'                                                      
+         LNR   R2,R2                                                            
+CL020    DS    0H                                                               
+         AR    R1,R2                                                            
+         SPACE                                                                  
+         SR    R2,R2                                                            
+         IC    R2,SCFOUT           GET SCALING FACTOR                           
+         TM    SCFOUT,X'80'        DECIMAL PLACES                               
+         BZ    CL030               YES - BRANCH                                 
+         N     R2,=XL4'7F'                                                      
+         LNR   R2,R2                                                            
+CL030    DS    0H                                                               
+         AR    R1,R2               R1 NOW HOLDS THE SCALING FACTOR              
+         SPACE 2                                                                
+         CLI   OPERATOR,MPOPPCT    % OPERATOR SUBTRACT 2(I.E. *100)             
+         BE    CL031                                                            
+         CLI   OPERATOR,MPOPPCTT   % TOTAL OPERATOR SUB 2(I.E. *100)            
+         BE    CL031                                                            
+         CLI   OPERATOR,MPOPCPT    CPT OPERATOR SUB 3(I.E. *1000)               
+         BNE   *+10                                                             
+         SPACE                                                                  
+         BCTR  R1,0                                                             
+CL031    DS    0H                                                               
+         BCTR  R1,0                                                             
+         BCTR  R1,0                                                             
+*                                  -VE = MULTIPLY, +VE = DIVIDE ANSWER          
+         EJECT                                                                  
+*                                                                               
+*        MOVE BINARY FIELD TO REGISTER, OR PACKED FIELD TO PL8 FIELD            
+*        AND PERFORM MULTIPLICATIVE FACTOR, IF REQUIRED                         
+*                                                                               
+         SPACE 2                                                                
+         CLI   FMT1,C'B'           BINARY                                       
+         BNE   CL050                                                            
+         SR    R3,R3                                                            
+         ICM   R6,15,AOP1          GET OPERAND ADDRESS                          
+         MVC   MASKCHR,LEN1        GET INPUT LENGTH...                          
+         TR    MASKCHR,TRTAB       ... AND TRANSLATE IT TO ICM MASK             
+         ZIC   R2,MASKCHR                                                       
+         EX    R2,*+8                                                           
+         B     *+8                                                              
+         ICM   R3,0,0(R6)          MOVE BINARY FIELD TO REGISTER                
+         XC    WORK15,WORK15       CLEAR WORK FIELD ...                         
+         CVD   R3,WORK15+8         ... AND PUT IN DECIMAL OPERAND               
+         B     CL055                                                            
+CL050    DS    0H                                                               
+         CLI   FMT1,C'P'           SHOULD BE PACKED                             
+         BNE   CLERR                                                            
+         ICM   R6,15,AOP1                                                       
+         ZIC   R2,LEN1             GET LENGTH                                   
+         BCTR  R2,0                                                             
+         EX    R2,*+8                                                           
+         B     *+10                                                             
+         ZAP   WORK15,0(0,R6)      MOVE TO DOUBLEWORD                           
+         EJECT                                                                  
+CL055    DS    0H                                                               
+         LTR   R1,R1               ANY MULTIPLICATIVE FACTOR                    
+         BNM   CL060               NO                                           
+         LPR   R1,R1                                                            
+         SRP   WORK15,1,0          *10                                          
+         BCT   R1,*-6              RETURN IF MORE                               
+CL060    DS    0H                                                               
+         CLI   FMT2,C'B'           BINARY OPERAND 2                             
+         BNE   CL070               NO -TRY PACKED                               
+         SR    R4,R4                                                            
+         ICM   R6,15,AOP2          GET ADDRESS                                  
+         MVC   MASKCHR,LEN2                                                     
+         TR    MASKCHR,TRTAB       TRANSLATE LENGTH TO ICM MASK                 
+         ZIC   R2,MASKCHR                                                       
+         EX    R2,*+8                                                           
+         B     *+8                                                              
+         ICM   R4,0,0(R6)                                                       
+         CVD   R4,WORKB8                                                        
+         B     CL080                                                            
+CL070    DS    0H                                                               
+         CLI   FMT2,C'P'           SHOULD BE PACKED                             
+         BNE   CLERR               YIKES !                                      
+         ICM   R6,15,AOP2                                                       
+         ZIC   R2,LEN2             GET LENGTH                                   
+         BCTR  R2,0                                                             
+         EX    R2,*+8                                                           
+         B     *+10                                                             
+         ZAP   WORKB8,0(0,R6)      MOVE TO DOUBLEWORD                           
+CL080    DS    0H                                                               
+         CLI   OPERATOR,MPOPMPLY   CHECK IF MUTIPLICATION REQUIRED              
+         BNE   CL085               ELSE SKIP FOR A DIVIDE                       
+         MP    WORK15,WORKB8                                                    
+         NC    WORK8,WORK8         CHECK NO OVERFLOW TO TOP 8 BYTES             
+         BZ    *+6                                                              
+         DC    H'0'                A X B GREATER THAN 8 BYTES                   
+         MVC   WORK8,WORK15+8      MOVE RESULT TO O/P FIELD                     
+         LTR   R1,R1               CHECK FOR SCALING FACTOR                     
+         BNZ   CL086               PERFORM SCLAING                              
+         B     CL090                                                            
+*                                                                               
+*                                         ** DIVISION **                        
+*                                  *10 TO SAVE SIGNIFICANT DIGITS               
+*                                  PERFORM DIVISION                             
+*                                  /10 FOR SCALING FACTOR AND                   
+*                                    PREVIOUS MULTIPLICATION                    
+*                                                                               
+CL085    SRP   WORK15,1,0          *10                                          
+         CP    WORKB8,=P'0'        CHECK WE HAVE A DIVISOR                      
+         BNE   CL085A                                                           
+         ZAP   WORK8,=P'0'         FORCE A ZERO RESULT                          
+         B     CL090                                                            
+CL085A   DP    WORK15,WORKB8       PERFORM DIVISION                             
+         LA    R1,1(R1)            EXTRA DIVISION FACTOR                        
+CL086    SRP   WORK8,64-1,5        DIVIDE BY MULTIPLES OF TEN                   
+         BCT   R1,*-6                                                           
+         EJECT                                                                  
+CL090    DS    0H                                                               
+         CLI   FMTOUT,C'P'         OUTPUT OPERAND PACKED                        
+         BNE   CL100               NO - TRY BINARY                              
+         ICM   R6,15,AOUT          GET OPERAND ADDRESS                          
+         ZIC   R2,LENOUT                                                        
+         BCTR  R2,0                GET EXECUTABLE LENGTH OF ZAP                 
+         SLL   R2,4                SHIFT TO AFFECT ZAP LEFT HAND SIDE           
+         EX    R2,*+8                                                           
+         B     *+10                                                             
+         ZAP   0(0,R6),WORK8       PUT OUR ANSWER IN CALLERS AREA               
+         B     CL110               GO TO RETURN                                 
+CL100    DS    0H                                                               
+         CLI   FMTOUT,C'B'         SHOULD BE BINARY                             
+         BNE   CLERR                                                            
+         MVC   MASKCHR,LENOUT                                                   
+         TR    MASKCHR,TRTAB       TRANSLATE LENGTH TO ICM MASK                 
+         ICM   R6,15,AOUT          GET OUTPUT ADDRESS                           
+         ZIC   R2,MASKCHR                                                       
+         CVB   R3,WORK8                                                         
+         EX    R2,*+8                                                           
+         B     *+8                                                              
+         STCM  R3,0,0(R6)          PUT ANSWER IN CALLER'S AREA                  
+CL110    DS    0H                                                               
+         LM    R1,R6,REGSAVE                                                    
+         BR    RE                                                               
+         SPACE 3                                                                
+CLERR    DS    0H                                                               
+         EJECT                                                                  
+**********************************************************************          
+*                                                                    *          
+*        ROUTINE TO SCAN CALC TABLE FOR BASE/QUALIFIER PAIR          *          
+*        R2 POINTS TO THE NEXT SLOT IN THE TABLE IF NOT FOUND.       *          
+*        RETURNS CC NON ZERO IF FOUND                                *          
+*                                                                    *          
+**********************************************************************          
+*                                                                               
+CTSCAN   DS    0H                                                               
+         L     R2,ACALCTAB                                                      
+CTS01    DS    0H                                                               
+         CLI   CTBASE,0            REACHED END OF TABLE                         
+         BE    CTSNO               YES - NOT FOUND - SET CC = ZERO              
+         CLC   BQPAIR,CTBASE       ALREADY IN TABLE                             
+         BNE   CTS02               NO  - TRY NEXT                               
+         CLI   CTTYP,MPVTYPV       IN VARIABLE PART OF DATA VECTOR              
+         BNE   CTSFOUND            NO - FOUND (IRRESPECTIVE OF SUFFIX)          
+         CLC   SUFFIX,CTSFX        CORRECT SUFFIX                               
+         BE    CTSFOUND            YES - FOUND - SET CC <> ZERO                 
+*                                                                               
+CTS02    DS    0H                                                               
+         LA    R2,CTLEN(R2)        BUMP TO NEXT CALC ENTRY                      
+         B     CTS01                                                            
+CTSFOUND DS    0H                                                               
+         LTR   RE,RE               FORCE CC NON ZERO                            
+         B     CTSEX                                                            
+CTSNO    DS    0H                                                               
+         CR    RE,RE               FORCE CC ZERO                                
+*                                                                               
+CTSEX    DS    0H                                                               
+         BR    RE                                                               
+         EJECT                                                                  
+XIT      DS    0H                                                               
+         XMOD1 1                                                                
+         SPACE 2                                                                
+*                                                                               
+MAXSUBR  DC    A(SUBREND-SUBRLIST)                                              
+         EJECT                                                                  
+         LTORG                                                                  
+         SPACE 3                                                                
+*THE FOLLOWING DSECTS ARE NOT PRINTED                                           
+*DDSPLWORKD,MPDITABD,MPPCMDD,MPEQUATES,MPVTABD,MPRXCTLD                         
+         PRINT OFF                                                              
+       ++INCLUDE DDSPLWORKD                                                     
+       ++INCLUDE MPDITABD                                                       
+       ++INCLUDE MPPCMDD                                                        
+       ++INCLUDE MPEQUATES                                                      
+       ++INCLUDE MPVTABD                                                        
+       ++INCLUDE MPRXCTLD                                                       
+         PRINT ON                                                               
+         SPACE 2                                                                
+CALCTABD DSECT                     CALC TABLE                                   
+CTBASE   DS    X                                                                
+CTQUAL   DS    X                                                                
+CTSFX    DS    XL2                                                              
+CTTYP    DS    X                                                                
+CTDATFMT DS    X                                                                
+CTDATLEN DS    X                                                                
+CTDATSCF DS    X                                                                
+CTFLAG   DS    X                                                                
+CTLEN    EQU   *-CALCTABD                                                       
+*                                                                               
+WORKD    DSECT                                                                  
+WORK8    DS    0D                                                               
+WORK15   DS    PL16                                                             
+WORKB8   DS    D                                                                
+ACCUM    DS    PL8                                                              
+TOTAL    DS    PL8                                                              
+REGSAVE  DS    7F                                                               
+SAVERE   DS    F                                                                
+CFRET    DS    F                                                                
+SDRET    DS    F                                                                
+CPCRET   DS    F                                                                
+VTSTART  DS    F                                                                
+PCSTART  DS    F                                                                
+TOTVEC   DS    F                                                                
+ARXCTL   DS    F                                                                
+ACALCTAB DS    F                   A(TABLE) THAT FLAGS IF CALC DONE             
+LCALCTAB DS    F                   L'TABLE  THAT FLAGS IF CALC DONE             
+LSTHIGHB DS    F                                                                
+LSTHIGHP DS    PL8                                                              
+LSTRANK  DS    F                                                                
+RANKNO   DS    F                                                                
+RNKSEQ   DS    AL4                                                              
+INSERTS  DS    F                                                                
+TOTCNT   DS    F                   TOTAL COUNT FOR FREQ PROG                    
+TOTIMP   DS    F                   TOTAL IMPS FOR FREQ PROG                     
+DATAFMT  DS    X                                                                
+BQPAIR   DS    XL2                                                              
+SUFFIX   DS    XL2                                                              
+INTRES   DS    XL10                                                             
+IMP00    DS    AL4                                                              
+MASKCHR  DS    X                                                                
+DONE     DS    X                                                                
+PARAMLST DS    0XL24                                                            
+AOP1     DS    AL4                                                              
+LEN1     DS    X                                                                
+FMT1     DS    X                                                                
+SCF1     DS    X                                                                
+OPERATOR DS    X                                                                
+AOP2     DS    AL4                                                              
+LEN2     DS    X                                                                
+FMT2     DS    X                                                                
+SCF2     DS    X                                                                
+         DS    X                                                                
+AOUT     DS    AL4                                                              
+LENOUT   DS    X                                                                
+FMTOUT   DS    X                                                                
+SCFOUT   DS    X                                                                
+         DS    X                                                                
+*                                  AND HOLDS LEN & FMT OF DATA                  
+WORKX    DS    0H                                                               
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'014MPFCALC   05/01/02'                                      
+         END                                                                    

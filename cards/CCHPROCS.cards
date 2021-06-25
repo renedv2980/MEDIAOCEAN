@@ -1,0 +1,198 @@
+/*                                                                              
+*CATALP CCHPROC                                                                 
+*/                                                                              
+                                                                                
+#include <standard.h>                                                           
+#include <stdio.h>                                                              
+#include <dds.h>                                                                
+#include <help.h>                                                               
+                                                                                
+#define movchr(src,des) memcpy(des,src,strlen(src))                             
+                                                                                
+extern struct dmblock *bptr;                                                    
+extern struct vald *val;                                                        
+extern struct helpkeyd *helpkey;                                                
+extern struct jcld *jcl;                                                        
+                                                                                
+extern char dataline(:100:);                                                    
+extern char pageheading(:100:);                                                 
+                                                                                
+extern int pagesprocessed;                                                      
+extern int datatype;                                                            
+                                                                                
+#define KEYFOUND       1                                                        
+#define COMMENTFOUND   2                                                        
+#define TEXTFOUND      3                                                        
+                                                                                
+processkey()                                                                    
+/*                                                                              
+  This routine processes all the text pertaining to a given key                 
+  definition. It processes page by page of the input file until a               
+  non-text card is encountered. It then deletes the remaining pages             
+  on GENFIL that match the given key definition. If the jcl write               
+  option is set to 'N', it will not update the file but will merely             
+  count the number of pages processed for the purpose of the report.            
+*/                                                                              
+{                                                                               
+    int pagesremain,textremains;                                                
+                                                                                
+    pagesprocessed = 0;                                                         
+    memset(bptr->key,0,bptr->keylen);                                           
+    memcpy(bptr->key,helpkey,pagedisp);                                         
+    readhi(bptr);                                                               
+    pagesremain = !memcmp(bptr->key,bptr->keysave,pagedisp);                    
+    readdata();                                                                 
+    textremains = datatype == TEXTFOUND;                                        
+                                                                                
+    /* add a record for each page in the input file */                          
+    while(textremains){                                                         
+        pagesprocessed++;                                                       
+        if(pagesremain)                                                         
+            getoldpage();                                                       
+        else                                                                    
+            makenewpage();                                                      
+        processpage();                                                          
+                                                                                
+        if(jcl->debug == 'Y'){                                                  
+            breakelems(bptr,0);                                                 
+            printf("\n");                                                       
+        }                                                                       
+                                                                                
+        if(jcl->write == 'Y')                                                   
+            addrec(bptr);                                                       
+        if(pagesremain){                                                        
+            readseq(bptr);                                                      
+            pagesremain = !memcmp(bptr->key,bptr->keysave,pagedisp);            
+        }                                                                       
+        textremains = datatype == TEXTFOUND;                                    
+    }                                                                           
+                                                                                
+    /* delete the remaining records */                                          
+    while(pagesremain){                                                         
+        if(jcl->write == 'Y')                                                   
+            delrec(bptr);                                                       
+        readseq(bptr);                                                          
+        pagesremain = !memcmp(bptr->key,bptr->keysave,pagedisp);                
+        }                                                                       
+}                                                                               
+                                                                                
+getoldpage()                                                                    
+/*                                                                              
+  This reads in the old record from the file and removes the old text           
+  and heading elements as well as updating the status and activity              
+  elements.                                                                     
+*/                                                                              
+{                                                                               
+    struct stateld *statel;                                                     
+    struct activeld *activel;                                                   
+    char *firstel();                                                            
+                                                                                
+    getrec(bptr);                                                               
+    remelem(bptr,textelq);                                                      
+    remelem(bptr,headelq);                                                      
+    statel = (struct stateld *)firstel(bptr,statelq);                           
+    statel->flags &= 0x7f;                                                      
+    activel = (struct activeld *)firstel(bptr,activelq);                        
+    binarydate(activel->datechanged);                                           
+    activel->numberchange = 1;                                                  
+}                                                                               
+                                                                                
+makenewpage()                                                                   
+/*                                                                              
+  This builds a new ioarea from scratch using helpkey and adds                  
+  status and activity elements for a new record.                                
+*/                                                                              
+{                                                                               
+    struct stateld *statel;                                                     
+    struct activeld *activel;                                                   
+                                                                                
+    helpkey->page = pagesprocessed;                                             
+    memset(bptr->ioarea,0,bptr->firsteldisp+1);                                 
+    memcpy(bptr->ioarea,helpkey,pagedisp+1);                                    
+    bptr->ioarea(:bptr->keylen+1:)= bptr->firsteldisp+1;                        
+/*  memset(bptr->key,0,bptr->keylen);                                           
+    memcpy(bptr->key,helpkey,pagedisp+1);                                       
+*/                                                                              
+    statel = calloc(sizeof(struct stateld),1);                                  
+    statel->elcode = statelq;                                                   
+    statel->ellen = statlenq;                                                   
+    addelem(bptr,statel);                                                       
+    free(statel);                                                               
+                                                                                
+    activel = calloc(sizeof(struct activeld),1);                                
+    activel->elcode = activelq;                                                 
+    activel->ellen = activlenq;                                                 
+    binarydate(activel->dateadded);                                             
+    binarydate(activel->datechanged);                                           
+    addelem(bptr,activel);                                                      
+    free(activel);                                                              
+}                                                                               
+                                                                                
+#define LASTLINE   16                                                           
+                                                                                
+processpage()                                                                   
+/*                                                                              
+   The record for this page is given a heading element and text                 
+   elements for each line of text in the input file until a condition           
+   of termination is reached.                                                   
+*/                                                                              
+{                                                                               
+    struct headeld *headel;                                                     
+    struct texteld *textel;                                                     
+    char *text,thisheading(:100:);                                              
+    int linenum,textlen,highintensity;                                          
+                                                                                
+    headel = calloc(sizeof(struct headeld),1);                                  
+    headel->elcode = headelq;                                                   
+    headel->ellen = headlenq;                                                   
+    headel->headlen = strlen(pageheading);                                      
+    movchr(pageheading,headel->heading);                                        
+    addelem(bptr,headel);                                                       
+    free(headel);                                                               
+                                                                                
+    /* This loop fills the ioarea with text elements for a                      
+       given page of text.                                                      
+       Three causes for termination of this loop are as follows:                
+       1) The limit on lines of text per page has been reached.                 
+       2) the <PA> card instructs the program to start a new page               
+       3) A non-text card has been found thus terminating processing            
+          of this key                                                           
+    */                                                                          
+    for(linenum = 1 ; linenum <= LASTLINE ; linenum++)                          
+        if(datatype != TEXTFOUND)                                               
+            break;                                                              
+        else if(memcmp(dataline,"<PA>",4) == 0 ºº                               
+                memcmp(dataline,"<pa>",4) == 0  ){                              
+            strcpy(thisheading,dataline+4);                                     
+            if(*thisheading != NULL)                                            
+                strcpy(pageheading,thisheading);                                
+            pageheading(:26:) = NULL;                                           
+            raise(pageheading);                                                 
+            readdata();                                                         
+            break;                                                              
+        }                                                                       
+        else{                                                                   
+            textel = calloc(sizeof(struct texteld),1);                          
+            textel->elcode = textelq;                                           
+            chexin("FFFF",textel->valbits,4);                                   
+            textel->seqnum = linenum;                                           
+            highintensity = dataline(:0:) == 'º';                               
+            if(highintensity){                                                  
+                textel->opbytes(:0:) = 0x80;                                    
+                text = dataline + 1;                                            
+                strcat(text,"|");                                               
+            }                                                                   
+            else                                                                
+                text = dataline;                                                
+            text(:75:) = NULL;                                                  
+            if(*text == NULL)                                                   
+                strcpy(text," ");                                               
+            textlen = strlen(text);                                             
+            textel->ellen = textlen + overlen;                                  
+            movchr(text,textel->text);                                          
+            addelem(bptr,textel);                                               
+            free(textel);                                                       
+                                                                                
+            readdata();                                                         
+        }                                                                       
+}                                                                               

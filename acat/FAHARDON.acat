@@ -1,0 +1,758 @@
+*          DATA SET FAHARDON   AT LEVEL 043 AS OF 01/25/11                      
+         TITLE 'FAHARDON - INTERFACE TO FAHARDCORE FOR PQ INDEX'                
+*CATALP HARDON                                                                  
+***********************************************************************         
+* THESE ROUTINES INTERFACE WITH A PROGRAM (SOURCE FAHARDCORE) WHICH   *         
+* RESIDES IN A DIFFERENT ADDRESS SPACE.                               *         
+* FAHARDCORE HOLDS ALL THE PQ INDEX BLOCKS IN ITS OWN CORE, WHERE     *         
+* THEY ARE: 1. INVISIBLE TO OTHER APPLICATIONS, AND                   *         
+*         : 2. OPERATIONS ON THEM ARE IMPLICITLY SERIALISED           *         
+*                                                                     *         
+* WHEN AN APPLICATION WANTS TO PERFORM ONE OF THE SUPPORTED ACTIONS   *         
+* ON AN INDEX RECORD, IT CALLS ONE OF THE ENTRY POINTS IN THIS MODULE *         
+* WITH THE CORRECT PARAMETER LIST.                                    *         
+* HARDON THEN TAKES CARE OF INTERFACING WITH THE PQ SERVER, WHICH IT  *         
+* DOES THROUGH A FIFO QUEUE IN THE TABS DATASPACE.                    *         
+*                                                                     *         
+* SUPPORTED ACTIONS:                                                  *         
+*                                                                     *         
+* HARDREAD     READ REQUESTED INDEX BLOCK                             *         
+* NTRY:   R1   A(DMGR PARAMETER LIST) DMCBW3(1) = EXTFILE             *         
+* EXIT:        DMCBW3 SET AS NORMAL OR X'FF' IF SERVER ABENDED        *         
+*                                                                     *         
+* HARDWRTE     WRITE SPECIFIED INDEX RECORD                           *         
+* NTRY:   R1   A(DMGR PARAMETER LIST) DMCBW3(1) = EXTFILE             *         
+* EXIT:        DMCBW3 SET AS NORMAL OR X'FF' IF SERVER ABENDED        *         
+*                                                                     *         
+* HARDINDX     GET NEXT FREE INDEX RECORD (TYPE 1 OR TYPE 2)          *         
+* NTRY:   R1   A(DMGR PARAMETER LIST) DMCBW3(1) = EXTFILE             *         
+*     :                               DMCBW4    = KEY TO INSERT       *         
+*     :                               DMCBW5    = CI TYPE             *         
+*     :   R2   A(CALLER PARAMETER LIST)                               *         
+* EXIT:        DMCBW3 SET AS NORMAL OR X'40' IF SERVER ABENDED        *         
+* IFOK:        DMCBW4 SET TO OLD KEY IN INDEX ENTRY USED              *         
+* IFOK:        DMCBW5 SET TO DISPLACEMENT TO ENTRY IN BLOCK           *         
+***********************************************************************         
+HARDON   CSECT                                                                  
+         ENTRY HARDFLAG                                                         
+         ENTRY HARDREAD                                                         
+         ENTRY HARDWRTE                                                         
+         ENTRY DMPQGCI                                                          
+         EJECT                                                                  
+***********************************************************************         
+* ROUTINE TO READ AN INDEX BUFFER FROM HARDCORE                       *         
+***********************************************************************         
+HARDREAD NMOD1 HARDWRKL,HARDREAD,CLEAR=YES                                      
+         USING HARDWRKD,RC                                                      
+         L     R7,HRCNST           CONSTANTS + USEFUL ROUTINES                  
+         USING HARDCNST,R7                                                      
+*                                                                               
+         ST    R1,CALLR1           SAVE INCOMING PARAMETERS                     
+         MVC   DMCBW,0(R1)                                                      
+         MVC   EXTFILE,DMCBW3                                                   
+*                                                                               
+         BRAS  RE,HARDINIT         INITIALISE - SET HARDFLAG HERE               
+         BE    HRD02               NO                                           
+         MVI   DMCBW3,X'FF'        FLAG TO USE DISK                             
+         MVC   0(L'DMCBW,R1),DMCBW                                              
+         J     EXITL                                                            
+*                                                                               
+HRCNST   DC    A(HARDCNST)                                                      
+*                                                                               
+HRD02    TIME  DEC                 GET ARRIVAL TIME - USED FOR LOGGING          
+         ST    R0,TIME                                                          
+*                                                                               
+         LAM   AR0,ARF,ARZERO                                                   
+         LAM   AR2,AR2,PQALET                                                   
+         L     R2,AMYNTRY                                                       
+         SAC   512                                                              
+         USING TPNTRYD,R2                                                       
+         MVI   TPNACT,TPNANDX      REQUEST A(INDEX)                             
+         ICM   RF,15,DMCBW3                                                     
+         BNZ   *+6                                                              
+         DC    H'0'                                                             
+*                                                                               
+         MVC   TPNDA,0(RF)         SET D/A                                      
+         MVC   TPNPQ,EXTFILE       SET PQ                                       
+         MVC   TPNARR,TIME         SET ARRIVAL TIME                             
+         XC    TPNNDX,TPNNDX       RESET THIS                                   
+         MVI   TPNFLAG,TPNFNEW     SET NEW WORK                                 
+         SAC   0                                                                
+         LAM   AR2,AR2,ARZERO                                                   
+*                                                                               
+         BRAS  RE,POSTPQ           POST PQ ADDRESS SPACE WITH NEW WORK          
+*                                                                               
+         LAM   AR0,ARF,ARZERO                                                   
+         LAM   AR2,AR2,PQALET                                                   
+         L     R2,AMYNTRY                                                       
+         SAC   512                                                              
+         CLI   TPNRTN,0            SHOULD BE NO PROBLEM                         
+         BE    HRD04                                                            
+*                                                                               
+         MVI   DMCBW3,X'40'        SET INVALID D/A                              
+         CLI   TPNRTN,TPNRABD      PQ ADDRESS SPACE SERVER ABENDED              
+         BNE   *+8                 NO                                           
+         MVI   DMCBW3,X'FF'        SET INTERNAL ERROR                           
+         B     HRDRDX                                                           
+*                                                                               
+HRD04    ICM   RE,15,TPNBADD       GET A(INDEX BLOCK)                           
+         LAM   ARE,ARE,PQALET                                                   
+         XR    RF,RF                                                            
+         ICM   RF,3,TPNBLEN        GET L'INDEX BLOCK                            
+         L     R0,DMCBW4                                                        
+         LR    R1,RF                                                            
+         MVCL  R0,RE               COPY INDEX BLOCK TO LOCAL BUFFER             
+*                                                                               
+         SAC   0                   CLEAR ARS                                    
+         LAM   AR0,ARF,ARZERO                                                   
+         MVI   DMCBW3,0            SET GOOD RETURN                              
+*                                                                               
+HRDRDX   BRAS  RE,PQRWX            CLEAN UP SLOT                                
+*                                                                               
+         L     R1,CALLR1           RESTORE CALLER REGISTERS                     
+         MVC   0(L'DMCBW,R1),DMCBW                                              
+         CLI   DMCBW3,0            AND SET CC FOR EXIT                          
+         J     EXIT                                                             
+         EJECT                                                                  
+***********************************************************************         
+* ROUTINE TO WRITE A SPECIFIED INDEX RECORD TO CORE                   *         
+***********************************************************************         
+HARDWRTE NMOD1 HARDWRKL,HARDWRTE,CLEAR=YES                                      
+         USING HARDWRKD,RC                                                      
+         L     R7,HWCNST                                                        
+         USING HARDCNST,R7                                                      
+*                                                                               
+         ST    R1,CALLR1                                                        
+         MVC   DMCBW,0(R1)                                                      
+         MVC   EXTFILE,DMCBW3                                                   
+*                                                                               
+         BRAS  RE,HARDINIT         INITIALISE                                   
+         BE    HWT02               OK                                           
+         MVI   DMCBW3,X'FF'        SET TO USE DISK                              
+         MVC   0(L'DMCBW,R1),DMCBW                                              
+         J     EXITL                                                            
+*                                                                               
+HWCNST   DC    A(HARDCNST)                                                      
+*                                                                               
+HWT02    TIME  DEC                                                              
+         ST    R0,TIME                                                          
+*                                                                               
+         LAM   AR0,ARF,ARZERO      FILL IN ENTRY                                
+         LAM   AR2,AR2,PQALET                                                   
+         L     R2,AMYNTRY                                                       
+         SAC   512                                                              
+         USING TPNTRYD,R2                                                       
+         MVI   TPNACT,TPNAPUT      REQUEST WRITE INDEX                          
+*                                                                               
+         ICM   RF,15,DMCBW3                                                     
+         BNZ   *+6                                                              
+         DC    H'0'                MAKE SURE A(D/A) SET                         
+*                                                                               
+         MVC   TPNDA,0(RF)         SET D/A                                      
+         MVC   TPNPQ,EXTFILE       SET PQ                                       
+         MVC   TPNARR,TIME         SET ARRIVAL TIME                             
+*                                                                               
+         L     RF,DMCBW4           W4=A(INDEX)                                  
+         XR    RE,RE                                                            
+         ICM   RE,3,DMCBW5+2                                                    
+         AR    RF,RE                                                            
+         MVC   TPNNDX,0(RF)        SET INDEX AS YOU WANT IT WRITING             
+         MVC   TPNRNUM,DMCBW5+2    SET DISP TO INDEX IN BLOCK                   
+         MVI   TPNFLAG,TPNFNEW     SET NEW WORK                                 
+         SAC   0                                                                
+         LAM   AR2,AR2,ARZERO                                                   
+*                                                                               
+         BRAS  RE,POSTPQ           POST PQ ADDRESS SPACE WITH NEW WORK          
+*                                                                               
+         LAM   AR0,ARF,ARZERO                                                   
+         LAM   AR2,AR2,PQALET                                                   
+         SAC   512                                                              
+         CLI   TPNRTN,0            SHOULD BE NO PROBLEM                         
+         BE    HWT04                                                            
+*                                                                               
+         MVI   DMCBW3,X'40'        SET INVALID D/A                              
+         CLI   TPNRTN,TPNRABD      PQ ADDRESS SPACE SERVER ABENDED              
+         BE    *+8                 YES                                          
+         MVI   DMCBW3,X'FF'        SET INTERNAL ERROR                           
+         J     HRDWTX                                                           
+*                                                                               
+HWT04    SAC   0                   CLEAR ARS                                    
+         LAM   AR2,AR2,ARZERO                                                   
+         MVI   DMCBW3,0            SET GOOD RETURN                              
+*                                                                               
+HRDWTX   BRAS  RE,PQRWX            CLEAN UP SLOT                                
+*                                                                               
+         L     R1,CALLR1           RESTORE CALLER REGISTERS                     
+         MVC   0(L'DMCBW,R1),DMCBW                                              
+         CLI   DMCBW3,0            AND SET CC FOR EXIT                          
+         J     EXIT                                                             
+         EJECT                                                                  
+***********************************************************************         
+* ROUTINE TO GET NEXT FREE INDEX RECORD                               *         
+***********************************************************************         
+DMPQGCI  NMOD1 HARDWRKL,HARDINDX,CLEAR=YES                                      
+         USING HARDWRKD,RC                                                      
+         L     R7,HNCNST                                                        
+         USING HARDCNST,R7                                                      
+*                                                                               
+         ST    R1,CALLR1                                                        
+         ST    R2,CALLR2                                                        
+         MVC   DMCBW,0(R1)                                                      
+         MVC   DMCBC,0(R2)                                                      
+         MVC   EXTFILE,DMCBW4                                                   
+*                                                                               
+         BRAS  RE,HARDINIT         INITIALISE                                   
+         BE    HND02               OK                                           
+         OI    DMCBC3,X'40'        SET TO USE DISK                              
+         MVC   0(L'DMCBC,R2),DMCBC                                              
+         J     EXITL                                                            
+*                                                                               
+HNCNST   DC    A(HARDCNST)                                                      
+*                                                                               
+HND02    TIME  DEC                                                              
+         ST    R0,TIME                                                          
+*                                                                               
+         LAM   AR0,ARF,ARZERO                                                   
+         LAM   AR2,AR2,PQALET                                                   
+         L     R2,AMYNTRY                                                       
+         SAC   512                                                              
+         USING TPNTRYD,R2                                                       
+*                                                                               
+         MVI   TPNACT,TPNANEW      GET NEW ENTRY INDEX                          
+         XC    TPNDA,TPNDA         SET D/A                                      
+         MVC   TPNPQ,EXTFILE       SET PQ                                       
+         MVC   TPNARR,TIME         SET ARRIVAL TIME                             
+*                                                                               
+         L     RF,DMCBC3           P3=A(KEY)                                    
+         MVC   TPNNKEY,0(RF)                                                    
+         L     RF,DMCBC5                                                        
+         CHI   RF,255                                                           
+         BNH   *+6                                                              
+         DC    H'0'                BAD VALUE                                    
+*                                                                               
+         STC   RF,FLAG                                                          
+         NI    FLAG,255-(TPNNTBIG+TPNNTP1+TPNNTP2)                              
+         BZ    HND04                                                            
+         DC    H'0'                INVALID CI TYPE REQUESTED                    
+*                                                                               
+HND04    STC   RF,TPNNTYPE                                                      
+         MVI   TPNFLAG,TPNFNEW     SET NEW WORK                                 
+         SAC   0                                                                
+         LAM   AR2,AR2,ARZERO                                                   
+*                                                                               
+         BRAS  RE,POSTPQ           POST PQ ADDRESS SPACE WITH NEW WORK          
+*                                                                               
+         LAM   AR0,ARF,ARZERO                                                   
+         LAM   AR2,AR2,PQALET                                                   
+         SAC   512                                                              
+         CLI   TPNRTN,0            SHOULD BE NO PROBLEM                         
+         BE    HND06                                                            
+*                                                                               
+         MVC   DMCBC3(1),TPNRTN                                                 
+         CLI   TPNRTN,TPNRABD      PQ ADDRESS SPACE SERVER ABENDED              
+         BNE   *+8                 YES                                          
+         MVI   DMCBC3,X'40'        SET INTERNAL ERROR                           
+         B     HND08                                                            
+*                                                                               
+HND06    MVI   DMCBC3,0                                                         
+         L     RF,DMCBC3           RETURN OLD KEY FROM THIS SLOT                
+         MVC   0(L'TPNNKEY,RF),TPNNKEY                                          
+         MVC   L'TPNNKEY(L'TPNDA,RF),TPNDA                                      
+         XR    RF,RF               SET DISP TO ENTRY IN BLOCK                   
+         ICM   RF,3,TPNNDSP                                                     
+         ST    RF,DMCBC5                                                        
+*                                                                               
+HND08    SAC   0                                                                
+         LAM   AR2,AR2,ARZERO                                                   
+*                                                                               
+HRDNDX   BRAS  RE,PQRWX            CLEAN UP SLOT                                
+*                                                                               
+         L     R1,CALLR1           RESTORE CALLER REGISTERS                     
+         MVC   0(L'DMCBW,R1),DMCBW                                              
+         L     R1,CALLR2                                                        
+         MVC   0(L'DMCBC,R1),DMCBC                                              
+         CLI   DMCBC3,0            AND SET CC FOR EXIT                          
+         J     EXIT                                                             
+         EJECT                                                                  
+***********************************************************************         
+* ROUTINE TO PERFORM INITIALISATION AND GET ENTRY IN DATASPACE QUEUE  *         
+***********************************************************************         
+HARDINIT NTR1  BASE=*,LABEL=*                                                   
+         L     R7,HICNST                                                        
+         USING HARDCNST,R7                                                      
+         CLI   HARDFLAG,C'N'       PREVIOUS FAILURE TO INITIALISE?              
+         JE    EXITL               YES - DISK FROM NOW ON                       
+*                                                                               
+         SAC   0                                                                
+         LAM   AR0,ARF,ARZERO                                                   
+         BRAS  RE,GETDTF                                                        
+*                                                                               
+         ICM   R2,15,ASSB          BUILD LOCK TOKEN FOR QUEUE ENTRY             
+         BNZ   *+6                                                              
+         DC    H'0'                MUST HAVE SSB                                
+         USING SSOOFF,R2                                                        
+         OC    SSOCNTL,SSOCNTL     OFFLINE?                                     
+         BNZ   HINI02              NO                                           
+*                                                                               
+         CLI   SSOXTND,X'FF'       EXTENDED SSB                                 
+         BE    *+6                 YES                                          
+         DC    H'0'                MUST HAVE EXTENDED SSB FOR ALET              
+         MVC   ALET,SSOTBLET                                                    
+         MVI   LOCKFAC,C'X'        FLAG JOB AS OFFLINE                          
+         MVI   LOCKTSK,C'X'                                                     
+         B     HINI04                                                           
+*                                                                               
+         USING SSBD,R2                                                          
+HINI02   MVC   ALET,SSBTBLET       ALET                                         
+         MVC   LOCKFAC,SSBSYSID    FACPAK                                       
+         MVI   LOCKTSK,C'!'        FLAG NOT IN TASK                             
+         ICM   RE,15,SSBTKADR      OR SET TASK NUMBER IF IN TASK                
+         BZ    *+10                                                             
+         MVC   LOCKTSK,TCBID+6-TCBD(RE)                                         
+         DROP  R2                                                               
+*                                                                               
+HINI04   L     R2,ADTF                                                          
+         BCTR  R2,0                SEE IF NEW OR OLD STYLE                      
+         CLI   0(R2),0             OLD STYLE?                                   
+         BE    HINI05              YES                                          
+         SHI   R2,63               NO, NEW STYLE IS 64 BIG                      
+         B     *+8                                                              
+HINI05   SHI   R2,39               OLD STYLE IS 40 BIG                          
+*                                                                               
+         USING CIDATA,R2                                                        
+         LA    R3,PQNAMES                                                       
+         USING PQNAMESD,R3                                                      
+HINI06   CLI   PQNNAME,EOT                                                      
+         JE    EXITL               PQ IMPROPERLY FLAGGED - USE DISK             
+         CLC   PQNID,CFPQXID                                                    
+         BE    *+12                                                             
+         AHI   R3,PQNAMESL                                                      
+         B     HINI06                                                           
+*                                                                               
+         CLI   TYPE,0              ALREADY TYPE SET UP?                         
+         BNE   HINI08              NO                                           
+         PROT  OFF                                                              
+         MVC   TYPE,PQNINDX        SET INFORMATION FOR THIS PQ SET              
+         MVC   TYPEC,PQNID                                                      
+         PROT  ON                                                               
+*                                                                               
+         CLI   HARDFLAG,C' '       INITIALISED AND BOUND TO PQ SERVER?          
+         BH    *+8                 YES - HOWDJADOTHAT                           
+         BRAS  RE,HARDBIND                                                      
+*                                                                               
+HINI08   CLC   TYPE,PQNINDX        SAME AS BEFORE?                              
+         BE    *+6                 YES - OK                                     
+         DC    H'0'                SOMETHING ISN'T RIGHT WITH THE STAMP         
+         DROP  R2,R3                                                            
+*                                                                               
+HINI10   CLI   HARDFLAG,C'Y'       BOUND OK?                                    
+         JNE   EXITL               NO - BACK TO DISK                            
+*                                                                               
+         MVC   LOCKASID,ASIDFLD+2  ASID HERE - LOCKWORD NOW BUILT               
+*                                                                               
+         LAM   AR2,AR2,PQALET                                                   
+         ICM   R2,15,APQMBR        GO TO START OF QUEUE                         
+         SAC   512                                                              
+         USING TPNTRYD,R2                                                       
+*                                                                               
+         LHI   R0,TPQQCNT                                                       
+         L     RF,LOCKWORD                                                      
+HINI12   ICM   RE,15,TPNLOCK       TRY TO FIND EMPTY (UNLOCKED) SLOT            
+         BNZ   HINI14                                                           
+         CS    RE,RF,TPNLOCK       AND GRAB IT WITH OUR LOCKWORD                
+         BE    HINI16                                                           
+*                                                                               
+HINI14   AHI   R2,TPNTRYLQ                                                      
+         BCT   R0,HINI12                                                        
+         DC    H'0'                QUEUE IS FULL - WAIT?                        
+*                                                                               
+HINI16   STCM  R2,15,AMYNTRY       SET A(THIS ENTRY)                            
+         XC    TPNNEXT,TPNNEXT                                                  
+         LA    RF,ECB                                                           
+         STCM  RF,15,TPNECB        SET A(POST ECB)                              
+         SAC   0                                                                
+         LAM   AR0,ARF,ARZERO                                                   
+         J     EXITOK                                                           
+*                                                                               
+HICNST   DC    A(HARDCNST)                                                      
+         EJECT                                                                  
+***********************************************************************         
+* INITIALISE PQ PARAMETERS AND W/S AREAS                              *         
+***********************************************************************         
+HARDBIND NTR1  ,                                                                
+         PROT  OFF                                                              
+         LAM   AR0,ARF,ARZERO                                                   
+         LAM   AR2,AR2,ALET        FILL IN PQ ADDRESSES                         
+         XR    R2,R2                                                            
+         SAC   512                                                              
+         ICM   R2,15,TABSPQNX-FATABSD(R2)                                       
+         AHI   R2,TPQLID                                                        
+*                                                                               
+         XR    RF,RF                                                            
+         ICM   RF,1,TYPE                                                        
+         BNZ   *+6                                                              
+         DC    H'0'                                                             
+*                                                                               
+         BCTR  RF,0                                                             
+         MHI   RF,TPQLENQ          INDEX INTO ENTRY FOR THIS FACPAK             
+         AR    R2,RF                                                            
+         ST    R2,APQ              SET A(PQ PROCESSOR ENTRY SLOT)               
+         USING TPQD,R2                                                          
+         MVC   STOKEN,TPQSTKN      SET STOKEN FOR PQ SERVER                     
+         ICM   RF,15,TPQAQHD                                                    
+         ST    RF,APQHEAD          SET A(PQ QUEUE HEAD)                         
+         AHI   RF,TPQHDLQ                                                       
+         STCM  RF,15,APQMBR        SET A(FIRST PQ MEMEBER)                      
+         SAC   0                                                                
+         LAM   AR2,AR2,ARZERO                                                   
+*                                                                               
+         OC    STOKEN,STOKEN       IS THE PQ SERVER THERE?                      
+         BNZ   *+12                NO                                           
+         MVI   HARDFLAG,C'N'       PQ ADDRESS SPACE CANNOT BE FOUND             
+         B     HARDBINX                                                         
+*                                                                               
+         EXTRACT ASIDFLD,'S',FIELDS=(ASID)                                      
+*                                                                               
+         XC    CARD,CARD           SVC 247 NEEDS CHANGING                       
+         MVC   CARD+00(04),=C'PALE'                                             
+         MVC   CARD+04(12),=C'TESTDATAMGRT'                                     
+         MVC   CARD+28(08),STOKEN                                               
+         LA    R0,21                                                            
+         LNR   R0,R0                                                            
+         LA    R1,CARD                                                          
+         SVC   247                                                              
+         LTR   RF,RF                                                            
+         BZ    *+12                                                             
+         MVI   HARDFLAG,C'N'       PQ ADDRESS SPACE CANNOT BE FOUND             
+         B     HARDBINX                                                         
+*                                                                               
+         MVC   PQALET,CARD+24                                                   
+         MVI   HARDFLAG,C'Y'       FLAG PQ DSPACE SET UP OK                     
+*                                                                               
+HARDBINX DS    0H                                                               
+         PROT  ON                                                               
+         J     EXIT                                                             
+         EJECT                                                                  
+***********************************************************************         
+* ROUTINE TO GET DTF FOR A PRINT QUEUE                                *         
+* NTRY: EXTFILE   = A(EXTERNAL FILE NUMBER)                           *         
+* EXIT: ADTF      = A(DTF)                                            *         
+***********************************************************************         
+GETDTF   NTR1  ,                                                                
+         XC    ADTF,ADTF                                                        
+         ICM   R2,15,=V(SYSFLES)                                                
+         BNZ   *+6                                                              
+         DC    H'0'                NEED SYSFLES                                 
+         CLI   0(R2),1                                                          
+         BE    *+6                                                              
+         DC    H'0'                SERVICE SYSTEM MUST BE FIRST                 
+*                                                                               
+         XR    R0,R0                                                            
+         IC    R0,3(R2)            R0 = NUMBER OF FILES                         
+         LA    R2,4(R2)            R2 = A(FIRST FILE INFO)                      
+*                                                                               
+GDTF02   CLC   EXTFILE,3(R2)       MATCH FILE NUMBER                            
+         BE    GDTF04                                                           
+         AHI   R2,8                                                             
+         BCT   R0,GDTF02                                                        
+         DC    H'0'                UNKNOWN FILE                                 
+*                                                                               
+GDTF04   MVC   ADTF+1(3),5(R2)     SAVE DTF ADDRESS                             
+         TM    0(R2),X'10'         MAKE SURE IT IS A PQ FILE                    
+         BO    EXITOK                                                           
+         DC    H'0'                                                             
+         EJECT                                                                  
+***********************************************************************         
+* PQ TYPE FLAG TABLE                                                  *         
+***********************************************************************         
+*FAHARDPQ                                                                       
+*        PRINT  OFF                                                             
+       ++INCLUDE FAHARDPQ                                                       
+*                                                                               
+HARDON   CSECT                                                                  
+         EJECT                                                                  
+***********************************************************************         
+* EXIT POINT FROM PQREAD ROUTINE - CLEARS OUT ENTRY                   *         
+***********************************************************************         
+PQRWX    NTR1  BASE=*,LABEL=*                                                   
+         L     R7,HPQCNST                                                       
+         USING HARDCNST,R7                                                      
+*                                                                               
+         LAM   AR0,ARF,ARZERO                                                   
+         L     R2,APQHEAD                                                       
+         LAM   AR2,AR2,PQALET                                                   
+         SAC   512                                                              
+         USING TPQHD,R2                                                         
+*                                                                               
+PQRWX02  ICM   RE,15,TPQHRDY       RESET JOB READY COUNT                        
+         BZ    PQRWX04                                                          
+         LR    RF,RE                                                            
+         BCTR  RF,0                                                             
+         CS    RE,RF,TPQHRDY                                                    
+         BNE   PQRWX02                                                          
+         DROP  R2                                                               
+*                                                                               
+PQRWX04  ICM   R2,15,AMYNTRY       CLEAR SLOT                                   
+         BZ    PQRWX06                                                          
+         XC    0(TPNTRYLQ,R2),0(R2)                                             
+*                                                                               
+PQRWX06  SAC   0                   RESET AR MODE AND CLEAR REGS USED            
+         LAM   AR2,AR2,ARZERO                                                   
+         J     EXIT                                                             
+*                                                                               
+HPQCNST  DC    A(HARDCNST)                                                      
+         EJECT                                                                  
+***********************************************************************         
+* POST PQ ADDRESS SPACE AND WAIT FOR COMPLETION                       *         
+* NTRY: APQ MUST BE CORRECTLY SET                                     *         
+* EXIT: AR MODE IS OFF                                                *         
+***********************************************************************         
+POSTPQ   NTR1  BASE=*,LABEL=*                                                   
+         L     R7,HPPCNST                                                       
+         USING HARDCNST,R7                                                      
+*                                                                               
+         LAM   AR0,ARF,ARZERO                                                   
+         LAM   AR2,AR2,PQALET                                                   
+         L     R2,APQHEAD                                                       
+         SAC   512                                                              
+         USING TPQHD,R2                                                         
+*                                                                               
+         LA    R0,CS               R0 = COMPARE AND SWAP                        
+         CPYA  AR1,AR2                                                          
+         LA    R1,TPQHLCK          R1 = LOCKWORD                                
+         CPYA  AR3,AR2                                                          
+         CPYA  AR4,AR2                                                          
+         USING TPNTRYD,R4                                                       
+         L     R5,AMYNTRY                                                       
+*                                                                               
+PQPS02   LA    R3,TPQFINQ                                                       
+         ICM   R4,15,0(R3)         A(FIRST IN INPUT QUEUE)                      
+         BZ    PQPS04              QUEUE NOT EMPTY                              
+*                                                                               
+         LA    R3,TPNNEXT                                                       
+         ICM   R4,15,0(R3)         A(NEXT ENTRY IN LIST OR 0 FOR EOL)           
+         BNZ   *-8                                                              
+*                                                                               
+PQPS04   LAM   AR4,AR4,ARZERO                                                   
+         PLO   R4,0(R3),0,0(R0)    MOVE ME INTO QUEUE AT CORRECT POINT          
+         BNE   PQPS02                                                           
+         DROP  R4                                                               
+*                                                                               
+         LAM   AR0,ARF,ARZERO                                                   
+         LAM   AR2,AR2,ALET                                                     
+         ICM   R2,15,APQ                                                        
+         USING TPQD,R2                                                          
+         ICM   R3,15,TPQPOST       GET A(WAKEUP ECB) IN R3                      
+         XR    R4,R4                                                            
+         ICM   R4,3,TPQASID        GET ASCB FOR THE FACPAK                      
+         SAC   0                                                                
+         LAM   AR2,AR2,ALET                                                     
+*                                                                               
+         LOCASCB ASID=(R4)                                                      
+         LTR   RF,RF               ASCB RETURNED IN R1 OK?                      
+         BZ    *+12                NO                                           
+         BRAS  RE,PQDWN                                                         
+         B     PQPS12                                                           
+*                                                                               
+         LR    R4,R1               SET ASCB IN R4                               
+         POST (R3),99,ASCB=(R4),LINKAGE=SYSTEM,ECBKEY=8,MF=(E,POSTLF)           
+         LTR   RF,RF                                                            
+         BZ    *+12                                                             
+         BRAS  RE,PQDWN                                                         
+         B     PQPS12                                                           
+*                                                                               
+         XC    ECB,ECB                                                          
+         LA    R1,ECB                                                           
+         ICM   RF,15,=V(ADWAIT)                                                 
+         BZ    *+6                                                              
+         BASR  RE,RF               DON'T THINK ABOUT MISSING THIS OUT           
+*                                  DDSIO WON'T LET YOU                          
+         WAIT  ECB=(1)                                                          
+*                                                                               
+PQPS12   NI    ECB,255-X'40'       TURN OFF ECB POST FLAG                       
+         J     EXIT                                                             
+*                                                                               
+POSTLF   POST  ECBKEY=YES,MF=L                                                  
+HPPCNST  DC    A(HARDCNST)                                                      
+         EJECT                                                                  
+***********************************************************************         
+* POST ERROR HANDLING ROUTINE - ASSUME PQ JOB HAS ABENDED             *         
+***********************************************************************         
+PQDWN    NTR1  BASE=*,LABEL=*      GUESS NEED TO CLEAR ENTRY?                   
+         L     R7,HPCNST                                                        
+         USING HARDCNST,R7                                                      
+*                                                                               
+         PROT  OFF                                                              
+         MVI   HARDFLAG,C'N'       FLAG UNAVAILABLE                             
+         PROT  ON                                                               
+*                                                                               
+         LAM   AR0,ARF,ARZERO                                                   
+         LAM   AR2,AR2,PQALET                                                   
+         L     R2,APQHEAD                                                       
+         SAC   512                                                              
+         USING TPQHD,R2                                                         
+         CPYA  AR3,AR2                                                          
+         ICM   R3,15,TPQFINQ       A(FIRST IN INPUT QUEUE)                      
+         BZ    PQD10               QUEUE IS EMPTY                               
+         USING TPNTRYD,R3                                                       
+*                                                                               
+PQD02    CLC   TPNLOCK,FIXED       ALREADY POSTED THIS ENTRY?                   
+         BE    PQD04               YES - NEXT ENTRY                             
+         MVI   TPNRTN,TPNRABD      SET SERVER ABENDED                           
+*                                                                               
+         ICM   R5,15,TPNECB        GET A(WAKEUP ECB) IN R3                      
+         XR    R4,R4                                                            
+         ICM   R4,3,TPNASID        GET ASCB FOR THE ADDRESS SPACE               
+*                                                                               
+         SAC   0                                                                
+         LAM   AR0,ARF,ARZERO                                                   
+*                                                                               
+         LOCASCB ASID=(R4)                                                      
+         LTR   RF,RF               ASCB RETURNED IN R1 OK?                      
+         BZ    PQD04               NO - ASSUME ADDRESS SPACE ABENDED            
+*                                                                               
+         LR    R4,R1               SET ASCB IN R4                               
+         POST (R5),99,ASCB=(R4),LINKAGE=SYSTEM,ECBKEY=8,MF=(E,POSTPD)           
+*                                                                               
+PQD04    LAM   AR0,ARF,ARZERO      RESET IN CASE USED BY POST/LOCASCB           
+         LAM   AR2,AR2,PQALET                                                   
+         CPYA  AR3,AR2                                                          
+         SAC   512                                                              
+         MVC   TPNLOCK,FIXED       SET ENTRY FIXED                              
+         ICM   R3,15,TPNNEXT                                                    
+         BNZ   PQD02                                                            
+*                                                                               
+PQD10    SAC   0                                                                
+         LAM   AR0,ARF,ARZERO      RESET                                        
+         J     EXIT                                                             
+*                                                                               
+POSTPD   POST  ECBKEY=YES,MF=L                                                  
+*                                                                               
+HPCNST   DC    A(HARDCNST)                                                      
+         DROP  R2,R3                                                            
+         EJECT                                                                  
+***********************************************************************         
+* CONSTANTS USED BY HARDON ROUTINES                                   *         
+***********************************************************************         
+HARDCNST DS    0L                                                               
+         DC    CL8'ASIDASID'                                                    
+ASIDFLD  DC    XL8'00'                                                          
+         DC    CL8'PQSTOKEN'                                                    
+STOKEN   DC    XL8'00'                                                          
+         DC    CL8'PQALET**'                                                    
+PQALET   DC    A(0)                                                             
+         DC    A(0)                                                             
+         DC    CL8'*APQ****'                                                    
+APQ      DC    A(0)                A(PQ PROCESSOR ADDRESS SPACE)                
+         DC    A(0)                                                             
+         DC    CL8'*APQHEAD'                                                    
+APQHEAD  DC    A(0)                A(HEAD OF QUEUE)                             
+         DC    A(0)                                                             
+         DC    CL8'*APQMBR*'                                                    
+APQMBR   DC    A(0)                A(FIRST QUEUE MEMBER)                        
+         DC    A(0)                                                             
+         DC    CL8'HARDFLAG'                                                    
+HARDFLAG DC    C' '                INITIALISATION FLAG                          
+         DC    XL7'00'                                                          
+         DC    CL8'*PQTYPE*'                                                    
+TYPE     DC    X'00'               PQ TYPE                                      
+TYPEC    DC    X'00'               PQ TYPE                                      
+         DC    XL6'00'                                                          
+*                                                                               
+ARZERO   DC    16F'0'                                                           
+ASSB     DC    V(SSB)                                                           
+FIXED    DC    CL4'FIXD'                                                        
+         EJECT                                                                  
+***********************************************************************         
+* EXIT POINTS                                                         *         
+***********************************************************************         
+EXITOK   CR    RB,RB                                                            
+         J     EXIT                                                             
+*                                                                               
+EXITL    CLI   *,FF                                                             
+         J     EXIT                                                             
+*                                                                               
+EXIT     XIT1  ,                                                                
+         EJECT                                                                  
+***********************************************************************         
+* LITERALS                                                            *         
+***********************************************************************         
+         LTORG                                                                  
+         EJECT                                                                  
+***********************************************************************         
+* WORKING STORAGE DSECT                                               *         
+***********************************************************************         
+HARDWRKD DSECT                                                                  
+CALLR1   DS    A                                                                
+CALLR2   DS    A                                                                
+*                                                                               
+DMCBW    DS    0XL24                                                            
+DMCBW1   DS    A                                                                
+DMCBW2   DS    A                                                                
+DMCBW3   DS    A                                                                
+DMCBW4   DS    A                                                                
+DMCBW5   DS    A                                                                
+DMCBW6   DS    A                                                                
+*                                                                               
+DMCBC    DS    0XL24                                                            
+DMCBC1   DS    A                                                                
+DMCBC2   DS    A                                                                
+DMCBC3   DS    A                                                                
+DMCBC4   DS    A                                                                
+DMCBC5   DS    A                                                                
+DMCBC6   DS    A                                                                
+*                                                                               
+ALET     DS    A                                                                
+PQWHY    DS    A                                                                
+LOCKWORD DS    0F                  UNIQUE (?) LOCKWORD FOR THIS ENTRY           
+LOCKFAC  DS    X                                                                
+LOCKTSK  DS    X                                                                
+LOCKASID DS    XL2                                                              
+*                                                                               
+AMYNTRY  DS    A                   A(THIS ENTRY IN QUEUE)                       
+ADTF     DS    A                   A(DTF FOR PQ)                                
+ECB      DS    F                   POST ECB                                     
+TIME     DS    A                                                                
+EXTFILE  DS    X                                                                
+FLAG     DS    X                                                                
+CARD     DS    XL48                                                             
+HARDWRKL EQU   *-HARDWRKD                                                       
+         EJECT                                                                  
+***********************************************************************         
+* OTHER INCLUDED DSECTS                                               *         
+***********************************************************************         
+*FADSECTS                                                                       
+         PRINT  OFF                                                             
+       ++INCLUDE FADSECTS                                                       
+         PRINT  ON                                                              
+*DMDSYSHDR                                                                      
+         PRINT  OFF                                                             
+       ++INCLUDE DMDSYSHDR                                                      
+         PRINT  ON                                                              
+*DMDSHDR                                                                        
+         PRINT  OFF                                                             
+       ++INCLUDE DMDSHDR                                                        
+         PRINT  ON                                                              
+*DMSPACED                                                                       
+         PRINT  OFF                                                             
+       ++INCLUDE DMSPACED                                                       
+         PRINT  ON                                                              
+*DMPRTQW                                                                        
+         PRINT  OFF                                                             
+       ++INCLUDE DMPRTQW                                                        
+         PRINT  ON                                                              
+*FAPLO                                                                          
+         PRINT  OFF                                                             
+       ++INCLUDE FAPLO                                                          
+         PRINT  ON                                                              
+*FATABSPQ                                                                       
+         PRINT  OFF                                                             
+       ++INCLUDE FATABSPQ                                                       
+         PRINT  ON                                                              
+*FATABSD                                                                        
+         PRINT  OFF                                                             
+       ++INCLUDE FATABSD                                                        
+         PRINT  ON                                                              
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'043FAHARDON  01/25/11'                                      
+         END                                                                    

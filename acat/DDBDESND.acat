@@ -1,0 +1,1044 @@
+*          DATA SET DDBDESND   AT LEVEL 161 AS OF 04/24/14                      
+*CATALP BDESND                                                                  
+         TITLE 'BUILD A XML BDE_REQUEST AND SEND IT VIA MQ'                     
+***********************************************************************         
+* THIS PROVIDES AN INTERFACE TO MAKE A REQUEST TO BDE SENDER SERVICES.*         
+*                                                                     *         
+* IT BUFFERS A MESSAGE AS A SERIES OF RECORDS THEN ADDS IT TO THE     *         
+* MASTER MQ QUEUE FOR TRANSMISSION THROUGH OUR BROKER                 *         
+*                                                                     *         
+* BROKER QUEUE/QMGR IS BASED ON THE DSAPCE IN US                      *         
+* DEFAULT  IS DDS.BROKER.LOCALQ      IN MQ1P                          *         
+* DSPACE=T IS DDS.BROKER.TEST.LOCALQ IN MQ7T                          *         
+* DSPACE=Q IS DDS.BROKER.FQA.LOCALQ  IN MQ7Q                          *         
+* DSPACE=C IS DDS.BROKER.CSC.LOCALQ  IN MQ7C                          *         
+*                                                                     *         
+* YOU CAN OVERRIDE QMGR/QUEUE IN THE CONTROL BLOCK IN "OPEN" CALL     *         
+*                                                                     *         
+* THIS PROGRAM SHOULD BE CALLED IN THE FOLLOWING SEQUENCE:            *         
+* 1) OPEN                                                             *         
+* 2) PUT   (CAN BE DONE MULTIPLE TIMES)                               *         
+* 3) CLOSE                                                            *         
+*                                                                     *         
+* THERE ARE A NUMBER OF PROCESSING OPTIONS FOR THE INDIVIDUAL PUTS    *         
+* WHICH CAN BE SET BY CONTROL BLOCK PASSED ON THE OPEN CALL.          *         
+*                                                                     *         
+***********************************************************************         
+         EJECT                                                                  
+***********************************************************************         
+* PARAMETER LISTS                                                     *         
+*                                                                     *         
+* OPEN: ALLOCATES & CLEARS A BUFFER, BUILDS HEADER IN IT              *         
+*                                                                     *         
+* NTRY:  P1                A(C'OPEN')                                 *         
+*        P2                A(BDE CONTROL BLOCK)                       *         
+*        P3                LENGTH OF BDE CONTROL BLOCK                *         
+*        P4                0                                          *         
+*        P5                0                                          *         
+*        P6                0                                          *         
+*                                                                     *         
+* EXIT:  P1      NO CHANGE                                            *         
+*        P2      NO CHANGE                                            *         
+*        P3      NO CHANGE                                            *         
+*        P4 B0   X'80' - ERROR OCCURRED - SEE P6                      *         
+*        P5      L'BUFFER AVAILABLE                                   *         
+*        P6      A(ERROR STRING => XL4(ERROR #),CL24(TEXT))           *         
+*                                                                     *         
+* PUT :  PUT MESSAGE INTO THE BUFFER                                  *         
+*                                                                     *         
+* NTRY:  P1                A(C'PUT')                                  *         
+*        P2                A(MESSAGE)                                 *         
+*        P3                L'MESSAGE                                  *         
+*        P4                0                                          *         
+*        P5                0                                          *         
+*        P6                0                                          *         
+*                                                                     *         
+* EXIT:  P1      NO CHANGE                                            *         
+*        P2      NO CHANGE                                            *         
+*        P3      NO CHANGE                                            *         
+*        P4 B0   X'80' - ERROR OCCURRED - SEE P6                      *         
+*                X'40' - NOT ENOUGH ROOM TO PUT MESSAGE INTO BUFFER   *         
+*        P5      L'BUFFER STILL AVAILABLE                             *         
+*        P6      A(ERROR STRING => XL4(ERROR #),CL24(TEXT))           *         
+*                                                                     *         
+* CLOSE - PUT BUFFER CONTENTS INTO MQ QUEUE AND CLEAN UP              *         
+*                                                                     *         
+* NTRY:  P1                A(C'CLOSE')                                *         
+*        P2                0                                          *         
+*        P3                0                                          *         
+*        P4                0                                          *         
+*        P5                0                                          *         
+*        P6                0                                          *         
+*                                                                     *         
+* EXIT:  P1      NO CHANGE                                            *         
+*        P2      NO CHANGE                                            *         
+*        P3      NO CHANGE                                            *         
+*        P4 B0   X'80' - ERROR OCCURRED - SEE P6                      *         
+*        P5      NO CHANGE                                            *         
+*        P6      A(ERROR STRING => XL4(ERROR #),CL24(TEXT))           *         
+*                                                                     *         
+* EXTRA INFORMATION IS IN FORM XL4(ERROR NUMBER),CL24(DESCRIPTION)    *         
+* SEE: ERROR_TABLE & MQ_REASON_CODE_TABLE FOR ERROR EXPLANATIONS      *         
+***********************************************************************         
+         PRINT NOGEN                                                            
+BDESND   CSECT                                                                  
+         NMOD1 WORKL,BDESND,CLEAR=YES                                           
+         USING WORKD,RC            WORK AREA FROM D-CHAIN                       
+         LAY   R8,COMMON           LOCAL STORAGE AREA                           
+         LR    R9,R8                                                            
+         AHI   R9,4096                                                          
+         LR    RA,R9                                                            
+         AHI   RA,4096                                                          
+         USING COMMON,R8,R9,RA                                                  
+*                                                                               
+         ST    R1,APARMS           SAVE A(PARMS)                                
+         MVC   PARMS,0(R1)         SAVE INPUT PARMS                             
+*                                                                               
+         L     RE,P1               COMMAND                                      
+         CLC   =C'OPEN',0(RE)                                                   
+         JE    OPEN                                                             
+         CLC   =C'PUT',0(RE)                                                    
+         JE    PUT                                                              
+         CLC   =C'CLOSE',0(RE)                                                  
+         JE    CLOSE                                                            
+         MVI   ERROR,ERUKCMDQ      UNKNOWN COMMAND                              
+         J     EXTERR                                                           
+*                                                                               
+OPEN     BRAS  RE,SETOPTS          SAVE OPTIONS FROM BDE CONTROL BLK            
+         JNE   EXTERR                                                           
+         BRAS  RE,GETBUFF          GET BUFFER AND CLEAR IT                      
+         JNE   EXTERR                                                           
+         BRAS  RE,BLDDATA          BUILD THE DATA INTO THE BUFFER               
+         J     EXTOK                                                            
+*                                                                               
+PUT      BRAS  RE,PUTBUFF          WRITE A LINE INTO THE BUFFER                 
+         JNE   EXTERR                                                           
+         J     EXTOK                                                            
+*                                                                               
+CLOSE    DS    0H                                                               
+         BRAS  RE,CLOBUFF          ADD CLOSING XML TAB                          
+         BRAS  RE,MQSETUP          SETUP SOME PARMS FOR MQ CALLS                
+         JNE   EXTERR                                                           
+*                                                                               
+         LAY   R3,BSNDBLK                                                       
+         USING BDESNDD,R3                                                       
+         OC    BSNAHCON,BSNAHCON   HCONN PASSED, NO CONNECT NEEDED              
+         JNZ   CONNX                                                            
+         LA    R2,CSQBCONN_STRUCTURE                                            
+         BRAS  RE,CALLMQ           CONNECT TO MQ QUEUE MANAGER                  
+         JNE   EXTERR                                                           
+CONNX    DS    0H                                                               
+*                                                                               
+         OC    BSNAHCON,BSNAHCON   HCONN PASSED, NO CONNECT NEEDED              
+         JZ    MQPUT1                                                           
+         ICM   RE,15,BSNAHCON                                                   
+         MVC   HCONN,0(RE)                                                      
+MQPUT1   LA    R2,CSQBPUT1_STRUCTURE                                            
+         BRAS  RE,CALLMQ           PUT THE MESSAGE TO THE MQ QUEUE              
+         JNE   EXTERR                                                           
+*                                                                               
+         OC    BSNAHCON,BSNAHCON   HCONN PASSED, NO DISCONNECT                  
+         JNZ   DISCX                                                            
+         LA    R2,CSQBDISC_STRUCTURE                                            
+         BRAS  RE,CALLMQ           DISCONNECT FROM MQ QUEUE MANAGER             
+         JNE   EXTERR                                                           
+DISCX    DS    0H                                                               
+         DROP  R3                                                               
+*                                                                               
+         BRAS  RE,FREEBUF          FREE THE BUFFER                              
+         J     EXTOK               AND YOU ARE DONE                             
+*                                                                               
+         EJECT                                                                  
+***********************************************************************         
+* SETOPTS - SAVE OPTIONS FROM BDE CONTROL BLK                         *         
+* NTRY: P2     = A(BDE CONTROL BLOCK)                                 *         
+*       P3     = L'BDE CONTROL BLOCK                                  *         
+***********************************************************************         
+SETOPTS  NTR1  BASE=*,LABEL=*                                                   
+*                                                                               
+         LAY   R0,BSNDBLK          CLEAR LOCAL BDE CONTROL BLK                  
+         LHI   R1,BSNDDQ                                                        
+         SR    RE,RE                                                            
+         SR    RF,RF                                                            
+         MVCL  R0,RE                                                            
+*                                  COPY FROM INPUT PARM                         
+         LAY   R0,BSNDBLK                                                       
+         LHI   R1,BSNDDQ                                                        
+         L     RE,P2                                                            
+         L     RF,P3                                                            
+         MVI   ERROR,ERBCBLQ       LEN OF BDE CONTROL BLK TOO LONG              
+         CR    R1,RF                                                            
+         JL    EXITL                                                            
+         LR    R1,RF                                                            
+         MVCL  R0,RE                                                            
+*                                  CHECK THE VALUES                             
+         LAY   R3,BSNDBLK                                                       
+         USING BDESNDD,R3                                                       
+         MVI   ERROR,ERMBCNQ       MISSING BDE COMMON NAME                      
+         CLI   BSNCNM,C' '                                                      
+         JNH   EXITL                                                            
+*                                                                               
+         MVI   ERROR,ERMSUBQ       MISSING SUBJECT                              
+         CLI   BSNSUB,C' '                                                      
+         JNH   EXITL                                                            
+*                                                                               
+         MVI   ERROR,ERMFLNQ       MISSING RECIPIENT'S FILE NAME                
+         CLI   BSNFIL,C' '                                                      
+         JNH   EXITL                                                            
+*                                                                               
+         J     EXITOK                                                           
+         DROP  R3                                                               
+         EJECT                                                                  
+***********************************************************************         
+* GETBUFF - GET MQ BUFFER AND CLEAR IT                                *         
+***********************************************************************         
+GETBUFF  NTR1  BASE=*,LABEL=*                                                   
+*                                                                               
+         L     R3,MQBUFFL          MAX MESSAGE SIZE                             
+         SAM31                                                                  
+         STORAGE OBTAIN,LENGTH=(3),LOC=ANY,BNDRY=PAGE,COND=YES                  
+         SAM24                                                                  
+         LTR   RF,RF                                                            
+         JZ    GETBUFF2                                                         
+         MVI   ERROR,ERGBUFQ       UNSUCCESSFUL STORAGE OBTAIN                  
+         ST    RF,ERRRTC           SAVE OF RETURN CODE                          
+         ST    R0,ERRRSN           SAVE OF RETURN REASON                        
+         J     EXITL                                                            
+*                                                                               
+GETBUFF2 ST    R1,AMQBUFF          A(MQ BUFFER)                                 
+         ST    R1,AMQBNAA          A(NEXT AVALIABLE AREA)                       
+         A     R1,MQBUFFL                                                       
+         ST    R1,AEOMBUFF         A(END OF MQ MAIL BUFFER)                     
+*                                                                               
+         SAM31                                                                  
+         L     R0,AMQBUFF          CLEAR BUFFER                                 
+         L     R1,MQBUFFL                                                       
+         SR    RE,RE                                                            
+         SR    RF,RF                                                            
+         MVCL  R0,RE                                                            
+         SAM24                                                                  
+         J     EXITOK                                                           
+         EJECT                                                                  
+***********************************************************************         
+* BLDHDR  - BUILD THE HEADER MESSAGE IN THE MQ BUFFER                 *         
+***********************************************************************         
+BLDDATA  NTR1  BASE=*,LABEL=*                                                   
+         LAY   R3,BSNDBLK                                                       
+         USING BDESNDD,R3                                                       
+*                                                                               
+         MVC   XMLFIL01,BSNFIL     REQ, RECIPIENT'S FILE NAME                   
+         MVC   XMLSUB01,BSNSUB     REQ, SUBJECT                                 
+*                                                                               
+         MVC   XMLTYP01(28),=CL28'FILECONTENT</bdeMessageType>'                 
+         CLI   BSNBIN,C'Y'         SEND DATA IN BINARY AS A FILE                
+         JNE   *+10                                                             
+         MVC   XMLTYP01(28),=CL28'INPUTFILE</bdeMessageType>  '                 
+         CLI   BSNINFS,C'S'        FILE ALREADY IN /u/bdeftp(t) DIR?            
+         JNE   *+10                                                             
+         MVC   XMLTYP01(28),=CL28'INPUTFILE</bdeMessageType>  '                 
+*                                                                               
+         MVC   XMLAPP01,=CL30'MY_APPL'                                          
+         CLI   BSNAPN,C' '                                                      
+         JNH   *+10                                                             
+         MVC   XMLAPP01,BSNAPN                                                  
+*                                                                               
+         MVC   XMLRID01,=CL60'MY_REQUEST_ID'                                    
+         CLI   BSNRID,C' '                                                      
+         JNH   *+10                                                             
+         MVC   XMLRID01,BSNRID                                                  
+         MVC   XMLREF01,XMLRID01   FIRST 27 BYTES AS EDICT REF#                 
+*                                                                               
+         MVC   XMLCOM01,=CL30'true'                                             
+         CLI   BSNCMP,C' '                                                      
+         JNH   BLDD050                                                          
+         CLI   BSNCMP,C'Y'                                                      
+         JE    BLDD050                                                          
+         CLI   BSNCMP,C'N'                                                      
+         JNE   BLDD050                                                          
+         MVC   XMLCOM01,=CL30'false'                                            
+BLDD050  DS    0H                                                               
+*                                                                               
+         MVC   XMLENC01,=CL30'BLOWFISH'                                         
+         CLI   BSNENC,C' '                                                      
+         JNH   BLDD060                                                          
+         CLI   BSNENC,C'B'                                                      
+         JE    BLDD060                                                          
+         MVC   XMLENC01,=CL30'TRIPLE_DES'                                       
+         CLI   BSNENC,C'3'                                                      
+         JE    BLDD060                                                          
+         MVC   XMLENC01,=CL30'NO_CRYPT'                                         
+         CLI   BSNENC,C'N'                                                      
+         JE    BLDD060                                                          
+         MVC   XMLENC01,=CL30'BLOWFISH'                                         
+BLDD060  DS    0H                                                               
+*                                                                               
+         SAM31                                                                  
+         L     R2,AMQBNAA          R2 = A(NEXT AVALIABLE AREA)                  
+         LR    R0,R2                                                            
+         LHI   R1,XMLSUBX-LABEL+L'XMLSUBX                                       
+         LAY   RE,LABEL                                                         
+         LR    RF,R1                                                            
+         MVCL  R0,RE                                                            
+         SAM24                                                                  
+         AHI   R2,XMLSUBX-LABEL+L'XMLSUBX                                       
+         ST    R2,AMQBNAA          SET A(NEXT)                                  
+*                                                                               
+*                                                                               
+         SAM31                                                                  
+         MVC   0(L'XMLRCV,R2),XMLRCV      INSERT BDE COMMON NAME                
+         MVC   L'XMLRCV(L'BSNCNM,R2),BSNCNM                                     
+         AHI   R2,L'XMLRCV+L'BSNCNM-1                                           
+*                                                                               
+         CLI   0(R2),C' '          BACKUP TO LAST NON-BLANK CHAR                
+         JH    *+10                                                             
+         BCTR  R2,0                                                             
+         J     *-10                                                             
+         AHI   R2,1                                                             
+         MVC   0(L'XMLRCVX,R2),XMLRCVX                                          
+         AHI   R2,L'XMLRCVX                                                     
+*                                                                               
+         MVC   0(L'XMLDAT,R2),XMLDAT      INSERT OPENNING DATA TAB              
+         AHI   R2,L'XMLDAT                                                      
+*                                                                               
+         ST    R2,AMQBNAA          SET A(NEXT)                                  
+         ST    R2,AXMLDAT          SET A(XMLDAT) IN MQ BUFFER                   
+         SAM24                                                                  
+*                                                                               
+         J     EXITOK                                                           
+         DROP  R3                                                               
+         EJECT                                                                  
+***********************************************************************         
+* WRTHFS - WRITE THE DATA INTO A HFS FILE                             *         
+***********************************************************************         
+WRTHFS   NTR1  BASE=*,LABEL=*                                                   
+         SAM31                                                                  
+*                                                                               
+         OC    BPX1OPN,BPX1OPN                                                  
+         JNZ   WHFS030                                                          
+*                                                                               
+         L     R1,16(,0)       CVT - COMMON VECTOR TABLE                        
+         L     R1,544(R1)      CSRTABLE                                         
+         L     R1,24(R1)       CSR SLOT                                         
+         MVC   BPX1OPN,BPX1OPNQ(R1)     ADDRESS OF THE SERVICE BPX1OPN          
+         MVC   BPX1CLO,BPX1CLOQ(R1)     ADDRESS OF THE SERVICE BPX1CLO          
+         MVC   BPX1WRT,BPX1WRTQ(R1)     ADDRESS OF THE SERVICE BPX1WRT          
+*                                                                               
+WHFS030  DS    0H                                                               
+         CLI   HFSDIR,C'/'         DIR NAME IS ALREADY SET?                     
+         JE    WHFS050             YES - JUMP OVER                              
+*&&US                                                                           
+         MVC   HFSDIRLN,=A(L'HFSDTST)                                           
+         MVC   HFSDIR(L'HFSDTST),HFSDTST                                        
+         L     RF,VSSB                                                          
+         USING SSBD,RF                                                          
+         CLI   SSODSPAC,C'T'       TST?                                         
+         JE    WHFS050                                                          
+         CLI   SSODSPAC,C'Q'       FQA?                                         
+         JE    WHFS050                                                          
+         CLI   SSODSPAC,C'C'       CSC?                                         
+         JE    WHFS050                                                          
+         MVC   HFSDIRLN,=A(L'HFSDPRD)                                           
+         MVC   HFSDIR(L'HFSDPRD),HFSDPRD                                        
+         DROP  RF                                                               
+*&&                                                                             
+*&&UK                                                                           
+         MVC   HFSDIRLN,=A(L'HFSDTST)                                           
+         MVC   HFSDIR(L'HFSDTST),HFSDTST                                        
+         L     RF,VSSB                                                          
+         USING SSBD,RF                                                          
+         CLI   SSODSPAC,C'T'       TST?                                         
+         JE    WHFS050                                                          
+         CLI   SSODSPAC,C'C'       CSC?                                         
+         JE    WHFS050                                                          
+         MVC   HFSDIRLN,=A(L'HFSDPRD)                                           
+         MVC   HFSDIR(L'HFSDPRD),HFSDPRD                                        
+         CLI   SSODSPAC,C'P'       PROD?                                        
+         JE    WHFS050                                                          
+         DC    H'0'                **UNKNOWN DSPACE, ABEND FOR NOW***           
+         DROP  RF                                                               
+*&&                                                                             
+WHFS050  DS    0H                                                               
+         XC    WORK,WORK                                                        
+         L     RF,HFSDIRLN                                                      
+         BCTR  RF,0                                                             
+         EX    RF,*+8                                                           
+         J     *+10                                                             
+         MVC   WORK(0),HFSDIR                                                   
+*                                                                               
+         LAY   R2,WORK+1                                                        
+         AR    R2,RF                                                            
+         LR    R4,R2               SAVE A(FILE NAME) IN R4                      
+         LAY   R3,BSNDBLK                                                       
+         USING BDESNDD,R3                                                       
+         MVC   0(L'BSNFIL,R2),BSNFIL                                            
+         DROP  R3                                                               
+*                                                                               
+         AHI   R2,L'BSNFIL-1                                                    
+         CLI   0(R2),C' '          BACKUP TO LAST NON-BLANK CHAR                
+         JH    *+10                                                             
+         BCTR  R2,0                                                             
+         J     *-10                                                             
+         MVI   1(R2),C'.'                                                       
+         MVI   2(R2),C'T'                                                       
+         AHI   R2,3                                                             
+*                                                                               
+         TIME  DEC,TIMEDATE,ZONE=LT,DATETYPE=YYYYMMDD,LINKAGE=SYSTEM            
+         MVC   DUB(2),TIMEDATE+10                MMDD                           
+         MVC   DUB+2(4),TIMEDATE                 HHMMSSTH                       
+         OI    DUB+5,X'0F'                                                      
+         UNPK  0(11,R2),DUB(6)                                                  
+         AHI   R2,11                                                            
+*                                                                               
+         LAY   RE,WORK                                                          
+         SR    R2,RE                                                            
+         ST    R2,BUFLEN           FULL PATH NAME LEN(R2 REUSED LATER!)         
+*                                                                               
+         XC    S_MODE,S_MODE                                                    
+         MVI   S_MODE2,S_IRUSR     READ/WRITE FOR ALL                           
+         MVI   S_MODE3,S_IWUSR+S_IRGRP+S_IWGRP+S_IROTH+S_IWOTH                  
+         XC    O_FLAGS(OPNF#LENGTH),O_FLAGS                                     
+         MVI   O_FLAGS4,O_CREAT+O_RDWR+O_TRUNC                                  
+         L     RF,BPX1OPN                                                       
+         CALL  (15),                 OPEN A FILE  BPX1OPN              X        
+               (BUFLEN,              INPUT: PATHNAME LENGTH            X        
+               WORK,                 INPUT: PATHNAME                   X        
+               O_FLAGS,              INPUT: ACCESS            BPXYOPNF X        
+               S_MODE,               INPUT: MODE    BPXYMODE, BPXYFTYP X        
+               RETVAL,               RETURN VALUE:-1 OR FILE DESCRIPTO X        
+               RETCODE,              RETURN CODE                       X        
+               RSNCODE),             REASON CODE                       X        
+               VL,MF=(E,PLIST)                                                  
+         ICM   RF,B'1111',RETVAL   TEST RETVAL           BL    PSEUD            
+         JNL   *+6                                                              
+         DC    H'0'                                                             
+         ST    RF,FILEDESC         SAVE FILE DESCRIPTOR                         
+*                                                                               
+*                                                                               
+         L     RE,AXMLDAT          A(BEGINNING OF DATA CONTENT)                 
+         L     RF,AMQBNAA          A(NEXT AVAILABLE AREA)                       
+         SR    RF,RE                                                            
+         ST    RF,BUFLEN           GET L'DATA CONTENT                           
+*                                                                               
+         MVC   BUFADDR,AXMLDAT                                                  
+*                                                                               
+         L     RF,BPX1WRT                                                       
+         CALL  (15),                 OPEN A FILE  BPX1RED              X        
+               (FILEDESC,            INPUT: FILE DESCRIPTOR            X        
+               BUFADDR,              ->BUFFER TO READ INTO             X        
+               BUFFALET,             INPUT: BUFFER ALET                X        
+               BUFLEN,               INPUT: NUMBER OF BYTES TO READ    X        
+               RETVAL,               RETURN VALUE: 0, -1, OR CHAR COUN X        
+               RETCODE,              RETURN CODE                       X        
+               RSNCODE),             REASON CODE                       X        
+               VL,MF=(E,PLIST)                                                  
+         ICM   RF,B'1111',RETVAL     TEST RETVAL           BL    PSEUD          
+         JNL   *+6                                                              
+         DC    H'0'                                                             
+*                                                                               
+*                                                                               
+         L     RF,BPX1CLO                                                       
+         CALL  (15),                 CLOSE A FILE                      X        
+               (FILEDESC,            INPUT: FILE DESCRIPTOR            X        
+               RETVAL,               RETURN VALUE: 0 OR -1             X        
+               RETCODE,              RETURN CODE                       X        
+               RSNCODE),             REASON CODE                       X        
+               VL,MF=(E,PLIST)                                                  
+         ICM   RF,B'1111',RETVAL     TEST RETVAL           BL    PSEUD          
+         JNL   *+6                                                              
+         DC    H'0'                                                             
+*                                                                               
+*                                  R2 = L'FULL PATHNAME                         
+         S     R2,HFSDIRLN         - L'DIR => JUST FILE NAME LENGTH             
+         L     RE,AXMLDAT          OVERRIDE DATA CONTENT IN THE MQBUFF          
+         LR    RF,RE                 WITH JUST THE FILE NAME                    
+         AR    RE,R2                                                            
+         ST    RE,AMQBNAA          SAVE A(NEXT AVAILABLE AREA)                  
+         BCTR  R2,0                                                             
+         EX    R2,*+8                                                           
+         J     *+10                                                             
+         MVC   0(0,RF),0(R4)                                                    
+*                                                                               
+         SAM24                                                                  
+         J     EXITOK                                                           
+         EJECT                                                                  
+***********************************************************************         
+* WRTFILN - WRITE FILE NAME INTO MQ BUFFER IF HFS IS GIVEN            *         
+* NTRY:  BSNINFN = FILENAME IN /u/bdeftp(t) DIR.                      *         
+***********************************************************************         
+WRTFILN  NTR1  BASE=*,LABEL=*                                                   
+         L     R2,AMQBNAA          R2 = A(NEXT AVAILABLE AREA)                  
+         LAY   R5,BSNDBLK                                                       
+         USING BDESNDD,R5                                                       
+         LAY   R3,BSNINFN          R3 = A(FILENAME)                             
+         LHI   R4,L'BSNINFN        R4 = L'FILENAME                              
+         DROP  R5                                                               
+*                                                                               
+         SAM31                                                                  
+         LR    RE,R2               RE = A(NEXT AVAILABLE AREA)                  
+         LR    R1,R4               R1 = L'FILENAME                              
+         LR    R0,R3               R0 = A(FILENAME)                             
+         LR    RF,R4               RF = L'FILENAME                              
+         MVCL  RE,R0               MOVE MESSAGE TO MQ BUFFER                    
+*                                                                               
+         AHI   R2,L'BSNINFN-1                                                   
+         CLI   0(R2),C' '          BACKUP TO LAST NON-BLANK CHAR                
+         JH    *+10                                                             
+         BCTR  R2,0                                                             
+         J     *-10                                                             
+         AHI   R2,1                                                             
+         SAM24                                                                  
+*                                                                               
+         ST    R2,AMQBNAA          UPDATE A(NEXT AVAILABLE AREA)                
+*                                                                               
+         J     EXITOK                                                           
+         EJECT                                                                  
+***********************************************************************         
+* PUTBUFF - ADD THIS MESSAGE FRAGMENT INTO BUFFER                     *         
+* NTRY: P2       = A(MESSAGE)                                         *         
+*       P3       = L'MESSAGE                                          *         
+***********************************************************************         
+PUTBUFF  NTR1  BASE=*,LABEL=*                                                   
+         L     R2,AMQBNAA          R2 = A(NEXT AVAILABLE AREA)                  
+         L     R3,P2               R3 = A(MESSAGE)                              
+         L     R4,P3               R4 = L'MESSAGE                               
+*                                                                               
+         L     R1,AEOMBUFF                                                      
+         SR    R1,R2               R1 = MQ BUFFER REMAINING                     
+*                                                                               
+         LR    RF,R4               RF = LENGTH OF MESSAGE                       
+         AHI   RF,L'CLOSEXML+L'BSNLDE   ADD CLOSE XML<>, L'DELIMITER            
+*                                                                               
+         CR    R1,RF               ENOUGH ROOM FOR THIS MESSAGE?                
+         JH    PBF040              YES                                          
+         MVI   ERROR,ERPBUFQ       BUFFER OVERFLOW IF ADD THIS MESSAGE          
+         J     EXITL                                                            
+*                                                                               
+PBF040   DS    0H                                                               
+         SAM31                                                                  
+         LR    RE,R2               RE = A(NEXT AVAILABLE AREA)                  
+         LR    R1,R4               R1 = L'MESSAGE                               
+         LR    R0,R3               R0 = A(MESSAGE)                              
+         LR    RF,R4               RF = L'MESSAGE                               
+         MVCL  RE,R0               MOVE MESSAGE TO MQ BUFFER                    
+         SAM24                                                                  
+*                                                                               
+         AR    R2,R4                                                            
+         ST    R2,AMQBNAA          UPDATE A(NEXT AVAILABLE AREA)                
+*                                                                               
+         LAY   R5,BSNDBLK                                                       
+         USING BDESNDD,R5                                                       
+         CLI   BSNLDL,X'00'        ANY DELIMITER?                               
+         JE    PBF080              NONE-EXIT                                    
+         SAM31                                                                  
+         LLC   RF,BSNLDL                                                        
+         LR    R1,RF                                                            
+         BCTR  RF,0                                                             
+         EX    RF,*+8                                                           
+         J     *+10                                                             
+         MVC   0(0,R2),BSNLDE                                                   
+         SAM24                                                                  
+         AR    R2,R1                                                            
+         ST    R2,AMQBNAA          UPDATE A(NEXT AVAILABLE AREA)                
+         DROP  R5                                                               
+*                                                                               
+PBF080   J     EXITOK                                                           
+         EJECT                                                                  
+***********************************************************************         
+* CLOBUFF - ADD CLOSING TAB TO THE BUFFER                             *         
+***********************************************************************         
+CLOBUFF  NTR1  BASE=*,LABEL=*                                                   
+*                                                                               
+         LAY   R3,BSNDBLK                                                       
+         USING BDESNDD,R3                                                       
+         CLI   BSNINFS,C'S'        FILE ALREADY IN /u/bdeftp(t) DIR?            
+         JNE   CLOB030                                                          
+         BRAS  RE,WRTFILN                                                       
+         J     CLOB040                                                          
+*                                                                               
+CLOB030  CLI   BSNBIN,C'Y'         SEND DATA IN BINARY AS A FILE                
+         JNE   CLOB040                                                          
+         BRAS  RE,WRTHFS                                                        
+         DROP  R3                                                               
+*                                                                               
+CLOB040  DS    0H                                                               
+         L     R2,AMQBNAA          R2 = A(NEXT AVAILABLE AREA)                  
+         LAY   R3,CLOSEXML         R3 = A(MESSAGE)                              
+         LHI   R4,L'CLOSEXML       R4 = L'MESSAGE                               
+*                                                                               
+         SAM31                                                                  
+         LR    RE,R2               RE = A(NEXT AVAILABLE AREA)                  
+         LR    R1,R4               R1 = L'MESSAGE                               
+         LR    R0,R3               R0 = A(MESSAGE)                              
+         LR    RF,R4               RF = L'MESSAGE                               
+         MVCL  RE,R0               MOVE MESSAGE TO MQ BUFFER                    
+         SAM24                                                                  
+*                                                                               
+         AR    R2,R4                                                            
+         ST    R2,AMQBNAA          UPDATE A(NEXT AVAILABLE AREA)                
+         J     EXITOK                                                           
+         EJECT                                                                  
+***********************************************************************         
+* MQSETUP - LOAD MQ ROUTINES AND SET UP PARMS                         *         
+***********************************************************************         
+MQSETUP  NTR1  BASE=*,LABEL=*                                                   
+         L     RE,AMQBNAA          A(NEXT AVALIABLE AREA)                       
+         S     RE,AMQBUFF          - A(MQBUFF)                                  
+         JP    *+12                                                             
+         MVI   ERROR,EREMTYQ       EMPTY MESSAGE                                
+         J     EXITL                                                            
+         ST    RE,BUFFERLENGTH     LENGTH OF DATA                               
+*                                                                               
+         LA    R1,CSQBPUT1_STRUCTURE                                            
+         MVC   44(4,R1),AMQBUFF                                                 
+*                                                                               
+         CLC   CSQBCONN_STRUCTURE,=F'0'                                         
+         JNE   EXITOK              EXIST IF ALREADY LOADED                      
+*                                                                               
+         BLDL  0,ENTRYPTS          BUILD LIST OF APPC/MVS ENTRY PTS             
+         LTR   RF,RF                                                            
+         JZ    MSUP10                                                           
+         MVI   ERROR,ERBLDLQ       BAD RETURN FROM BLDL MACRO                   
+         ST    RF,ERRRTC           SAVE OF RETURN CODE                          
+         ST    R0,ERRRSN           SAVE OF RETURN REASON                        
+         J     EXITL                                                            
+*                                                                               
+MSUP10   LOAD  DE=CSQBCONN                                                      
+         ST    R0,CSQBCONN_STRUCTURE                                            
+         LOAD  DE=CSQBPUT1                                                      
+         ST    R0,CSQBPUT1_STRUCTURE                                            
+         LOAD  DE=CSQBDISC                                                      
+         ST    R0,CSQBDISC_STRUCTURE                                            
+                                                                                
+**********************************************************************          
+* QMGRNAME IS "MQ" + SY# + DSPACE, IF ON SY1 THEN MQ1T OR MQ1P       *          
+**********************************************************************          
+*                                                                               
+         LAY   R3,BSNDBLK                                                       
+         USING BDESNDD,R3                                                       
+         CLI   BSNQMGR,C' '       USE IF ANY OVERRIDE QMGR/QOBJ                 
+         JNH   MSUP20                                                           
+         MVC   QMGRNAME,BSNQMGR                                                 
+         MVC   OBJDESC_OBJECTNAME,BSNQNAM                                       
+         J     MSUP30                                                           
+         DROP  R3                                                               
+*                                                                               
+MSUP20   DS    0H                                                               
+*&&US                                                                           
+         USING CPUD,R1                                                          
+         GOTO1 =V(CPUINFO),0                                                    
+         MVC   QMGRNAME(8),CPUMQMGR                                             
+         DROP  R1                                                               
+*                                                                               
+         L     RF,VSSB                                                          
+         USING SSBD,RF                                                          
+         MVC   OBJDESC_OBJECTNAME,OBJECTNAMET  USE TST                          
+         CLI   SSODSPAC,C'T'       TST?                                         
+         JE    MSUP30                                                           
+         MVC   OBJDESC_OBJECTNAME,OBJECTNAMEQ  USE FQA                          
+         CLI   SSODSPAC,C'Q'       FQA?                                         
+         JE    MSUP30                                                           
+         MVC   OBJDESC_OBJECTNAME,OBJECTNAMEC  USE CSC                          
+         CLI   SSODSPAC,C'C'       CSC?                                         
+         JE    MSUP30                                                           
+         MVC   OBJDESC_OBJECTNAME,OBJECTNAME   USE LIVE                         
+         DROP  RF                                                               
+*&&                                                                             
+*&&UK                                                                           
+         L     RF,VSSB                                                          
+         USING SSBD,RF                                                          
+         MVC   QMGRNAME,QMGRNAMET                                               
+         MVC   OBJDESC_OBJECTNAME,OBJECTNAMET  USE TST                          
+         CLI   SSODSPAC,C'T'       TST?                                         
+         JE    MSUP30                                                           
+         MVC   QMGRNAME,QMGRNAMEC                                               
+         MVC   OBJDESC_OBJECTNAME,OBJECTNAMEC  USE CSC                          
+         CLI   SSODSPAC,C'C'       CSC?                                         
+         JE    MSUP30                                                           
+         MVC   QMGRNAME,QMGRNAMEP                                               
+         MVC   OBJDESC_OBJECTNAME,OBJECTNAMEP  USE PROD                         
+         CLI   SSODSPAC,C'P'       PROD?                                        
+         JE    MSUP30                                                           
+         DC    H'0'                **UNKNOWN DSPACE, ABEND FOR NOW***           
+         DROP  RF                                                               
+*&&                                                                             
+*                                                                               
+MSUP30   DS    0H                                                               
+         MVC   OBJDESC_OBJECTTYPE,=A(MQOT_Q)  OBJECT IS A QUEUE                 
+         LA    RF,MQPMO_SYNCPOINT                                               
+         ICM   RE,15,=AL4(MQPMO_FAIL_IF_QUIESCING)                              
+         AR    RF,RE                                                            
+         ST    RF,PUTMSGOPTS_OPTIONS                                            
+         J     EXITOK                                                           
+         EJECT                                                                  
+***********************************************************************         
+* CALLMQ - CALL MQ ROUTINES                                           *         
+* NTRY: R2     =A(PARAMETER STRUCTURE)                                *         
+***********************************************************************         
+CALLMQ   NTR1  BASE=*,LABEL=*                                                   
+         SAM31                                                                  
+         L     RF,0(R2)            RF = A(MQ ROUTINE)                           
+         LA    R3,24(R2)           R3 = A(PARAMETER LIST)                       
+         CALL  (15),MF=(E,(R3))                                                 
+         SAM24                                                                  
+*                                                                               
+         CLC   COMPCODE,=A(MQCC_OK)                                             
+         JE    EXITOK                                                           
+*                                                                               
+         MVI   ERROR,ERMQERR       MQ RETURNED AN ERROR                         
+         CLC   COMPCODE,=A(MQCC_WARNING)                                        
+         JE    EXITOK                                                           
+         CLC   COMPCODE,=A(MQCC_FAILED)                                         
+         JE    EXITL                                                            
+         MVI   ERROR,ERMQCCQ       UNKNOWN MQ COMPLETION CODE                   
+         J     EXITL                                                            
+         EJECT                                                                  
+***********************************************************************         
+* RETERR - RETURN ERROR INFORMATION IN USER PARAMETER LIST            *         
+* NTRY: ERROR   = ERROR CODE                                          *         
+*       REASON  = ERROR CODE IF ERROR = ERMQERR                       *         
+*                                                                     *         
+* EXIT: P4 B0   = X'80' - SIGNIFIES ERROR OCCURRED                    *         
+*               = X'C0' - BUFFER IS NOT BIG ENOUGH TO ADD MESSAGE     *         
+*       P6      = A(EXTRA ERROR INFORMATION)                          *         
+*                                                                     *         
+* EXTRA INFORMATION IS IN FORM XL4(ERROR NUMBER),CL24(DESCRIPTION)    *         
+***********************************************************************         
+RETERR   NTR1  BASE=*,LABEL=*                                                   
+         L     R2,APARMS                                                        
+         MVI   12(R2),X'80'         SET X'80' BIT IN RETURN PARM #4             
+         CLI   ERROR,ERPBUFQ       CAN'T PUT TO MQ BUFFER ERROR                 
+         JNE   *+8                                                              
+         OI    12(R2),X'40'         SET X'40' BIT IN RETURN PARM #4             
+*                                                                               
+         LAY   RF,ERRTAB                                                        
+         ST    RF,20(R2)           DEFAULT ERROR RETURN                         
+*                                                                               
+         LAY   RF,MQ_REASON_CODE_TABLE                                          
+         L     R0,REASON                                                        
+*                                                                               
+         CLI   ERROR,ERMQERR       MQ RETURNED AN ERROR                         
+         JE    RERR02              YES - USE THAT TABLE THEN                    
+*                                                                               
+         LAY   RF,ERRTAB                                                        
+         XR    R0,R0                                                            
+         IC    R0,ERROR            R0 = ERROR CODE                              
+*                                                                               
+RERR02   CLI   0(RF),X'FF'         END OF TABLE?                                
+         JE    EXITOK              YES - NOT FOUND                              
+         CLM   R0,15,0(RF)         MATCH ON ERROR CODE?                         
+         JE    *+12                YES                                          
+         AHI   RF,28               BUMP TO NEXT TABLE ENTRY                     
+         J     RERR02                                                           
+*                                                                               
+         ST    RF,20(R2)           PUT A(ERROR STRING) IN PARM #6               
+         J     EXITOK                                                           
+*                                                                               
+         EJECT                                                                  
+***********************************************************************         
+* FREEBUF - FREE THE BUFFER                                           *         
+***********************************************************************         
+FREEBUF  NTR1  BASE=*,LABEL=*                                                   
+         ICM   R2,15,AMQBUFF       EVER GOT AROUND TO GETTING IT?               
+         JZ    EXITOK              NO                                           
+         L     R3,MQBUFFL          LENGTH                                       
+*                                                                               
+         XC    AMQBUFF,AMQBUFF                                                  
+         XC    AMQBNAA,AMQBNAA                                                  
+         XC    AEOMBUFF,AEOMBUFF                                                
+*                                                                               
+         STORAGE RELEASE,LENGTH=(3),ADDR=(2),COND=YES                           
+         J     EXITOK              IGNORE ALL ERRORS HERE                       
+         DROP  RB                                                               
+         EJECT                                                                  
+***********************************************************************         
+* COMMON STORAGE                                                      *         
+***********************************************************************         
+COMMON   DS    0D                                                               
+         DC    CL8'*COMMON*'                                                    
+*                                                                               
+EXTOK    L     RE,AEOMBUFF         A(END OF MQ BUFFER)                          
+         S     RE,AMQBNAA          - A(NEXT AVALIABLE AREA) = LEN LEFT          
+         L     R1,APARMS                                                        
+         ST    RE,16(R1)           STORE LENGTH LEFT IN PARM #5                 
+         MVI   16(R1),0            SET NO ERROR                                 
+         XC    12(4,R1),12(R1)     CLEAR ERROR RETURN AREA                      
+         J     EXIT                                                             
+*                                                                               
+EXTERR   BRAS  RE,RETERR           SET ERROR PARMS                              
+         BRAS  RE,FREEBUF          FREE THE BUFFER                              
+         J     EXIT                                                             
+*                                                                               
+EXITOK   CR    RB,RB               RETURN CC EQUAL                              
+         J     EXIT                                                             
+*                                                                               
+EXITL    CLI   *,255               RETURN CC NOT EQUAL                          
+         J     EXIT                                                             
+*                                                                               
+EXIT     XIT1  ,                                                                
+         EJECT ,                                                                
+***********************************************************************         
+* LITERALS AND CONSTANTS                                              *         
+***********************************************************************         
+         DS    0D                                                               
+         DC    C'**RTC***'                                                      
+ERRRTC   DC    X'00000000'                                                      
+         DC    C'**RSN***'                                                      
+ERRRSN   DC    X'00000000'                                                      
+*                                                                               
+SPACES   DC    CL256' '                                                         
+*                                                                               
+         DS    0D                                                               
+         DC    CL8'AMQBUFF='                                                    
+AMQBUFF  DC    A(0)                A(MQ BUFFER)                                 
+         DC    A(0)                                                             
+*                                                                               
+         DC    CL8'MQBUFFL='                                                    
+MQBUFFL  DC    A(4*1024*1024)      4M                                           
+         DC    A(0)                                                             
+*                                                                               
+         DC    CL8'AMQBNAA='                                                    
+AMQBNAA  DC    A(0)                A(NEXT AVAILABLE AREA IN MQ BUFFER)          
+         DC    A(0)                                                             
+*                                                                               
+         DC    CL8'AEOMBUFF'                                                    
+AEOMBUFF DC    A(0)                A(END OF MQ BUFFER)                          
+         DC    A(0)                                                             
+*                                                                               
+         DC    CL8'AXMLDAT='                                                    
+AXMLDAT  DC    A(0)                A(AXMLDAT) IN THE MQ BUFFER                  
+*                                                                               
+VSSB     DC    V(SSB)                                                           
+CRLF     DC    X'0D25'                                                          
+*                                                                               
+BSNDBLK  DC    (BSNDDQ)X'00'                                                    
+*                                                                               
+*                                                                               
+LABEL    DC    CL16'BDE_XML_REQ*****'                                           
+XMLVER   DC    C'<?xml version="1.0" encoding="ibm-437_P100-1995"?>'            
+XMLBDERT DC    C'<BDERequest xmlns:xsd="http://www.w3.org/2001/XMLSchem+        
+               a" xmlns:NS1="BDE" xmlns:xsi="http://www.w3.org/2001/XML+        
+               Schema-instance">'                                               
+XMLAPP   DC    C'<appName>'                                                     
+XMLAPP01 DC    CL30' '                                                          
+XMLAPPX  DC    C'</appName>'                                                    
+XMLRID   DC    C'<requestId>'                                                   
+XMLRID01 DC    CL60' '                                                          
+XMLRIDX  DC    C'</requestId>'                                                  
+XMLFIL   DC    C'<fileName>'                                                    
+XMLFIL01 DC    CL80' '                                                          
+XMLFILX  DC    C'</fileName>'                                                   
+XMLTYP   DC    C'<bdeMessageType>'                                              
+XMLTYP01 DC    CL11' '                                                          
+XMLTYPX  DC    C'</bdeMessageType>'                                             
+XMLCOM   DC    C'<compressFile>'                                                
+XMLCOM01 DC    CL30' '                                                          
+XMLCOMX  DC    C'</compressFile>'                                               
+XMLENC   DC    C'<encryptionAlgorithm>'                                         
+XMLENC01 DC    CL30' '                                                          
+XMLENCX  DC    C'</encryptionAlgorithm>'                                        
+XMLSUB   DC    C'<subject>'                                                     
+XMLSUB01 DC    CL60' '                                                          
+         DC    CL05' '                                                          
+XMLREF01 DC    CL27' '                                                          
+XMLSUBX  DC    C'</subject>'                                                    
+**                                                                              
+**                                                                              
+**                                                                              
+**                                                                              
+XMLRCV   DC    C'<receiverProfileName>'                                         
+XMLRCV01 DC    CL40' '                                                          
+XMLRCVX  DC    C'</receiverProfileName>'                                        
+**                                                                              
+XMLDAT   DC    C'<fileContent><!CDATA'                                        
+XMLDAT01 DC    C' '                                                             
+**                                                                              
+CLOSEXML DC    C'ÙÙ></fileContent></BDERequest>'                                
+*                                                                               
+         LTORG                                                                  
+         EJECT                                                                  
+***********************************************************************         
+* MQSERIES CALL PARAMETERS                                            *         
+***********************************************************************         
+         CMQA LIST=YES,EQUONLY=NO                                               
+*                                                                               
+QMGRNAME     DC      CL(L'OBJDESC_OBJECTQMGRNAME)' '                            
+*&&US                                                                           
+OBJECTNAME   DC      CL(L'OBJDESC_OBJECTNAME)'DDS.BROKER.LOCALQ'                
+OBJECTNAMET  DC      CL(L'OBJDESC_OBJECTNAME)'DDS.BROKER.TEST.LOCALQ'           
+OBJECTNAMEQ  DC      CL(L'OBJDESC_OBJECTNAME)'DDS.BROKER.FQA.LOCALQ'            
+OBJECTNAMEC  DC      CL(L'OBJDESC_OBJECTNAME)'DDS.BROKER.CSC.LOCALQ'            
+*&&                                                                             
+*&&UK                                                                           
+QMGRNAMEP    DC      CL(L'OBJDESC_OBJECTQMGRNAME)'MQ1L'                         
+QMGRNAMET    DC      CL(L'OBJDESC_OBJECTQMGRNAME)'MQTL'                         
+QMGRNAMEC    DC      CL(L'OBJDESC_OBJECTQMGRNAME)'MQCL'                         
+OBJECTNAMEP  DC      CL(L'OBJDESC_OBJECTNAME)'LDDS.BROKER.LOCALQ'               
+OBJECTNAMET  DC      CL(L'OBJDESC_OBJECTNAME)'LDDS.BROKER.TEST.LOCALQ'          
+OBJECTNAMEC  DC      CL(L'OBJDESC_OBJECTNAME)'LDDS.BROKER.CSC.LOCALQ'           
+*&&                                                                             
+*                                                                               
+*                                                                               
+HCONN        DS      F                     CONNECTION HANDLE                    
+HOBJ         DS      F                     OBJECT HANDLE                        
+COMPCODE     DS      F                     COMPLETION CODE                      
+REASON       DS      F                     QUALIFIES COMPLETION CODE            
+             DC      C'*XLG'                                                    
+BUFFERLENGTH DS      F                     LENGTH OF DATA IN MQBUFFER           
+*                                                                               
+OBJDESC  CMQODA  DSECT=NO,LIST=YES     OBJECT DESCRIPTOR                        
+*                                                                               
+MSGDESC  CMQMDA  DSECT=NO,LIST=YES     MESSAGE DESCRIPTOR                       
+         ORG   MSGDESC_FORMAT                                                   
+         DC    CL8'MQSTR   '               MQFMT_STRING FOR DATA FORMAT         
+         ORG                                                                    
+*                                                                               
+PUTMSGOPTS   CMQPMOA DSECT=NO,LIST=YES     PUT MESSAGE OPTIONS                  
+         EJECT                                                                  
+***********************************************************************         
+* PARAMETER LISTS FOR MQSERIES CALLS                                            
+*  F    A(ROUTINE)                                                              
+*  CL16 EBCDIC ROUTINE NAME                                                     
+*  XL1  FLAGS                                                                   
+*  XL3  SPARE                                                                   
+*  PARAMETERS (STANDARD IBM FORMAT)                                             
+***********************************************************************         
+CSQBCONN_STRUCTURE        DS    A                                               
+                          DC    CL16'MQ_CONNECT'                                
+                          DC    X'00'                                           
+                          DS    XL3                                             
+                          DC    X'00',AL3(QMGRNAME)                             
+                          DC    X'00',AL3(HCONN)                                
+                          DC    X'00',AL3(COMPCODE)                             
+                          DC    X'80',AL3(REASON)                               
+*                                                                               
+CSQBDISC_STRUCTURE        DS    A                                               
+                          DC    CL16'MQ_DISCONNECT'                             
+                          DC    X'00'                                           
+                          DS    XL3                                             
+                          DC    X'00',AL3(HCONN)                                
+                          DC    X'00',AL3(COMPCODE)                             
+                          DC    X'80',AL3(REASON)                               
+*                                                                               
+CSQBPUT1_STRUCTURE        DS    A                                               
+                          DC    CL16'MQ_PUT1'                                   
+                          DC    X'00'                                           
+                          DS    XL3                                             
+                          DC    X'00',AL3(HCONN)                                
+                          DC    X'00',AL3(OBJDESC)                              
+                          DC    X'00',AL3(MSGDESC)                              
+                          DC    X'00',AL3(PUTMSGOPTS)                           
+                          DC    X'00',AL3(BUFFERLENGTH)                         
+                          DS    AL4                                             
+                          DC    X'00',AL3(COMPCODE)                             
+                          DC    X'80',AL3(REASON)                               
+*                                                                               
+ENTRYPTS DS    0F                                                               
+         DC    Y((ENTRYLSQ-ENTRYSTQ)/60)   NUMBER OF TABLE ENTRIES              
+         DC    H'60'                       MUST REMAIN AS 60                    
+ENTRYSTQ EQU   *                                                                
+CSQBCONN DC    CL8'CSQBCONN'                                                    
+         DC    XL52'00'                                                         
+CSQBDISC DC    CL8'CSQBDISC'                                                    
+         DC    XL52'00'                                                         
+CSQBPUT1 DC    CL8'CSQBPUT1'                                                    
+         DC    XL52'00'                                                         
+ENTRYLSQ EQU   *                                                                
+         EJECT                                                                  
+*                                                                               
+*ERROR TABLE (ERROR #1-10)                                                      
+ERUKCMDQ EQU   001                 UNKNOWN COMMAND                              
+ERGBUFQ  EQU   002                 CAN'T GET MEMORY FOR MQ BUFF                 
+ERBLDLQ  EQU   003                 BAD RETURN FROM BLDL MACRO                   
+ERMQCCQ  EQU   004                 UNKNOWN MQ COMPLETION CODE                   
+ERPBBIGQ EQU   005                 TOO BIG FOR MVCL                             
+ERPBUFQ  EQU   006                 BUFFER OVERFLOW IF ADD THIS MESSAGE          
+EREMTYQ  EQU   007                 EMPTY MESSAGE                                
+ERBCBLQ  EQU   008                 BDE CONTROL BLOCK LENGTH TOO LONG            
+ERMBCNQ  EQU   009                 MISSING BDE COMMON NAME                      
+ERMSUBQ  EQU   010                 MISSING SUBJECT                              
+ERMFLNQ  EQU   011                 MISSING RECIPIENT'S FILE NAME                
+ERMQERR  EQU   254                 MQ RETURNED ERROR                            
+ERUNKWNQ EQU   255                 UNKNOWN MQ ERROR                             
+*                                                                               
+ERRTAB   DC    A(ERUKCMDQ),CL24'UNKNOWN COMMAND'                                
+         DC    A(ERGBUFQ),CL24'STORAGE MACRO ERROR'                             
+         DC    A(ERBLDLQ),CL24'BLDL MACRO ERROR'                                
+         DC    A(ERMQCCQ),CL24'BAD MQ COMPLETION CODE'                          
+         DC    A(ERPBBIGQ),CL24'MESSAGE LENGTH TOO LONG'                        
+         DC    A(ERPBUFQ),CL24'RUN OUT OF BUFFER AREA'                          
+         DC    A(EREMTYQ),CL24'EMPTY MESSAGE'                                   
+         DC    A(ERBCBLQ),CL24'BDE CTL BLOCK TOO LONG'                          
+         DC    A(ERMBCNQ),CL24'MISSING BDE COMMON NAME'                         
+         DC    A(ERMSUBQ),CL24'MISSING SUBJECT'                                 
+         DC    A(ERMFLNQ),CL24'MISSING RCVR''S FILE NAME'                       
+         DC    A(ERMQERR),CL24'MQ RETURNED AN ERROR'                            
+         DC    A(ERUNKWNQ),CL24'UNKNOWN MQ ERROR'                               
+         DC    X'FF'                                                            
+                                                                                
+*MQ_REASON_CODE_TABLE (ERROR # 2000S)                                           
+       ++INCLUDE DDMQREASON                                                     
+         EJECT                                                                  
+*********************************************************************           
+* HFS ACCESS VALUES                                                 *           
+*********************************************************************           
+BPX1OPNQ EQU   156                                                              
+BPX1CLOQ EQU   72                                                               
+BPX1WRTQ EQU   220                                                              
+BPX1OPN  DS    A                                                                
+BPX1CLO  DS    A                                                                
+BPX1WRT  DS    A                                                                
+HFSDIRLN DS    F                                                                
+HFSDIR   DC    CL20' '                                                          
+*&&US                                                                           
+HFSDTST  DC    CL11'/u/bdeftpt/'                                                
+HFSDPRD  DC    CL10'/u/bdeftp/'                                                 
+*&&                                                                             
+*&&UK                                                                           
+HFSDTST  DC    CL11'/u/bdeftpt/'                                                
+HFSDPRD  DC    CL10'/u/bdeftp/'                                                 
+*&&                                                                             
+BUFFALET DC    F'0'                                                             
+BUFADDR  DS    A                                                                
+BUFLEN   DS    F                                                                
+PLIST    DS    13A              CALL PARMLIST WORK AREA                         
+RETCODE  DS    F                RETURN CODE (ERRNO)                             
+RSNCODE  DS    F                REASON CODE                                     
+RETVAL   DS    F                RETURN VALUE (0, -1 OR OTHER)                   
+FILEDESC DS    F                FILE DESCRIPTOR                                 
+         BPXYFTYP DSECT=NO                                                      
+         BPXYOPNF DSECT=NO                                                      
+         BPXYMODE DSECT=NO                                                      
+         EJECT                                                                  
+*********************************************************************           
+* EQUATES AND DSECTS                                                *           
+*********************************************************************           
+SSBD     DSECT                                                                  
+       ++INCLUDE FASSBOFF                                                       
+*                                                                               
+       ++INCLUDE DDCPUD                                                         
+*                                                                               
+       ++INCLUDE DDBDESNDD                                                      
+*                                                                               
+YES      EQU   C'Y'                                                             
+NO       EQU   C'N'                                                             
+                                                                                
+WORKD    DSECT                                                                  
+DUB      DS    D                                                                
+APARMS   DS    A                   A(INPUT PARMS)                               
+ACPUID   DS    A                   A(4 CHAR CPU ID)                             
+*                                                                               
+PARMS    DS    0XL24               COPY OF INPUT PARMS                          
+P1       DS    F                                                                
+P2       DS    F                                                                
+P3       DS    F                                                                
+P4       DS    F                                                                
+P5       DS    F                                                                
+P6       DS    F                                                                
+*                                                                               
+ERROR    DS    X                   ERROR #                                      
+TIMEDATE DS    CL16                TIME AND DATE RETURNED                       
+WORK     DS    XL256                                                            
+WORKL    EQU   *-WORKD                                                          
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'161DDBDESND  04/24/14'                                      
+         END                                                                    

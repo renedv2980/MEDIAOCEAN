@@ -1,0 +1,2281 @@
+*          DATA SET SPTBAUP    AT LEVEL 120 AS OF 01/28/13                      
+*CATALP SPTBAUP                                                                 
+         TITLE 'SPTBAUP -- SPOTPAK TRAFFIC BUY ACTIVITY UPDATE'                 
+***********************************************************************         
+*                                                                     *         
+* LEV100 BGRI SEP19/01 ACCEPT OFFLINE BUY CHANGES, AND COUNT THEM     *         
+*                      FIX FOR LEFTOVER JUNK IN NEW REVOVERY RECS     *         
+* LEV102 BGRI OCT08/01 FIX BUG CLEARING NON-SPOT RECS                 *         
+* LEV104 BGRI AUG17/04 BYPASS ANY BAD RECS WITH BAD ELEMS             *         
+*        MHER NOV08/06 REPLACE MSUNPK CALLS WITH STAPACK CALLS        *         
+*                      USE DMDDNAME TO FIND SE NUMBERS                *         
+*                      6K SPOT BUY RECORDS                            *         
+* LEV109 SMUR DEC07/10 SEND EMAIL WHEN BAD DIRECTORY POINTER          *         
+* LEV110 MHER JUN/11   SUPPORT FOR 8A ACTIVITY POINTERS               *         
+* LEV116 RCRI NOV/11   BLKSIZE=27648                                  *         
+* LEV117 SMUR APR/12   BBTAB, CLOSE TRAFFIC FILES                     *         
+* LEV118 SMUR SEP/12   FIX SVSYS FOR AGENCY SPECIFIC RUN              *         
+* LEV120 SMUR JAN/13   BUG FIX FOR NO BUYACTIVITY - FLUSH SPT/TRF     *         
+*                      BUFFERS, ADD PROCESSED FLG TO TBA TABLE        *         
+*                      ADD TIME STAMP TO REPORT                       *         
+***********************************************************************         
+*                                                                               
+TBAUPDT  CSECT                                                                  
+         PRINT NOGEN                                                            
+         ENTRY UTL                                                              
+         ENTRY SSB                                                              
+*                                                                               
+         NBASE 0,*TBAUPDT,VREGSAVE                                              
+*                                                                               
+QSPTFIL  EQU   X'21'                                                            
+*                                                                               
+         LA    RC,2048(RB)                                                      
+         LA    RC,2048(RC)                                                      
+         LA    RA,2048(RC)                                                      
+         LA    RA,2048(RA)                                                      
+         USING TBAUPDT,RB,RC,RA                                                 
+*                                                                               
+         L     R8,=V(CPRINT)                                                    
+         USING DPRINT,R8                                                        
+*                                                                               
+         MVC   DUB,SPACES          LOAD MSUNPK                                  
+         MVC   DUB(4),=C'T00A'                                                  
+         MVI   WORK,QSTAPACK                                                    
+*                                                                               
+         GOTO1 =V(HEXOUT),DMCB,WORK,DUB+4,1,0                                   
+         GOTO1 =V(LOADER),DMCB,DUB,0                                            
+         ICM   RE,15,4(R1)                                                      
+         BNZ   *+6                                                              
+         DC    H'0'                                                             
+         ST    RE,VSTAPACK                                                      
+*                                                                               
+         MVI   WORK,QCABLETB                                                    
+         GOTO1 =V(HEXOUT),DMCB,WORK,DUB+4,1,0                                   
+         GOTO1 =V(LOADER),DMCB,DUB,0                                            
+         ICM   RE,15,4(R1)                                                      
+         BNZ   *+6                                                              
+         DC    H'0'                                                             
+         ST    RE,VCABLETB                                                      
+*                                                                               
+         LA    R1,STAWORK          PASS A(T00A9E) TO STAPACK                    
+         XC    0(32,R1),0(R1)                                                   
+         USING STAPACKD,R1                                                      
+*                                                                               
+         MVI   STAPACT,QSTP_T00A9E                                              
+         MVC   STAPACOM,VCABLETB                                                
+         GOTO1 VSTAPACK,(R1)                                                    
+         DROP  R1                                                               
+*                                                                               
+         GOTO1 =V(STXITER),DMCB,A(DUMPLIST)                                     
+         XC    WORK,WORK                                                        
+         ST    RB,WORK                                                          
+         L     R4,VREGSAVE                                                      
+         A     R4,=F'20000'                                                     
+         ST    R4,WORK+4                                                        
+         OI    WORK+4,X'80'                                                     
+         GOTO1 =V(STXITER),DMCB,WORK                                            
+         B     INIT2                                                            
+*                                                                               
+VREGSAVE DC    V(REGSAVE)                                                       
+*                                                                               
+         EJECT                                                                  
+INIT2    GOTO1 =V(CARDS),DMCB,CARD,=C'RE00'                                     
+*                                                                               
+         MVC   P(80),CARD                                                       
+         GOTO1 =V(PRINTER)                                                      
+*                                                                               
+INIT3    CLC   =C'DSPACE=',CARD                                                 
+         BNE   INIT4                                                            
+         L     RE,=A(SSB)                                                       
+         MVC   SSODSPAC-SSOOFF(1,RE),CARD+7                                     
+         B     INIT2                                                            
+*                                                                               
+INIT4    CLC   =C'DDSIO=',CARD     FOR TESTING                                  
+         BNE   INIT6                                                            
+         L     RF,=V(DDSIO)                                                     
+         MVC   0(8,RF),CARD+6                                                   
+         B     INIT2                                                            
+*                                                                               
+INIT6    XC    DATLEN,DATLEN                                                    
+         MVC   DATLEN(2),=H'10'                                                 
+         CLC   =C'SPOT',CARD       SPOTX....                                    
+         BNE   IERR                                                             
+                                                                                
+*======================================================================         
+* LOCATE SPOT SYSTEM AND GET SENUM. OPTIONAL AGENCY ALPHA ALSO                  
+* CONVERT TO USE TWO CHR SYSTEM NAME SPOTXYAA WHERE XY=SYS AND AA=AGY           
+*======================================================================         
+                                                                                
+GETSE    CLI   CARD+7,C' '         SPOTXAA > SPOTX AA                           
+         BNE   GETSE1                                                           
+         CLI   CARD+6,C' '                                                      
+         BE    GETSE1                                                           
+         ICM   R0,3,CARD+5         MOVE AGY CODE ONE BYTE TO RIGHT              
+         MVI   CARD+5,C' '                                                      
+         STCM  R0,3,CARD+6                                                      
+*                                                                               
+GETSE1   MVC   SESNAM+7(2),CARD+4  EXTRACT ONE/TWO CHR SYSTEM ID                
+         MVC   TRFNAM+7(2),CARD+4                                               
+*                                                                               
+GETSEX   GOTO1 =V(DMDDNAME),DMCB,(X'24',=C'DDNAME'),SESNAM,0                    
+         CLI   8(R1),0                                                          
+         BNE   GETSEXER                                                         
+         L     RF,8(R1)            GET A(FILE INFO LIST)                        
+         MVC   SPTUTL,1(RF)        EXTRACT SENUM                                
+*                                                                               
+         GOTO1 =V(DMDDNAME),DMCB,(X'24',=C'DDNAME'),TRFNAM,0                    
+         CLI   8(R1),0                                                          
+         BNE   GETSEXER                                                         
+         L     RF,8(R1)            GET A(FILE INFO LIST)                        
+         MVC   TRFUTL,1(RF)                                                     
+         B     GETSEXOK                                                         
+*                                                                               
+GETSEXER B     IERR                ERROR                                        
+GETSEXOK B     INIT8               VALID                                        
+*                                                                               
+SESNAM   DC    C'SYS=SPT##'                                                     
+TRFNAM   DC    C'SYS=STR##'                                                     
+         EJECT                                                                  
+IERR     MVC   P(30),=C'** ERROR * SYSTEM NOT VALID **'                         
+         GOTO1 =V(LOGIO),DMCB,1,(30,P)                                          
+         GOTO1 =V(PRINTER)                                                      
+CANCEL   DC    0H'0'                                                            
+         ABEND 999                                                              
+*                                                                               
+INIT8    MVC   SVSYS,CARD          SPOTXYAA - MODIFIED INPUT CARD               
+*                                                                               
+         ZAP   LINE,=P'99'                                                      
+         GOTO1 =V(DATCON),DMCB,(5,0),(3,TODAY)                                  
+*                                                                               
+INIT9    GOTO1 =V(CARDS),DMCB,CARD,=C'RE00'                                     
+*                                                                               
+         MVC   P(80),CARD                                                       
+         GOTO1 =V(PRINTER)                                                      
+*                                                                               
+         CLC   =C'/*',CARD                                                      
+         BE    INIT14                                                           
+*                                                                               
+         CLC   =C'WRITE=NO',CARD   DON'T WRITE TO SPTFILE                       
+         BNE   INIT9A                                                           
+         MVI   TLIST,C' '          SUPPRESS EOF SEARCH ON TRFFILE               
+         MVI   WRITESW,C'N'                                                     
+         B     INIT9                                                            
+*                                                                               
+INIT9A   CLC   =C'WRITE=Y',CARD                                                 
+         BNE   *+12                                                             
+         MVI   WRITESW,C'Y'                                                     
+         B     INIT9                                                            
+*                                                                               
+         CLC   =C'TEST=YES',CARD   WRITE TBA RECORDS TO OUTPUT FILE             
+         BNE   *+12                                                             
+         MVI   TESTSW,C'Y'                                                      
+         B     INIT9                                                            
+*                                                                               
+         CLC   =C'TRACE=YES',CARD   TRACE SOME I/O                              
+         BNE   *+12                                                             
+         MVI   TRACSW,C'Y'                                                      
+         B     INIT9                                                            
+*                                                                               
+INIT10   CLC   =C'TODAY=',CARD     FOR TESTING                                  
+         BNE   INIT12                                                           
+         GOTO1 =V(DATCON),DMCB,(4,CARD+6),(3,TODAY)                             
+         B     INIT9                                                            
+*                                                                               
+INIT12   CLC   =C'RECOVER=W',CARD  TO RUN UPDATIVE SOON                         
+         BNE   INIT12A                                                          
+         MVI   MCRECOVR,C'W'                                                    
+         B     INIT9                                                            
+*                                                                               
+INIT12A  CLC   =C'FACPAK=',CARD    TO RUN UPDATIVE SOON                         
+         BNE   INIT12B                                                          
+         MVC   MCFACPAK,CARD+7                                                  
+         B     INIT9                                                            
+*                                                                               
+INIT12B CLC   =C'UPDID=',CARD                                                   
+        BNE   INIT12C                                                           
+        GOTO1 =V(DATAMGR),DMCB,=C'UPDID'                                        
+        L     RF,12(R1)                                                         
+        MVC   0(2,RF),CARD+6                                                    
+        B     INIT9                                                             
+*                                                                               
+INIT12C  CLC   =C'INPUT=DISK',CARD                                              
+         BNE   INIT12D                                                          
+         MVI   MCINPUT,C'D'                                                     
+         BRAS  RE,SETOPS           SET TO WAIT ON OPER ECB TO END               
+         B     INIT9                                                            
+*                                                                               
+INIT12D  CLC   =C'INPUT=TAPE',CARD                                              
+         BNE   INIT12E                                                          
+         MVI   MCINPUT,C'T'                                                     
+         B     INIT9                                                            
+*                                                                               
+INIT12E  CLC   =C'TIMER=',CARD                                                  
+         BNE   INIT13                                                           
+*                                                                               
+         LA    R0,4                                                             
+         LA    R1,CARD+6                                                        
+*                                                                               
+INIT12F  CLI   0(R1),C'0'                                                       
+         BL    BADTIME                                                          
+         CLI   0(R1),C'9'                                                       
+         BH    BADTIME                                                          
+         LA    R1,1(R1)                                                         
+         BCT   R0,INIT12F                                                       
+         MVC   WAITTIME+2(4),CARD+6   MOVE MMSS                                 
+         B     INIT9                                                            
+*                                                                               
+INIT13   MVC   P(32),=C'*TBAUPDT* UNKNOWN PARAMETER CARD'                       
+         GOTO1 =V(PRINTER)                                                      
+         DC    H'0'                                                             
+*                                                                               
+BADTIME  MVC   P(30),=C'*TBAUPDT* TIME NOT FOUR DIGITS'                         
+         GOTO1 =V(PRINTER)                                                      
+         DC    H'0'                                                             
+*                                                                               
+* OPEN FILES                                                                    
+*                                                                               
+INIT14   CLI   WRITESW,C'N'                                                     
+         BNE   INIT18                                                           
+         LA    R1,FLIST                                                         
+*                                                                               
+INIT16   MVI   0(R1),C'N'          SET FILES FOR NO UPDATE                      
+         LA    R1,8(R1)                                                         
+         CLI   0(R1),C'X'                                                       
+         BNE   INIT16                                                           
+*                                                                               
+INIT18   L     RE,=A(UTL)                                                       
+         MVC   4(1,RE),SPTUTL                                                   
+         GOTO1 =V(DATAMGR),DMCB,=C'DMOPEN',=C'SPOT',FLIST,AREC                  
+*                                                                               
+         CLI   WRITESW,C'N'                                                     
+         BNE   INIT22                                                           
+         LA    R1,TLIST                                                         
+*                                                                               
+INIT20   MVI   0(R1),C'N'          SET FILES FOR NO UPDATE                      
+         LA    R1,8(R1)                                                         
+         CLI   0(R1),C'X'                                                       
+         BNE   INIT20                                                           
+*                                                                               
+INIT22   L     RE,=A(UTL)                                                       
+         MVC   4(1,RE),TRFUTL                                                   
+         GOTO1 =V(DATAMGR),DMCB,=C'DMOPEN',=C'STR',TLIST,AREC                   
+*                                                                               
+         XC    KEY,KEY             READ TRFDIR FOR HEADER                       
+         MVI   KEY+12,1                                                         
+         MVC   KEYSAVE,KEY                                                      
+         GOTO1 =V(DATAMGR),DMCB,=C'DMRDHI',=C'TRFDIR',KEYSAVE,KEY               
+         CLC   KEY(13),KEYSAVE                                                  
+         BE    *+6                                                              
+         DC    H'0'                                                             
+*                                                                               
+         MVI   KEY,X'0A'           FORCE GETREC FROM TRFFIL                     
+         MVC   AIO,ABUY                                                         
+         GOTO1 GETREC                                                           
+*                                                                               
+         L     RE,AIO                                                           
+         LA    RE,58(RE)           POINT TO MM/DD/YY                            
+         MVC   WORK(2),6(RE)       MOVE YY                                      
+         MVC   WORK+2(2),0(RE)     MOVE MM                                      
+         MVC   WORK+4(2),3(RE)     MOVE DD                                      
+*                                                                               
+         GOTO1 =V(ADDAY),DMCB,WORK,WORK+6,-7                                    
+         MVC   SV8ABASE,WORK+6     SAVE BASE YYMMDD                             
+*                                                                               
+         CLI   MCINPUT,C'D'        TEST DISK INPUT                              
+         BE    INIT23                                                           
+*                                                                               
+         L     R4,=A(RECVIN)                                                    
+         OPEN  ((4),(INPUT))                                                    
+         LTR   RF,RF                                                            
+         BZ    *+6                                                              
+         DC    H'0'                                                             
+*                                                                               
+INIT23   CLI   TESTSW,C'Y'                                                      
+         BNE   INIT24                                                           
+         L     R4,=A(TESTOUT)                                                   
+         OPEN  ((4),(OUTPUT))                                                   
+         LTR   RF,RF                                                            
+         BZ    *+6                                                              
+         DC    H'0'                                                             
+*                                                                               
+INIT24   CLI   MCRECOVR,C'W'       TEST UDPATIVE SOON                           
+         BNE   INIT30                                                           
+                                                                                
+* READ CONTROL FILE TO GET USERID NUMBER FOR THIS SYSTEM                        
+                                                                                
+         XC    KEY,KEY                                                          
+         MVI   KEY,C'I'                                                         
+         MVC   KEY+15(4),=C'DDSZ'                                               
+         MVC   KEY+19(2),SESNAM+7                                               
+         GOTO1 =V(DATAMGR),DMCB,=C'DMRDHI',=C'CTFILE',KEY,ABUY                  
+*                                                                               
+         L     RE,ABUY                                                          
+         CLC   KEY(21),0(RE)                                                    
+         BE    *+6                                                              
+         DC    H'0'                                                             
+*                                                                               
+         LA    RE,28(RE)           POINT TO FIRST ELEMENT                       
+         SR    R0,R0                                                            
+*                                                                               
+INIT24A  CLI   0(RE),2                                                          
+         BE    INIT24B                                                          
+         CLI   0(RE),0                                                          
+         BNE   *+6                                                              
+         DC    H'0'                                                             
+         IC    R0,1(RE)                                                         
+         AR    RE,R0                                                            
+         B     INIT24A                                                          
+*                                                                               
+INIT24B  MVC   MCORIGID,2(RE)       SAVE USERID NUMBER                          
+                                                                                
+         GOTO1 =V(DATCON),DMCB,(5,0),(1,FULL)                                   
+         L     RF,=A(SSB)                                                       
+         USING SSOOFF,RF                                                        
+         MVI   SSOXTND,X'FF'   +02  X'FF' TO SHOW OFFLINE EXTENSION             
+         OI    SSOSTAT2,SSOSRWRK    SET FACWK RECOVERY BIT IN SSB               
+*                                                                               
+         L     RF,SSOFWNDX                                                      
+         USING UKRECD,RF            SET FACWRK KEY VALUES                       
+*                                                                               
+         MVC   UKUSRID,MCORIGID     USERID                                      
+         MVI   UKSYSPRG,C'T'        SYSTEM                                      
+         MVC   UKSYSPRG+1(2),=C'BA' PROGRAM                                     
+         MVC   UKSUBPRG,MCFACPAK    FACPAK SYSTEM ID                            
+         MVC   UKDAY,FULL+2         DAY NUMBER                                  
+         MVI   UKCLASS,C'R'         CLASS=RECOVERY                              
+         MVI   UKFLAG,X'01'         FLAG DUPLICATES ALLOWED                     
+         MVC   UKFILNO,=X'FFFF'     LET WRKR KNOW UKFLAG IS VALID               
+         DROP  RF                                                               
+*                                                                               
+INIT30   GOTO1 =V(SORTER),DMCB,SRTCARDR,RECCARDR                                
+*                                                                               
+         MVC   TITLE(30),=CL30'SPOTN TRAFFIC ACTIVITY REPORT'                   
+         MVC   TITLE(5),SVSYS                                                   
+         LARL  RE,TBAMID1                                                       
+         MVC   MID1(L'TBAMID1),0(RE)                                            
+         LARL  RE,TBAMID2                                                       
+         MVC   MID2(L'TBAMID2),0(RE)                                            
+         XC    OLDAAGY,OLDAAGY                                                  
+         ZAP   LINE,=P'99'         FORCE NEW PAGE                               
+         EJECT                                                                  
+*=====================================================*                         
+* READ THE AGENCY HEADERS AND BUILD A TABLE           *                         
+* THAT IDENTIFIES AGENCY AS US OR CANADIAN            *                         
+*=====================================================*                         
+*                                                                               
+BLDAG    L     RE,=A(UTL)                                                       
+         MVC   4(1,RE),SPTUTL                                                   
+*                                                                               
+         XC    AGYTAB,AGYTAB                                                    
+         XC    KEY,KEY                                                          
+         MVI   KEY,6                                                            
+         BAS   RE,HIGH                                                          
+         B     BLDAG4                                                           
+*                                                                               
+BLDAG2   BAS   RE,SEQ                                                           
+*                                                                               
+BLDAG4   CLI   KEY,6                                                            
+         BNE   BLDAGX                                                           
+         L     R6,AREC                                                          
+         ST    R6,AIO                                                           
+         BAS   RE,GETREC                                                        
+*                                                                               
+         LA    R6,24(R6)                                                        
+         SR    R0,R0                                                            
+*                                                                               
+BLDAG6   IC    R0,1(R6)                                                         
+         AR    R6,R0                                                            
+         CLI   0(R6),0                                                          
+         BE    BLDAG2                                                           
+         CLI   0(R6),2             FIND A MEDIA ELEMENT                         
+         BNE   BLDAG6                                                           
+         LLC   RE,3(R6)            GET AG/MD BYTE                               
+         SRL   RE,4                DROP MEDIA                                   
+         SLL   RE,2                X4                                           
+         LA    RE,AGYTAB(RE)                                                    
+         CLI   0(RE),0             TEST SOMETHING THERE ALREADY                 
+         BNE   BLDAG2              YES - SKIP                                   
+         L     RF,AREC                                                          
+         MVC   0(2,RE),1(RF)       MOVE AGYALPHA TO TABLE                       
+         LA    RF,AGYPROF+7-AGYHDR(RF)                                          
+         MVC   2(1,RE),0(RF)       MOVE COUNTRY CODE TO TABLE                   
+         B     BLDAG2                                                           
+*                                                                               
+BLDAGX   DS    0H                                                               
+*                                                                               
+* INITIALIZE TBA TABLES *                                                       
+*                                                                               
+         USING TBATABD,R4                                                       
+*                                                                               
+         L     R4,ATBATAB1         THE MAIN TBA TABLE                           
+         BAS   RE,TBACLR                                                        
+         L     R4,ATBATAB2         UTILITY TABLE                                
+         BAS   RE,TBACLR                                                        
+         L     R4,ADATETAB         TABLE OF DATES UPDATED TODAY                 
+         MVC   TBALEN,=Y(DATETABX-DATETAB)                                      
+         BAS   RE,TBACLR                                                        
+*                                                                               
+         MVI   TBAACTN,TBAINIT     INITIALIZE DATE TABLE                        
+         GOTO1 =V(TBAMAINT),DMCB,(R4),TODAY                                     
+         B     IN1                                                              
+*                                                                               
+DMKEY    DC    C'DMKEY   '                                                      
+*                                                                               
+FLIST    DS    0H                                                               
+         DC    CL8' SPTFILE'                                                    
+         DC    CL8' SPTDIR '                                                    
+         DC    CL8' STAFILE'                                                    
+         DC    CL8'NCTFILE '                                                    
+         DC    CL8'NRECV   '                                                    
+         DC    CL8'X       '                                                    
+*                                                                               
+TLIST    DS    0H                                                               
+         DC    CL8'UTRFFILE'                                                    
+         DC    CL8'UTRFDIR '                                                    
+         DC    CL8'UTRFRCV '                                                    
+         DC    CL8'NCTFILE '                                                    
+         DC    CL8'X       '                                                    
+         EJECT                                                                  
+* CLEAR AND INITIALIZE TBA TABLE *                                              
+*                                                                               
+TBACLR   NTR1                                                                   
+         USING TBATABD,R4                                                       
+         LA    R0,256                                                           
+         LR    RE,R4                                                            
+         LH    RF,TBALEN                                                        
+         LA    RE,2(RE)            SKIP PAST LENGTH                             
+         AHI   RF,-2                                                            
+*                                                                               
+TBACLR2  CR    RF,R0                                                            
+         BNH   TBACLR4                                                          
+         XC    0(256,RE),0(RE)                                                  
+         AR    RE,R0                                                            
+         SR    RF,R0                                                            
+         B     TBACLR2                                                          
+*                                                                               
+TBACLR4  BCTR  RF,0                                                             
+         EX    RF,*+8                                                           
+         B     *+10                                                             
+         XC    0(0,RE),0(RE)                                                    
+*                                                                               
+         LA    RE,CLIST-CLTHDRD                                                 
+         A     RE,ADCLT                                                         
+         ST    RE,TBAPRDS                                                       
+*                                                                               
+         L     RE,=A(COMFACS)                                                   
+         ST    RE,TBACOMFC         SET COMFACS ADDRESS                          
+*                                                                               
+         USING COMFACSD,RE                                                      
+         MVC   CDATCON,=V(DATCON)  AND INITIALIZE ADDRESSES NEEDED              
+         MVC   CADDAY,=V(ADDAY)                                                 
+         MVC   CGETDAY,=V(GETDAY)                                               
+         MVC   CDATAMGR,=V(DATAMGR)                                             
+         DROP  RE                                                               
+*                                                                               
+         MVC   TBARECUP,=V(RECUP)                                               
+*                                                                               
+         L     RE,=A(BBTAB)                                                     
+         ST    RE,TBABBTAB                                                      
+*                                                                               
+         B     EXIT                                                             
+         EJECT                                                                  
+*** PEEL AND SORT INPUT RECOVERY FILE ***                                       
+*                                                                               
+IN1      L     R4,=A(WORKFILE)                                                  
+         OPEN  ((4),(OUTPUT))                                                   
+*                                                                               
+IN2      CLI   MCINPUT,C'D'        TEST INPUT=DISK                              
+         BNE   IN10                                                             
+*                                                                               
+         BRAS  RE,RDRCV            GO READ RECOVERY FILE                        
+         TM    DMCB+8,X'80'        TEST EOF                                     
+         BO    ENDIN1X                                                          
+*                                                                               
+         CP    RECCOUNT,=P'2000'   DONE 2000 RECORDS                            
+         BNL   ENDIN1X                                                          
+         B     IN12                                                             
+*                                                                               
+IN10     LA    R0,RECVHDR-4                                                     
+         L     R1,=A(RECVIN)                                                    
+         GET   (1),(0)                                                          
+*                                                                               
+* FIX FOR LEFTOVER JUNK IN NEW RECOVERY RECORDS                                 
+*                                                                               
+IN12     CLI   RFILTY,QSPTFIL      TEST SPTFILE                                 
+         BNE   IN2                                                              
+         CLI   RKEY,X'10'          TEST BUYREC (LOWER BOUND)                    
+         BL    IN2                                                              
+*                                                                               
+         LA    RE,RECVHDR+24       POINT TO KEY                                 
+         SR    R0,R0                                                            
+         ICM   R0,3,13(RE)         GET REC LENGTH                               
+         AR    RE,R0                                                            
+         XC    0(2,RE),0(RE)                                                    
+*                                                                               
+         TM    RKEY,X'08'          TEST BUYREC COPY                             
+         BO    IN2                  BYPASS                                      
+*                                                                               
+         CLI   RPRG,1              TEST PFM                                     
+         BE    IN2                 YES - IGNORE                                 
+*                                                                               
+         LA    RE,RECVHDR-4                                                     
+         AH    RE,0(RE)                                                         
+         XC    0(2,RE),0(RE)       PUT ZEROES AT END OF RECORD                  
+*                                                                               
+         LA    R2,RKEY+24          POINT TO FIRST ELEMENT                       
+*                                                                               
+POOLEL   SR    RF,RF                                                            
+         IC    RF,1(R2)                                                         
+         LTR   RF,RF                                                            
+         BZ    IN2                 BYPASS ELEM LEN ZERO                         
+*                                                                               
+         AR    R2,RF               POINT TO NEXT ELEMENT                        
+         CLI   0(R2),0             TEST END OF RECORD                           
+         BE    IN2                                                              
+         CLI   0(R2),6             TEST FOR ELEMENT CODES                       
+         BL    POOLEL              X'06',X'07',X'08',X'0B',X'0C',X'0D'          
+         CLI   0(R2),13                                                         
+         BH    POOLEL                                                           
+*                                                                               
+         L     R6,=V(TBADATES)                                                  
+         CLC   2(2,R2),0(R6)       LOOK FOR ACTIVITY SINCE THIS MONDAY          
+         BL    POOLEL              NONE                                         
+*                                                                               
+         CLI   RRECTY,3            TEST ADD                                     
+         BE    IN14                                                             
+*                                                                               
+         OC    RSIN,RSIN           TEST SIN=0 (CHANGE W/O COPY)                 
+         BNZ   IN14                 NO, ONLINE                                  
+*                                                                               
+* TEST RUN LIMITED TO ONE AGENCY *                                              
+*                                                                               
+IN14     CLC   SVSYS+6(2),SPACES   ***WAS +5                                    
+         BE    *+14                                                             
+         CLC   SVSYS+6(2),RKEY+20  MATCH ALPHA AGY CODE  (**WAS +5)             
+         BNE   IN2                                                              
+*                                                                               
+         LH    RE,RECVHDR-4                                                     
+         LA    RE,20(RE)           ADD EXPANSION LENGTH                         
+         SLL   RE,16                                                            
+         ST    RE,RCVLEN                                                        
+         L     RE,MYSEQ                                                         
+         LA    RE,1(RE)                                                         
+         ST    RE,MYSEQ                                                         
+         MVC   RSORTSEQ,MYSEQ+1    SET SEQUENCE NUMBER                          
+*                                                                               
+         MVC   RSORTKEY(3),RKEY      A-M/CLT                                    
+         MVC   RSORTKEY+3(5),RKEY+4  MKT/STA                                    
+         MVC   RSORTKEY+8(1),RKEY+3  PRD                                        
+         MVC   RSORTKEY+9(4),RKEY+9  EST/BUY DTLS                               
+*                                                                               
+         GOTO1 =V(SORTER),DMCB,=C'PUT',RCVLEN                                   
+         CLI   TRACSW,C'Y'                                                      
+         BNE   IN2                                                              
+*                                                                               
+*=======================================================*                       
+         MVC   P(7),=C'SORTPUT'                                                 
+         GOTO1 =V(HEXOUT),DMCB,RKEY,P+10,60,=C'TOG'                             
+         GOTO1 =V(PRINTER)                                                      
+*=======================================================*                       
+*                                                                               
+         B     IN2                                                              
+*                                                                               
+ENDIN1   L     R4,=A(RECVIN)                                                    
+         CLOSE ((4))                                                            
+         EJECT                                                                  
+* GET FIRST OUTPUT RECOVERY RECORD *                                            
+*                                                                               
+ENDIN1X  L     R4,ATBATAB2         GET SPARE TBA TABLE ADDRESS                  
+         USING TBATABD,R4                                                       
+*                                                                               
+         TIME                                                                   
+         SRL   R0,4                SHIFT TIME FOR EDIT                          
+         ST    R0,DUB                                                           
+         MVC   P(10),=X'402021204B20204B2020'                                   
+         ED    P(10),DUB                                                        
+*                                                                               
+         USING NEXTREC,R6                                                       
+         GOTO1 =V(SORTER),DMCB,=C'GET'                                          
+         ICM   R6,15,4(R1)                                                      
+         BZ    ENDINXX                                                          
+*                                                                               
+         MVC   P+11(14),=C'ACTIVITY BELOW'                                      
+         GOTO1 =V(PRINTER)         TIME STAMP THE TRANSACTION                   
+         B     OUT16               GO SAVE RECORD                               
+                                                                                
+ENDINXX  GOTO1 =V(SORTER),DMCB,=C'END'                                          
+*                                                                               
+         MVC   P+11(16),=C'NO INPUT RECORDS'                                    
+         GOTO1 =V(PRINTER)                                                      
+         B     EOJ                                                              
+*                                                                               
+* GET NEXT OUTPUT RECORD *                                                      
+*                                                                               
+OUT2     GOTO1 =V(SORTER),DMCB,=C'GET'                                          
+         ICM   R6,15,4(R1)                                                      
+         BNZ   OUT2X               TEST ANY MORE RECOVERY RECORDS               
+         GOTO1 =V(SORTER),DMCB,=C'END'                                          
+         MVI   EOFSW,C'Y'                                                       
+         B     OUT6                                                             
+*                                                                               
+OUT2X    CLI   TRACSW,C'Y'                                                      
+         BNE   OUT4                                                             
+*                                                                               
+*=======================================================*                       
+         MVC   P(7),=C'SORTGET'                                                 
+         GOTO1 =V(HEXOUT),DMCB,(R6),P+10,16,=C'TOG'                             
+         GOTO1 =V(PRINTER)                                                      
+*=======================================================*                       
+*                                                                               
+OUT4     DS   0H                                                                
+         CLC   RKEY,NKEY           TEST CHANGE OF KEY                           
+         BNE   OUT6                                                             
+*                                                                               
+         LH    R7,NLEN             GET 'FROM' REC LEN                           
+         LA    RE,RCVLEN           SET 'TO' REC ADDR                            
+         LA    RF,2(R7)            SET 'TO' LEN = 'FROM' LEN + 2                
+         MVCL  RE,R6               ** WHICH PUTS IN 2X'00' AT EOR               
+         B     OUT2                GET NEXT RECOVERY RECORD                     
+*                                                                               
+* ON CHANGE OF KEY PROCESS LAST RECOVERY IMAGE *                                
+*                                                                               
+OUT6     TM    RKEY+15,X'80'       TEST LAST CHANGE IS A DELETE                 
+         BO    OUT7                YES - PROCESS THE FIRST COPY                 
+         CLI   RRECTY,1            TEST WE HAD A COPY WITH NO CHANGE            
+         BE    OUT7                RIGHT -- PROCESS THE FIRST COPY              
+*                                                                               
+         CLI   TRACSW,C'Y'                                                      
+         BNE   OUT6A                                                            
+*                                                                               
+*=======================================================*                       
+         MVC   P(9),=C'TO TBAMNE'                                               
+         GOTO1 =V(HEXOUT),DMCB,RKEY,P+11,60,=C'TOG'                             
+         GOTO1 =V(PRINTER)                                                      
+*=======================================================*                       
+*                                                                               
+OUT6A    DS   0H                                                                
+         MVI   TBAACTN,TBACHG      SET 'CHANGE' (FOR ADDS AS WELL)              
+         GOTO1 =V(TBAMAINT),DMCB,(R4),RKEY                                      
+         CLI   TBAERR,TBANOACT     TEST NO ACTIVITY                             
+         BE    OUT14                                                            
+*                                                                               
+OUT7     LA    R5,TBADATA          FOR EACH PRODUCT IN TBA TABLE                
+         LH    R3,TBALEN                                                        
+         AR    R3,R5                                                            
+         BCTR  R3,0                                                             
+         B     OUT12                                                            
+*                                                                               
+OUT8     MVC   WSRTKEY(10),RSORTKEY   CREATE SORT KEY FROM RECOVERY KEY         
+         MVI   WSRTPRD2,0                                                       
+         OC    4(12,R5),4(R5)      SEE IF ANY ACTIVITY BITS ARE ON              
+         BZ    OUT10               NO ACTIVITY FOR THIS PRODUCT                 
+         CLI   WSRTPRD,X'FF'       TEST POOL BUY                                
+         BE    *+16                                                             
+         MVC   WSRTPRD,0(R5)       GET PRODUCT/PARTNER IN ALPHABETIC -          
+         MVC   WSRTPRD2,1(R5)       - ORDER FROM ACTIVITY TABLE                 
+*                                                                               
+         MVC   WSRTAAGY,RKEY+20    ALPHA AGENCY CODE                            
+         MVI   SORTSW,X'FF'        SET SORT SWITCH ON                           
+         L     R1,=A(WORKFILE)                                                  
+         PUT   (1),WSRTKEY    WRITE 13-BYTE SORT KEY TO VIO FILE                
+*                                                                               
+OUT10    LA    R5,L'TBADATA(R5)    NEXT PRODUCT                                 
+OUT12    CLI   0(R5),0             TEST LAST ENTRY                              
+         BE    *+10                YES                                          
+         CR    R5,R3               TEST PAST TABLE END                          
+         BL    OUT8                                                             
+*                                                                               
+         BAS   RE,TBACLR           CLEAR AND INITIALIZE TBA TABLE               
+*                                                                               
+OUT14    CLI   EOFSW,C'Y'          TEST E-O-F                                   
+         BNE   OUT16                                                            
+         CLI   SORTSW,X'FF'        TEST ANY RECORDS ARE IN VIO FILE             
+         BE    SORTWKEY            SORT BUY KEYS                                
+         MVC   P(11),=C'NO ACTIVITY'                                            
+         GOTO1 =V(PRINTER)                                                      
+         B     EOJ                                                              
+*                                                                               
+* SAVE NEW RECORD *                                                             
+*                                                                               
+OUT16    LH    R7,NLEN             GET 'FROM' REC LEN                           
+         LA    RE,RCVLEN           SET 'TO' REC ADDR                            
+         LA    RF,2(R7)            SET 'TO' LEN = 'FROM' LEN + 2                
+         MVCL  RE,R6               ** WHICH PUTS IN 2X'00' AT EOR               
+*                                                                               
+* CHECK NEW CLTHDR REQUIRED *                                                   
+*                                                                               
+*                                                                               
+         L     RE,=A(UTL)                                                       
+         MVC   4(1,RE),SPTUTL                                                   
+*                                                                               
+         L     R6,ADCLT                                                         
+         CLC   RKEY(3),1(R6)       TEST SAME 00/A-M/CLT                         
+         BE    OUT20                                                            
+         XC    KEY,KEY                                                          
+         MVC   KEY+1(3),RKEY                                                    
+         MVI   DMINBTS,X'24'       FORCE READ FROM DISK                         
+         BAS   RE,HIGH                                                          
+         MVI   DMINBTS,0                                                        
+         CLC   KEY(13),KEYSAVE                                                  
+         BE    OUT18                                                            
+*                                                                               
+* PRINT INFO ON BAD RECOVERY RECORD KEY                                         
+*                                                                               
+         LARL  RE,BADRECVR                                                      
+         MVC   P,0(RE)                                                          
+         GOTO1 =V(HEXOUT),DMCB,RKEY,P+32,1,=C'TOG'                              
+         GOTO1 =V(HEXOUT),DMCB,RKEY+1,P+40,2,=C'TOG'                            
+         GOTO1 =V(HEXOUT),DMCB,RKEY+3,P+50,1,=C'TOG'                            
+         GOTO1 =V(HEXOUT),DMCB,RKEY+4,P+60,5,=C'TOG'                            
+         GOTO1 =V(HEXOUT),DMCB,RKEY+9,P+76,1,=C'TOG'                            
+         GOTO1 =V(PRINTER)                                                      
+*                                                                               
+         CLI   EOFSW,C'Y'          TEST E-O-F                                   
+         BE    OUT6                                                             
+*                                                                               
+         B     OUT2                                                             
+*                                                                               
+OUT18    ST    R6,AIO                                                           
+         BAS   RE,GETREC                                                        
+         BE    *+6                                                              
+         DC    H'0'                                                             
+*                                                                               
+OUT20    CLI   RRECTY,1            TEST COPY IMAGE                              
+         BNE   OUT2                                                             
+         MVI   TBAACTN,TBACOPY     SET 'COPY' PROCESSING                        
+         GOTO1 =V(TBAMAINT),DMCB,(R4),RKEY                                      
+         B     OUT2                                                             
+         EJECT                                                                  
+*** AT END OF RECOVERY FILE, SORT ACTIVITY KEYS ***                             
+*                                                                               
+SORTWKEY L     R4,=A(WORKFILE)     CLOSE ACTIVITY VIO FILE                      
+         CLOSE ((4))                                                            
+         OPEN  ((4),(INPUT))       OPEN VIO FILE FOR READING                    
+         GOTO1 =V(SORTER),DMCB,SRTCARDW,RECCARDW   INITIALIZE SORT              
+         MVI   EOFSW,C'N'                                                       
+*                                                                               
+PUTSORT  LA    R0,WSRTKEY          WRITE RECORDS TO SORT FILE                   
+         L     R1,=A(WORKFILE)                                                  
+         GET   (1),(0)                                                          
+         GOTO1 =V(SORTER),DMCB,=C'PUT',WSRTKEY                                  
+         B     PUTSORT                                                          
+*                                                                               
+ENDIN2   L     R4,=A(WORKFILE)                                                  
+         CLOSE ((4))                                                            
+*                                                                               
+         GOTO1 =V(SORTER),DMCB,=C'GET'    GET FIRST SORTED KEY                  
+         ICM   R6,15,4(R1)         TEST NO SORT RECORDS                         
+         BNZ   *+6                                                              
+         DC    H'0'                SHOULD BE AT LEAST ONE RECORD                
+         MVC   WSRTKEY,0(R6)       SAVE FIRST KEY                               
+*                                                                               
+GETBUYS  CLI   EOFSW,C'Y'          TEST ALL TBARECS HAVE BEEN POSTED            
+         BE    EOJ                                                              
+*                                                                               
+         GOTO1 =V(SORTER),DMCB,=C'GET'    GET NEXT KEY                          
+         ICM   R6,15,4(R1)         TEST END OF WORK FILE                        
+         BNZ   GETBUY2                                                          
+         MVI   EOFSW,C'Y'          SET END OF WORK FILE FLAG ON                 
+         GOTO1 =V(SORTER),DMCB,=C'END'                                          
+         B     GETBUY2                                                          
+*                                                                               
+GETBUY2  CLC   WSRTKEY(11),0(R6)   TEST KEY CHANGE                              
+         BE    GETBUYS                                                          
+*                                                                               
+         L     RE,=A(UTL)                                                       
+         MVC   4(1,RE),SPTUTL                                                   
+*                                                                               
+         MVC   WBUYAM,WSRTAM       CONSTRUCT BUY KEY                            
+         MVC   WBUYCLT,WSRTCLT                                                  
+         MVC   WBUYPRD,WSRTPRD                                                  
+         MVC   WBUYMKST,WSRTMKST                                                
+         MVC   WBUYEST,WSRTEST                                                  
+         MVC   WBUYPRD2,WSRTPRD2   SAVE PARTNER                                 
+         MVC   WBUYAAGY,WSRTAAGY   SAVE ALPHA AGENCY                            
+*                                                                               
+         CLI   EOFSW,C'Y'          TEST EOF                                     
+         BE    *+10                                                             
+         MVC   WSRTKEY,0(R6)       SAVE NEW SORT KEY                            
+*                                                                               
+* CHECK NEW CLTHDR REQUIRED *                                                   
+*                                                                               
+         L     R6,ADCLT                                                         
+         CLC   WBUYKEY(3),1(R6)    TEST SAME 00/A-M/CLT                         
+         BE    MRG20                                                            
+         XC    KEY,KEY                                                          
+         MVC   KEY+1(3),WBUYKEY                                                 
+         BAS   RE,HIGH                                                          
+         BE    *+6                                                              
+         DC    H'0'                                                             
+         CLC   KEY(13),KEYSAVE                                                  
+         BE    MRG10                                                            
+*                                                                               
+         MVC   P(L'MISCLTMS),MISCLTMS                                           
+         GOTO1 =V(HEXOUT),DMCB,WBUYKEY,P+19,1,=C'TOG'                           
+         GOTO1 =V(HEXOUT),DMCB,WBUYKEY+1,P+27,2,=C'TOG'                         
+         GOTO1 =V(PRINTER)                                                      
+         B     GETBUYS                                                          
+*                                                                               
+MRG10    DS    0H                                                               
+         ST    R6,AIO                                                           
+         BAS   RE,GETREC                                                        
+         BE    *+6                                                              
+         DC    H'0'                                                             
+*                                                                               
+         USING TBATABD,R4                                                       
+MRG20    L     R4,ATBATAB1         GET TBATAB ADDRESS                           
+         BAS   RE,TBACLR           CLEAR AND INITIALIZE TBA TABLE               
+*                                                                               
+         L     RE,=A(BBTAB)                                                     
+         L     RF,0(RE)            GET TABLE LENGTH                             
+         LA    RE,4(,RE)                                                        
+         XCEF                                                                   
+*                                                                               
+         XC    KEY,KEY                                                          
+         MVC   KEY(10),WBUYKEY                                                  
+         BAS   RE,HIGH             GET FIRST BUY RECORD                         
+         BE    MRG35                                                            
+         DC    H'0'                ERROR -- BLOW UP                             
+*                                                                               
+MRG25    L     R4,ATBATAB1         TBA TABLE ADDRESS                            
+*                                                                               
+         MVI   TBAACTN,TBAADD      'ADD' RECORD TO TBA TABLE                    
+         GOTO1 =V(TBAMAINT),DMCB,(R4),ABUY                                      
+         CLI   TBAERR,0            BUY RECORD POSTED                            
+         BE    MRG30                                                            
+         CLI   TBAERR,TBANOACT     NO ACTIVITY POSTED                           
+         BE    *+6                                                              
+         DC    H'0'                OTHER ERROR -- BLOW UP                       
+*                                                                               
+MRG30    XC    KEY,KEY                                                          
+         MVC   KEY(10),WBUYKEY                                                  
+         BAS   RE,SEQ              NEXT BUY RECORD                              
+         BE    *+6                                                              
+         DC    H'0'                BLOW UP ON ERROR                             
+*                                                                               
+MRG35    CLI   WBUYPRD,X'FF'       TEST POOL BUY                                
+         BNE   MRG40                                                            
+         CLC   KEY(10),KEYSAVE                                                  
+         BNE   UPDATE              NO MORE BUYS                                 
+*                                                                               
+         MVC   AIO,ABUY            BUYREC ADDRESS                               
+         BAS   RE,GETREC                                                        
+         BE    MRG37                                                            
+*                                                                               
+         MVC   P(7),=C'BAD D/A'                                                 
+         GOTO1 =V(HEXOUT),DMCB,KEY,P+32,13,=C'TOG'                              
+         GOTO1 =V(PRINTER)                                                      
+*                                                                               
+         CLI   BADRECT,20                                                       
+         BL    *+6                                                              
+         DC    H'0'                TOO MANY BAD RECORDS                         
+*                                                                               
+         LLC   R1,BADRECT                                                       
+         LA    R1,1(R1)                                                         
+         STC   R1,BADRECT                                                       
+*                                                                               
+         CLI   BADRECT,1                                                        
+         BH    MRG37               ONE EMAIL NOTIFICATION IS SUFFICIENT         
+*                                                                               
+         LA    R1,EMSG                                                          
+         MVC   0(L'AUTOMSG,R1),AUTOMSG                                          
+                                                                                
+         MVC   EMSG+L'AUTOMSG(L'SVSYS),SVSYS                                    
+                                                                                
+         MVC   EMSG+L'AUTOMSG+L'SVSYS(L'BDAMSG),BDAMSG                          
+         OC    EMSG,SPACES                                                      
+         GOTO1 =V(DATAMGR),DMCB,=C'OPMSG',(L'AUTOMSG+L'SVSYS+L'BDAMSG, X        
+               EMSG)                                                            
+*                                                                               
+*NOP     DC    H'0'                SMUR 11/30/10                                
+*                                                                               
+MRG37    L     R6,ABUY                                                          
+*                                                                               
+         B     MRG25                                                            
+*                                                                               
+MRG40    CLC   KEY(3),KEYSAVE      TEST KEY MATCH WITHOUT PRODUCT               
+         BNE   UPDATE                                                           
+         CLC   KEY+4(6),KEYSAVE+4                                               
+         BNE   UPDATE                                                           
+*                                                                               
+         MVC   AIO,ABUY            GET THE BUY RECORD                           
+         MVI   DMINBTS,X'08'       GET DELETED RECORDS AS WELL                  
+         BAS   RE,GETREC                                                        
+         BE    *+6                                                              
+         DC    H'0'                                                             
+*                                                                               
+         MVI   DMINBTS,0                                                        
+         L     R6,ABUY                                                          
+*                                                                               
+         TM    15(R6),X'80'        TEST RECORD WAS DELETED                      
+         BO    MRG30               IT WAS                                       
+*                                                                               
+         L     R4,ATBATAB2         SPARE TBA TABLE                              
+         BAS   RE,TBACLR           CLEAR AND INITIALIZE SPARE TABLE             
+         MVI   TBAACTN,TBACHG                                                   
+*                                                                               
+         GOTO1 =V(TBAMAINT),DMCB,(R4),ABUY                                      
+         CLI   TBAERR,TBANOACT     TEST NO ACTIVITY                             
+         BE    MRG30                                                            
+*                                                                               
+         LA    R6,TBADATA          FIRST (AND ONLY) TABLE ENTRY                 
+         CLC   WBUYPRD,0(R6)       TEST PRODUCT MATCH                           
+         BNE   MRG30                                                            
+         CLC   WBUYPRD2,1(R6)      TEST PARTNER MATCH                           
+         BNE   MRG30                                                            
+         B     MRG25               PRODUCT AND PARTNER BOTH MATCH               
+         EJECT                                                                  
+* UPDATE (OR CREATE) TBA RECORDS FROM TBA TABLE                                 
+*                                                                               
+UPDATE   L     R4,ATBATAB1                                                      
+         USING TBATABD,R4                                                       
+*                                                                               
+         L     RE,=A(UTL)                                                       
+         MVC   4(1,RE),TRFUTL                                                   
+*                                                                               
+         L     R2,ADATETAB         LIST OF NEW DATES                            
+         LA    R0,127              NUMBER OF ROWS                               
+         XC    0(196,R2),0(R2)     CLEAR NEW DATE TABLE                         
+         LA    R2,196(R2)                                                       
+         BCT   R0,*-10                                                          
+*                                                                               
+* COUNT THE ENTRIES IN TBA TABLE AND INITIALIZE NEW DATE TABLE                  
+*                                                                               
+         L     R2,ADATETAB                                                      
+         LA    R5,TBADATA                                                       
+         SR    R0,R0                                                            
+UPD2     CLI   0(R5),0                                                          
+         BE    UPD3                                                             
+         MVC   0(4,R2),0(R5)                                                    
+         LA    R2,196(R2)                                                       
+         LA    R5,L'TBADATA(R5)                                                 
+         BCT   R0,UPD2                                                          
+*                                                                               
+UPD3     LPR   R0,R0               NUMBER OF ENTRIES IN TABLE                   
+         BZ    UPD30               NONE -- TOSS RECS WITH THIS ESTIMATE         
+*                                                                               
+         LA    R5,TBADATA                                                       
+         GOTO1 =V(XSORT),DMCB,(R5),(R0),L'TBADATA,4,0   SORT TBA TABLE          
+         L     R2,ADATETAB                                                      
+         GOTO1 =V(XSORT),DMCB,(R2),(R0),196,4,0  SORT NEW DATE TABLE            
+*                                                                               
+         LA    R6,KEY                                                           
+         USING TBARECD,R6                                                       
+         XC    KEY,KEY             BUILD TBA KEY THROUGH STATION                
+         MVC   TBAKID,=X'0A2E'                                                  
+         MVC   TBAKAM,WBUYAM       AGENCY/MEDIA                                 
+         MVC   TBAKCLT,WBUYCLT     CLIENT                                       
+         MVC   TBAKMKT(5),WBUYMKST MKT/STA                                      
+         MVC   TBAKEST,WBUYEST     ESTIMATE                                     
+         BAS   RE,HIGH             LOOK FOR TBA KEYS                            
+         BE    UPD6                                                             
+         DC    H'0'                                                             
+*                                                                               
+UPD5     LA    R6,KEY                                                           
+         GOTO1 SEQ                 NEXT TBA RECORD                              
+*                                                                               
+UPD6     CLC   TBAKID,=X'0A2E'     TEST TBA RECORD                              
+         BNE   UPD20                                                            
+         CLC   TBAKAM,WBUYAM       TEST SAME AGENCY/MEDIA                       
+         BNE   UPD20                                                            
+         CLC   TBAKCLT,WBUYCLT     TEST SAME CLIENT                             
+         BNE   UPD20                                                            
+         CLC   TBAKMKT(5),WBUYMKST TEST SAME MKT/STA                            
+         BNE   UPD20                                                            
+         CLC   TBAKEST,WBUYEST     FILTER ON ESTIMATE                           
+         BNE   UPD5                                                             
+         CLI   WBUYPRD,X'FF'       IS IT POL                                    
+         BE    UPD6D                                                            
+         CLC   TBAKPRD(1),WBUYPRD   NO, COMPARE PRD                             
+         BNE   UPD20                                                            
+*                                                                               
+UPD6D    DS    0H                                                               
+         L     R6,ATBAREC                                                       
+         ST    R6,AIO                                                           
+         BAS   RE,GETREC           GET TBA RECORD                               
+         BE    *+6                                                              
+         DC    H'0'                                                             
+*                                                                               
+         XC    SV8AOLD,SV8AOLD                                                  
+         XC    SV8ANEW,SV8ANEW                                                  
+* FIND ELEMENT FOR OLD 8A POINTER                                               
+         SR    R0,R0                                                            
+         LA    R6,24(R6)                                                        
+*                                                                               
+UPD6E    CLI   0(R6),0                                                          
+         BE    UPD6X                                                            
+         CLI   0(R6),5                                                          
+         BNE   UPD6F                                                            
+         TM    TBADTAAC-TBADTAEL(R6),X'02'   TEST 8A FLAG                       
+         BO    UPD6G                                                            
+*                                                                               
+UPD6F    IC    R0,1(R6)                                                         
+         LTR   R0,R0                                                            
+         BZ    UPD6X                                                            
+         AR    R6,R0                                                            
+         B     UPD6E                                                            
+*                                                                               
+UPD6G    MVC   SV8AOLD,2(R6)       SAVE OLD ACTIVITY DATE                       
+*                                                                               
+UPD6X    L     R6,ATBAREC          RESTORE RECORD REGISTER                      
+*                                                                               
+         L     R0,ABUY             USE BUYREC AREA TO SAVE TBA RECORD           
+         LHI   R1,4100                                                          
+         L     RE,ATBAREC          A(TBA RECORD)                                
+         LR    RF,R1                                                            
+         MVCL  R0,RE                                                            
+*                                                                               
+         MVI   TBAACTN,TBAUPD      SET ACTION=UPDATE                            
+         GOTO1 =V(TBAMAINT),DMCB,(R4),ATBAREC,ADATETAB                          
+         CLI   TBAERR,TBANOACT     ANY ACTIVITY POSTED                          
+         BE    UPD11               NO                                           
+*                                                                               
+         L     R3,ATBAREC          A(TBAREC)                                    
+         LA    R3,24(R3)           A(FIRST 05 ELEMENT)                          
+*                                                                               
+UPD7     CLI   0(R3),05            THIS AN ACTIVITY ELEMENT                     
+         BE    UPD8                                                             
+         DC    H'0'                                                             
+*                                                                               
+UPD8     TM    6(R3),X'80'         TEST ACTIVITY BIT ON                         
+         BZ    UPD10               NO - IGNORE                                  
+*                                                                               
+         GOTO1 =V(HELLO),DMCB,(C'G',=C'SPTFIL '),(X'05',ABUY),(4,2(R3))         
+         CLI   12(R1),0            TEST ELEMENT WAS FOUND                       
+         BE    *+14                YES                                          
+         CLI   12(R1),6            TEST ELEMENT NOT FOUND                       
+         BE    UPD9                RIGHT - IT'S A NEW ELEMENT                   
+         DC    H'0'                DIE ON ANY OTHER ERROR                       
+*                                                                               
+         L     R1,12(R1)           A(ACTIVITY ELEMENT)                          
+         TM    6(R1),X'80'         TEST ELEMENT WAS ACTIVE BEFORE               
+         BZ    UPD9                 NO, MUST UPDATE                             
+*                                                                               
+         CLC   6(1,R1),6(R3)       HAS ANYTHING CHANGED                         
+         BNE   UPD9                 YES                                         
+*                                                                               
+         CLI   1(R3),9             NEW ELEM LEN?                                
+         BNE   UPD10                NO                                          
+*                                                                               
+         CLC   1(1,R1),1(R3)       SAME ELEM LEN                                
+         BNE   UPD8C                                                            
+*                                                                               
+         CLC   7(2,R1),7(R3)       CHG IN NEW BB LENS                           
+         BE    UPD10                NO                                          
+*                                                                               
+UPD8C    OC    7(2,R3),7(R3)        ELEM IS BIGGER NOW, ANY NEW BB              
+         BZ    UPD10                NO - NO CHANGE                              
+*                                                                               
+UPD9     GOTO1 =V(HELLO),DMCB,(C'G',=C'SPTFIL '),(X'F1',(R6)),0                 
+         CLI   12(R1),0            LOOK FOR ACTIVITY ELEMENT. . .               
+         BE    *+6                 . . . AND CHANGE DATE                        
+         DC    H'0'                                                             
+         L     R3,12(R1)           A(ACTIVITY ELEMENT)                          
+*                                                                               
+         MVC   8(3,R3),TODAY                                                    
+         B     UPD18                                                            
+*                                                                               
+UPD10    LLC   R1,1(R3)            ELEM LEN                                     
+         AR    R3,R1               BUMP TO NEXT ELEMENT                         
+         CLI   0(R3),X'F1'         TEST END OF RECORD                           
+         BE    UPD18                                                            
+         CLI   0(R3),0             TEST END OF RECORD                           
+         BE    UPD18                                                            
+         B     UPD7                                                             
+*                                                                               
+UPD11    LR    R3,R6               NO ACTIVITY - DELETE ALL 05 ELEMENTS         
+         LA    R3,24(R3)                                                        
+         SR    R0,R0                                                            
+         ICM   R0,3,13(R6)         SAVE RECORD LEN                              
+UPD12    CLI   0(R3),X'05'         FIND TBA DATA ELEMENTS                       
+         BNE   UPD13                                                            
+         GOTO1 =V(RECUP),DMCB,(R6),(R3)   DELETE ELEMENT                        
+         B     UPD12                                                            
+*                                                                               
+UPD13    SR    R1,R1                                                            
+         ICM   R1,3,13(R6)         SAVE NEW RECORD LEN                          
+         CR    R0,R1               IF RECS LEN NOT EQUAL                        
+         BE    UPD14                                                            
+*                                                                               
+         GOTO1 =V(HELLO),DMCB,(C'G',=C'SPTFIL '),(X'F1',(R6)),0                 
+         CLI   12(R1),0            LOOK FOR ACTIVITY ELEMENT. . .               
+         BE    *+6                 . . . AND CHANGE DATE                        
+         DC    H'0'                                                             
+*                                                                               
+         L     R3,12(R1)           A(ACTIVITY ELEMENT)                          
+         MVC   8(3,R3),TODAY                                                    
+*                                                                               
+UPD14    CLC   WBUYAAGY,OLDAAGY    TEST SAME AGENCY                             
+         BE    UPD16                                                            
+         ZAP   LINE,=P'99'         FORCE NEW PAGE                               
+         MVC   OLDAAGY,WBUYAAGY                                                 
+*                                                                               
+         LA    RE,AGYTAB                                                        
+         LA    RF,16                                                            
+UPD15    CLC   0(2,RE),OLDAAGY                                                  
+         BE    UPD15X                                                           
+         LA    RE,4(RE)                                                         
+         BCT   RF,UPD15                                                         
+         DC    H'0'                                                             
+UPD15X   MVC   OLDCTRY,2(RE)       MOVE COUNTRY CODE                            
+*                                                                               
+UPD16    MVC   PWEEKS(11),=C'NO ACTIVITY'                                       
+*                                                                               
+         BRAS  RE,FMTKEY           FORMAT RECORD KEY                            
+*                                                                               
+UPD17    GOTO1 =V(PRINTER)                                                      
+*                                                                               
+UPD18    DS   0H                                                                
+*                                                                               
+         ST    R6,AIO              TBA RECORD                                   
+         BRAS  RE,SET8ANEW         GET NEW 8A POINTER DATE                      
+*                                                                               
+         CLI   WRITESW,C'N'        TEST 'WRITE=NO'                              
+         BE    UPD19                                                            
+*                                                                               
+         LA    RF,PUTREC           WRITE UPDATED TBA RECORD                     
+         BASR  RE,RF                                                            
+*                                                                               
+UPD19    BRAS  RE,UPD8A            ADD/CHANGE 8A POINTERS                       
+*                                                                               
+         CLI   TESTSW,C'Y'         WAS TEST OUTPUT FILE REQUESTED               
+         BNE   UPD5                NO                                           
+*                                                                               
+         LR    RE,R6               TBA RECORD                                   
+         SR    R0,R0                                                            
+         ICM   R0,3,13(RE)         GET RECORD LENGTH                            
+         AHI   R0,5                ADD 5 TO LENGTH                              
+         SLL   R0,16               LEFT ALIGN                                   
+         AHI   RE,-5               BACK UP FROM START OF RECORD                 
+         STCM  R0,15,0(RE)                                                      
+         MVI   4(RE),C'P'          INDICATE PUTREC                              
+         L     R1,=A(TESTOUT)                                                   
+         LR    R0,RE                                                            
+         PUT   (1),(0)             WRITE OUTPUT RECORD TO TESTFILE              
+         B     UPD5                                                             
+         EJECT                                                                  
+UPD20    LA    R5,TBADATA          FIRST TBA TABLE ENTRY                        
+         L     R6,ATBAREC                                                       
+         ST    R6,AIO                                                           
+*                                                                               
+UPD21    CLI   0(R5),0             TEST END OF TABLE                            
+         BNE   UPD23               NO                                           
+*                                                                               
+         BAS   RE,PRTTBA           PRINT ACTIVITY FOR THIS PRD1/PRD2            
+*                                                                               
+         CLI   TRACSW,C'Y'         REQ TRACE                                    
+         BNE   UPD22                NO                                          
+*                                                                               
+         L     R3,=A(BBTAB)         POINT TO                                    
+         LA    R4,=CL20'BILLBOARD TABLE'                                        
+         L     R5,0(R3)                                                         
+         LA    R3,4(,R3)                                                        
+         GOTO1 =V(PRNTBL),DMCB,(20,(R4)),(R3),C'DUMP',(R5),=C'0D'               
+*                                                                               
+UPD22    L     R4,ATBATAB1                                                      
+         B     GETBUYS             YES - CREATE NEXT BUY ACTIVITY TABLE         
+*                                                                               
+UPD23    TM    TBAFLG-TBADATA(R5),TBAPROC TEST ENTY   PROCESSED                 
+         BO    UPD26                         YES                                
+*                                                                               
+         XC    0(256,R6),0(R6)     BUILD NEW TBA RECORD                         
+         MVC   TBAKID,=X'0A2E'                                                  
+         MVC   TBAKAM,WBUYAM       AGENCY/MEDIA                                 
+         MVC   TBAKCLT,WBUYCLT     CLIENT                                       
+         MVC   TBAKMKT(5),WBUYMKST MKT/STA                                      
+         MVC   TBAKPRD,0(R5)       PRODUCT                                      
+         MVC   TBAKEST,WBUYEST     ESTIMATE                                     
+         MVC   TBAKPRD2,1(R5)      PARTNER                                      
+         MVC   13(2,R6),=H'24'     RECORD LENGTH                                
+         MVC   20(2,R6),WBUYAAGY   ALPHA AGENCY CODE                            
+*                                                                               
+         XC    KEY,KEY                                                          
+         MVC   KEY(13),0(R6)                                                    
+         BAS   RE,HIGH                                                          
+*                                                                               
+         CLC   KEY(13),KEYSAVE                                                  
+         BNE   *+12                                                             
+         ST    R6,AIO                                                           
+         BAS   RE,GETREC                                                        
+*                                                                               
+         MVI   TBAACTN,TBAUPD      SET ACTION=UPDATE                            
+         GOTO1 =V(TBAMAINT),DMCB,(R4),ATBAREC,ADATETAB                          
+*                                                                               
+         ST    R6,AIO                                                           
+         BRAS  RE,SET8ANEW         GET NEW 8A POINTER DATE                      
+*                                                                               
+         CLI   WRITESW,C'N'        TEST 'WRITE=NO'                              
+         BE    UPD24                                                            
+*                                                                               
+         LA    RF,ADDREC           ADD NEW TBA RECORD                           
+         CLC   KEY(13),KEYSAVE                                                  
+         BNE   *+8                                                              
+         LA    RF,PUTREC                                                        
+         BASR  RE,RF                                                            
+*                                                                               
+UPD24    BRAS  RE,UPD8A            UPDATE 8A POINTERS                           
+*                                                                               
+         CLI   TESTSW,C'Y'         WAS TEST OUTPUT FILE REQUESTED               
+         BNE   UPD26               NO                                           
+*                                                                               
+         LR    RE,R6               TBA RECORD                                   
+         SR    R0,R0                                                            
+         ICM   R0,3,13(RE)         GET RECORD LENGTH                            
+         AHI   R0,5                ADD 5 TO LENGTH                              
+         SLL   R0,16               LEFT ALIGN                                   
+         AHI   RE,-5               BACK UP FROM START OF RECORD                 
+         STCM  R0,15,0(RE)                                                      
+         MVI   4(RE),C'A'          INDICATE ADDREC                              
+*                                                                               
+         CLC   KEY(13),KEYSAVE                                                  
+         BNE   *+8                                                              
+         MVI   4(RE),C'P'          INDICATE PUTREC                              
+*                                                                               
+         L     R1,=A(TESTOUT)                                                   
+         LR    R0,RE                                                            
+         PUT   (1),(0)             WRITE OUTPUT RECORD TO TESTFILE              
+*                                                                               
+UPD26    LA    R5,L'TBADATA(R5)    NEXT TABLE ENTRY                             
+         B     UPD21                                                            
+         EJECT                                                                  
+UPD30    L     R6,ATBAREC          GET READY TO READ TBA RECORDS                
+         ST    R6,AIO                                                           
+*                                                                               
+         XC    KEY,KEY             GET TBA RECORDS W SAME A/M-CLT-MKSTA         
+         MVC   KEY(2),=X'0A2E'                                                  
+         MVC   KEY+2(1),WBUYAM     AGENCY/MEDIA                                 
+         MVC   KEY+3(2),WBUYCLT    CLIENT                                       
+         MVC   KEY+5(5),WBUYMKST   MKT/STA                                      
+*                                                                               
+         BAS   RE,HIGH             LOOK FOR EXISTING TBA KEY                    
+         BE    *+6                                                              
+         DC    H'0'                                                             
+*                                                                               
+UPD35    CLC   KEY(10),KEYSAVE     TEST SAME KEY THROUGH MKSTA                  
+         BNE   GETBUYS             NO MORE TBA RECORDS ARE AFFECTED             
+*                                                                               
+         CLC   KEY+11(1),WBUYEST   TEST SAME ESTIMATE                           
+         BNE   UPD60               THIS RECORD NOT AFFECTED                     
+*                                                                               
+         CLI   WBUYPRD,X'FF'       TEST POOL BUY                                
+         BE    UPD37               YES -- GET RID OF ALL PRODUCTS               
+*                                                                               
+         CLC   KEY+10(1),WBUYPRD   TEST PRODUCT MATCH                           
+         BNE   UPD60                                                            
+         CLC   KEY+12(1),WBUYPRD2  TEST PARTNER MATCH                           
+         BNE   UPD60                                                            
+*                                                                               
+UPD37    BAS   RE,GETREC           GET THE TBA RECORD                           
+         BE    *+6                                                              
+         DC    H'0'                                                             
+*                                                                               
+         LR    R3,R6                                                            
+         LA    R3,24(R3)           SKIP PAST RECORD HEADER                      
+         SR    R0,R0                                                            
+         ICM   R0,3,13(R6)         SAVE RECORD LEN                              
+*                                                                               
+UPD40    CLI   0(R3),X'05'         SEE IF TBA DATA ELEMENT                      
+         BNE   UPD45                                                            
+         GOTO1 =V(RECUP),DMCB,(R6),(R3)   DELETE ELEMENT                        
+         B     UPD40                                                            
+*                                                                               
+UPD45    SR    R1,R1                                                            
+         ICM   R1,3,13(R6)         SAVE NEW RECORD LEN                          
+         CR    R0,R1               IF RECS LEN NOT EQUAL                        
+         BE    UPD46                                                            
+*                                                                               
+         GOTO1 =V(HELLO),DMCB,(C'G',=C'SPTFIL '),(X'F1',(R6)),0                 
+         CLI   12(R1),0            LOOK FOR ACTIVITY ELEMENT. . .               
+         BE    *+6                 . . . AND CHANGE DATE                        
+         DC    H'0'                                                             
+*                                                                               
+         L     R3,12(R1)           A(ACTIVITY ELEMENT)                          
+         MVC   8(3,R3),TODAY                                                    
+*                                                                               
+UPD46    BRAS  RE,SET8ANEW         GET NEW 8A POINTER DATE                      
+*                                                                               
+         CLI   WRITESW,C'N'        TEST 'WRITE=NO'                              
+         BE    *+8                                                              
+         BAS   RE,PUTREC           UPDATE THE RECORD                            
+*                                                                               
+         BRAS  RE,UPD8A            UPDATE 8A POINTERS                           
+*                                                                               
+         CLI   TESTSW,C'Y'         WAS TEST OUTPUT FILE REQUESTED               
+         BNE   UPD50                                                            
+*                                                                               
+         LR    RE,R6               TBA RECORD                                   
+         SR    R0,R0                                                            
+         ICM   R0,3,13(RE)         GET RECORD LENGTH                            
+         AHI   R0,5                ADD 5 TO LENGTH                              
+         SLL   R0,16               LEFT ALIGN                                   
+         AHI   RE,-5               BACK UP FROM START OF RECORD                 
+         STCM  R0,15,0(RE)                                                      
+         MVI   4(RE),C'P'          INDICATE PUTREC                              
+         L     R1,=A(TESTOUT)                                                   
+         LR    R0,RE                                                            
+         PUT   (1),(0)             WRITE OUTPUT RECORD                          
+*                                                                               
+UPD50    CLC   WBUYAAGY,OLDAAGY    TEST SAME AGENCY                             
+         BE    *+10                YES                                          
+         ZAP   LINE,=P'99'         FORCE NEW PAGE                               
+*                                                                               
+         BRAS  RE,FMTKEY                                                        
+*                                                                               
+UPD55    GOTO1 =V(PRINTER)                                                      
+*                                                                               
+UPD60    BAS   RE,SEQ              TRY NEXT TBA RECORD                          
+         BE    UPD35                                                            
+         DC    H'0'                                                             
+         EJECT                                                                  
+*============================================================                   
+* PRINT THE TBA TABLE DATA FOR THE CURRENT TBA RECORD                           
+*============================================================                   
+                                                                                
+PRTTBA   NTR1                                                                   
+*                                                                               
+         CLC   WBUYAAGY,OLDAAGY    TEST SAME AGENCY                             
+         BE    PRT4                                                             
+         ZAP   LINE,=P'99'         FORCE NEW PAGE                               
+         MVC   OLDAAGY,WBUYAAGY                                                 
+*                                                                               
+         LA    RE,AGYTAB                                                        
+         LA    RF,16                                                            
+PRT2     CLC   0(2,RE),OLDAAGY                                                  
+         BE    PRT2X                                                            
+         LA    RE,4(RE)                                                         
+         BCT   RF,PRT2                                                          
+         DC    H'0'                                                             
+PRT2X    MVC   OLDCTRY,2(RE)       MOVE COUNTRY CODE                            
+                                                                                
+*** PRINT TBA TABLE DATA ***                                                    
+                                                                                
+PRT4     L     R5,ATBATAB1             A(TBA TABLE)                             
+         LA    R5,TBADATA-TBATABD(R5)  A(FIRST TABLE ENTRY)                     
+         L     R2,ADATETAB         SHOWS WHICH DATES WERE ADDED TODAY           
+*                                                                               
+PRT10    TM    TBAFLG-TBADATA(R5),TBAPRT    PRINTED ?      Y                    
+         BO    PRT34               YES - SKIP                                   
+*                                                                               
+         OC    4(12,R5),4(R5)      TEST ACTIVE                                  
+         BZ    PRT34                                                            
+*                                                                               
+*NOP     L     RE,ABUY             TBA RECORD SAVED IN ABUY                     
+         L     RE,ATBAREC          TBA RECORD SAVED IN ABUY                     
+         CLC   TBAKPRD-TBAKEY(1,RE),0(R5)    MATCH PRD 1                        
+         BNE   PRT34                                                            
+         CLC   TBAKPRD2-TBAKEY(1,RE),1(R5)   MATCH PRD 2                        
+         BNE   PRT34                                                            
+*                                                                               
+         OI    TBAFLG-TBADATA(R5),TBAPRT   MARK ENTRY PRINTED                   
+*                                                                               
+         MVI   PIGSW,C'N'                                                       
+         BRAS  RE,FMTKEY                                                        
+         LR    R9,R2               BEGINNING OF NEW ROW OF DATES                
+*                                                                               
+         MVI   PPRD+3,C'-'                                                      
+         CLI   3(R9),0             TEST SLN2 TO SEE IF PIGGYBACK                
+         BNE   PRT12               YES                                          
+         LLC   R0,2(R9)            GET CURRENT SLN                              
+         EDIT  (R0),(3,PPRD+4),ALIGN=LEFT                                       
+         LARL  R4,P1                                                            
+         MVC   0(132,R4),P         MOVE PRINT LINE TO BUFFER                    
+         MVC   P,SPACES                                                         
+         B     PRT14                                                            
+*                                                                               
+PRT12    LARL  R4,P1                                                            
+         MVC   0(132,R4),P                                                      
+         MVC   P,SPACES                                                         
+*                                                                               
+         MVI   PIGSW,C'Y'          SET TO PRINT 2 LINES                         
+         LLC   R0,2(R9)            SLN1                                         
+         LA    RF,PPRD-P+132(R4)   PRINT ON LINE 2                              
+         EDIT  (R0),(3,(RF)),ALIGN=LEFT                                         
+         MVI   3(RF),C'-'                                                       
+         LLC   R0,3(R9)            SLN2                                         
+         LA    RF,4(RF)                                                         
+         EDIT  (R0),(3,(RF)),ALIGN=LEFT                                         
+*                                                                               
+* PRINT LIST OF ACTIVE WEEKS *                                                  
+*                                                                               
+PRT14    LA    R3,PWEEKS-P(R4)                                                  
+         ST    R3,WKADDR                                                        
+         ZAP   WKCTR,=P'7'                                                      
+         ZAP   LNCTR,=P'1'                                                      
+         LA    R9,4(R9)            GO PAST PRDS/SLNS                            
+         DROP  R4                                                               
+*                                                                               
+         L     R6,=V(TBADATES)     GET TBAMAINT DATE LIST ADDRESS               
+         LA    R7,4(R5)            POINT TO FIRST ACTIVITY BYTE                 
+         LA    R4,X'80'            AND SET TEST BIT                             
+*                                                                               
+PRT16    CLI   0(R7),0             TEST ANY BITS ON                             
+         BNE   PRT18               YES                                          
+         LA    R6,16(R6)           SKIP 8 WEEKS                                 
+         LA    R7,1(R7)                                                         
+         LA    R4,X'80'                                                         
+         CLI   0(R6),0             TEST E-O-T                                   
+         BNE   PRT16                                                            
+         B     PRT30                                                            
+*                                                                               
+PRT18    EX    R4,*+8                                                           
+         B     *+8                                                              
+         TM    0(R7),0                                                          
+         BZ    PRT28                                                            
+         GOTO1 =V(DATCON),DMCB,(2,(R6)),(8,(R3))                                
+*                                                                               
+* DETERMINE IF DATE WAS ADDED TODAY                                             
+*                                                                               
+PRT22    CLC   0(2,R9),0(R6)       TEST DATE IN NEW DATES LIST                  
+         BH    PRT26                                                            
+         BE    *+12                                                             
+         LA    R9,2(R9)                                                         
+         B     PRT22                                                            
+*                                                                               
+         MVI   8(R3),C'*'          ASTERISK INDICATES DATE IS NEW               
+         LA    R9,2(R9)                                                         
+*                                                                               
+PRT26    LA    R3,10(R3)                                                        
+         SP    WKCTR,=P'1'                                                      
+         BP    PRT28                                                            
+         L     R3,WKADDR                                                        
+         LA    R3,132(R3)                                                       
+         ST    R3,WKADDR                                                        
+         ZAP   WKCTR,=P'7'                                                      
+         AP    LNCTR,=P'1'                                                      
+*                                                                               
+PRT28    LA    R6,2(R6)            NEXT WEEK                                    
+         SRL   R4,1                SHIFT TEST BIT                               
+         CLI   0(R6),0             TEST E-O-T                                   
+         BE    PRT30                                                            
+         LTR   R4,R4               TEST ANY BITS LEFT                           
+         BNZ   PRT18                                                            
+         LA    R7,1(R7)                                                         
+         LA    R4,X'80'                                                         
+         B     PRT16                                                            
+*                                                                               
+PRT30    LARL  R1,P1                                                            
+         CLI   PIGSW,C'Y'          TEST NEED AT LEAST 2 LINES                   
+         BNE   PRT32                                                            
+         CP    LNCTR,=P'1'                                                      
+         BH    PRT32                                                            
+         AP    LNCTR,=P'1'                                                      
+*                                                                               
+PRT32    MVC   P(132),0(R1)        MOVE BUFFER TO PRINT LINE                    
+         MVC   0(132,R1),SPACES    AND BLANK BUFFER                             
+         GOTO1 =V(PRINTER)                                                      
+         LA    R1,132(R1)                                                       
+         SP    LNCTR,=P'1'                                                      
+         BP    PRT32                                                            
+*                                                                               
+PRT34    LA    R5,L'TBADATA(R5)    NEXT DATA ROW                                
+         LA    R2,196(R2)          NEXT ROW OF NEW DATES                        
+         CLI   0(R5),0             TEST E-O-T                                   
+         BNE   PRT10                                                            
+         B     EXIT                                                             
+         EJECT                                                                  
+*============================================================                   
+* FORMAT RECORD KEY FOR PRINTING                                                
+*============================================================                   
+                                                                                
+FMTKEY   NTR1                                                                   
+         MVC   PAGY,WBUYAAGY                                                    
+*                                                                               
+         SR    RE,RE               GET EBCDIC MEDIA                             
+         IC    RE,WBUYAM                                                        
+         N     RE,=X'0000000F'                                                  
+         IC    RE,MDTAB-1(RE)                                                   
+         STC   RE,PMED                                                          
+*                                                                               
+         SR    R0,R0                                                            
+         IC    R0,WBUYEST                                                       
+         EDIT  (R0),(3,PEST)                                                    
+*                                                                               
+         GOTO1 =V(CLUNPK),DMCB,WBUYCLT,PCLT                                     
+*                                                                               
+         L     RE,=A(UTL)                                                       
+         MVC   SVUTL,4(RE)         SAVE CURRENT SYSNUM                          
+         MVC   4(1,RE),SPTUTL                                                   
+*                                                                               
+         L     R1,=A(STAWORK)                                                   
+         USING STAPACKD,R1                                                      
+*                                                                               
+         OC    OLDAAGY,OLDAAGY                                                  
+         BZ    FMTK2                                                            
+*                                                                               
+         MVI   STAPACT,C'U'                                                     
+         MVC   STAPMED,PMED                                                     
+         MVC   STAPAGY,OLDAAGY                                                  
+         MVC   STAPCTRY,OLDCTRY                                                 
+         MVC   STAPMKST,WBUYMKST                                                
+         L     RE,=A(COMFACS)                                                   
+         ST    RE,STAPACOM                                                      
+         L     RF,VSTAPACK                                                      
+         GOTO1 (RF),(R1)                                                        
+*                                                                               
+         MVC   PMKT,STAPQMKT                                                    
+         MVC   PSTA(4),STAPQSTA                                                 
+         CLI   STAPQSTA+4,C' '                                                  
+         BE    *+14                                                             
+         MVI   PSTA+4,C'-'                                                      
+         MVC   PSTA+5(1),STAPQSTA+4                                             
+*                                                                               
+         CLC   STAPQNET,SPACES     CABLE HEAD                                   
+         BE    *+14                                                             
+         MVI   PSTA+4,C'/'                                                      
+         MVC   PSTA+5(3),STAPQNET                                               
+         DROP  R1                                                               
+*                                                                               
+FMTK2    L     RE,=A(UTL)                                                       
+         MVC   4(1,RE),SVUTL                                                    
+*                                                                               
+         LA    R1,TBAKPRD          POINT TO PRD 1                               
+         BAS   RE,FINDPRD                                                       
+         MVC   PPRD(3),WORK                                                     
+*                                                                               
+         CLI   TBAKPRD2,0                                                       
+         BE    FMTKX                                                            
+*                                                                               
+         LA    R1,TBAKPRD2         P/B                                          
+         BAS   RE,FINDPRD                                                       
+         MVI   PPRD+3,C'-'                                                      
+         MVC   PPRD+4(3),WORK                                                   
+*                                                                               
+FMTKX    J     EXIT                                                             
+*                                                                               
+MDTAB    DC    C'TRNX'                                                          
+         EJECT                                                                  
+FINDPRD  L     RF,ADCLT                                                         
+         LA    RF,CLIST-CLTHDRD(RF)                                             
+*                                                                               
+FINDPRD2 CLC   0(1,R1),3(RF)                                                    
+         BE    FINDPRD4                                                         
+         LA    RF,4(RF)                                                         
+         CLI   0(RF),C'A'                                                       
+         BNL   FINDPRD2                                                         
+         LA    RF,=C'***'                                                       
+*                                                                               
+FINDPRD4 MVC   WORK(3),0(RF)                                                    
+         BR    RE                                                               
+         EJECT                                                                  
+*================================================================               
+* FIND THE DATE FOR THE 8A ELEMENT IN THIS RECORD                               
+* THE FIRST ACTIVE DATE AFTER THE FILE LOAD DATE - 7 DAYS                       
+*================================================================               
+                                                                                
+SET8ANEW NTR1                                                                   
+*                                                                               
+         LA    RE,24(R6)           POINT TO FIRST ELEMENT                       
+         USING TBADTAEL,RE                                                      
+*                                                                               
+SET8A2   TM    TBADTAAC,X'80'      TEST ACTIVITY PENDING                        
+         BZ    SET8A4                                                           
+         CLC   TBADTAWK,SV8ABAS2   AFTER POINTER START DATE                     
+         BL    SET8A4              NO                                           
+         OI    TBADTAAC,TBADTA8A   SET THIS AS 8A POINTER ELEM                  
+         MVC   SV8ANEW,TBADTAWK    AND SAVE THE NEW DATE                        
+         B     SET8AX                                                           
+         DROP  RE                                                               
+*                                                                               
+*ET8A4   IC    R0,1(RE)                                                         
+SET8A4   LLC   R0,1(RE)                                                         
+         AR    RE,R0                                                            
+         CLI   0(RE),5                                                          
+         BE    SET8A2                                                           
+         CLI   0(RE),0                                                          
+         BNE   SET8A4                                                           
+SET8AX   J     EXIT                                                             
+         EJECT                                                                  
+*================================================================               
+* DELETE OLD 8A POINTER WITH DATE IN SV8AOLD AND                                
+* ADD NEW 8A POINTER WITH DATE IN SV8ANEW FOR REC AT 0(R6)                      
+*================================================================               
+                                                                                
+UPD8A    NTR1                                                                   
+         MVC   MYKEYSV,KEY         SAVE CURRENT TRFDIR KEY/DA                   
+*                                                                               
+         CLC   SV8AOLD,SV8ANEW     TEST SAME OLD/NEW DATES                      
+         BE    UPD8AX                                                           
+         OC    SV8AOLD,SV8AOLD                                                  
+         BZ    UPD8A6                                                           
+*                                                                               
+         GOTO1 =V(DATCON),DMCB,(2,SV8AOLD),DUB  UNPACK DATE                     
+         GOTO1 =V(PERVERT),DMCB,SV8ABASE,DUB    GET DAYS BETWEEN DATES          
+*                                                                               
+         MVI   KEY,X'8A'           TYPE                                         
+         MVC   KEY+1(3),2(R6)      A-M/CLT                                      
+         LH    R0,8(R1)            GET DAYS INCLUSIVE                           
+         BCTR  R0,0                ADJUST TO DAYS BETWEEN DATES                 
+         STC   R0,KEY+4            AND SET DAYS TO FIRST AIR DATE               
+         MVC   KEY+5(8),5(R6)      MKT/STA/PRD/...                              
+*                                                                               
+         BAS   RE,TRFHIGH                                                       
+         CLC   KEY(13),KEYSAVE                                                  
+         BNE   UPD8A6                                                           
+*                                                                               
+         OI    KEY+13,X'80'        DELETE OLD 8A KEY                            
+         CLI   WRITESW,C'N'                                                     
+         BE    UPD8A6                                                           
+*                                                                               
+         BAS   RE,TRFWRT                                                        
+                                                                                
+*=========================================================                      
+* CREATE POINTER FOR NEW DATE                                                   
+*=========================================================                      
+                                                                                
+UPD8A6   OC    SV8ANEW,SV8ANEW                                                  
+         BZ    UPD8AX                                                           
+*                                                                               
+         GOTO1 =V(DATCON),DMCB,(2,SV8ANEW),DUB  UNPACK DATE                     
+         GOTO1 =V(PERVERT),DMCB,SV8ABASE,DUB    GET DAYS BETWEEN DATES          
+         CLC   8(2,R1),=H'195'              MORE THAN 195 DAYS AWAY             
+         BH    UPD8AX                       YES -FORGET IT                      
+*                                                                               
+         XC    KEY,KEY                                                          
+         MVI   KEY,X'8A'           TYPE                                         
+         MVC   KEY+1(3),2(R6)      A-M/CLT                                      
+         LH    R0,8(R1)            GET DAYS INCLUSIVE                           
+         BCTR  R0,0                ADJUST TO DAYS BETWEEN DATES                 
+         STC   R0,KEY+4            AND SET DAYS TO FIRST AIR DATE               
+         MVC   KEY+5(8),5(R6)      MKT/STA/PRD/...                              
+*                                                                               
+         MVI   DMINBTS,X'08'       SET TO READ DELETES                          
+         BAS   RE,TRFHIGH                                                       
+         CLC   KEY(13),KEYSAVE                                                  
+         BNE   UPD8A8                                                           
+         NI    KEY+13,X'7F'         UNDELETE                                    
+         CLI   WRITESW,C'N'                                                     
+         BE    *+8                                                              
+         BAS   RE,TRFWRT                                                        
+         B     UPD8AX                                                           
+*                                                                               
+UPD8A8   MVC   KEY,KEYSAVE             RESTORE KEY BEING ADDED                  
+         MVC   KEY+14(4),MYKEYSV+14    MOVE SAVED DISK ADDRESS                  
+         CLI   WRITESW,C'N'                                                     
+         BE    UPD8AX                                                           
+         GOTO1 =V(DATAMGR),DMCB,=C'DMADD',=C'TRFDIR',KEY,KEY                    
+         CLI   8(R1),0                                                          
+         BE    *+6                                                              
+         DC    H'0'                                                             
+*                                                                               
+UPD8AX MVI     DMINBTS,0                                                        
+         MVC   KEY,MYKEYSV         RESTORE ORIGINAL KEY                         
+         GOTO1 HIGH                                                             
+         XC    SV8AOLD,SV8AOLD                                                  
+         XC    SV8ANEW,SV8ANEW                                                  
+         XIT1                                                                   
+MYKEYSV  DS    XL24                                                             
+         EJECT                                                                  
+TRFHIGH  NTR1                                                                   
+         MVC   KEYSAVE,KEY                                                      
+         LA    R3,=C'TRFDIR'                                                    
+         B     HIGHDMGR                                                         
+*                                                                               
+TRFWRT   NTR1                                                                   
+         GOTO1 =V(DATAMGR),DMCB,=C'DMWRT',=C'TRFDIR',KEY,KEY                    
+         B     EXIT                                                             
+*                                                                               
+HIGH     NTR1                                                                   
+         MVC   KEYSAVE,KEY                                                      
+*                                                                               
+         LA    R3,=C'SPTDIR'                                                    
+         CLI   KEY,X'0A'           THIS A TRAFFIC REC                           
+         BNE   *+8                                                              
+         LA    R3,=C'TRFDIR'                                                    
+*                                                                               
+HIGHDMGR GOTO1 =V(DATAMGR),DMCB,(DMINBTS,=C'DMRDHI'),(R3),KEYSAVE,KEY           
+         B     PUTRECX                                                          
+*                                                                               
+SEQ      NTR1                                                                   
+         MVC   KEYSAVE,KEY                                                      
+*                                                                               
+         LA    R3,=C'SPTDIR'                                                    
+         CLI   KEY,X'0A'           THIS A TRAFFIC REC                           
+         BNE   *+8                                                              
+         LA    R3,=C'TRFDIR'                                                    
+*                                                                               
+         GOTO1 =V(DATAMGR),DMCB,(DMINBTS,=C'DMRSEQ'),(R3),KEYSAVE,KEY           
+         B     PUTRECX                                                          
+*                                                                               
+GETREC   LA    RF,=C'GETREC'                                                    
+         B     PUTREC2                                                          
+*                                                                               
+ADDREC   LA    RF,=C'ADDREC'                                                    
+         MVI   KEY,X'0A'                                                        
+         AP    OUTCOUNT,=P'1'                                                   
+         B     PUTREC2                                                          
+*                                                                               
+PUTREC   LA    RF,=C'PUTREC'                                                    
+         AP    OUTCOUNT,=P'1'                                                   
+*                                                                               
+PUTREC2  NTR1                                                                   
+         ST    RF,DMCB                                                          
+         MVC   DMCB(1),DMINBTS                                                  
+*                                                                               
+         LA    R3,=C'SPTFILE'                                                   
+         CLI   KEY,X'0A'           THIS A TRAFFIC REC                           
+         BNE   *+8                                                              
+         LA    R3,=C'TRFFILE'                                                   
+*                                                                               
+         GOTO1 =V(DATAMGR),DMCB,,(R3),KEY+14,AIO,DMWORK                         
+*                                                                               
+PUTRECX  TM    8(R1),X'FD'         SET CC ON EXIT                               
+*                                                                               
+EXIT     XIT1                                                                   
+*                                                                               
+AUTOMSG  DC    C'AUTONOTE*US-OPERATIONS_SUPPORT_NY,MNAS,SMURN,EJOR: '           
+BDAMSG   DC    C'TR074 BAD DIR POINTER '                                        
+         EJECT                                                                  
+*=============================================================                  
+* READ ONLINE RECOVERY FILE                                                     
+* IF NO PREVIOUS DISK ADDRESS, TRY TO READ IT FROM CHECKPOINT                   
+*=============================================================                  
+                                                                                
+RDRCV    NTR1                                                                   
+*                                                                               
+         OC    LASTRCV,LASTRCV     HAVE A DISK ADDRESS?                         
+         BNZ   RDRCV8              YES                                          
+                                                                                
+* NO - SEE IF THERE'S A CHECKPOINT RECORD                                       
+                                                                                
+         L     R4,=A(CHKPOINT)     OPEN CHECKPOINT FILE                         
+         OPEN  ((4),INPUT)                                                      
+         LTR   RF,RF                                                            
+         BZ    *+6                                                              
+         DC    H'0'                                                             
+*                                                                               
+RDRCV2   L     R1,=A(CHKPOINT)     AND READ THE RECORD                          
+         GET   (1),CARD                                                         
+*                                                                               
+RDRCV4   L     R4,=A(CHKPOINT)                                                  
+         CLOSE ((4))               CLOSE THE INPUT FILE                         
+*                                                                               
+         MVI   REREAD,C'N'         ASSUME CHECKPOINT INVALID                    
+         CLC   TODAY,CARD          TEST DATA CURRENT                            
+         BNE   RDRCV6              NO                                           
+         MVC   LASTRCV,CARD+3      AND USE THIS DISK ADDRESS IF IT IS           
+         OC    LASTRCV,LASTRCV                                                  
+         BZ    *+8                                                              
+         MVI   REREAD,C'Y'         AND MAKE SURE TO REREAD RECORD               
+*                                                                               
+RDRCV6   BRAS  RE,STRTMSG                                                       
+*                                                                               
+RDRCV8   MVC   SAVERCV,LASTRCV     SAVE DA OF LAST REC THAT WAS FOUND           
+*                                                                               
+         L     RE,=A(UTL)                                                       
+         MVC   4(1,RE),SPTUTL                                                   
+*                                                                               
+RDRCV8A  LA    R0,=C'DMRDIR'                                                    
+         CLI   REREAD,C'Y'                                                      
+         BE    *+8                                                              
+         LA    R0,=C'DMRSEQ'                                                    
+*                                                                               
+         GOTO1 =V(DATAMGR),DMCB,(X'00',(R0)),=C'RECOVER',LASTRCV,      X        
+               RECVHDR,ARCVBUFF                                                 
+*                                                                               
+         TM    8(R1),X'80'         TEST EOF                                     
+         BO    RDRCVX                                                           
+*                                                                               
+         CLI   8(R1),0             TEST ANY OTHER ERROR                         
+         BNE   RDRCV8ER                                                         
+*                                                                               
+         CLI   REREAD,C'Y'         IF THIS WAS A REREAD                         
+         BNE   RDRCV10             NO - PROCESS RECORD                          
+         MVI   REREAD,C'N'         GO GET NEXT RECORD NOW                       
+         B     RDRCV8A                                                          
+*                                                                               
+RDRCV8ER WTO   TEXT=RCVERRH,MCSFLAG=HRDCPY                                      
+*                                                                               
+RDRCV8X  XC    LASTRCV,LASTRCV     START AT BEGINNING OF FILE                   
+         MVI   RDRCV8X,0           BUT ONLY DO THIS ONCE!                       
+         B     RDRCV8                                                           
+*                                                                               
+RCVERRH  DC    H'24'                                                            
+RCVERR   DC    CL24'RECOVERY READ ERROR'                                        
+*                                                                               
+RDRCV10  CLI   RFILTY,QSPTFIL      TEST SPTFILE                                 
+         BNE   RDRCV8                                                           
+         CLI   RKEY,X'10'          TEST BUYREC (LOWER BOUND)                    
+         BL    RDRCV8                                                           
+*                                                                               
+         LA    RE,RECVHDR+24       POINT TO KEY                                 
+         SR    RF,RF                                                            
+         ICM   RF,3,13(RE)         GET REC LENGTH                               
+         LA    RF,4+24(RF)         ADJUST LENGTH FOR LEN+RECVHDR                
+         SLL   RF,16               MAKE IT LL00                                 
+         LA    RE,RECVHDR-4                                                     
+         ST    RF,0(RE)                                                         
+*                                                                               
+         AP    RECCOUNT,=P'1'      BUMP RECORD COUNTER                          
+*                                                                               
+RDRCVX   J     EXIT                                                             
+         EJECT                                                                  
+EOJ      DS    0H                                                               
+         GOTO1 =V(SORTER),DMCB,=C'END'   ENSURE THAT SORT ENDED                 
+         MVI   SORTSW,C'N'               RESET SWITCH                           
+         MVI   EOFSW,C'N'                                                       
+         CLI   TESTSW,C'Y'                                                      
+         BNE   EOJ4                                                             
+         L     R4,=A(TESTOUT)                                                   
+         CLOSE ((4))                                                            
+*                                                                               
+EOJ4     L     RF,=V(SSB)                                                       
+         USING SSOOFF,RF                                                        
+         CLI   MCINPUT,C'D'        TEST INPUT=DISK                              
+         BNE   EOJX                                                             
+         CLI   WRITESW,C'N'        TEST WRITE=NO                                
+         BE    EOJ6                                                             
+*                                                                               
+         ICM   R7,15,SSOFWNDX      CLOSE FACWK FILE                             
+         USING UKRECD,R7                                                        
+         BNZ   *+6                                                              
+         DC    H'0'                                                             
+*                                                                               
+         CP    OUTCOUNT,=P'0'                                                   
+         BE    EOJ6                                                             
+         LA    R0,=C'CLOSE'                                                     
+         GOTO1 =V(DATAMGR),DMCB,(X'00',(R0)),=C'FACWRK',(R7),ABUY,     X        
+               SSOFWBUF                                                         
+         ZAP   OUTCOUNT,=P'0'                                                   
+         DROP  R7,RF                                                            
+                                                                                
+* WRITE A RECORD TO THE CHECKPOINT FILE                                         
+                                                                                
+EOJ6     L     R4,=A(CHKPOINT)     OPEN CHECKPOINT FILE                         
+         OPEN  ((4),OUTPUT)                                                     
+         LTR   RF,RF                                                            
+         BZ    *+6                                                              
+         DC    H'0'                                                             
+*                                                                               
+         MVC   CARD,SPACES                                                      
+         MVC   CARD(3),TODAY                                                    
+         MVC   CARD+3(4),SAVERCV   PUT LAST REC FOUND TO CHKPT                  
+         MVC   CARD+10(11),=C'TB TB TB TB'                                      
+         L     R1,=A(CHKPOINT)                                                  
+         PUT   (1),CARD                                                         
+*                                                                               
+         L     R4,=A(CHKPOINT)                                                  
+         CLOSE ((4))               CLOSE THE FILE                               
+         LTR   RF,RF                                                            
+         BZ    *+6                                                              
+         DC    H'0'                                                             
+*                                                                               
+         L     RF,=A(SSB)                                                       
+         USING SSOOFF,RF                                                        
+         L     RF,SSOFWNDX                                                      
+         USING UKRECD,RF            SET FACWRK KEY VALUES                       
+         MVC   UKFILNO,=X'FFFF'     SET TO GET NEW WRKR FILE                    
+         ZAP   OUTCOUNT,=P'0'                                                   
+         DROP  RF                                                               
+*                                                                               
+         ZAP   RECCOUNT,=P'0'                                                   
+*                                                                               
+         MVC   WAITMSG+12(4),WAITTIME+2                                         
+         WTO   TEXT=WAITMSGH,MCSFLAG=HRDCPY                                     
+*                                                                               
+         L     R1,OPECB                                                         
+         TM    0(R1),X'40'         TEST OPER EC POSTED                          
+         BO    EOJ10                                                            
+         STIMER WAIT,DINTVL=WAITTIME    WAIT SPECIFIED INTERVAL                 
+                                                                                
+*============================================================                   
+* READ THE FIRST RECORD ON THE RECOVERY FILE TO FORCE                           
+* REFRESH OF RECOVERY BUFFER                                                    
+*============================================================                   
+*                                                                               
+* FLUSH BUFFERS                                                                 
+*                                                                               
+         L     RE,=A(UTL)                                                       
+         MVC   4(1,RE),TRFUTL                                                   
+*                                                                               
+         GOTO1 =V(DATAMGR),DMCB,DMKEY,=C'TRFFIL',(4,0),0                        
+         GOTO1 =V(DATAMGR),DMCB,DMKEY,=C'TRFDIR',(4,0),0                        
+*                                                                               
+         L     RE,=A(UTL)                                                       
+         MVC   4(1,RE),SPTUTL                                                   
+*                                                                               
+         GOTO1 =V(DATAMGR),DMCB,DMKEY,=C'SPTDIR',(4,0),0                        
+         GOTO1 =V(DATAMGR),DMCB,DMKEY,=C'SPTFIL',(4,0),0                        
+*                                                                               
+         XC    LASTRCV,LASTRCV                                                  
+         GOTO1 =V(DATAMGR),DMCB,(X'00',=C'DMRSEQ'),=C'RECOVER',        X        
+               LASTRCV,RECVHDR,ARCVBUFF                                         
+*                                                                               
+         MVI   REREAD,C'N'                                                      
+         MVC   LASTRCV,SAVERCV     RESTORE LAST D/A                             
+*                                                                               
+         OC    LASTRCV,LASTRCV                                                  
+         BZ    *+8                                                              
+         MVI   REREAD,C'Y'         SET TO REREAD RECORD                         
+*                                                                               
+         BRAS  RE,STRTMSG                                                       
+         B     INIT30              AND THEN CONTINUE                            
+*                                                                               
+EOJ10    WTO   TEXT=EOJMSGH,MCSFLAG=HRDCPY                                      
+*                                                                               
+EOJX     L     RE,=A(UTL)                                                       
+         MVC   4(1,RE),TRFUTL                                                   
+         GOTO1 =V(DATAMGR),DMCB,=C'DMCLSE',=C'STR',TLIST,AREC                   
+         XBASE                                                                  
+         DS    0D                                                               
+WAITTIME DC    C'00150000'         HHMMSSTH                                     
+WAITMSGH DC    H'32'                                                            
+WAITMSG  DC    CL32'WAITING FOR ....'                                           
+*                                                                               
+EOJMSGH  DC    H'24'                                                            
+EOJMSG   DC    CL24'OPER EOJ RECEIVED'                                          
+         LTORG                                                                  
+         EJECT                                                                  
+*===============================================================                
+* PUT A MESSAGE TO THE CONSOLE HARDCOPY WHEN A PASS STARTS                      
+*===============================================================                
+                                                                                
+STRTMSG  NTR1                                                                   
+         GOTO1 =V(HEXOUT),DMCB,LASTRCV,MESSAGE+23,4,=C'TOG'                     
+         WTO   TEXT=MSGH,MCSFLAG=HRDCPY                                         
+         J     EXIT                                                             
+*                                                                               
+MSGH     DC    AL2(32)                                                          
+MESSAGE  DC    CL32'START PASS AT DISKADDR 00000000'                            
+*                                                                               
+DUMPLIST DS    0F                                                               
+         DC    A(TBAUPDT,65000)                                                 
+         ORG   *-4                                                              
+         DC    X'80'                                                            
+         ORG                                                                    
+         EJECT                                                                  
+*=============================================================                  
+* SET UP OPERATOR COMMUNICATIONS                                                
+* OPERATOR NEEDS TO SEND A MODIFY EOJ COMMAND TO END RUN                        
+*=============================================================                  
+                                                                                
+SETOPS   NTR1  BASE=*,LABEL=*                                                   
+*                                                                               
+         EXTRACT ACOMM,FIELDS=COMM                                              
+         L     RF,ACOMM                                                         
+         USING COMLIST,RF                                                       
+         MVC   OPECB+1(3),COMECBPT+1                                            
+         L     R2,COMCIBPT         GET A(CIB)                                   
+         USING CIBNEXT,R2                                                       
+         LA    R3,COMCIBPT         SET A(A(CIB))                                
+         DROP  RF                                                               
+*                                                                               
+         CLI   CIBVERB,CIBSTART    TEST FOR 'S JOBNAME' (IE NOT BATCH)          
+         BNE   SETOP2                                                           
+         QEDIT ORIGIN=(R3),BLOCK=(R2)        RELEASE THE CIB                    
+         DROP  R2                                                               
+*                                                                               
+SETOP2   QEDIT ORIGIN=(R3),CIBCTR=1          ACCEPT MODIFY COMMANDS             
+         WTO   TEXT=CIBMSGH,MCSFLAG=HRDCPY                                      
+*                                                                               
+         J     EXIT                                                             
+CIBMSGH  DC    H'24'                                                            
+CIBMSG   DC    CL24'OPER INTRPTS ENABLED'                                       
+*                                                                               
+         DS    0D                                                               
+         DC    CL8'**OPECB*'                                                    
+OPECB    DC    F'0'                                                             
+         DC    F'0'                                                             
+         DC    CL8'*LASTRCV'                                                    
+LASTRCV  DC    F'0'                                                             
+SAVERCV  DC    F'0'                                                             
+DUB      DS    D                                                                
+FULL     DS    F                                                                
+HALF     DS    H                                                                
+BYTE     DS    X                                                                
+BYTE2    DS    X                                                                
+         DC    C'**DMCB**'                                                      
+DMCB     DS    6F                                                               
+         DC    C'***KEY**'                                                      
+KEY      DS    XL32                                                             
+KEYSAVE  DS    XL32                                                             
+DMWORK   DS    XL96                                                             
+SV8ABASE DS    XL6                 FILE LOAD DATE -7 DAYS                       
+SV8ABAS2 DS    XL2                 LOAD DATE -7 DAYS 2-BYTE VERSION             
+SV8AOLD  DS    XL2                 OLD 8A DATE                                  
+SV8ANEW  DS    XL2                 NEW 8A DATE                                  
+ACOMM    DS    A                                                                
+*                                                                               
+         DS    0D                                                               
+WORK     DS    CL64                                                             
+CARD     DS    CL80                                                             
+MYSEQ    DS    F                                                                
+DATLEN   DS    F                                                                
+ELCODE   DS    X                                                                
+MCINPUT  DS    X                                                                
+MCRECOVR DS    X                                                                
+MCFACPAK DS    X                                                                
+MCORIGID DS    XL2                                                              
+EOFSW    DC    X'00'                                                            
+TESTSW   DC    X'00'               WRITE OUTPUT RECS TO TEST FILE               
+TRACSW   DC    X'00'               TRACE SOME I/O                               
+WRITESW  DC    X'00'                                                            
+PIGSW    DC    X'00'                                                            
+SORTSW   DC    X'00'                                                            
+BADRECT  DC    X'00'               BAD RECORD COUNT                             
+SVSYS    DS    CL8                                                              
+OLDAAGY  DS    CL2                                                              
+OLDCTRY  DS    C                                                                
+DMINBTS  DS    X                                                                
+TODAY    DS    XL3                                                              
+TRFUTL   DS    XL1                                                              
+SPTUTL   DS    XL1                                                              
+SVUTL    DS    XL1                                                              
+REREAD   DC    C'N'                                                             
+*                                                                               
+         DS    0D                                                               
+STAWORK  DS    XL32                                                             
+AGYTAB   DS    XL64                                                             
+*                                                                               
+AIO      DS    A                                                                
+ATBATAB1 DC    A(TBATAB1)                                                       
+ATBATAB2 DC    A(TBATAB2)                                                       
+ADATETAB DC    A(DATETAB)                                                       
+AREC     DC    A(REC)                                                           
+ATBAREC  DC    A(TBAREC)                                                        
+ADCLT    DC    A(CLTREC)                                                        
+ABUY     DC    A(BUYRECI)                                                       
+ARCVBUFF DC    A(RCVBUFF)                                                       
+*                                                                               
+VSTAPACK DS    V                                                                
+VCABLETB DC    A(0)                                                             
+*                                                                               
+WKADDR   DS    A                                                                
+WKCTR    DC    PL2'0'                                                           
+LNCTR    DC    PL2'0'                                                           
+RECCOUNT DC    PL4'0'                                                           
+OUTCOUNT DC    PL4'0'                                                           
+         EJECT                                                                  
+EMSG     DS    CL80                ERROR MESSAGE                                
+SRTCARDR DC    CL80'SORT FIELDS=(5,16,A),FORMAT=BI,WORK=1'                      
+RECCARDR DC    CL80'RECORD TYPE=V,LENGTH=6100'                                  
+SRTCARDW DC    CL80'SORT FIELDS=(1,11,A),FORMAT=BI,WORK=1'                      
+RECCARDW DC    CL80'RECORD TYPE=F,LENGTH=13'                                    
+*                                                                               
+MISCLTMS DC    C'MISSING CLIENT A/M=XX  CLT=XXXX'                               
+         LTORG                                                                  
+         EJECT                                                                  
+         DS    0D                                                               
+         DC    C'*SORTKEY'                                                      
+WSRTKEY  DS    0XL13               ACTIVITY SORT KEY                            
+*                                                                               
+WSRTAM   DS    XL1                                                              
+WSRTCLT  DS    XL2                                                              
+WSRTMKST DS    XL5                                                              
+WSRTPRD  DS    XL1                                                              
+WSRTEST  DS    XL1                                                              
+WSRTPRD2 DS    XL1                                                              
+*                                                                               
+WSRTAAGY DS    CL2                                                              
+*                                                                               
+         DS    0D                                                               
+         DC    C'*BUYKEY*'                                                      
+WBUYKEY  DS    0XL10               BUY KEY                                      
+*                                                                               
+WBUYAM   DS    XL1                                                              
+WBUYCLT  DS    XL2                                                              
+WBUYPRD  DS    XL1                                                              
+WBUYMKST DS    XL5                                                              
+WBUYEST  DS    XL1                                                              
+*                                                                               
+WBUYPRD2 DS    XL1                                                              
+WBUYAAGY DS    CL2                                                              
+         EJECT                                                                  
+         DS    0D                                                               
+         DC    C'*RECVREC'                                                      
+RCVLEN   DS    H                   LOGICAL IOCS LEN                             
+         DS    H                                                                
+RSORTKEY DS    0XL13                                                            
+*                                                                               
+RSORTAM  DS    XL1                                                              
+RSORTCLT DS    XL2                                                              
+RSORTMKT DS    XL2                                                              
+RSORTSTA DS    XL3                                                              
+RSORTPRD DS    XL1                                                              
+RSORTEST DS    XL1                                                              
+RSORTBUY DS    XL3                                                              
+*                                                                               
+RSORTSEQ DS    XL3                                                              
+RSPARE   DS    XL4                                                              
+*                                                                               
+*                                                                               
+*          DATA SET DMRCVRHDR  AT LEVEL 001 AS OF 07/18/01                      
+RECVHDR  DS    0CL24               ***** RECOVERY RECORD HEADER **              
+*                                                                               
+RFILTY   DS    XL1       +0        FILE NUMBER                                  
+RRECTY   DS    XL1       +1        TRNS CODE (01=COPY,02=CHG,03=AD              
+RTRM     DS    XL2       +2        TERMINAL NUMBER                              
+         ORG   RTRM                                                             
+RPERSON  DS    XL2       +2        PERSON ID (NEW FORMAT)                       
+RTASKID  DS    0CL1      +4        TASK IDENTIFICATION                          
+RSIN     DS    XL4       +4        SYSTEM INPUT NUMBER                          
+RTIME    DS    XL4       +8        TIME 0HHMMSS+ WHERE +=F IF FIRS              
+*                                  ELSE HHMMSSI+ IF CONTROL SYSTEM              
+*                                  WHERE I IS FACPAKID AND X'80' B              
+RVCHR    DS    XL4       +12       DISK ADDRESS                                 
+RSYS     DS    XL1       +16       SYSTEM NUMBER                                
+RPRG     DS    XL1       +17       PROGRAM NUMBER                               
+         DS    XL3       +18       YMD BINARY                                   
+RAG      DS    XL1       +21       AGENCY/COMPANY                               
+RUSER    DS    XL2       +22       USER ID NUMBER                               
+*                                                                               
+RKEY     DS    0CL13               IOAREA FOR RECOVERY RECORD                   
+         DS    6100C                                                            
+         EJECT                                                                  
+         DS    0D                                                               
+REC      DS    4000C               IOAREA                                       
+*                                                                               
+         DS    0D                                                               
+         DC    C'*CLTREC*'                                                      
+CLTREC   DS    1000C               IOAREA FOR CLTHDR                            
+*                                                                               
+         DS    0D                                                               
+         DC    C'*TBAREC*'                                                      
+TBAREC   DS    4200C               IOAREA FOR TBAREC                            
+*                                                                               
+         DS    0D                                                               
+         DC    C'*BUYREC*'                                                      
+BUYRECI  DS    6100C               IOAREA FOR BUYREC                            
+*                                                                               
+P1       DC    CL132' '                                                         
+P2       DC    CL132' '                                                         
+P3       DC    CL132' '                                                         
+P4       DC    CL132' '                                                         
+P5       DC    CL132' '                                                         
+P6       DC    CL132' '                                                         
+P7       DC    CL132' '                                                         
+P8       DC    CL132' '                                                         
+P9       DC    CL132' '                                                         
+P10      DC    CL132' '                                                         
+P11      DC    CL132' '                                                         
+P12      DC    CL132' '                                                         
+*                                                                               
+TBAMID1  DC    CL132'AG M CLT MKT  STAT     PRODUCT EST ACTIVE WEEKS'           
+TBAMID2  DC    CL132'-- - --- ---  ----     ------- --- ------------'           
+BADRECVR DC    CL132'MISS CLT,RCV REC BYPASSED.  A/M=XX  CLT=XXXX  PRD=+        
+               XX  MKSTA=XXXXXXXXXX  EST=XX'                                    
+*                                                                               
+RECVIN   DCB   DDNAME=RECVIN,DSORG=PS,RECFM=VB,LRECL=8200,             +        
+               MACRF=GM,EODAD=ENDIN1                                            
+*                                                                               
+TESTOUT  DCB   DDNAME=TESTOUT,DSORG=PS,RECFM=VB,LRECL=8200,            +        
+               BLKSIZE=27648,MACRF=PM                                           
+*                                                                               
+WORKFILE DCB   DDNAME=WORKFILE,DSORG=PS,RECFM=FB,LRECL=13,             +        
+               BLKSIZE=1300,MACRF=(GM,PM),EODAD=ENDIN2                          
+*                                                                               
+CHKPOINT DCB   DDNAME=CHKPOINT,DSORG=PS,RECFM=FB,LRECL=80,             +        
+               BLKSIZE=160,MACRF=(GM,PM),EODAD=RDRCV4                           
+*                                                                               
+         DS    0D                                                               
+         DC    C'*TBATAB1'                                                      
+TBATAB1  DS    0F                                                               
+         DC    AL2(TBATABX1-TBATAB1)                                            
+         DC    2046X'00'                                                        
+TBATABX1 EQU   *                                                                
+*                                                                               
+         DS    0D                                                               
+         DC    C'*TBATAB2'                                                      
+TBATAB2  DS    0F                                                               
+         DC    AL2(TBATABX2-TBATAB2)                                            
+         DC    2046X'00'                                                        
+TBATABX2 EQU   *                                                                
+*                                                                               
+* ENTRY IS  A/M CLT MKT/STA EST                                                 
+*           PRD1, PRD2, SLN1, SLN2, LOW DATE, HIGH DATE, STAT                   
+*                                                                               
+         DC    C'*BBTABLE'                                                      
+BBTAB    DC    A(4000*20)          WAS 4000*18                                  
+         DC    4000XL20'00'                                                     
+         DS    0D                                                               
+         DC    C'*DATETAB'                                                      
+DATETAB  DS    0F                                                               
+         DC    24892X'00'                                                       
+DATETABX EQU   *                                                                
+*                                                                               
+         DS    0D                                                               
+         DC    CL12'** FACINDX **'                                              
+FACINDX  DC    16X'00'                                                          
+*                                                                               
+         DC    CL12'** FACBUFF **'                                              
+FACBUFF  DS    6144C               6K BUFFER                                    
+         DS    XL256               FOR SAFETY                                   
+         ORG                                                                    
+*                                                                               
+RCVBUFF  DS    64000C                                                           
+         EJECT                                                                  
+         DS    0D                                                               
+         DC    CL8'**UTL **'                                                    
+UTL      DC    8X'00'                                                           
+*                                                                               
+         DC    CL16'*****  SSB  ****'                                           
+SSB      DC    XL2'00',X'FF',X'00' RECOVER !!!!!!!!!!!!!!!!!                    
+         DC    5F'0'                                                            
+         DC    A(FACINDX)                                                       
+         DC    A(FACBUFF)                                                       
+         DC    56F'0'                                                           
+*                                                                               
+NEXTREC  DSECT                                                                  
+NLEN     DS    H                                                                
+         DS    H                                                                
+NSORTKEY DS    CL13                                                             
+NSEQ     DS    CL3                                                              
+NSPARE   DS    CL4                                                              
+*                                                                               
+NRECVHDR DS    CL24                                                             
+*                                                                               
+NKEY     DS    0CL13                                                            
+NREC     DS    0C                                                               
+         EJECT                                                                  
+       ++INCLUDE SPTBATABD                                                      
+         EJECT                                                                  
+       ++INCLUDE SPTRTBAE                                                       
+         EJECT                                                                  
+       ++INCLUDE DDDPRINT                                                       
+DPRINT   DSECT                                                                  
+         ORG   P                                                                
+PLINE    DS    0C                                                               
+PAGY     DS    CL2                                                              
+         DS    CL1                                                              
+PMED     DS    CL1                                                              
+         DS    CL1                                                              
+PCLT     DS    CL3                                                              
+         DS    CL1                                                              
+PMKT     DS    CL4                                                              
+         DS    CL1                                                              
+PSTA     DS    CL7                                                              
+         DS    CL2                                                              
+PPRD     DS    CL7                                                              
+         DS    CL1                                                              
+PEST     DS    CL3                                                              
+         DS    CL1                                                              
+PWEEKS   DS    CL72                                                             
+         ORG                                                                    
+         EJECT                                                                  
+CLTHDRD  DSECT                                                                  
+       ++INCLUDE SPGENCLT                                                       
+         EJECT                                                                  
+BUYRECD  DSECT                                                                  
+       ++INCLUDE SPGENBUY                                                       
+         EJECT                                                                  
+AGYHDRD  DSECT                                                                  
+       ++INCLUDE SPGENAGY                                                       
+         EJECT                                                                  
+TBAUPDT  CSECT                                                                  
+                                                                                
+         DS    0A                                                               
+COMFACS  DS    CL(COMFACSL)                                                     
+                                                                                
+       ++INCLUDE DDCOMFACS                                                      
+         DSECT                                                                  
+         IEZCIB                                                                 
+         IEZCOM                                                                 
+*                                                                               
+* DDCOREQUS                                                                     
+         PRINT OFF                                                              
+       ++INCLUDE DDCOREQUS                                                      
+       ++INCLUDE FASSBOFF                                                       
+       ++INCLUDE SPSTAPACKD                                                     
+       ++INCLUDE DMWRKRK                                                        
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'120SPTBAUP   01/28/13'                                      
+         END                                                                    

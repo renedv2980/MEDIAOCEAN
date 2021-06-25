@@ -1,0 +1,253 @@
+*          DATA SET CTLDPRGE   AT LEVEL 002 AS OF 02/05/14                      
+*CATALP CTLDPRGE                                                                
+         TITLE 'DMLDPRGE - LOAD/DUMP CTFILE PURGE ROUTINE'                      
+* PARAMETER LIST                                                                
+*                                                                               
+* P1=A(RECORD)      PASS FIRST BYTE X'01'= RECORD IN CORE                       
+*                   RETURN VALUE    X'00'= KEEP RECORD                          
+*                                   X'FF'= PURGE RECORD                         
+*                                   X'FE'= CHANGED RECORD (RECOVERY)            
+*                                   X'FD'= ADD NEW RECORD                       
+* P2=A(PEELDATE)                                                                
+* P3=A(LAST DSKADR) PASS FIRST BYTE C'Y' = YOU ASKED ME TO RETURN               
+*                   RETURN VALUE    C'R' = RETURN BACK TO EXTERNAL              
+* P4=A(FILE DEFN)                                                               
+                                                                                
+         PRINT NOGEN                                                            
+LDPURGE  CSECT                                                                  
+         NMOD1 WORKX-WORKD,LDPURGE                                              
+         USING WORKD,RC                                                         
+         ST    R1,APARM            SAVE PARAMETERS                              
+         MVC   PLIST,0(R1)                                                      
+                                                                                
+         TM    FIRST,X'01'         TEST AND SET FIRST TIME FLAG                 
+         BO    PRGCTL                                                           
+         OI    FIRST,X'01'                                                      
+         L     RE,=V(UPSIVAL)                                                   
+         MVC   UPSI,0(RE)          UPSI=00000001 TO PURGE DELETED RECS          
+         L     RE,=V(DATEVAL)                                                   
+         MVC   DATES,0(RE)         EXTRACT DATE VALUES FROM DMLDMOD             
+                                                                                
+* CONTROL FLOW LOGIC                                                            
+*                                                                               
+PRGCTL   XR    R2,R2               R2=A(RECORD)                                 
+         ICM   R2,7,1(R1)                                                       
+         USING MYRECD,R2                                                        
+         L     RA,=V(CPRINT)       RA=A(CPRINT) FOR PRINTING                    
+         USING DPRINT,RA                                                        
+                                                                                
+         CLI   PLIST+8,C'Y'        RETURN CALL AS REQUESTED LAST TIME           
+         BE    RETREC                                                           
+         CLI   PLIST,X'01'         NORMAL CALL TO PROCESS RECORD                
+         BNH   PROREC                                                           
+         B     PRGXIT                                                           
+                                                                                
+PRGKEEP  L     R1,APARM            KEEP RECORD EXIT                             
+         MVI   0(R1),0                                                          
+         MVI   8(R1),0                                                          
+         B     PRGXIT                                                           
+                                                                                
+PRGDEL   L     R1,APARM            DELETE RECORD EXIT                           
+         MVI   0(R1),X'FF'                                                      
+         MVI   8(R1),0                                                          
+PRGDEL1  ICM   RF,15,ACTRECT       TEST IF A(CTRECT ENTRY) SET                  
+         BZ    PRGXIT                                                           
+         L     R0,24(RF)           BUMP DELETED COUNTER                         
+         AHI   R0,1                                                             
+         ST    R0,24(RF)                                                        
+         OI    3(RF),X'80'         SET DELETED COUNTER UPDATED BY ME            
+         B     PRGXIT                                                           
+                                                                                
+PRGDELR  L     R1,APARM            DELETE RECORD AND RETURN TO ME               
+         MVI   0(R1),X'FF'                                                      
+         MVI   8(R1),C'R'                                                       
+         B     PRGDEL1                                                          
+                                                                                
+PRGCHG   L     R1,APARM            CHANGED RECORD (FOR RECOVERY)                
+         MVI   0(R1),X'FE'                                                      
+         MVI   8(R1),0                                                          
+         B     PRGXIT                                                           
+                                                                                
+PRGADD   L     R1,APARM            ADDED RECORD BLOCKED                         
+         MVI   0(R1),X'FD'                                                      
+         MVI   8(R1),0                                                          
+         B     PRGXIT                                                           
+                                                                                
+PRGXIT   XMOD1 1                                                                
+                                                                                
+* PROCESS RECORD LOGIC - RECORD IN AREC - RETURN ALLOWED                        
+*                                                                               
+PROREC   MVI   TYPE,0              SET RECORD TYPE                              
+         MVI   RECNUM,0                                                         
+         XC    ACTRECT,ACTRECT                                                  
+         CLI   MYKEY,C'C'          TEST COMMENT BOOK                            
+         BE    PROR1                                                            
+         CLI   MYKEY,C'J'          TEST JCL BOOK                                
+         BE    PROR1                                                            
+         CLI   MYKEY,C'L'          TEST LIBRARY BOOK                            
+         BNE   PROR2                                                            
+PROR1    OI    TYPE,X'02'          SET BOOK RECORD                              
+                                                                                
+PROR2    TM    UPSI,X'01'          TEST TO PURGE DELETED RECORDS                
+         BZ    PROR3                                                            
+         TM    TYPE,X'02'          IGNORE BOOK RECORDS                          
+         BO    PRGKEEP                                                          
+         TM    MYSTAT,X'80'        TEST IF FLAGGED AS DELETED                   
+         BO    PRGDEL                                                           
+                                                                                
+PROR3    TM    UPSI,X'01'          TEST TO PURGE OTHER RECORDS                  
+         BZ    PRGKEEP                                                          
+*&&DO                                                                           
+PROR4    CLI   MYKEY,X'99'         RADIO RECORDS ALWAYS DELETED                 
+         BNE   PROR5               UNLESS USERID STARTS WITH DDS                
+         MVI   RECNUM,51                                                        
+         MVC   ACTRECT,=V(CTRECT51)                                             
+         CLC   CT99KUID-CT99RECD(3,R2),=C'DDS'                                  
+         BE    PRGKEEP                                                          
+         B     PRGDEL                                                           
+                                                                                
+PROR5    CLI   MYKEY,X'9A'         RADIO PASSIVES ALWAYS DELETED                
+         BNE   PROR6               UNLESS USERID STARTS WITH DDS                
+         MVI   RECNUM,52                                                        
+         MVC   ACTRECT,=V(CTRECT52)                                             
+         CLC   CT9AUID-CT9ARECD(3,R2),=C'DDS'                                   
+         BE    PRGKEEP                                                          
+         B     PRGDEL                                                           
+*&&                                                                             
+PROR6    CLI   MYKEY,C'P'          TEST PROGRAM PROFILE                         
+         BNE   PROR6X                                                           
+         MVI   RECNUM,10                                                        
+         MVC   ACTRECT,=V(CTRECT10)                                             
+         CLC   MYLEN,=H'34'        DELETE IF EMPTY PROFILE                      
+         BNH   PRGDEL                                                           
+         MVI   BYTE,0                                                           
+         LA    R3,MYDATA                                                        
+         SR    R4,R4                                                            
+*                                                                               
+PROR6A   CLI   0(R3),0             SEARCH FOR PROFILE ELEMENTS                  
+         BE    PROR6C                                                           
+         MVC   WORK(1),0(R3)                                                    
+         NI    WORK,X'F0'                                                       
+         CLI   WORK,X'40'          TEST PROFILE ELEMENT                         
+         BNE   PROR6B                                                           
+         CLI   2(R3),C'T'          TEST TEMP TYPE                               
+         BNE   PROR6B                                                           
+         CLC   3(3,R3),DATEPCK     TEST WITH TODAYS DATE (PACKED)               
+         BNL   PROR6B                                                           
+         MVI   0(R3),X'FF'         SET ELEMENT CODE FOR DELETION                
+         OI    BYTE,X'80'                                                       
+*                                                                               
+PROR6B   IC    R4,1(R3)            BUMP TO NEXT ELEMENT                         
+         AR    R3,R4                                                            
+         B     PROR6A                                                           
+*                                                                               
+PROR6C   CLI   BYTE,0              TEST ANYTHING TO BE DELETED                  
+         BE    PRGKEEP                                                          
+         GOTO1 =V(HELLO),DMCB,(C'D',=C'CTFILE'),(X'FF',(R2)),0                  
+         L     R3,12(R1)                                                        
+         CH    R3,=H'34'           DELETE IF EMPTY RECORD                       
+         BNH   PRGDEL                                                           
+         B     PRGCHG              SET RECORD HAS BEEN CHANGED                  
+PROR6X   EQU   *                                                                
+                                                                                
+PROR7    CLI   MYKEY,C'0'          TEST AUTH RECORD                             
+         BNE   PROR7X                                                           
+         OC    3(12,R2),3(R2)      IGNORE AUTH NAME RECORD                      
+         BNZ   PROR7X                                                           
+         MVI   RECNUM,40           AUTH CODE                                    
+         MVC   ACTRECT,=V(CTRECT40)                                             
+         OC    3(20,R2),3(R2)                                                   
+         BNZ   PROR7A                                                           
+         MVI   RECNUM,41           AUTH PASSIVE                                 
+         MVC   ACTRECT,=V(CTRECT41)                                             
+PROR7A   LA    R3,MYDATA                                                        
+         SR    RF,RF                                                            
+*                                                                               
+PROR7B   CLI   0(R3),0             FIND EFFECTIVE DATE ELEMENT                  
+         BE    PRGKEEP             IGNORE IF NOT FOUND                          
+         USING SAPEFEL,R3                                                       
+         CLI   SAPEFEL,SAPEFELQ                                                 
+         BE    PROR7C                                                           
+         IC    RF,1(R3)            BUMP TO NEXT ELEMENT                         
+         AR    R3,RF                                                            
+         B     PROR7B                                                           
+*                                                                               
+PROR7C   CLC   SAPEFSTA,SAPEFEND   DELETE IF START>END EFFECTIVE DATE           
+         BH    PRGDEL                                                           
+         CLC   SAPEFEND,DATECMP    DELETE IF OUTDATED (COMPRESSED DATE)         
+         BL    PRGDEL                                                           
+         B     PRGKEEP                                                          
+PROR7X   EQU   *                                                                
+         DROP  R3                                                               
+                                                                                
+PRORECX  B     PRGKEEP                                                          
+                                                                                
+* REQUESTED RETURN - DATA IN AREC AS LEFT PREVIOUSLY                            
+*                                                                               
+RETREC   L     R1,APARM                                                         
+         MVI   0(R1),0             SET NORMAL RETURN                            
+         MVI   8(R1),0             END OF REQUESTED RETURN                      
+         B     PRGXIT                                                           
+                                                                                
+         LTORG                                                                  
+*                                                                               
+FIRST    DC    X'00'               FIRST TIME CALL FLAG                         
+UPSI     DC    X'00'                                                            
+*                                                                               
+DATES    DS    0CL22               DATES FROM DMLDMOD                           
+DATEVAL  DC    CL8' '              DD/MM/YY                                     
+DATEYMD  DC    CL6' '              0=YYMMDD                                     
+DATEPCK  DC    XL3'00'             1=PACKED                                     
+DATECMP  DC    XL2'00'             2=COMPRESSED                                 
+DATEBIN  DC    XL3'00'             3=BINARY                                     
+                                                                                
+WORKD    DSECT                                                                  
+BYTE     DS    X                                                                
+WORK     DS    X                                                                
+TYPE     DS    X                                                                
+RECNUM   DS    X                   CTRECT TABLE INTERNAL REC NUM                
+*                                                                               
+APARM    DS    A                                                                
+ACTRECT  DS    A                                                                
+DMCB     DS    6F                                                               
+*                                                                               
+PLIST    DS    0XL16                                                            
+AREC     DS    A                                                                
+ADSKADR  DS    A                                                                
+APARAMC  DS    A                                                                
+VLDDEFN  DS    A                                                                
+*                                                                               
+WORKX    EQU   *                                                                
+                                                                                
+MYRECD   DSECT                                                                  
+MYKEY    DS    XL25                REC KEY                                      
+MYLEN    DS    XL2                 REC LEN                                      
+MYSTAT   DS    XL1                 REC STAT - X'80' DELETED                     
+MYDATA   DS    0X                  REC DATA                                     
+MYELID   DS    XL1                 ELM ID                                       
+MYELLEN  DS    XL1                 ELM LEN                                      
+                                                                                
+*DMLDDEFN                                                                       
+       ++INCLUDE DMLDDEFN                                                       
+                                                                                
+*DDDPRINT                                                                       
+       ++INCLUDE DDDPRINT                                                       
+                                                                                
+*CTGENFILE                                                                      
+         PRINT OFF                                                              
+       ++INCLUDE CTGENFILE                                                      
+         PRINT ON                                                               
+*&&US                                                                           
+*CTGENRAD                                                                       
+         PRINT OFF                                                              
+       ++INCLUDE CTGENRAD                                                       
+         PRINT ON                                                               
+*&&                                                                             
+*SEACSFILE                                                                      
+         PRINT OFF                                                              
+       ++INCLUDE SEACSFILE                                                      
+         PRINT ON                                                               
+                                                                                
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'002CTLDPRGE  02/05/14'                                      
+         END                                                                    

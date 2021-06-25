@@ -1,0 +1,418 @@
+*          DATA SET DETABQH    AT LEVEL 006 AS OF 05/01/02                      
+*CATALP DETABQH                                                                 
+         TITLE 'DETABQH<==>RMDETABQH - QUARTER-HOUR TABLE MAINTENANCE'          
+***********************************************************************         
+*=============================== MAIN ================================*         
+* MAINTAINS A (CABLE) PROGRAM'S QUARTER-HOUR TABLE, WHICH IS USED TO            
+*  INDICATE IN WHICH QUARTER-HOUR(S) THAT PROGRAM WAS ACTIVE.  THIS             
+*  MODULE CURRENTLY SUPPORTS 3 FUNCTIONS:                                       
+*        SET   TURNS ON THE BITS CORRESPONDING TO THE QUARTER-HOURS             
+*               FOR WHICH THE PROGRAM WAS ACTIVE                                
+*        CLEAR TURNS OFF THE BITS CORRESPONDING TO THE QUARTER-HOURS            
+*               FOR WHICH THE PROGRAM WAS INACTIVE                              
+*        COUNT COUNTS THE NUMBER OF QUARTER-HOURS FOR WHICH THE PROGRAM         
+*               WAS ACTIVE                                                      
+*        ACTV  Looks for first active quarter-hour and exits                    
+*                                                                               
+*  THE PARAMETERS TO THE MODULE ARE:                                            
+*   P1  BYTE 0 : DAYCODE - X'40'=MON, ..., X'01'=SUN, (X'80' NOT USED)          
+*       BYTE1-3: A(3-CHAR COMMAND)          (CL3)                               
+*   P2         : A(QUARTER-HOUR TABLE)      (CL(LQHTABQ))                       
+*   P3         : A(START TIME IN MILITARY)  (XL2)                               
+*   P4         : A(END TIME IN MILITARY)    (XL2)                               
+*                                                                               
+*  THE OUTPUTS FROM THE MODULE ARE:                                             
+*   P2  BYTE 0 : ERROR CODE   (SEE ERRCODE IN WORKD DSECT)                      
+*   P5         : # OF QUARTER-HOURS ACTIVE (FOR COMMAND=COUNT)                  
+*              : 0 if no active qh found,                                       
+*                 else HOB <> 0 and                                             
+*                 LOBs = A(1st qh active)  (FOR COMMAND=ACTV)                   
+*              : 0                         (FOR SET & CLEAR)                    
+         EJECT                                                                  
+DETABQH  CSECT                                                                  
+         PRINT NOGEN                                                            
+         NMOD1 WORKX-WORKD,*DETABQH,RR=RE,CLEAR=YES                             
+         USING WORKD,RC                                                         
+         ST    R1,APARMS                                                        
+         ST    RE,RELO                                                          
+*                                                                               
+*------------------ PARAMETER TRANSFER & VALIDATION ------------------*         
+*                                                                               
+         MVC   PARMS,0(R1)                                                      
+         LM    R1,R4,ACMD                                                       
+                                                                                
+         NI    DAYCODE,X'FF'-X'80'  IGNORE INVALID DAY, IF ANY                  
+                                                                                
+         LA    R1,0(R1)            CLEAR HOB                                    
+         MVC   COMMAND,0(R1)       SET THE COMMAND IN MY STORAGE                
+                                                                                
+         L     RF,ATABLE                                                        
+         LA    RF,LQHTABQ-1(RF)                                                 
+         ST    RF,ATABLEX          SET A(LAST BYTE OF QH TABLE)                 
+*                                                                               
+         LA    R3,0(R3)            START TIME,                                  
+         MVC   TIME,0(R3)                                                       
+         BAS   RE,CHKTIME           CHECK IT                                    
+         BE    *+12                                                             
+         OI    ERRCODE,ECBADTME                                                 
+         B     MAINEXIT                                                         
+         MVC   STIME,TIME                                                       
+                                                                                
+         LA    R4,0(R4)            END TIME,                                    
+         MVC   TIME,0(R4)                                                       
+         OC    TIME,TIME                                                        
+         BNZ   *+10                                                             
+         MVC   TIME,STIME                                                       
+         BAS   RE,CHKTIME           CHECK IT                                    
+         BE    *+12                                                             
+         OI    ERRCODE,ECBADTME                                                 
+         B     MAINEXIT                                                         
+         MVC   ETIME,TIME                                                       
+                                                                                
+         LH    RF,ETIME                                                         
+MAIN5    LR    R1,RF                                                            
+         CH    RF,STIME            MAKE SURE STIME <= ETIME                     
+         BE    MAIN5B                                                           
+         BH    MAIN5A                                                           
+         AH    RF,=H'2400'                                                      
+         B     MAIN5                                                            
+MAIN5A   BCTR  R1,0                IN CASE ETIME GIVEN @ QH BORDER              
+         SR    RE,RE                                                            
+         D     RE,=F'100'                                                       
+         OR    RE,RE                AND IF TIME WAS ON THE HOUR,                
+         BNZ   *+8                                                              
+         SH    R1,=H'40'            MAKE IT 59 MINUTES                          
+MAIN5B   STH   R1,ETIME                                                         
+         EJECT                                                                  
+*                                                                               
+*--------------------------- START WORKING ---------------------------*         
+*                                                                               
+MAIN10   MVC   MTIME,STIME         USE MTIME TO BUMP THRU TIME INTVL            
+         CLC   COMMAND,=C'CLR'     CLEAR BITS                                   
+         BE    CLEARBIT                                                         
+         CLC   COMMAND,=C'CNT'     COUNT BITS                                   
+         BE    COUNTBIT                                                         
+         CLC   COMMAND,=C'SET'     SET BITS                                     
+         BE    SETBIT                                                           
+         CLC   COMMAND,=C'ACT'     LOOK FOR ANY ACTIVE QH                       
+         BE    ACTIVE                                                           
+                                                                                
+         OI    ERRCODE,ECBADCMD                                                 
+         B     MAINEXIT                                                         
+         EJECT                                                                  
+*                                                                               
+*----------------------------- CLEAR BITS ----------------------------*         
+*                                                                               
+CLEARBIT MVC   TIME,MTIME                                                       
+         BAS   RE,GTQHBYTE         GET A(CRRSPNDNG QH-BYTE IN TABLE)            
+                                                                                
+         L     R2,AQHBYTE                                                       
+         TM    0(R2),X'80'         MAKE SURE H.O.BIT IS NOT ON                  
+         BZ    *+12                                                             
+         OI    ERRCODE,ECINVBIT                                                 
+         B     XCLEARBT                                                         
+                                                                                
+         MVC   OPBYTE,0(R2)        CHECK TO SEE IF BITS TO BE                   
+         MVC   BYTE,DAYCODE         CLEARED ARE ALL ON                          
+         XI    OPBYTE,X'FF'        INVERT BITS W/IN TARGET BYTE                 
+         NC    BYTE,OPBYTE         BYTE SHOULD BE ALL NULLS IF                  
+         BZ    *+8                  TARGETS BITS WERE ON                        
+         OI    ERRCODE,ECPRVOFF                                                 
+                                                                                
+         MVC   OPBYTE,DAYCODE      NOW DO THE CLEARING                          
+         XI    OPBYTE,X'FF'                                                     
+         NC    0(1,R2),OPBYTE      TRGT BITS IN TABLE "AND" W/ ZEROES           
+                                                                                
+         CLC   MTIME,ETIME         ARE WE DONE?                                 
+         BNL   XCLEARBT             YES, EXIT                                   
+         MVC   TIME,MTIME                                                       
+         BAS   RE,GTNEXTQH          NO, GET NEXT QUARTER-HOUR                   
+         BNE   XCLEARBT                                                         
+         MVC   MTIME,TIME          MTIME=TIME IN NEXT QUARTER-HOUR              
+         B     CLEARBIT                                                         
+*                                                                               
+XCLEARBT B     MAINEXIT                                                         
+         EJECT                                                                  
+*                                                                               
+*----------------------------- COUNT BITS ----------------------------*         
+*                                                                               
+COUNTBIT DS    0H                                                               
+         MVC   TIME,ETIME                                                       
+         BAS   RE,GTQHBYTE         GET A(END-TIME QH-BYTE IN TABLE)             
+         L     R5,AQHBYTE          R5-->QH BYTE OF END-TIME                     
+                                                                                
+         MVC   TIME,MTIME                                                       
+         BAS   RE,GTQHBYTE         GET A(CRRSPNDNG QH-BYTE IN TABLE)            
+         L     R2,AQHBYTE          R2-->QH BYTE OF START-TIME                   
+*                                                                               
+COUNT5   DS    0H                                                               
+         MVC   BYTE,0(R2)          GET ONLY TARGET BITS                         
+         MVC   OPBYTE,DAYCODE                                                   
+         NC    BYTE,OPBYTE                                                      
+         ZICM  RF,BYTE,(8)         PUT TARGET BITS IN HOB OF RF                 
+         BZ    COUNT20              NEXT IF NOTHING THERE                       
+*                                                                               
+         SR    R1,R1               R1 COUNTS # OF TARGET BITS ON                
+COUNT10  SR    RE,RE                                                            
+         SLDL  RE,1                                                             
+         AR    R1,RE                                                            
+         LTR   RF,RF               IF ANY MORE DAYS,                            
+         BNZ   COUNT10              COUNT THE REST                              
+         A     R1,BITCNT            ADD RESULTS TO TOTAL SUM                    
+         ST    R1,BITCNT           STORE IT                                     
+*                                                                               
+COUNT20  CR    R2,R5               ARE WE AT QH BYTE OF END-TIME?               
+         BE    COUNT5               YES, EXIT                                   
+         LA    R2,1(R2)            BUMP TO NEXT QH BYTE IN TABLE                
+         C     R2,ATABLEX          IF WE PASS END OF THE TABLE,                 
+         BNH   COUNT5                                                           
+         L     R2,ATABLE            WRAP AROUND TO START OF TABLE               
+         B     COUNT5                                                           
+*                                                                               
+XCOUNTBT B     MAINEXIT                                                         
+         EJECT                                                                  
+*                                                                               
+*----------------------------- ACTIVE QH -----------------------------*         
+*                                                                               
+ACTIVE   DS    0H                                                               
+         MVC   TIME,ETIME                                                       
+         BAS   RE,GTQHBYTE         GET A(END-TIME QH-BYTE IN TABLE)             
+         L     R5,AQHBYTE          R5-->QH BYTE OF END-TIME                     
+                                                                                
+         MVC   TIME,MTIME                                                       
+         BAS   RE,GTQHBYTE         GET A(CRRSPNDNG QH-BYTE IN TABLE)            
+         L     R2,AQHBYTE          R2-->QH BYTE OF START-TIME                   
+*                                                                               
+ACT10    DS    0H                                                               
+         MVC   BYTE,0(R2)          GET ONLY TARGET BITS                         
+         NC    BYTE,DAYCODE                                                     
+         BZ    ACT20                KEEP LOOKING IF NOTHING THERE               
+         ST    R2,BITCNT                                                        
+         MVC   BITCNT(1),BYTE                                                   
+         B     XACT                 EXIT IF SOMETHING THERE                     
+*                                                                               
+ACT20    CR    R2,R5               ARE WE AT QH BYTE OF END-TIME?               
+         BE    XACT                 YEP, EXIT                                   
+         LA    R2,1(R2)            BUMP TO NEXT QH BYTE IN TABLE                
+         C     R2,ATABLEX          IF WE PASS END OF TABLE,                     
+         BNH   ACT10                                                            
+         L     R2,ATABLE            WRAP AROUND TO START OF TABLE               
+         B     ACT10                                                            
+*                                                                               
+XACT     B     MAINEXIT                                                         
+         EJECT                                                                  
+*                                                                               
+*------------------------------ SET BITS -----------------------------*         
+*                                                                               
+SETBIT   MVC   TIME,MTIME                                                       
+         BAS   RE,GTQHBYTE         GET A(CRRSPNDNG QH-BYTE IN TABLE)            
+                                                                                
+         L     R2,AQHBYTE                                                       
+         TM    0(R2),X'80'         MAKE SURE H.O.BIT IS NOT ON                  
+         BZ    *+12                                                             
+         OI    ERRCODE,ECINVBIT                                                 
+         B     XSETBT                                                           
+                                                                                
+         MVC   OPBYTE,0(R2)        CHECK TO SEE IF BITS TO BE                   
+         MVC   BYTE,DAYCODE         CLEARED ARE ALL OFF                         
+         NC    BYTE,OPBYTE         BYTE SHOULD BE ALL NULLS IF                  
+         BZ    *+8                  TARGETS BITS WERE OFF                       
+         OI    ERRCODE,ECPRVON                                                  
+                                                                                
+         MVC   OPBYTE,DAYCODE      NOW DO THE SETTING                           
+         OC    0(1,R2),OPBYTE      TRGT BITS IN TABLE "OR" W/ ONES              
+                                                                                
+         CLC   MTIME,ETIME         ARE WE DONE?                                 
+         BNL   XSETBT               YES, EXIT                                   
+         MVC   TIME,MTIME                                                       
+         BAS   RE,GTNEXTQH          NO, GET NEXT QUARTER-HOUR                   
+         BNE   XSETBT                                                           
+         MVC   MTIME,TIME          MTIME=TIME IN NEXT QUARTER-HOUR              
+         B     SETBIT                                                           
+*                                                                               
+XSETBT   B     MAINEXIT                                                         
+         EJECT                                                                  
+*                                                                               
+*----------------------------- MAIN EXIT -----------------------------*         
+*                                                                               
+MAINEXIT L     R1,APARMS           SET RETURN VALUES                            
+         MVC   4(1,R1),ERRCODE      ERROR CODE                                  
+         MVC   16(4,R1),BITCNT      BITS COUNTED                                
+                                                                                
+         CLI   ERRCODE,0                                                        
+         BNE   CCNEQUAL                                                         
+*                                                                               
+CCEQUAL  SR    RF,RF               TO RETURN WITH CC EQUAL                      
+         B     *+8                                                              
+CCNEQUAL LA    RF,1                TO RETURN WITH CC NOT EQUAL                  
+         LTR   RF,RF                                                            
+EXIT     XIT1                                                                   
+***********************************************************************         
+         EJECT                                                                  
+***********************************************************************         
+*======================= GET QUARTER-HOUR BYTE =======================*         
+*  LOCATES THE QUARTER-HOUR BYTE IN TABLE FOR TIME GIVEN IN TIME                
+*   FIELD.  STRUCTURE OF TABLE IS:                                              
+*     BYTE     0     IS MILITARY TIME 000-->UNIT                                
+*     BYTE LQHTABQ-1 IS MILITARY TIME (2359-UNIT)-->2359                        
+*  AT ENTRY,                                                                    
+*     TIME  CONTAINS THE TIME FOR WHICH THE QH-BYTE IS DESIRED                  
+*  AT EXIT,                                                                     
+*     AQHBYTE = A(CORRESPONDING QUARTER-HOUR BYTE)                              
+*                                                                               
+GTQHBYTE NTR1                                                                   
+         BAS   RE,CHKTIME          BREAK TIME INTO HOURS, MINUTES, ETC.         
+         BE    *+6                                                              
+         DC    H'0'                                                             
+                                                                                
+         SR    R2,R2               CALCULATE INDEX INTO TABLE IN R2             
+         IC    R2,BYTE             R2=NTH QUARTER-HOUR OF HOUR                  
+         ZIC   RF,HALF             RF=HOURS                                     
+         MH    RF,=Y(NUMUNITQ)     (# OF HOURS)*(# OF UNITS IN 1HR)             
+         AR    R2,RF               R2=NTH QUARTER-HOUR OF DAY                   
+         A     R2,ATABLE           R2-->CORRESPONDING QH-BYTE                   
+         ST    R2,AQHBYTE          SET RETURN VALUE                             
+                                                                                
+         B     EXIT                                                             
+***********************************************************************         
+         EJECT                                                                  
+***********************************************************************         
+*====================== GET NEXT QUARTER-HOUR ========================*         
+*  GETS TIME INTO THE NEXT QUARTER-HOUR                                         
+*  AT ENTRY,                                                                    
+*    TIME  = TIME FOR WHICH TO GET NEXT QUARTER-HOUR                            
+*  AT EXIT,                                                                     
+*    TIME  = NEW TIME IN THE NEXT QUARTER-HOUR                                  
+*     CC   = 0 IF WE SHOULD PROCESS THE NEW TIME                                
+*     CC  <> 0 IF WE NOT SHOULD PROCESS THE NEW TIME                            
+*                                                                               
+GTNEXTQH NTR1                                                                   
+         LH    R1,TIME             HOLD ONTO THE TIME,                          
+         BAS   RE,CHKTIME           CHKTIME MAY CLOBBER IT                      
+         BE    *+6                                                              
+         DC    H'0'                                                             
+         MVC   QHQUAD,BYTE         HOLD ONTO QUARTER-HOUR QUADRANT              
+                                                                                
+         LA    R0,UNIT                                                          
+GNQ10    LA    R1,1(R1)                                                         
+         LR    RF,R1                                                            
+         SR    RE,RE                                                            
+         D     RE,=F'100'          IF WE REACH THE NEXT HOUR,                   
+         CH    RE,=H'60'                                                        
+         BL    GNQ10A                                                           
+         BE    *+6                                                              
+         DC    H'0'                                                             
+         LA    R1,40(R1)            ADJUST FOR IT                               
+GNQ10A   CH    R1,ETIME                                                         
+         BNL   GNQ20                                                            
+         BCT   R0,GNQ10                                                         
+*                                                                               
+GNQ20    STH   R1,TIME             R1=TIME POTENTIALLY FOR NEXT QH              
+         BAS   RE,CHKTIME                                                       
+         BE    *+6                                                              
+         DC    H'0'                                                             
+         STH   R1,TIME             RSTR TIME, CLOBBERED BY CHKTIME              
+         CLC   QHQUAD,BYTE         ARE WE IN SAME QH AS BEFORE?                 
+         BE    GNQXNO               YES, SO DON'T PROCESS THE TIME              
+         BNE   GNQXYES              NO,                                         
+*                                                                               
+GNQXYES  B     CCEQUAL                                                          
+GNQXNO   B     CCNEQUAL                                                         
+***********************************************************************         
+         EJECT                                                                  
+***********************************************************************         
+*============================ CHECK TIME =============================*         
+* CHECKS IF THE MILITARY TIME IN THE FIELD TIME IS CORRECT                      
+*  AT ENTRY,                                                                    
+*    TIME = THE MILITARY TIME WE'RE CHECKING                                    
+*  AT EXIT,                                                                     
+*    TIME      = SAME MILITARY TIME AS INPUT, BUT IN 000-2359 RANGE             
+*    HALF(1)   = HOUR                                                           
+*    HALF+1(1) = MINUTE                                                         
+*    BYTE      = QUARTER-HOUR QUADRANT (0-3)                                    
+*     CC       = 0 IF TIME IS VALID                                             
+*     CC      <> 0 IF TIME IS INVALID                                           
+*                                                                               
+*                                                                               
+CHKTIME  NTR1                                                                   
+         LH    RF,TIME                                                          
+         LTR   RF,RF                                                            
+         BM    CKTXNO                                                           
+CKT10    CH    RF,=H'2400'                                                      
+         BL    CKT20                                                            
+         SH    RF,=H'2400'                                                      
+         BNM   CKT10                                                            
+         DC    H'0'                                                             
+*                                                                               
+CKT20    STH   RF,TIME                                                          
+         SR    RE,RE                                                            
+         D     RE,=F'100'          SPLIT HOURS AND MINUTES                      
+         STC   RF,HALF              HALF GETS THE HOUR                          
+         STC   RE,HALF+1            HALF+1 GETS THE MINUTES                     
+         CLI   HALF+1,60           S/B 0<=RE<=59                                
+         BNL   CKTXNO                                                           
+         SPACE                                                                  
+         LR    RF,RE               GET QUARTER-HOUR QUADRANT                    
+         SR    RE,RE                                                            
+         D     RE,=A(UNIT)                                                      
+         STC   RF,BYTE                                                          
+         B     CKTXYES                                                          
+*                                                                               
+CKTXYES  B     CCEQUAL                                                          
+CKTXNO   B     CCNEQUAL                                                         
+***********************************************************************         
+         EJECT                                                                  
+***********************************************************************         
+*=========================== LITERAL POOL ============================*         
+         LTORG                                                                  
+         SPACE 2                                                                
+UNIT     EQU   15                  15 MINUTES PER QUARTER-HOUR                  
+NUMUNITQ EQU   60/UNIT             # OF UNITS IN 1 HOUR                         
+LQHTABQ  EQU   24*NUMUNITQ         L(QUARTER-HOUR TABLE)                        
+***********************************************************************         
+         SPACE 2                                                                
+         DROP  RB,RC                                                            
+         EJECT                                                                  
+***********************************************************************         
+*=========================== LOCAL STORAGE ===========================*         
+WORKD    DSECT                                                                  
+PARMS    DS    0CL(4*4)                                                         
+DAYCODE  DS    XL1                 X'40'=MON, X'20'=TUE, ETC.                   
+         ORG   PARMS                                                            
+ACMD     DS    A                   A(3-CHAR COMMAND)                            
+ATABLE   DS    A                   A(QUARTER-HOUR TABLE)                        
+ASTIME   DS    A                   A(START TIME)                                
+AETIME   DS    A                   A(END TIME)                                  
+DMCB     DS    6F                                                               
+DUB      DS    D                                                                
+FULL     DS    F                                                                
+APARMS   DS    A                   A(CALLER'S DMCB)                             
+RELO     DS    A                   RELOCATION FACTOR                            
+BITCNT   DS    F                   BIT COUNTER                                  
+AQHBYTE  DS    A                   A(DESIRED QH-BYTE IN TABLE)                  
+ATABLEX  DS    A                   A(LAST BYTE OF TABLE)                        
+HALF     DS    H                                                                
+BYTE     DS    XL1                                                              
+BYTE2    DS    XL1                                                              
+COMMAND  DS    CL3                 COMMAND FROM CALLER                          
+STIME    DS    H                   START TIME (IN MILITARY)                     
+ETIME    DS    H                   END TIME (IN MILITARY)                       
+MTIME    DS    H                   MIDDLE TIME (IN MILITARY)                    
+TIME     DS    H                   TEMP STORAGE FOR TIME                        
+OPBYTE   DS    XL1                 OPERATOR BYTE                                
+QHQUAD   DS    XL1                 QUARTER HOUR QUADRANT                        
+*                                   0 = 00-14                                   
+*                                   1 = 15-29                                   
+*                                   2 = 30-44                                   
+*                                   3 = 45-59                                   
+ERRCODE  DS    XL1                 ERROR CODE                                   
+ECBADCMD EQU   X'80'                CALLER PASSED BAD COMMAND                   
+ECINVBIT EQU   X'40'                INVALID BIT (X'80') ON                      
+ECPRVON  EQU   X'20'                BIT SET ON WAS PREVIOUSLY ON                
+ECPRVOFF EQU   X'10'                BIT SET OFF WAS PREVIOUSLY OFF              
+ECBADTME EQU   X'08'                BAD TIME                                    
+WORKX    EQU   *                                                                
+***********************************************************************         
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'006DETABQH   05/01/02'                                      
+         END                                                                    

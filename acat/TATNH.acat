@@ -1,0 +1,794 @@
+*          DATA SET TATNH      AT LEVEL 009 AS OF 06/30/08                      
+*CATALP TATNHA                                                                  
+*                                                                               
+         SPACE 1                                                                
+*                                                                               
+*        P1        - (RC)                                                       
+*        P2        - A(TAX & HANDLING BLOCK)                                    
+*        P2 BYTE 0 - X'80' - INITIALIZE - READ ALLTAX FILE                      
+*                                                                               
+*        RETURNS CC NEQ DURING INIT IF NO TAX TABLE                             
+*                                                                               
+         SPACE 1                                                                
+         TITLE 'TATNH - CALCULATE TAX AND HANDLING'                             
+TATNH    CSECT                                                                  
+         PRINT NOGEN                                                            
+         SPACE 1                                                                
+         NMOD1 0,TATNH                                                          
+         L     RC,0(R1)            GENCON                                       
+         USING GEND,RC                                                          
+         L     RA,4(R1)            TAX & HANDLING INTERFACE BLOCK               
+         USING TNHD,RA                                                          
+         L     R9,ASUBSYSD         SYSTEM SPECIFIC WORK                         
+         USING SUBSYSD,R9                                                       
+         EJECT                                                                  
+*                                                                               
+         TM    4(R1),X'80'         INITIALIZE                                   
+         BO    SETTAX                                                           
+         BAS   RE,SETUP            SET UP FOR TNH                               
+         BAS   RE,TNHCALC          DO T&H CALCULATIONS                          
+         BAS   RE,FINISH                                                        
+         B     XIT                                                              
+         EJECT                                                                  
+*                                                                               
+*        GOTO TALIMIT 1ST TIME TO SET UP TABLE & READ IN INITIAL VALUES         
+*                                                                               
+SETTAX   DS    0H                                                               
+         XC    MYWORK(MYWLNQ),MYWORK                                            
+         L     R0,=A(YTDTAB)       CLEAR YTD TABLE                              
+         L     R1,=A(YTDTABX)                                                   
+         SR    R1,R0                                                            
+         XR    RE,RE                                                            
+         LR    RF,RE                                                            
+         MVCL  R0,RE                                                            
+*                                                                               
+         LA    R2,TALIMBLK         READ IN TAX TABLE 1ST TIME                   
+         USING TMD,R2                                                           
+         MVI   BYTE,TMTYFUI        REQUESTING FUI MAX                           
+         BAS   RE,SETLIMIT         SET INTERFACE FOR TALIMIT                    
+         GOTO1 =V(TALIMIT),DMCB,TALIMBLK                                        
+         BNE   NO                                                               
+         MVC   FUIMAX,TMWGBS       SET RETURNED AMOUNT                          
+         TM    TXOPTS,TXTRACE      TRACE TAX TABLE                              
+         BNO   STT10                                                            
+         GOTO1 MYTRACE,DMCB,=C'FUI TALIMIT',(R2)                                
+*                                                                               
+STT10    MVI   BYTE,TMTYFIC        REQUESTING FICA MAX                          
+         BAS   RE,SETLIMIT         SET INTERFACE FOR TALIMIT                    
+         GOTO1 =V(TALIMIT),DMCB,TALIMBLK                                        
+         BNE   NO                                                               
+         MVC   FICMAX,TMWGBS       SET RETURNED AMOUNT                          
+         TM    TXOPTS,TXTRACE      TRACE TAX TABLE                              
+         BNO   STT20                                                            
+         GOTO1 MYTRACE,DMCB,=C'FICA TALIMIT',(R2)                               
+*                                                                               
+STT20    MVI   BYTE,TMTYMED        REQUESTING MEDICARE MAX                      
+         BAS   RE,SETLIMIT         SET INTERFACE FOR TALIMIT                    
+         GOTO1 =V(TALIMIT),DMCB,TALIMBLK                                        
+         BNE   NO                                                               
+         MVC   MEDMAX,TMWGBS       SET RETURNED AMOUNT                          
+         TM    TXOPTS,TXTRACE      TRACE TAX TABLE                              
+         BNO   YES                                                              
+         GOTO1 MYTRACE,DMCB,=C'MED TALIMIT',(R2)                                
+         B     YES                                                              
+         EJECT                                                                  
+*                                                                               
+*                                                                               
+*        SET UP FOR T & H CALC                                                  
+*                                                                               
+SETUP    NTR1                                                                   
+         MVC   SVAIO,AIO           SAVE USER'S I/O                              
+         XC    STATUS,STATUS       CLEAR STATUS BYTE                            
+         MVC   TXSVSRC,TGBSRC      SAVE ORIGINAL RATES                          
+         XC    TXCSTTAX,TXCSTTAX   SINGLE PERFORMERS TAX FOR POSTINGS           
+         XC    TXCSTHND,TXCSTHND                   HANDLING                     
+         XC    TXCSTFIC,TXCSTFIC                   FICA CREDITS                 
+         XC    TXLEVEL,TXLEVEL     CLEAR RATE LEVEL                             
+         XC    TXPOYTD,TXPOYTD           FED YTD                                
+         XC    TXPOYTDS,TXPOYTDS         SUI YTD                                
+         BAS   RE,GETYTD           GET YTD AMOUNT                               
+*                                                                               
+         LA    R2,TALIMBLK                                                      
+         MVI   BYTE,TMTYSUI        REQUESTING STATE MAX                         
+         BAS   RE,SETLIMIT         SET INTERFACE FOR TALIMIT                    
+         GOTO1 =V(TALIMIT),DMCB,TALIMBLK                                        
+         BE    SET10                                                            
+         OI    STATUS,STNSTATE     IF STATE NOT FOUND - SET FLAG AND            
+         MVC   STTMAX,=X'7FFFFFFF'    STATE AMT TO MAXIMUM                      
+         B     SET15                                                            
+*                                                                               
+SET10    MVC   STTMAX,TMWGBS       SET RETURNED AMOUNT                          
+         TM    TXOPTS,TXTRACE      TRACE TAX TABLE                              
+         BNO   SET15                                                            
+         GOTO1 MYTRACE,DMCB,=C'SUI TALIMIT',(R2)                                
+*                                                                               
+SET15    CLI   TGBTYPE,TABRTY99    BILLING TYPE 99 - NO TNH                     
+         BE    SETX                                                             
+         CLC   =C'HI ',TXSTOWRK    IF STATE OF WORK = HAWAII                    
+         BNE   SET30                                                            
+         LH    R1,TGBHAND          ADD 4% TO HANDLING FEES                      
+         AH    R1,=H'400'                                                       
+         STH   R1,TGBHAND                                                       
+         LH    R1,TGBCORP                                                       
+         AH    R1,=H'400'                                                       
+         STH   R1,TGBCORP                                                       
+         CLI   TGBTYPE,TABRTY1     BILLING TYPES 1  & 2 USE FUTA FIELD          
+         BE    SET20                                                            
+         CLI   TGBTYPE,TABRTY2     ONLY                                         
+         BNE   SETX                                                             
+*                                                                               
+SET20    LH    R1,TGBFUTA                                                       
+         AH    R1,=H'400'                                                       
+         STH   R1,TGBFUTA                                                       
+         B     SETX                                                             
+*                                                                               
+SET30    CLC   =C'MI ',TXSTOWRK    IF STATE OF WORK = MICHIGAN                  
+         BNE   SETX                                                             
+         LH    R1,TGBHAND          ADD 2.35% TO HANDLING FEES                   
+         AH    R1,=H'235'                                                       
+         STH   R1,TGBHAND                                                       
+         LH    R1,TGBCORP                                                       
+         AH    R1,=H'235'                                                       
+         STH   R1,TGBCORP                                                       
+         CLI   TGBTYPE,TABRTY1     BILLING TYPES 1  & 2 USE FUTA FIELD          
+         BE    SET40                                                            
+         CLI   TGBTYPE,TABRTY2     ONLY                                         
+         BNE   SETX                                                             
+*                                                                               
+SET40    LH    R1,TGBFUTA                                                       
+         AH    R1,=H'235'                                                       
+         STH   R1,TGBFUTA                                                       
+*                                                                               
+SETX     B     XIT                                                              
+         EJECT                                                                  
+*                                                                               
+*                                                                               
+*        SET UP FOR T & H CALC                                                  
+*                                                                               
+TNHCALC  NTR1                                                                   
+         CLI   TGBTYPE,TABRTY99    BILLING TYPE 99 - NO TNH                     
+         BE    TNHX                                                             
+         CLI   TGCUR,C'C'          IF THIS IS A CANADIAN $ INVOICE              
+         BNE   TNH10                                                            
+         BAS   RE,CKINR            & IT'S AN I&R CHECK                          
+         BE    TNHX                DONT CALC HANDLING ON IT                     
+         L     R2,TXNTXERN         ELSE CALCULATE CAN HANDLING FEE ON           
+         A     R2,TXTXEARN         ENTIRE AMOUNT                                
+         GOTO1 CALCP,DMCB,TGBCAN,(R2),TXHANDC                                   
+         MVC   TXCSTHND,0(R1)                                                   
+         B     TNHX                                                             
+*                                                                               
+TNH10    CLI   TGBTYPE,TABRTY1                                                  
+         BE    TNH12                                                            
+         CLI   TGBTYPE,TABRTY2                                                  
+         BNE   TNH60                                                            
+*                                                                               
+TNH12    L     R2,TXNTXERN         CALCULATE HANDLING FEE ON                    
+         GOTO1 CALCP,DMCB,TGBHAND,(R2),TXHANDC  NON TAXABLE EARNINGS            
+         L     R3,0(R1)                                                         
+         A     R3,TXCSTHND                                                      
+         ST    R3,TXCSTHND                                                      
+         OC    TXTXEARN,TXTXEARN   IF NO TAXABLE EARNINGS                       
+         BZ    XIT                 THEN EXIT                                    
+*                                                                               
+         L     R2,FYTD                                                          
+         L     R3,TXTXEARN         SAVE TAXABLE EARNINGS                        
+         AR    R2,R3               ADD EARNINGS TO YTD                          
+         TM    TXTXEARN,X'80'      IF THIS IS A NEGATIVE INVOICE                
+         BNO   TNH15                                                            
+         ST    R2,FYTD             SET NEW 'YTD'                                
+         LTR   R2,R2               BUT INSURE IT'S NOT NEGATIVE                 
+         BNM   TNH14                                                            
+         XR    R2,R2                                                            
+*                                                                               
+TNH14    LCR   R3,R3               COMPLEMENT EARNINGS TO POSITIVE              
+         AR    R2,R3               ADD                                          
+*                                                                               
+TNH15    C     R2,MEDMAX           CHECK IF OVER MEDICARE                       
+         BNH   TNH40                                                            
+         S     R2,MEDMAX           GET AMOUNT THAT IS OVER MEDICARE             
+         CR    R2,R3               IF IT'S OVER TAXABLE EARNINGS                
+         BNH   TNH30                                                            
+         LR    R2,R3               THEN ONLY USE TAXABLE EARNINGS               
+*                                                                               
+TNH30    MVC   TRATE,TGBOMED       SET OVER MEDICARE                            
+         MVI   TXLEVEL,C'E'        SET RATE LEVEL                               
+         GOTO1 CALCP,DMCB,TRATE,(R2),TXFICR                                     
+         L     R1,0(R1)                                                         
+         TM    TXTXEARN,X'80'      IF THIS ISN'T A NEGATIVE INVOICE             
+         BO    TNH35                 LCR THE AMOUNT                             
+         LCR   R1,R1                                                            
+*                                                                               
+TNH35    A     R1,TXCSTFIC         FICA PER CAST MEMBER                         
+         ST    R1,TXCSTFIC                                                      
+         SR    R3,R2               R3 = AMOUNT LEFT TO TAX                      
+*                                                                               
+TNH40    L     R2,FYTD                                                          
+         AR    R2,R3               DON'T ADD EARNINGS                           
+         C     R2,FICMAX           CHECK IF OVER FICA MAX                       
+         BNH   TNH55                                                            
+         S     R2,FICMAX           GET AMOUNT THAT IS OVER FICA MAX             
+         CR    R2,R3               ENSURE IT'S LESS THAN REMAINING              
+         BNH   TNH45                  TAXABLE AMOUNT                            
+         LR    R2,R3               ELSE USE REMAINING TAXABLE AMOUNT            
+*                                                                               
+TNH45    MVC   TRATE,TGBOFIC       SET OVER FICA                                
+         CLI   TXLEVEL,C'E'        IF RATE LEVEL IS SET LOWEST                  
+         BE    TNH46               LEAVE IT                                     
+         MVI   TXLEVEL,C'D'        ELSE SET RATE LEVEL                          
+*                                                                               
+TNH46    GOTO1 CALCP,DMCB,TRATE,(R2),TXFICR                                     
+         L     R1,0(R1)                                                         
+         TM    TXTXEARN,X'80'      IF THIS IS A NEGATIVE INVOICE                
+         BO    TNH50                                                            
+         LCR   R1,R1                                                            
+*                                                                               
+TNH50    A     R1,TXCSTFIC                                                      
+         ST    R1,TXCSTFIC                                                      
+*                                                                               
+TNH55    MVC   TRATE,TGBFUTA       SET FUTA FOR TAXES                           
+         CLI   TXLEVEL,0           IF RATE LEVEL ISN'T SET YET                  
+         BNE   TNH57                                                            
+         MVI   TXLEVEL,C'A'        SET IT                                       
+*                                                                               
+TNH57    BAS   RE,CALCTAX          CALCULATE TAX                                
+         CLI   TGBTYPE,TABRTY1     IF BILLING TYPE 1                            
+         BNE   XIT                 ADD 'FICA CREDITS' TO TAXES                  
+         L     R3,TXCSTTAX                                                      
+         A     R3,TXCSTFIC                                                      
+         ST    R3,TXCSTTAX                                                      
+*                                                                               
+         L     R3,TXTAX                                                         
+         A     R3,TXCSTFIC                                                      
+         ST    R3,TXTAX                                                         
+         XC    TXCSTFIC,TXCSTFIC   AND CLEAR FICA FIELDS                        
+         XC    TXFICR,TXFICR                                                    
+         B     XIT                                                              
+         EJECT                                                                  
+*                                                                               
+TNH60    MVC   TRATE,TGBFUTA       DEFAULT TAX RATE = FUTA                      
+         CLI   TGBTYPE,TABRTY6                                                  
+         BNE   TNH70                                                            
+*                                                                               
+         TM    TGUSSTAT,SESSION    IF IT IS A RE-USE PAYMENT -                  
+         BNO   TNH75                  USE FUTA FIELD FOR TAX RATE               
+         MVC   TRATE,TGBSUTA       ELSE IF IT'S A SESSION PAYMENT -             
+         B     TNH75                    USE SUTA RATE                           
+         SPACE 2                                                                
+*                                  REST OF CALCULATIONS - LIKE TYPE 8           
+TNH70    CLI   TGBTYPE,TABRTY8                                                  
+         BNE   TNH80                                                            
+*                                                                               
+TNH75    BAS   RE,CALCTAX          CALCULATE TAXES                              
+         L     R2,TXTXEARN         HANDLING * (  TAXABLE EARNINGS               
+         A     R2,TXCSTTAX                     + PAYROLL TAXES                  
+         A     R2,TXMDED                       + MISC DEDUCTIONS                
+         A     R2,TXNTXERN                     + NON TAXABLE EARNINGS           
+         A     R2,TXPNH                        + P & H )                        
+         GOTO1 CALCP,DMCB,TGBHAND,(R2),TXHANDC                                  
+         L     R3,0(R1)                                                         
+         A     R3,TXCSTHND                                                      
+         ST    R3,TXCSTHND                                                      
+         B     XIT                                                              
+         EJECT                                                                  
+*                                                                               
+TNH80    CLI   TGBTYPE,TABRTY7                                                  
+         BNE   TNH90                                                            
+         L     R2,TXTXEARN         HANDLING * (GROSS + MISC PAYMENTS)           
+         A     R2,TXNTXERN                                                      
+         GOTO1 CALCP,DMCB,TGBHAND,(R2),TXHANDC                                  
+         L     R3,0(R1)                                                         
+         A     R3,TXCSTHND                                                      
+         ST    R3,TXCSTHND                                                      
+         BAS   RE,CALCTAX                                                       
+         B     XIT                                                              
+         SPACE 3                                                                
+*                                                                               
+TNH90    CLI   TGBTYPE,TABRTY11                                                 
+         BNE   TNH200                                                           
+         L     R2,TXTXEARN         HANDLING * (  GROSS WAGES                    
+         A     R2,TXNTXERN                    + MISC PAYMENTS                   
+         A     R2,TXPNH                       + P & H )                         
+         GOTO1 CALCP,DMCB,TGBHAND,(R2),TXHANDC                                  
+         L     R3,0(R1)                                                         
+         A     R3,TXCSTHND                                                      
+         ST    R3,TXCSTHND         & NO TAX                                     
+         B     XIT                                                              
+         EJECT                                                                  
+*                                                                               
+TNH200   DS    0H                                                               
+         MVI   TXLEVEL,C' '                                                     
+         NI    STATUS,X'FF'-STNSTATE     SET STATE NOT FOUND                    
+*                                                                               
+         CLI   TXW4TYPE,TAW4TYCO   IF CORP - OR FOREIGNER                       
+         BE    TNH240                                                           
+         CLI   TXW4TYPE,TAW4TYFO   THEN NO TAXABLE AMOUNT                       
+         BE    TNH240                                                           
+*                                                                               
+TNH210   MVC   TRATE,TGBFUTA                                                    
+         MVI   TXLEVEL,C'A'        SET RATE LEVEL                               
+         MVC   REMAIN,TXTXEARN                                                  
+         XC    TAXED,TAXED         CLEAR AMOUNT TAXED THIS INVOICE              
+         TM    TXTXEARN,X'80'      IF THIS IS A NEGATIVE INVOICE                
+         BNO   TNH215                                                           
+         L     R3,FYTD             ADD NEGATIVE AMOUNT INTO YTD                 
+         A     R3,REMAIN                                                        
+         BNM   TNH212              BUT YTD CANNOT BE NEGATIVE                   
+         XR    R3,R3                                                            
+*                                                                               
+TNH212   ST    R3,FYTD                                                          
+         L     R3,REMAIN           TAX AS IF POSITIVE AMOUNT                    
+         LCR   R3,R3                                                            
+         ST    R3,REMAIN                                                        
+*                                                                               
+TNH215   GOTO1 MAXTAX,DMCB,FUIMAX,FYTD                                          
+         OC    REMAIN,REMAIN                                                    
+         BZ    TNH240                                                           
+         MVC   TRATE,TGBSUTA       SET STATE TAX RATE                           
+         MVI   TXLEVEL,C'B'        SET RATE LEVEL                               
+*                                                                               
+         TM    TXTXEARN,X'80'      IF THIS IS A NEGATIVE INVOICE                
+         BNO   TNH220                                                           
+         L     R1,STYTD                                                         
+         C     R1,FYTD             IF THE SUI YTD > FED YTD                     
+         BNH   TNH220                                                           
+         A     R1,TXTXEARN         ADD NEGATIVE AMT                             
+         C     R1,FYTD             IF SUI YTD < FEDERAL YTD                     
+         BNL   *+8                                                              
+         L     R1,FYTD             SET SUI TO BE = FED YTD                      
+         ST    R1,STYTD                                                         
+*                                                                               
+TNH220   GOTO1 MAXTAX,DMCB,STTMAX,STYTD                                         
+*                                                                               
+         OC    REMAIN,REMAIN                                                    
+         BZ    TNH240                                                           
+         MVC   TRATE,TGBFICA       SET FICA TAX RATE                            
+         MVI   TXLEVEL,C'C'        SET RATE LEVEL                               
+         GOTO1 MAXTAX,DMCB,FICMAX,FYTD                                          
+*                                                                               
+         OC    REMAIN,REMAIN                                                    
+         BZ    TNH240                                                           
+         MVC   TRATE,TGBOFIC       SET OVER FICA RATE                           
+         MVI   TXLEVEL,C'D'        SET RATE LEVEL                               
+         GOTO1 MAXTAX,DMCB,MEDMAX,FYTD                                          
+*                                                                               
+         OC    REMAIN,REMAIN                                                    
+         BZ    TNH240                                                           
+         MVC   TRATE,TGBOMED       SET OVER MEDICARE                            
+         MVI   TXLEVEL,C'E'        SET RATE LEVEL                               
+*                                                                               
+         L     R2,REMAIN           A * AA = PAYROLL TAXES                       
+         TM    TXTXEARN,X'80'      IF THIS IS A NEGATIVE INVOICE                
+         BNO   TNH237                                                           
+         LCR   R2,R2               RESTORE AMT TO (-) FOR CALCULATION           
+*                                                                               
+TNH237   GOTO1 CALCP,DMCB,TRATE,(R2),TXTAX                                      
+         L     R3,0(R1)                                                         
+         A     R3,TXCSTTAX                                                      
+         ST    R3,TXCSTTAX                                                      
+*                                                                               
+TNH240   L     R2,TXNTXERN         ALL NON TAXABLE EARNINGS => CORP             
+         GOTO1 CALCP,DMCB,TGBCORP,(R2),TXHANDC     HANDLING                     
+         L     R3,0(R1)                                                         
+         A     R3,TXCSTHND                                                      
+         ST    R3,TXCSTHND                                                      
+*                                                                               
+         CLI   TXW4TYPE,TAW4TYCO      TAXABLE EARNINGS => INDIVIDUAL            
+         BE    TNHX                           HANDLING                          
+         CLI   TXW4TYPE,TAW4TYFO                                                
+         BE    TNHX                                                             
+         L     R2,TXTXEARN                                                      
+         GOTO1 CALCP,DMCB,TGBHAND,(R2),TXHANDI                                  
+         L     R3,0(R1)                                                         
+         A     R3,TXCSTHND                                                      
+         ST    R3,TXCSTHND                                                      
+*                                                                               
+TNHX     B     XIT                                                              
+         EJECT                                                                  
+*        FINISH UP ROUTINES - UPDATE YTD                                        
+*                                                                               
+         USING YTDTABD,R4                                                       
+FINISH   NTR1                                                                   
+         L     R4,ATHISYTD         A(YTD ENTRY)                                 
+         L     R2,YTDFCURR         PREVIOUS FEDERAL EARNINGS                    
+*                                                                               
+         CLI   TXW4TYPE,TAW4TYCO   IF CORP - OR FOREIGNER                       
+         BE    FIN10                                                            
+         CLI   TXW4TYPE,TAW4TYFO                                                
+         BNE   FIN12                                                            
+*                                                                               
+FIN10    A     R2,TXNTXERN         PLUS NON TAXABLE EARNINGS                    
+         B     *+8                                                              
+*                                                                               
+FIN12    A     R2,TXTXEARN         ELSE PLUS TAXABLE EARNINGS                   
+         BNM   *+6                 DON'T ALLOW NEGATIVE YTD'S                   
+         XR    R2,R2               JUST CLEAR IT                                
+         ST    R2,YTDFCURR         CURRENT EARNINGS                             
+*                                                                               
+         CLI   TXW4TYPE,TAW4TYCO   IF CORP - OR FOREIGNER                       
+         BE    FINX                                                             
+         CLI   TXW4TYPE,TAW4TYFO   DONE                                         
+         BE    FINX                                                             
+*                                                                               
+         TM    STATUS,STNSTATE     IF NO STATE ID WAS FOUND                     
+         BO    FINX                DON'T ADD TO SUI EARNINGS                    
+*                                                                               
+         TM    TXTXEARN,X'80'      IF THIS IS A NEGATIVE INVOICE                
+         BNO   FIN15                                                            
+         L     R1,STYTD                                                         
+         C     R1,YTDFCURR         IF THE SUI YTD > FED YTD                     
+         BNH   FINX                                                             
+         A     R1,TXTXEARN         ADD NEGATIVE AMT                             
+         C     R1,YTDFCURR         IF SUI YTD < FEDERAL YTD                     
+         BNL   *+8                                                              
+         L     R1,YTDFCURR         SET SUI TO BE = FED YTD                      
+         ST    R1,STYTD                                                         
+         B     FINX                                                             
+*                                                                               
+FIN15    L     R2,TXTXEARN                                                      
+         CLC   STTMAX,STYTD        IF SUI YTD REACHED STATE MAX                 
+         BNH   FINX                   EXIT                                      
+         L     RF,STTMAX                                                        
+         S     RF,STYTD                                                         
+         CR    RF,R2                                                            
+         BNH   *+8                                                              
+         L     RF,TXTXEARN                                                      
+         A     RF,YTDSCURR                                                      
+         ST    RF,YTDSCURR                                                      
+*                                                                               
+FINX     MVC   TGBSRC,TXSVSRC        RESTORE ORIGINAL RATES                     
+         MVC   TXPOYTD,YTDFCURR      RETURN YTD INCLUDING LAST CHECK            
+         MVC   TXPOYTDS,YTDSCURR                                                
+         L     R1,YTDSCURR           SUI YTD INCLUDING THIS CHECK               
+         S     R1,STYTD              LESS SUI YTD BEFORS THIS CHECK             
+         ST    R1,TXTSUI             = THIS CHECK'S SUI                         
+         MVC   AIO,SVAIO             RESTORE USER'S I/O                         
+         B     XIT                                                              
+         DROP  R4                                                               
+         EJECT                                                                  
+*                                                                               
+*        CALCULATE TAXES                                                        
+*                                                                               
+*        USING YTDTABD,R4                                                       
+CALCTAX  NTR1                                                                   
+         L     R2,TXTXEARN                                                      
+         GOTO1 CALCP,DMCB,TRATE,(R2),TXTAX                                      
+         L     R3,0(R1)                                                         
+         A     R3,TXCSTTAX                                                      
+         ST    R3,TXCSTTAX                                                      
+         B     XIT                                                              
+         SPACE 3                                                                
+*                                                                               
+*        CHECK IF THIS CANADIAN CHECK IS AN I & R CHECK                         
+*                                                                               
+CKINR    NTR1                                                                   
+         LA    R4,CANINR           TABLE OF SSN'S FOR I&R CANADA                
+*                                                                               
+CKINR10  CLI   0(R4),X'FF'         END OF TABLE                                 
+         BE    NO                                                               
+         CLC   TGSSN,0(R4)         IF THIS IS I&R ACCOUNT                       
+         BE    YES                                                              
+         LA    R4,L'CANINR(R4)     BUMP TABLE                                   
+         B     CKINR10                                                          
+         SPACE 2                                                                
+         EJECT                                                                  
+*                                                                               
+*        CALCULATE TAX AMOUNT OF A SPECIFIC RATE                                
+*        P1 = A(MAX TAXABLE AMOUNT)                                             
+*        P2 = A(CORRESPONDING YTD AMOUNT)                                       
+*        REMAIN - (REMAINING TAXABLE)                                           
+*        TRATE  - (TAX RATE)                                                    
+*                                                                               
+         SPACE 1                                                                
+MAXTAX   NTR1                                                                   
+*                                                                               
+         OC    REMAIN,REMAIN                                                    
+         BZ    MAXX                                                             
+         L     R4,4(R1)            A(YTD)                                       
+         L     R4,0(R4)                                                         
+         L     R1,0(R1)            A(MAX TAXABLE AMOUNT)                        
+         L     R1,0(R1)                                                         
+*                                                                               
+         L     R2,REMAIN                                                        
+         SR    R1,R4               R1 <= MAX - YTD                              
+         BNP   MAXX                                                             
+         S     R1,TAXED            - AMOUNT TAXED THIS INVOICE                  
+         BNP   MAXX                                                             
+         CR    R1,R2               IF MAX TAXABLE >= PAYMENT                    
+         BL    MAX10                                                            
+         XC    REMAIN,REMAIN       USE ENTIRE PAYMENT AMOUNT                    
+         B     MAX20                                                            
+*                                                                               
+MAX10    SR    R2,R1               ELSE US DIFFERENCE AT THIS RATE              
+         ST    R2,REMAIN           AND REMAINDER USE AT HIGHER RATE             
+         LR    R2,R1                                                            
+*                                                                               
+MAX20    TM    TXTXEARN,X'80'      IF THIS IS A NEGATIVE INVOICE                
+         BNO   MAX30                                                            
+         LCR   R2,R2               RESTORE AMT TO (-) FOR CALCULATION           
+*                                                                               
+MAX30    GOTO1 CALCP,DMCB,TRATE,(R2),TXTAX                                      
+         L     R3,0(R1)                                                         
+         A     R3,TXCSTTAX                                                      
+         ST    R3,TXCSTTAX                                                      
+         TM    TXTXEARN,X'80'      IF THIS IS A NEGATIVE INVOICE                
+         BNO   MAX40                                                            
+         LCR   R2,R2               RESTORE AMT TO (+) TO SUM TAXED AMT          
+*                                                                               
+MAX40    L     R1,TAXED            UPDATE AMOUNT TAXED THIS INVOICE             
+         AR    R1,R2                                                            
+         ST    R1,TAXED                                                         
+*                                                                               
+MAXX     B     XIT                                                              
+         EJECT                                                                  
+*                                                                               
+*        CALCULATE P1 * P2 + P3 = P3                                            
+*                  P1 = A(RATE)                                                 
+*                  P2 = AMOUNT                                                  
+*                  P3 = TOTAL                                                   
+*                                                                               
+         SPACE 1                                                                
+CALCP    NTR1                                                                   
+         L     R4,0(R1)            A(P1)                                        
+         LH    RE,0(R4)            RATE                                         
+*                                                                               
+         XR    R2,R2                                                            
+         L     R3,4(R1)            P2                                           
+*                                                                               
+         MR    R2,RE               R2,R3 = RE * R3                              
+         D     R2,=F'5000'         PERCENTAGE                                   
+         LTR   R3,R3               R3 = QUOTIENT                                
+         BM    *+8                                                              
+         AH    R3,=H'1'            ROUND                                        
+         SRA   R3,1                                                             
+         ST    R3,0(R1)            RETURN CALC FOR 1                            
+*                                                                               
+         L     R4,8(R1)            A(P3) - TOTAL                                
+         A     R3,0(R4)                                                         
+         ST    R3,0(R4)                                                         
+         B     XIT                                                              
+         EJECT                                                                  
+         SPACE 1                                                                
+*                                                                               
+*        GET CURRENT YTD AMOUNT IN FYTD                                         
+*                                                                               
+         SPACE 1                                                                
+GETYTD   NTR1                                                                   
+         L     R2,=A(YTDTAB)       YTD TABLE                                    
+         USING YTDTABD,R2                                                       
+*                                                                               
+         TM    TXOPTS,TXNOYTD      IF WE DON'T WANT TO KEEP YTD TABLE           
+         BZ    GET10                                                            
+         XC    0(YTDLEN,R2),0(R2)  CLEAR CURRENT ENTRY                          
+         B     GET50                                                            
+*                                                                               
+GET10    OC    0(YTDLEN,R2),0(R2)  SSN NOT IN TABLE YET                         
+         BZ    GET30                                                            
+*                                                                               
+         CLC   YTDSSN,TGSSN        IF CORRECT SSN FOUND                         
+         BNE   GET20                                                            
+         CLC   YTDCURR,TGCUR          & CORRECT CURRENCY                        
+         BNE   GET20                                                            
+         CLC   YTDEMP,TGEMP           & CORRECT EMPLOYER                        
+         BNE   GET20                                                            
+         MVC   TXPOYTD,YTDFCURR    SET YTD TO INCLUDE LAST CHECK                
+         MVC   TXPOYTDS,YTDSCURR                                                
+         B     GET50                                                            
+*                                                                               
+GET20    LA    R2,YTDLEN(R2)       BUMP TO NEXT ENTRY IN TABLE                  
+         C     R2,=A(YTDTABX)                                                   
+         BL    GET10               IF WE REACHED END OF TABLE                   
+         DC    H'0'                THEN DIE                                     
+*                                                                               
+GET30    XC    YTDBLK,YTDBLK       CLEAR TAYTD PARAMETER BLOCK                  
+         LA    R3,YTDBLK                                                        
+         USING TYD,R3                                                           
+         MVC   TYASYSIO,TASYSIO    A(SYSIO)                                     
+         L     R4,=A(TAYTDTAB)                                                  
+         ST    R4,TYATAB           A(YTD TABLE)                                 
+         USING YTDD,R4                                                          
+         MVC   TYPEND,TGTODAY1     END DATE                                     
+         MVC   TYEMP,TGEMP         EMPLOYER                                     
+         MVC   TYSSN,TGSSN         SOCIAL SECURITY NUMBER *** CHECK CID         
+         OI    TYSTAT,TYSTBILL     REQUEST BILLING YTD                          
+         MVC   TYCUR,TGCUR         SET CURRENCY                                 
+         TM    TXOPTS,TXTRACE      TRACE                                        
+         BNO   *+8                                                              
+         MVI   TYTRACE,C'Y'                                                     
+*                                                                               
+         GOTO1 TGTAYTD,DMCB,(RC),SYSCOMM,(R3)  BUILD YTD TABLE                  
+         TM    TYRETURN,TYFNDPTR   WAS A POINTER FOUND                          
+         BNO   GET40                                                            
+         MVC   TXPOYTD,BYTDEARN    SET FED YTD                                  
+         MVC   TXPOYTDS,BYTDSUI        SUI YTD                                  
+         B     GET50                                                            
+*                                                                               
+GET40    BAS   RE,GETPOOL          IF NO YTD PTR - GET POOL ELEM                
+*                                                                               
+GET50    MVC   YTDSSN,TGSSN        SET PERFORMER IN TABLE                       
+         MVC   YTDCURR,TGCUR                                                    
+         MVC   YTDEMP,TGEMP                                                     
+         MVC   YTDFCURR,TXPOYTD                                                 
+         MVC   YTDSCURR,TXPOYTDS                                                
+         ST    R2,ATHISYTD         RETURN LOCATION OF SSN ENTRY                 
+*                                                                               
+         MVC   FYTD,YTDFCURR       SET CURRENT FED YTD                          
+         MVC   STYTD,YTDSCURR                  SUI YTD                          
+         B     XIT                                                              
+         DROP  R2                                                               
+         EJECT                                                                  
+*                                                                               
+*        GET POOL ELEMENT FROM W4 RECORD                                        
+*                                                                               
+GETPOOL  NTR1                                                                   
+         L     R4,=A(W4IO)                                                      
+         ST    R4,AIO                                                           
+         GOTO1 RECVAL,DMCB,TLW4CDQ,(X'A4',TGSSN)                                
+         BE    *+6                 W4 RECORD MUST BE THERE                      
+         DC    H'0'                                                             
+*                                                                               
+         USING TAPOD,R4                                                         
+         MVI   ELCODE,TAPOELQ      POOL ELEMENT                                 
+         MVC   WORK(1),TGTODAY1    YEAR PWOS                                    
+         MVC   WORK+1(1),TGCUR     CURRENCY                                     
+         MVC   WORK+2(3),TGEMP     EMPLOYER                                     
+         GOTO1 GETL,DMCB,(5,WORK)  GET CORRECT ELEMENT                          
+         BNE   GPX                                                              
+*                                                                               
+         L     R4,TGELEM           ADDRESS OF ELEMENT                           
+         MVC   TXPOYTD,TAPOEARN    EARNINGS                                     
+         MVC   TXPOYTDS,TAPOSUI    SUI TAXABLE EARNINGS                         
+*                                                                               
+GPX      B     XIT                                                              
+         EJECT                                                                  
+         SPACE 1                                                                
+*                                                                               
+*        SET UP INTERFACE BLOCK FOR TALIMIT                                     
+*                                                                               
+         SPACE 1                                                                
+SETLIMIT NTR1                                                                   
+         LA    R2,TALIMBLK                                                      
+         USING TMD,R2                                                           
+         XC    0(TMLNQ,R2),0(R2)   CLEAR BLOCK                                  
+         ST    RC,TMRC             GENCON                                       
+         MVI   TMTRACE,C' '                                                     
+         TM    TXOPTS,TXTRACE      TRACE TAX TABLE                              
+         BNO   SETL10                                                           
+         MVI   TMTRACE,C'Y'                                                     
+*                                                                               
+SETL10   MVC   TMEFDTE0,TGTODAY0   SET EBCDIC DATE                              
+         MVC   TMTYPE,BYTE         TYPE OF AMOUNT REQUESTED                     
+         CLI   TXSTOWRK+2,C' '     IF THIS IS NOT A STATE                       
+         BNH   SETL20                                                           
+         GOTO1 TAXVAL,DMCB,(3,TXSTOWRK)                                         
+         MVC   TXSTOWRK,TGTASTCY   FIND THE STATE IT BELONGS TO                 
+*                                                                               
+SETL20   MVC   TMUNIT,TXSTOWRK     TAX UNIT - STATE OF WORK                     
+         MVC   TMEMP,TGEMP         EMPLOYER                                     
+         MVC   TMEARN,TXTXEARN     EARNINGS                                     
+         L     R1,FYTD                                                          
+         A     R1,TXTXEARN                                                      
+         ST    R1,TMYTD                                                         
+         CLI   TMTYPE,TMTYSUI      IF CALUCULATING SUI                          
+         BNE   SETLX                                                            
+         MVC   TMFYTD,TMYTD        SET FEDERAL YTD                              
+         L     R1,STYTD            AND SUI YTD                                  
+         A     R1,TXTXEARN                                                      
+         ST    R1,TMYTD                                                         
+*                                                                               
+SETLX    B     XIT                                                              
+         EJECT                                                                  
+*                                                                               
+*        SET INFO FOR TRACE ROUTINE                                             
+*                                                                               
+MYTRACE  NTR1                                                                   
+         LM    R2,R3,0(R1)         R2=A(LITERAL), R3=A(I/O AREA)                
+         ZIC   R4,0(R1)            R4=L'LITERAL                                 
+         GOTO1 TRACE,DMCB,(R3),109,(R2),(R4)                                    
+         B     XIT                                                              
+         EJECT                                                                  
+         SPACE 2                                                                
+YES      SR    RC,RC               SET CONDITION CODE                           
+NO       LTR   RC,RC                                                            
+*                                                                               
+XIT      XIT1                                                                   
+         EJECT                                                                  
+         LTORG                                                                  
+         EJECT                                                                  
+*                                                                               
+*        MISC VARIABLES                                                         
+*                                                                               
+MYWORK   DS    0H                                                               
+TRATE    DS    H                   TAX RATE                                     
+*                                                                               
+FYTD     DS    F                   FEDERAL YTD TAXABLE EARNINGS                 
+SYTD     DS    F                   STATE YTD TAXABLE EARNINGS                   
+REMAIN   DS    F                   LEFTOVER PAYMENT                             
+TAXED    DS    F                   AMOUNT TAXED THIS INVOICE                    
+*                                                                               
+FUIMAX   DS    F                   FEDERAL MAX WAGES                            
+STTMAX   DS    F                   STATE MAX WAGES                              
+FICMAX   DS    F                   FICA MAX WAGES                               
+MEDMAX   DS    F                   MEDICARE MAX WAGES                           
+*                                                                               
+STYTD    DS    F                   STATE Y-T-D                                  
+*                                                                               
+ATHISYTD DS    A                   NEXT YTD TABLE ENTRY                         
+*                                                                               
+TXSVSRC  DS    CL16                SAVE ORIGINAL RATES                          
+*                                                                               
+STATUS   DS    XL1                 STATUS                                       
+STNSTATE EQU   X'80'               STATE TAX ID NOT FND                         
+*                                                                               
+SVAIO    DS    XL4                 SAVED IO                                     
+*                                                                               
+         DS    0D                                                               
+YTDBLK   DS    CL(TYLNQ)           TAYTD PARAMETER LIST                         
+*                                                                               
+         DS    0D                                                               
+TALIMBLK DS    CL(TMLNQ)           TALIMIT INTERFACE BLOCK                      
+*                                                                               
+MYWLNQ   EQU   *-MYWORK                                                         
+         EJECT                                                                  
+*                                                                               
+*        TABLE OF CANADIAN I&R SSN'S                                            
+*                                                                               
+CANINR   DS    0CL9                                                             
+         DC    CL9'000000055'                                                   
+         DC    CL9'000000066'                                                   
+         DC    X'FF'                                                            
+         SPACE 3                                                                
+*                                                                               
+*        W4 I/O AREA                                                            
+*                                                                               
+         DS    0D                                                               
+         DC    CL8'**W4IO**'                                                    
+W4IO     DS    2000C               AREA FOR WORKER FILE                         
+*                                                                               
+*        TABLE OF YTD OF A PERFORMER                                            
+*                                                                               
+         DS    0D                                                               
+         DC    CL8'TAYTDTAB'                                                    
+TAYTDTAB DS    CL(55*YTDLNQ)                                                    
+         SPACE 1                                                                
+*                                                                               
+*        TABLE OF YTD OF ALL PERFORMERS                                         
+*                                                                               
+         DS    0D                                                               
+         DC    CL8'*YTDTAB*'                                                    
+YTDTAB   DS    3000CL(YTDLEN)                                                   
+YTDTABX  DS    0H                                                               
+         EJECT                                                                  
+       ++INCLUDE TAYTDTAB                                                       
+         EJECT                                                                  
+         SPACE 2                                                                
+TTNHD    DSECT                                                                  
+         SPACE 1                                                                
+       ++INCLUDE TATNHD                                                         
+         EJECT                                                                  
+       ++INCLUDE TAYTDD                                                         
+         EJECT                                                                  
+       ++INCLUDE TALIMITD                                                       
+         EJECT                                                                  
+         SPACE 1                                                                
+*        OTHER DSECTS ARE HIDDEN IN HERE                                        
+         SPACE 3                                                                
+*DDSPLWORKD                                                                     
+*TAATREFD                                                                       
+*TAGENFILE                                                                      
+*CTGENFILE                                                                      
+*TASYSDSECT                                                                     
+*TASYSEQUS                                                                      
+*TAREPWORKD                                                                     
+         PRINT OFF                                                              
+       ++INCLUDE DDSPLWORKD                                                     
+       ++INCLUDE TAATREFD                                                       
+       ++INCLUDE TAGENFILE                                                      
+       ++INCLUDE CTGENFILE                                                      
+       ++INCLUDE TASYSDSECT                                                     
+       ++INCLUDE TASYSEQUS                                                      
+       ++INCLUDE TAREPWORKD                                                     
+         PRINT ON                                                               
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'009TATNH     06/30/08'                                      
+         END                                                                    

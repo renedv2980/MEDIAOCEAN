@@ -1,0 +1,380 @@
+*          DATA SET DMDXLRPS   AT LEVEL 007 AS OF 06/10/15                      
+*PROCESS USING(WARN(15))                                                        
+*CATALP DMDXLRPS                                                                
+*=====================================================================*         
+*                                                                     *         
+*                      ****** NOTE *****                              *         
+*                                                                     *         
+* DANDX FILES USE A DOUBLE-INDEX STRUCTURE. I.E., THEY ARE            *         
+* STRUCTURALLY DIFFERENT FROM OUR OTHER FILES. WHAT FOLLOWS IS INFO   *         
+* REGARDING THE ALGORITHM CODED BELOW.                                *         
+*                                                                     *         
+* IN OTHER (NON-DANDX) FILES, WE TYPICALLY WRITE THE FILE RECORD TO   *         
+* DISK BEFORE WRITING THE DIRECTORY POINTER. DELDXMOD (THE DEMOFILE   *         
+* DUMP/LOAD/UPDATE CONTROLLER) WORKS DIFFERENTLY, IN CONJUNCTION WITH *         
+* THIS MODULE.                                                        *         
+*                                                                     *         
+* HERE'S WHAT HAPPENS: WHEN THE MINOR KEY FOR A NEW MAJOR KEY IS      *         
+* PASSED IN (I.E., A CHANGE OF MAJOR KEY), DADDS IS CALLED TO GRAB    *         
+* THE FIRST (AND PROBABLY ONLY) INDEX BLOCK (TO HOLD THE MINOR KEY    *         
+* ARRAY), AS WELL AS THE FIRST DATA BLOCK. THE I/S DIRECTORY POINTER  *         
+* (WHICH POINTS TO THE FIRST INDEX BLOCK) IS WRITTEN TO DISK          *         
+* IMMEDIATELY BY DELDXMOD, ***BEFORE*** DADDS HAS BEEN CALLED BY THIS *         
+* MODULE TO COMMIT THE INDEX BLOCK AND DATA BLOCK TO DISK. THAT       *         
+* COMMIT DOESN'T HAPPEN UNTIL A BLOCK FILLS UP, A CHANGE IN MAJOR KEY *         
+* IS SEEN BY THIS MODULE, OR THIS MODULE IS CALLED FOR THE LAST TIME  *         
+* (I.E., DUE TO EOF ON THE INPUT FILE).                               *         
+*                                                                     *         
+* THIS APPROACH IS EFFICIENT, BUT IT DOES LEAVE A SMALL WINDOW OF     *         
+* TIME IN WHICH AN I/S DIRECTORY POINTER POINTS TO A NON-EXISTENT     *         
+* INDEX BLOCK (OR THE INDEX BLOCK MIGHT POINT TO AN INCOMPLETE SET    *         
+* OF DATA BLOCKS). IN THE VAST MAJORITY OF CASES, THIS IS AN          *         
+* ACCEPTABLE RISK.                                                    *         
+*                                                                     *         
+* HOWEVER, IN DEMOGRAPHICS, THE WINDOW OF EXPOSURE IS GREATER,        *         
+* BECAUSE DELDXMOD MAY WRITE PASSIVE KEYS TO THE DIRECTORY, WHICH ARE *         
+* NOT SEEN BY THIS MODULE. WHILE THOSE PASSIVES ARE BEING WRITTEN,    *         
+* THIS MODULE SITS ON AN INDEX BLOCK WHICH HAS NOT YET BEEN COMMITTED *         
+* TO DISK (BECAUSE IT HAS NOT YET SEEN THE CHANGE IN MAJOR KEY WHICH  *         
+* TRIGGERS THE DISK WRITE). SO DURING THAT INTERVAL OF TIME WHILE THE *         
+* PASSIVES ARE BEING WRITTEN, THERE WILL BE AN I/S DIRECTORY POINTER  *         
+* WHICH POINTS TO A NON-EXISTENT DATA BLOCK.                          *         
+*                                                                     *         
+*=====================================================================*         
+         TITLE 'DXLRPS - D/A INDEXED FILE LOAD MODULE'                          
+         PRINT NOGEN                                                            
+DAXLDDS  CSECT                                                                  
+         NMOD1 0,DAXLDDS                                                        
+         LR    R2,R1                                                            
+         USING LDPARAMS,R2         R2=A(PARM LIST)                              
+*                                                                               
+         OC    LDP1(12),LDP1       TEST IF INITIALIZE                           
+         BZ    INIT                YES                                          
+*                                                                               
+         L     R3,ADTF                                                          
+         USING DTFPHD,R3           R3=A(DTF)                                    
+         CLI   LDP1,X'FF'          TEST IF LAST TIME                            
+         BNE   ADDREC              NO                                           
+         CLI   ANYRECS,0           TEST ANY D/A RECORDS ADDED                   
+         BE    EXIT                NO - EXIT                                    
+         B     ADDREC2                                                          
+*                                  INITIALIZE FOR NEW FILE LOAD                 
+INIT     XC    NDXDANAT,NDXDANAT                                                
+         MVI   LASTKEYL,X'FF'                                                   
+         MVC   LASTKEYL+1(L'LASTKEYL-1),LASTKEYL                                
+         MVI   ANYRECS,0           SET NO D/A RECORDS ADDED                     
+         MVC   ADTF,LDP4                                                        
+         L     R3,ADTF                                                          
+         MVC   DUB(4),=X'00010101' CALL DADDS TO GET HITRK/EXTENT               
+         GOTO1 =V(DADDS),P1,A(DATRNS),0,0,ADTF,DUB,DUB+4                        
+*                                                                               
+*                                  INITIALIZE DNEXT MATRIX                      
+         USING EXTENTD,R1                                                       
+         OC    DNEXTMTX,DNEXTMTX                                                
+         BNZ   EXIT                EXIT IF FNDEOF CALLED                        
+         LA    R1,DMTX             R1=A(EXTENT MATRIX ENTRY)                    
+         CLC   DMTX(14),=14X'FF'                                                
+         BNE   *+8                                                              
+         LA    R1,DNDXMTX                                                       
+         CLC   HIXTNT,DMTX+EXTLNQ                                               
+         BNE   *+8                                                              
+         ICM   R1,15,DMTX                                                       
+         LA    RE,DNEXTMTX         RE=A(DNEXT MATRIX ENTRY)                     
+         LHI   RF,1                RF=LAST HITRK+1                              
+*                                                                               
+         SAM31                                                                  
+*                                                                               
+INIT2    CLI   0(R1),X'FF'         TEST IF END OF EXTENT MATRIX                 
+         BE    EXIT                                                             
+         MVC   0(4,RE),=X'00010000'                                             
+         STC   RF,3(RE)                                                         
+         LA    R1,EXTLNQ(,R1)      BUMP TO NEXT EXTENT                          
+         LA    RE,4(RE)                                                         
+         LA    RF,1(RF)            SET EXTENT MATRIX NUMBER                     
+         B     INIT2                                                            
+         DROP  R1                                                               
+*                                                                               
+EXIT     XMOD1 1                                                                
+         EJECT                                                                  
+***********************************************************************         
+* ADD A DATA RECORD TO DATA BLOCK & HANDLE INDEX BUILDING.                      
+***********************************************************************         
+ADDREC   MVI   CBFLAG,0                                                         
+         OI    ANYRECS,X'01'       SET D/A RECORD ADDED                         
+         OC    NDXDANAT,NDXDANAT   TEST IF FIRST RECORD                         
+         BNZ   *+12                NO                                           
+         OI    CBFLAG,X'80'        YES - FUDGE A CONTROL BREAK                  
+         B     ADDREC4                                                          
+*                                                                               
+         LH    RE,DKEYLNL                                                       
+         BCTR  RE,0                                                             
+         L     RF,LDP2                                                          
+         EX    RE,*+8                                                           
+         B     *+10                                                             
+         CLC   LASTKEYL(0),0(RF)   MAJOR KEY CONTROL BREAK?                     
+         BE    ADDREC16            NO                                           
+         OI    CBFLAG,X'80'        SET MAJOR KEY CONTROL BREAK OCCURRED         
+*                                  WRITE LAST DATA & INDEX BLOCKS               
+*                                                                               
+*                                  ADD NEW DATA BLOCK                           
+ADDREC2  LH    R0,DBLKSZ                                                        
+         GOTO1 =V(DADDS),P1,A(WTCKD),ABLK,(R0),ADTF,BLKDA,0                     
+         OC    P3(2),P3                                                         
+         BNZ   ERR1                                                             
+*                                  UPDATE CURRENT INDEX BLOCK                   
+         GOTO1 (RF),(R1),A(WTID),ANDX,,,NDXDA,0                                 
+         OC    P3(2),P3                                                         
+         BNZ   ERR2                                                             
+*                                  RESTORE DNEXT & DCOUNT TO MATRICES           
+         LLC   RE,DMTXNUM                                                       
+         LR    RF,RE                                                            
+         SLL   RF,1                                                             
+         LA    RF,DCNTMTX-2(RF)                                                 
+         SLL   RE,2                                                             
+         LA    RE,DNEXTMTX-4(RE)                                                
+         MVC   0(2,RF),DCOUNT                                                   
+         MVC   0(4,RE),DNEXT                                                    
+         CLI   LDP1,X'FF'          EXIT IF LAST TIME CALL                       
+         BE    EXIT                                                             
+*                                                                               
+         USING EXTENTD,RE          FIND EXTENT WITH MOST AVAILABLE              
+ADDREC4  LA    RE,DMTX             SPACE & SET DNEXT/DCOUNT                     
+         CLC   DMTX(14),=14X'FF'                                                
+         BNE   *+8                                                              
+         LA    RE,DNDXMTX                                                       
+         CLC   HIXTNT,DMTX+EXTLNQ                                               
+         BNE   *+8                                                              
+         ICM   RE,15,DMTX          A(HIGH CORE EXTENT MATRIX)                   
+         LA    RF,DNEXTMTX                                                      
+         LA    R1,1                                                             
+         XC    DUB(4),DUB          DUB(4)=LARGEST AVAILABLE SPARE               
+         MVI   DMTXNUM,0                                                        
+*                                                                               
+         SAM31                                                                  
+*                                                                               
+ADDREC6  SR    R0,R0                                                            
+         ICM   R0,3,EXT#TRKS                                                    
+         SR    R5,R5                                                            
+         ICM   R5,3,0(RF)                                                       
+         SR    R0,R5               SUBTRACT DNEXT TTTT FROM HITRK               
+         BM    ERR3                                                             
+         C     R0,DUB              TEST IF LARGEST SO FAR                       
+         BNH   *+12                                                             
+         ST    R0,DUB                                                           
+         STC   R1,DMTXNUM          SET MATRIX NUMBER OF THIS EXTENT             
+*                                                                               
+         LA    RE,EXTLNQ(,RE)      BUMP TO NEXT EXTENT ENTRY                    
+         LA    RF,4(RF)                                                         
+         LA    R1,1(R1)                                                         
+         CLI   0(RE),X'FF'         TEST IF END OF EXTENT MATRIX                 
+         BNE   ADDREC6                                                          
+         DROP  RE                                                               
+*                                  MOVE DNEXT/DCOUNT FROM MATRICES              
+         SAM24                                                                  
+*                                                                               
+         SR    RE,RE                                                            
+         ICM   RE,1,DMTXNUM        RE=MATRIX NUMBER                             
+         BZ    ERR4                                                             
+         LR    RF,RE                                                            
+         SLL   RF,1                                                             
+         LA    RF,DCNTMTX-2(RF)                                                 
+         SLL   RE,2                                                             
+         LA    RE,DNEXTMTX-4(RE)                                                
+         MVC   DCOUNT,0(RF)                                                     
+         MVC   DNEXT,0(RE)                                                      
+*                                                                               
+ADDREC8  LA    R4,DUB              GET D/A OF NEXT INDEX BLOCK                  
+         BAS   R9,GETADDR                                                       
+         TM    CBFLAG,X'80'        TEST IF MAJOR KEY CONTROL BREAK              
+         BO    ADDREC10                                                         
+*                                  NO - INDEX BLOCK HAS OVERFLOWED              
+*                                  WRITE PREVIOUS INDEX BLOCK WITH LINK         
+         L     RE,ANDX                                                          
+         MVC   6(4,RE),DUB         SET LINK ADDRESS                             
+*                                                                               
+*                                  UPDATE CURRENT INDEX BLOCK                   
+         LH    R0,DBLKSZ                                                        
+         GOTO1 =V(DADDS),P1,A(WTID),ANDX,(R0),ADTF,NDXDA,0                      
+         OC    P3(2),P3                                                         
+         BNZ   ERR2                                                             
+         B     ADDREC12                                                         
+*                                  MAJOR KEY CONTROL BREAK OCCURRED             
+*                                                                               
+ADDREC10 MVC   NDXDANAT,DUB        SAVE D/A OF NATIVE INDEX BLOCK               
+         LH    RE,DKEYLNL                                                       
+         BCTR  RE,0                                                             
+         L     RF,LDP2                                                          
+         EX    RE,*+8                                                           
+         B     *+10                                                             
+         MVC   LASTKEYL(0),0(RF)   SET NEW MAJOR KEY VALUE                      
+         XI    CBFLAG,X'80'                                                     
+*                                  BUILD & WRITE NEW INDEX BLOCK                
+*                                                                               
+ADDREC12 L     R1,ANDX             INITIALIZE NEW INDEX BLOCK                   
+         LH    RF,DBLKSZ                                                        
+         XCEF  (R1),(RF)           CLEAR INDEX BLOCK                            
+         MVC   NDXDA,DUB           SAVE D/A OF CURRENT INDEX BLOCK              
+         MVC   0(4,R1),NDXDA                                                    
+         LH    RE,DKEYLNL                                                       
+         BCTR  RE,0                                                             
+         EX    RE,*+8                                                           
+         B     *+10                                                             
+         MVC   10(0,R1),LASTKEYL   MOVE MAJOR KEY TO INDEX BLOCK                
+         LA    RF,11(RE,R1)                                                     
+         MVC   0(2,RF),EFFS                                                     
+         LA    RE,11(RE)                                                        
+         STH   RE,4(R1)            SET LENGTH OF BLOCK SO FAR                   
+         LA    RE,0(RE,R1)                                                      
+         ST    RE,NDXPTR           SET CURRENT INDEX POINTER                    
+*                                                                               
+*                                  ADD NEW INDEX BLOCK                          
+         LH    R0,DBLKSZ                                                        
+         GOTO1 =V(DADDS),P1,A(WTCKD),ANDX,(R0),ADTF,NDXDA,0                     
+         OC    P3(2),P3                                                         
+         BNZ   ERR2                                                             
+*                                                                               
+         L     RF,ANDX             ADD L'(MINOR KEY+D/A) TO BLOCK LEN           
+         LH    RE,4(RF)                                                         
+         AH    RE,DKEYLNR                                                       
+         LA    RE,4(RE)                                                         
+         STH   RE,4(RF)                                                         
+*                                  GET D/A OF NEXT DATA BLOCK                   
+ADDREC14 LA    R4,BLKDA                                                         
+         BAS   R9,GETADDR                                                       
+         L     R1,ABLK             INITIALIZE NEW DATA BLOCK                    
+         LH    RF,DBLKSZ                                                        
+         XCEF  (R1),(RF)           CLEAR DATA BLOCK                             
+         MVC   0(3,R1),BLKDA                                                    
+         LA    RE,6                                                             
+         STH   RE,4(R1)                                                         
+*                                                                               
+*                                  TEST IF RECORD WILL FIT INTO BLOCK           
+ADDREC16 L     RF,ABLK                                                          
+         LH    RE,4(RF)            RE=LENGTH OF BLOCK SO FAR                    
+         LH    R1,LDP3+2           R1=LENGTH OF RECORD TO BE ADDED              
+         LA    R0,2(RE,R1)         R0=NEW LENGTH OF BLOCK                       
+         CH    R0,DBLKSZ           TEST WILL RECORD FIT                         
+         BH    ADDREC18            NO                                           
+         STH   R0,4(RF)            YES - SET NEW BLOCK LENGTH                   
+         LLC   R0,3(RF)            UPDATE HIGH RECORD NUMBER                    
+         AHI   R0,1                                                             
+         STC   R0,3(RF)                                                         
+         LA    RF,0(RE,RF)                                                      
+         LA    R0,2(R1)                                                         
+         STH   R0,0(RF)            SET RECORD LENGTH                            
+         L     RE,LDP2                                                          
+         LA    RF,2(RF)                                                         
+         MOVE  ((RF),(R1)),(RE)    MOVE RECORD TO BLOCK                         
+*                                  UPDATE HIGH KEY IN INDEX RECORD              
+         L     R1,NDXPTR                                                        
+         L     RF,LDP2                                                          
+         AH    RF,DKEYLNL                                                       
+         LH    RE,DKEYLNR          RE=A(MINOR KEY IN RECORD)                    
+         BCTR  RE,0                                                             
+         EX    RE,*+8                                                           
+         B     *+10                                                             
+         MVC   0(0,R1),0(RF)       MOVE NEW HIGH KEY TO INDEX                   
+         LA    R1,1(RE,R1)                                                      
+         MVC   0(4,R1),BLKDA       SET D/A OF DATA BLOCK IN INDEX               
+         MVC   4(2,R1),EFFS                                                     
+         MVC   LDP5,NDXDANAT       RETURN D/A OF FIRST INDEX BLOCK              
+         B     EXIT                                                             
+*                                                                               
+*                                  RECORD WON'T FIT INTO DATA BLOCK             
+ADDREC18 LH    R0,DBLKSZ           WRITE BACK LAST DATA BLOCK                   
+         GOTO1 =V(DADDS),P1,A(WTCKD),ABLK,(R0),ADTF,BLKDA,0                     
+         OC    P3(2),P3                                                         
+         BNZ   ERR1                                                             
+*                                  UPDATE INDEX POINTER FOR NEW BLOCK           
+         L     RF,ANDX                                                          
+         LH    RE,4(RF)                                                         
+         LH    R1,DKEYLNR                                                       
+         LA    R0,6(RE,R1)         L'(BLOCK+MINOR KEY+D/A+EOB FLAG)             
+         CH    R0,DBLKSZ           TEST IF INDEX IS FULL                        
+         BH    ADDREC8                                                          
+*                                  NO - CALCULATE NEW INDEX POINTER             
+         LA    RE,4(RE,R1)                                                      
+         STH   RE,4(RF)                                                         
+         L     RE,NDXPTR                                                        
+         LA    RE,4(RE,R1)                                                      
+         ST    RE,NDXPTR                                                        
+         B     ADDREC14                                                         
+         EJECT                                                                  
+*                                                                               
+* GET D/A OF NEXT BLOCK TO BE WRITTEN ON THIS EXTENT.                           
+*                                                                               
+GETADDR  ST    R4,P5               SET A(D/A)                                   
+         LH    R0,DBLKSZ                                                        
+         GOTO1 =V(DADDS),P1,A(ADDADR),ANDX,(R0),ADTF                            
+         TM    P3+1,X'04'          TEST FOR END-OF-EXTENT                       
+         BNZ   ERR4                                                             
+         L     R4,P5                                                            
+         CLI   3(R4),0             VALID D/A RETURNED ?                         
+         BE    ERR3                NO                                           
+         BR    R9                                                               
+         SPACE 2                                                                
+         EJECT                                                                  
+***********************************************************************         
+* LITERALS ETC.                                                                 
+***********************************************************************         
+         LTORG                                                                  
+         SPACE 3                                                                
+HIXTNT   DS    0CL(EXTLNQ)                                                      
+         DC    X'FF',C'**HIGHCORE**',X'FF'                                      
+*                                                                               
+EFFS     DC    X'FFFF'                                                          
+ERR1     DC    H'0',C'DISK ERROR WRITING DATA BLOCK '                           
+ERR2     DC    H'0',C'DISK ERROR WRITING INDEX BLOCK'                           
+ERR3     DC    H'0',C'BAD DNEXT VALUE IN MATRIX '                               
+ERR4     DC    H'0',C'END OF FILE '                                             
+*                                                                               
+ANDX     DC    A(NDX)                                                           
+ABLK     DC    A(BLK)                                                           
+ADTF     DS    A                                                                
+ANYRECS  DS    X                   N/Z = D/A RECORD ADDED                       
+*                                                                               
+DUB      DS    D                                                                
+P1       DS    F                   DADDS PARM LIST                              
+P2       DS    F                                                                
+P3       DS    F                                                                
+P4       DS    F                                                                
+P5       DS    F                                                                
+P6       DS    F                                                                
+LASTKEYL DS    CL64                LAST MAJOR KEY VALUE                         
+NDXDANAT DS    F                   D/A OF FIRST INDEX BLOCK (THIS C/I)          
+NDXDA    DS    F                   D/A OF CURRENT INDEX BLOCK                   
+NDXPTR   DS    A                   CURRENT INDEX POINTER                        
+BLKDA    DS    F                   D/A OF CURRENT DATA BLOCK                    
+CBFLAG   DS    X                   X'80' ON IF MAJOR KEY CONTROL BREAK          
+         EJECT                                                                  
+***********************************************************************         
+* DSECT TO COVER PARM LIST                                                      
+***********************************************************************         
+LDPARAMS DSECT                                                                  
+LDP1     DS    F                   X'FF' IF LAST TIME CALL                      
+LDP2     DS    F                   A(RECORD TO BE ADDED)                        
+LDP3     DS    F                   ERROR INDICS(2) RECORD LENGTH(2)             
+LDP4     DS    F                   A(DTF) ONLY REQD ON INITIAL CALL             
+LDP5     DS    F                   D/A OF INDEX RECORD RETURNED HERE            
+LDP6     DS    F                                                                
+         EJECT                                                                  
+* DMDTFPH                                                                       
+       ++INCLUDE DMDTFPH                                                        
+         EJECT                                                                  
+* DMXTNTD                                                                       
+       ++INCLUDE DMXTNTD                                                        
+         EJECT                                                                  
+NDX      CSECT                     INDEX RECORD AREA                            
+         DS    9000C                                                            
+*                                                                               
+BLK      CSECT                     DATA BLOCK AREA                              
+         DS    9000C                                                            
+         SPACE 2                                                                
+* DMGREQUS                                                                      
+         PRINT OFF                                                              
+       ++INCLUDE DMGREQUS                                                       
+         PRINT ON                                                               
+                                                                                
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'007DMDXLRPS  06/10/15'                                      
+         END                                                                    

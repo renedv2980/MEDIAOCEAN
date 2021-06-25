@@ -1,0 +1,1319 @@
+*          DATA SET PRWRIADR   AT LEVEL 081 AS OF 04/22/03                      
+*CATALP PRWRIADR                                                                
+         TITLE 'PRWRIADR - ADDRESS/REP - ENTRY POINTS'                          
+         ENTRY IADRREP                                                          
+         ENTRY OADRREP                                                          
+PRWRIADR CSECT                                                                  
+         TITLE 'PRWRICFL - CHANGE LOG'                                          
+*                                                                               
+* SMYE 08/02     ADD NAME AND INDIVIDUAL LINES OUTPUT FOR PUB ADDRESSES         
+*                (CONTRACT, PAYING, SHIPPING AND TRAFFIC)                       
+*                                                                               
+* SMYE 08/01     ADD PUBADDRESS ONLY AND BY INDIVIDUAL ADDREES LINES            
+*                                                                               
+* SMYE 09/99     ADD PUB E-MAIL ADDRESS HANDLING AND MODIFY FOR NEW             
+*                1-LENGTH, LONGER PUB ADDRESS RECORD                            
+*                                                                               
+* SMYE 03/31/99  CHANGE OADRFAX.. TO TEST FOR FAX GREATER THAN SPACES           
+*                AS WELL AS ELEMENT LENGTH BEFORE USING FAX                     
+*                                                                               
+         TITLE 'PRWRITER - ADDRESS/REP - INPUT - IADRREP'                       
+***********************************************************************         
+*                                                                     *         
+*        ROUTINE TO FIND CONTRACT, PAY OR TRAFFIC ADDRESS             *         
+*        REP ENTRIES SENT HERE BUT SKIP ADDRESS OVERRIDE ELEMENT LOGIC*         
+*                                                                     *         
+*        HIERARCHY OF ADDRESSES(REPS) IS                              *         
+*          1. BUY OVERRIDE (PAY ONLY)                                 *         
+*          2. PUB ADDRESS OVERRIDE FOR CLIENT                         *         
+*          3. PUB REP     OVERRIDE FOR CLIENT                         *         
+*          4. PUB ADDRESS OVERRIDE FOR OFFICE                         *         
+*          5. PUB REP     OVERRIDE FOR OFFICE                         *         
+*          6. PUB ADDRESS OVERRIDE FOR AGENCY                         *         
+*          7. PUB REP     OVERRIDE FOR AGENCY                         *         
+*          8. PUB ADDRESS                                             *         
+*                                                                     *         
+*NTRY    GLARGS   = C'P' - PUB RELATED DATA                           *         
+*        GLARGS+1 = C'C' - CONTRACT ADDRESS                           *         
+*                   C'P' - PAY      ADDRESS                           *         
+*                   C'T' - TRAFFIC  ADDRESS                           *         
+*                   C'S' - SHIPPING ADDRESS                           *         
+*                   C'A' - DEFAULT  ADDRESS                           *         
+*        GLARGS+2 = C'A' - ADDRESS ONLY                               *         
+*                   C'B' - REP CODE & NAME OR NAME & ADDRESS          *         
+*                   C'C' - REP CODE FOR REPS                          *         
+*                   C'E' - E-MAIL ADDRESS                             *         
+*                   C'F' - FAX NUMBER                                 *         
+*                   C'N' - NAME ONLY                                  *         
+*                   C'T' - TELEPHONE NUMBER                           *         
+*                   C'W' - ATTENTION NAME (WHO)                       *         
+*        GLARGS+3 = C'A' - ADDRESS ENTRY                              *         
+*                   C'R' - REP     ENTRY                              *         
+*                                                                     *         
+*        GLARGS+4 = C'0' - ADDRESS LINES 1 & 2                        *         
+*                   C'1' - ADDRESS LINE 1                             *         
+*                   C'2' - ADDRESS LINE 2                             *         
+*                   C'3' - ADDRESS NAME                               *         
+*                                                                     *         
+*        R2==>  DRIVER INPUT AREA                                     *         
+*        R8==>  SPOOL WORKAREA                                        *         
+*        R9==>  PRINTWRITER WORKAREA                                  *         
+*        RA==>  DRIVER GLOBAL AREA                                    *         
+*        RC==>  GENCON WORKAREA                                       *         
+*                                                                     *         
+*EXIT   0-9    -  1ST 10 BYTES OF NAME                                *         
+*                                                                     *         
+*       10-13  -  RECORD DISK ADDRESS                                 *         
+*       14-15  -  ELEMENT DISPLACEMENT IN RECORD                      *         
+*       16     -  RECORD IDENTIFIER 'B', 'P', 'C', 'R', 'A'           *         
+*       17     -  SE NUMBER FOR FILES IF DOING AOR REPORT             *         
+*                                                                     *         
+*        R2==>  DRIVER INPUT AREA                                     *         
+*        R8==>  SPOOL WORKAREA                                        *         
+*        R9==>  PRINTWRITER WORKAREA                                  *         
+*        RA==>  DRIVER GLOBAL AREA                                    *         
+*        RC==>  GENCON WORKAREA                                       *         
+*                                                                     *         
+***********************************************************************         
+         SPACE 2                                                                
+         PRINT NOGEN                                                            
+         DS    0D                                                               
+IADRREP  NMOD1 0,**+IADR,RR=R3                                                  
+*                                                                               
+         ST    R3,RELOX                                                         
+         B     *+8                                                              
+RELOX    DC    F'0'                                                             
+*                                                                               
+         USING SPOOLD,R8           ESTABLISH SPOOL WORKAREA                     
+         USING SYSD,R9             ESTABLISH PRINTWRITER WORKAREA               
+         USING GLOBALD,RA          ESTABLISH DRIVER WORKAREA                    
+*                                                                               
+         LA    R7,PBLOCK           ESTABLISH PRINT BLOCK                        
+         USING PBLOCK,R7                                                        
+*                                                                               
+         L     RC,GLAWORKD         RESET WORKING STORAGE POINTER                
+         USING GEND,RC                                                          
+*                                                                               
+         MVI   IADRELCD,0          INIT WORKAREA                                
+         XC    IADRTAB(IADRTABL),IADRTAB  INIT WORKAREA                         
+         MVC   IADRID,=3X'FF'      INIT ADDRESS ID                              
+*                                                                               
+         TM    PBQREQFL,X'08'      IF PUB NOT REQUESTED AS C/M/ROW              
+         BNO   IADRERR             THEN PUB RECORD NOT READ AND NO DATA         
+*                                    AVAILABLE                                  
+*        A PAY REP OVERRIDE IN THE BUY OVERRIDES ALL ADDRESSES                  
+*                                                                               
+IADROVR  DS    0H                                                               
+*                                                                               
+         CLI   GLARGS+1,C'P'       MUST BE PAY ENTRY                            
+         BNE   IADROVRX                                                         
+*                                                                               
+         CLI   PBMODE,PBPROCIV     SKIP IF NOT PROCESSING INVOICES              
+         BNE   IADRIVX                                                          
+*                                                                               
+         ICM   R6,15,PBIHDELA      POINT TO INVOICE HEADER                      
+         BZ    IADROVRX            SKIP IF NONE AVAILABLE                       
+*                                                                               
+         OC    PBAREPBF,PBAREPBF   SKIP IF NO REP BUFFER AVAILABLE              
+         BZ    IADROVRX                                                         
+*                                                                               
+         USING PIMHDREL,R6         ESTABLISH INVOICE HEADER                     
+*                                                                               
+         MVC   0(4,R2),PIMSREP     RETURN SPECIAL REP CODE                      
+*                                                                               
+         OC    0(4,R2),0(R2)       SKIP IF NO SPECIAL REP AVAILABLE             
+         BZ    IADROVRX                                                         
+*                                                                               
+         MVI   IADRTYPE,IADRTPRQ   INDICATE REP BEING USED                      
+         XC    IADRID,IADRID       SET LOWEST ADDRESS IDENTIFIER                
+         MVC   IADRADDR,PIMSREP    SAVE REP ID FROM ELEMENT                     
+         MVI   IADRSRC,IADRREPQ    INIDCATE REP RECORD SOURCE                   
+*                                                                               
+         B     IADROK              GO USE ADDRESS                               
+*                                                                               
+IADRIVX  DS    0H                                                               
+*                                                                               
+         TM    PBQREQFL,X'04'      MUST HAVE INSERT DATE AS ROW/M/H             
+         BNO   IADROVRX              TO ENSURE BUY AVAILABLE                    
+*                                                                               
+         OC    PBAREPBF,PBAREPBF   SKIP IF NO REP BUFFER AVAILABLE              
+         BZ    IADROVRX                                                         
+*                                                                               
+         L     R6,AIO1             POINT TO BUY RECORD                          
+*                                                                               
+         MVI   IADRELCD,PBSREPQ    LOOKING FOR SPECIAL REP ELEMENT              
+*                                                                               
+         BAS   RE,IADRGTEL         LOOK FOR  REP OVERRIDE ELM IN BUY            
+         BNE   IADROVRX            NONE FOUND                                   
+*                                                                               
+         USING PBSREPD,R6          ESTABLISH SPECIAL REP ELEMENT                
+*                                                                               
+         MVI   IADRTYPE,IADRTPRQ   INDICATE REP BEING USED                      
+         XC    IADRID,IADRID       SET LOWEST ADDRESS IDENTIFIER                
+         MVC   IADRADDR,PBSREP     SAVE REP ID FROM ELEMENT                     
+         MVI   IADRSRC,IADRREPQ    INIDCATE REP RECORD SOURCE                   
+*                                                                               
+         B     IADROK              GO USE ADDRESS                               
+*                                                                               
+IADROVRX DS    0H                                                               
+*                                                                               
+*        IF LOOKING FOR CONTRACT ATTENTION                                      
+*          THEN ATTENTION IN CONTRACT RECORD OVERRIDES ALL                      
+*                                                                               
+IADRCAT  DS    0H                                                               
+*                                                                               
+         CLI   GLARGS+3,C'R'       SKIP IF LOOKING FOR REP DATA                 
+         BE    IADRCATX                                                         
+*                                                                               
+         CLI   GLARGS+2,C'W'       MUST BE ATTENTION                            
+         BNE   IADRCATX                                                         
+         CLI   GLARGS+1,C'C'       FOR     CONTRACT                             
+         BNE   IADRCATX                                                         
+*                                                                               
+         L     R6,AIO2             POINT TO CONTRACT RECORD                     
+*                                                                               
+         CLI   PCONKRCD-PCONRECD(R6),PCONKIDQ SKIP IF REC NOT IN CORE           
+         BNE   IADRCATX                                                         
+*                                                                               
+         MVI   IADRELCD,PCATELQ    SET FOR ATTENTION ELEMENT                    
+*                                                                               
+         BAS   RE,IADRGTEL         FIND ELEMENT                                 
+         BNE   IADRCATX            NOT FOUND                                    
+*                                                                               
+         MVI   IADRTYPE,IADRTPAQ   INDICATE ADDRESS BEING USED                  
+         XC    IADRID,IADRID       SET LOWEST ADDRESS IDENTIFIER                
+         STCM  R6,15,IADRADDR      SAVE ELEMENT ADDRESS                         
+         MVI   IADRSRC,IADRCONQ    INDICATE CONTRACT RECORD SOURCE              
+*                                                                               
+         B     IADROK                                                           
+*                                                                               
+IADRCATX DS    0H                                                               
+*                                                                               
+*        FIND ADDRESS OVERRIDE RECORDS (OR ELEMENTS)                            
+*                                                                               
+IADRAOV  DS    0H                                                               
+*                                                                               
+         MVI   IADRSRC,IADRPUBQ    DATA FROM PUB RECORD                         
+*                                                                               
+         CLI   GLARGS+3,C'R'       SKIP IF ONLY WANT REP DATA                   
+         BE    IADRROV                                                          
+*                                                                               
+         CLI   GLARGS+1,C'P'       DETERMINE TYPE OF ADDRESS ELM SOUGHT         
+         BNE   *+8                                                              
+         MVI   IADRELCD,PUBPAOVQ   PAY                                          
+*                                                                               
+         CLI   GLARGS+1,C'C'                                                    
+         BNE   *+8                                                              
+         MVI   IADRELCD,PUBCAOVQ   CONTRACT                                     
+*                                                                               
+         CLI   GLARGS+1,C'T'                                                    
+         BNE   *+8                                                              
+         MVI   IADRELCD,PUBTAOVQ   TRAFFIC                                      
+*                                                                               
+         CLI   GLARGS+1,C'S'                                                    
+         BNE   *+8                                                              
+         MVI   IADRELCD,PUBSAOVQ   SHIPPING                                     
+*                                                                               
+IADRAOV1 DS    0H                                                               
+*                                                                               
+         L     R6,AIO3             POINT TO PUB RECORD                          
+*                                                                               
+         TM    PBQREQFL,X'18'      CAN CHECK FOR CLIENT IF MEDIA AND            
+         BNO   IADRAOV2              CLIENT REQUESTED AS R/M/H                  
+*                                                                               
+         MVC   IADRCODE,PBCLT       CLIENT CODE                                 
+*                                                                               
+         CLI   GLARGS+1,C'C'       IF CONTRACT RELATED DATA                     
+         BNE   IADRAOV2                                                         
+         CLI   PBCPROF+5,C'2'         AND A SLAVE CLIENT                        
+         BNE   IADRAOV2                                                         
+*                                                                               
+         MVC   IADRCODE,PBCPROF+6          USE MASTER CLIENT                    
+*                                                                               
+IADRAOV2 DS    0H                  SET FIELDS IN IADRCDTA FOR CALL              
+*                                                                               
+         MVC   IADRAGY,PUBKAGY-PUBREC(R6)     AGENCY                            
+         MVC   IADRMED,PUBKMED-PUBREC(R6)     MEDIA                             
+         MVC   IADRCLT,IADRCODE               CLIENT CODE                       
+         MVC   IADROFF,PBCOFF                 CLIENT OFFICE                     
+*                                                                               
+         GOTO1 =V(PPGETADR),DMCB,(GLARGS+1,IADRCDTA),(R6),DATAMGR,0             
+*                                                                               
+         CLI   0(R1),X'FF'         ERROR IN CALL ?                              
+*                                 (WILL GET IF NOT LOOKING FOR                  
+*                                 PAYING/TRAF/CON/SHIP)                         
+         BE    IADRROV             TREAT AS IF NOT FOUND                        
+*                                                                               
+         CLI   0(R1),0             PUB AOV ADDRESS RECORD FOUND ?               
+         BE    IADRROV             NO - LOOK FOR REP ADDRESS                    
+*                                                                               
+*                                  PUB AOV ADDRESS RECORD FOUND                 
+*                                                                               
+         L     R6,4(R1)            ADDRESS OF OUTPUT                            
+*                                  POINTS TO PUB ADDRESS RECORD                 
+         MVC   HALF,14(R1)         GET ELEMENT DISPLACEMENT                     
+         AH    R6,HALF             POINT TO ADDRESS RECORD ELEMENT              
+*                                                                               
+         MVI   IADRTYPE,IADRTPAQ   INDICATE ADDRESS OVERRIDE ELEMENT            
+         MVC   IADRID,1(R1)        SAVE ADDRESS AGY/OFC/CLT ID                  
+         STCM  R6,15,IADRADDR      SAVE ELEMENT ADDRESS                         
+*                                                                               
+         OC    8(4,R1),8(R1)       ADDRESS FROM PUB ADDRESS RECORD ?            
+         BZ    IADRAOVX            NO                                           
+         MVC   10(4,R2),8(R1)      SAVE DA FROM PUB ADDRESS RECORD              
+         MVI   IADRSRC,IADRADRQ    DATA FROM PUB ADDRESS RECORD                 
+         MVC   14(2,R2),14(R1)     SAVE ELEMENT DISPLACEMENT                    
+*                                                                               
+IADRAOVX DS    0H                                                               
+*                                                                               
+*        FIND REP ADDRESS OVERRIDE ELEMENTS IN PUB RECORD                       
+*                                                                               
+IADRROV  DS    0H                                                               
+*                                                                               
+         OC    PBAREPBF,PBAREPBF   SKIP IF NO REP BUFFER AVAILABLE              
+         BZ    IADRROVX                                                         
+*                                                                               
+         CLI   IADRELCD,PUBSAOVQ   SKIP IF SHIPPING DATA WANTED                 
+         BE    IADRROVX                                                         
+*                                                                               
+         MVI   IADRELCD,PUBREPQ    LOOKING FOR REP ELEMENT                      
+*                                                                               
+         L     R6,AIO3             POINT TO START OF PUB RECORD                 
+*                                                                               
+         BAS   RE,IADRGTEL         GET FIRST ELEMENT OF TYPE                    
+         BNE   IADRROVD            NONE FOUND                                   
+*                                                                               
+IADRROVL DS    0H                                                               
+*                                                                               
+         USING PUBREPD,R6          ESTABLISH REP ELEMENT                        
+*                                                                               
+         CLC   PUBRPOFF,=3X'FF'    POSSIBLE IF AGENCY OVERRIDE                  
+         BE    IADRROVF                                                         
+*                                                                               
+         CLI   PUBRPOFF,X'FF'      SKIP IF NOT AN OFFICE OVERRIDE               
+         BNE   *+14                                                             
+         CLC   PUBRPOFF+1(1),PBCOFF POSSIBILITY IF CLT'S OFC OVERRIDE           
+         BE    IADRROVF                                                         
+*                                                                               
+         TM    PBQREQFL,X'18'      CAN CHECK FOR CLIENT IF MEDIA AND            
+         BNO   IADRROVC              CLIENT REQUESTED AS R/M/H                  
+*                                                                               
+         CLI   GLARGS+1,C'C'       IF CONTRACT RELATED DATA                     
+         BNE   IADRROV3                                                         
+         CLI   PBCPROF+5,C'2'         AND A SLAVE CLIENT                        
+         BNE   IADRROV3                                                         
+*                                                                               
+         CLC   PUBRPOFF,PBCPROF+6   MATCH TO MASTER CLIENT                      
+         BE    IADRROVF                                                         
+*                                                                               
+         B     IADRROVC                                                         
+*                                                                               
+IADRROV3 DS    0H                  ELSE                                         
+*                                                                               
+         CLC   PUBRPOFF,PBCLT      MATCH CLIENT                                 
+         BNE   IADRROVC                                                         
+*                                                                               
+IADRROVF DS    0H                                                               
+*                                                                               
+         CLC   PUBRPOFF,IADRID     COMPARE IDS                                  
+         BH    IADRROVD            SKIP IF HIGHER THAN PREVIOUS ID              
+         BL    *+14                USE  IF LOWER  THAN PREVIOUS ID              
+         OC    IADRADDR,IADRADDR   USE  IF  EQUAL AND NO ADDR FOUND YET         
+         BNZ   IADRROVD              ELSE SKIP                                  
+*                                                                               
+         SR    R1,R1                                                            
+*                                                                               
+         CLI   GLARGS+1,C'P'       POINT TO CORRECT REP ID                      
+         BNE   *+8                                                              
+         LA    R1,PUBPAREP         PAY REP                                      
+*                                                                               
+         CLI   GLARGS+1,C'C'                                                    
+         BNE   *+8                                                              
+         LA    R1,PUBCNREP         CONTRACT REP                                 
+*                                                                               
+         CLI   GLARGS+1,C'T'                                                    
+         BNE   *+8                                                              
+         LA    R1,PUBTRREP         TRAFFICE REP                                 
+*                                                                               
+         CLI   GLARGS+1,C'S'       SHIPPING ADDR IS DEFAULTING TO               
+         BNE   *+8                   TRAFFIC ADDR HERE                          
+         LA    R1,PUBTRREP         TRAFFICE REP                                 
+*                                                                               
+         LTR   R1,R1               MUST HAVE AN ADDRESS                         
+         BZ    IADRROVC                                                         
+*                                                                               
+         OC    0(4,R1),0(R1)       SKIP IF WANTED REP MISSING                   
+         BZ    IADRROVC                                                         
+*                                                                               
+         MVI   IADRTYPE,IADRTPRQ   INDICATE REP ELEMENT                         
+         MVC   IADRID,PUBRPOFF     SAVE ADDRESS AGY/OFC/CLT ID                  
+         MVC   IADRADDR,0(R1)      SAVE REP ID                                  
+         MVI   IADRSRC,IADRREPQ    INIDCATE REP RECORD SOURCE                   
+*                                                                               
+*        FIRST ADDRESS FOUND WILL HAVE HIGHEST PRIORITY OF TYPE                 
+*                                                                               
+         B     IADRROVX            GO ON TO NEXT ADDR TYPE                      
+*                                                                               
+IADRROVC DS    0H                                                               
+*                                                                               
+         BAS   RE,IADRNXEL         FIND NEXT ELEMENT                            
+         BE    IADRROVL              FOUND                                      
+         B     IADRROVD              NOT FOUND                                  
+*                                                                               
+IADRROVD DS    0H                                                               
+*                                                                               
+IADRROVX DS    0H                                                               
+*                                                                               
+*        DEFAULT TO PUB'S ADDRESS IF NOTHING FOUND YET                          
+*                                                                               
+IADRDFL  DS    0H                                                               
+*                                                                               
+         OC    IADRADDR,IADRADDR   SKIP IF DATA FOUND ALREADY                   
+         BNZ   IADRDFLX                                                         
+*                                                                               
+         CLI   GLARGS+3,C'A'       USE DEFAULT ONLY FOR ADDRESS ENTRIES         
+         BNE   IADRERR             ELSE AND ERROR                               
+*                                                                               
+         MVI   IADRELCD,PUBNAMQ    FIND PUB NAME & ADDRESS ELEMENT              
+*                                                                               
+         L     R6,AIO3             POINT TO START OF PUB RECORD                 
+*                                                                               
+         BAS   RE,IADRGTEL                                                      
+         BNE   IADRDFLX            EXIT IF NONE FOUND                           
+*                                                                               
+         MVI   IADRTYPE,IADRTPPQ   INDICATE PUB DEFAULT ADDRESS                 
+         MVC   IADRID,=3X'FF'      ID IS THAT OF AGENCY                         
+         MVI   IADRELCD,PUBNAMQ    FIND PUB NAME ELEMENT                        
+         STCM  R6,15,IADRADDR      SAVE ELEMENT ADDRESS                         
+*                                                                               
+IADRDFLX DS    0H                                                               
+*                                                                               
+IADROK   DS    0H                                                               
+*                                                                               
+         OC    IADRADDR,IADRADDR   MUST HAVE DATA                               
+         BZ    IADRERR                                                          
+*                                                                               
+*        IF REP ADDRESS THEN SEARCH BUFFER FOR DISK ADDRESS                     
+*                                                                               
+         CLI   IADRTYPE,IADRTPRQ   SKIP IF NOT REP NUMBER                       
+         BNE   IADREPX                                                          
+*                                                                               
+         ICM   RE,15,PBAREPBF      ESTABLISH REP BUFFER                         
+         USING REPBUFD,RE                                                       
+         BZ    IADREPNO               NO BUFFER                                 
+*                                                                               
+         OC    REPBUFD(REPBUFLN),REPBUFD   IF NO TABLE AVAILABLE                
+         BNZ   IADREPA                                                          
+*                                                                               
+         GOTO1 =V(BLDREP)             GO BUILD IT                               
+*                                                                               
+         ICM   RE,15,PBAREPBF      ESTABLISH REP BUFFER                         
+*                                                                               
+IADREPA  DS    0H                                                               
+*                                                                               
+IADREPLP DS    0H                                                               
+*                                                                               
+         OC    REPBUFD(REPBUFLN),REPBUFD   IF NO TABLE AVAILABLE                
+         BZ    IADREPNO              PROCESS NO REP SITUATION                   
+*                                                                               
+         CLC   REPBUFN,IADRADDR    LOOK FOR REP NUMBER MATCH                    
+         BE    IADREPFD                                                         
+*                                                                               
+IADREPCN DS    0H                                                               
+*                                                                               
+         LA    RE,REPBUFLN(RE)     BUMP TABLE ENTRY POINTER                     
+         B     IADREPLP                                                         
+*                                                                               
+IADREPFD DS    0H                                                               
+*                                                                               
+         CLI   GLARGS+2,C'C'       IF NUMBER ONLY REQUIRED                      
+         BNE   IADREP10                                                         
+*                                                                               
+         MVC   0(4,R2),REPBUFN       RETURN IT                                  
+         B     IADRREPX                                                         
+*                                                                               
+IADREP10 DS    0H                  ELSE                                         
+*                                                                               
+         MVC   0(10,R2),REPBUFNA         RETURN SHORT NAME                      
+         MVC   10(4,R2),REPBUDA          AND REP REC DISK ADDRESS               
+         MVC   16(1,R2),IADRSRC          RETURN RECORD TYPE                     
+         MVC   17(1,R2),REPBUFSE         PASS SE NUMBER                         
+         B     IADRREPX                                                         
+*                                                                               
+         DROP  RE                                                               
+*                                                                               
+IADREPNO DS    0H                  NO REP FOUND IN TABLE                        
+*                                    DEFAULT TO PUB ADDRESS                     
+*                                                                               
+         L     R6,AIO3             POINT TO PUB RECORD                          
+*                                                                               
+         MVI   IADRELCD,PUBNAMQ    LOOK FOR PUB NAME ADDRESS                    
+*                                                                               
+         BAS   RE,IADRGTEL         FIND ELEMENT                                 
+         BNE   IADRERR               NOT FOUND IS AN ERROR                      
+*                                                                               
+         MVI   IADRTYPE,IADRTPPQ   INDICATE PUB DEFAULT DATA                    
+         MVI   IADRSRC,IADRPUBQ    INDICATE ADDRESS IN PUB RECORD               
+         MVC   IADRID,=3X'FF'      FLAG AS AGENCY LEVEL ADDRESS                 
+         STCM  R6,15,IADRADDR      SAVE ELEMENT ADDRESS                         
+*                                                                               
+IADREPX  DS    0H                                                               
+*                                                                               
+*        ADDRESS ELEMENTS                                                       
+*                                                                               
+IADRELM  DS    0H                                                               
+*                                                                               
+         CLI   IADRSRC,IADRCONQ    IF CONTRACT RECORD MUST GET PUB NAME         
+         BNE   IADRCADX                                                         
+*                                                                               
+         L     R6,AIO3             POINT TO PUB RECORD                          
+*                                                                               
+         MVI   IADRELCD,PUBNAMQ    LOOK FOR PUB NAME ADDRESS                    
+*                                                                               
+         BAS   RE,IADRGTEL         FIND ELEMENT                                 
+         BNE   IADRERR               NOT FOUND IS AN ERROR                      
+*                                                                               
+         MVC   0(10,R2),PUBNAME-PUBNAMD(R6) RETURN SHORT NAME FOR SORT          
+*                                                                               
+         ICM   R6,15,IADRADDR      RE-POINT TO ADDRESS ELEMENT                  
+*                                                                               
+         B     IADRELM1                                                         
+*                                                                               
+IADRCADX DS    0H                                                               
+*                                                                               
+         ICM   R6,15,IADRADDR      POINT TO ADDRESS ELEMENT                     
+*                                                                               
+         CLI   0(R6),PUBNAMQ       SKIP IF NOT PUB NAME ELEM                    
+         BNE   IADRNNAM                                                         
+*                                                                               
+         MVC   0(10,R2),PUBNAME-PUBNAMD(R6) RETURN SHORT NAME FOR SORT          
+*                                                                               
+         CLI   GLARGS+2,C'F'       FAX IN SUPPLEMENTAL ELEMENT                  
+         BE    *+8                                                              
+         CLI   GLARGS+2,C'T'       TELEPHONE   "                                
+         BE    *+8                                                              
+         CLI   GLARGS+2,C'W'       ATTENTION                                    
+         BNE   IADRELM1                                                         
+*                                                                               
+         MVI   IADRELCD,PUBSADQ    SET FOR SUPPLEMENTAL ELEMENT                 
+*                                                                               
+         L     R6,AIO3             POINT TO START OF PUB RECORD                 
+*                                                                               
+         BAS   RE,IADRGTEL         SEARCH FOR ELEMENT                           
+         BNE   IADRERR             NEED ELEMENT                                 
+*                                                                               
+         STCM  R6,15,IADRADDR      RESET ELEMENT ADDRESS                        
+*                                                                               
+         B     IADRELM1                                                         
+*                                                                               
+IADRNNAM DS    0H                                                               
+*                                                                               
+         MVC   0(10,R2),PGADNAME-PGADELEM(R6) RETURN SHORT NAME (SORT)          
+*                                                                               
+IADRELM1 DS    0H                                                               
+*                                                                               
+         L     RF,AIO3             POINT TO PUB RECORD                          
+*                                                                               
+         CLI   IADRSRC,IADRCONQ    CHECK FOR CONTRACT RECORD                    
+         BNE   IADRELM2                                                         
+*                                                                               
+         MVC   10(4,R2),PBQCONDA   RETURN DISK ADDRESS                          
+*                                                                               
+         ICM   RE,15,PBUTLA        IF UTL ADDRESS KNOWN                         
+         BZ    *+10                                                             
+         MVC   17(1,R2),4(RE)         PASS SE NUMBER FOR FILES                  
+*                                                                               
+         L     RF,AIO2             POINT TO CONTRACT RECORD                     
+*                                                                               
+         B     IADRELM3                                                         
+*                                                                               
+IADRELM2 DS    0H                                                               
+*                                                                               
+         ICM   RE,15,PBUTLA        IF UTL ADDRESS KNOWN                         
+         BZ    *+10                                                             
+         MVC   17(1,R2),4(RE)          PASS SE NUMBER FOR FILES                 
+*                                                                               
+         CLI   IADRSRC,IADRADRQ    CHECK FOR PUB ADDRESS RECORD                 
+         BE    IADRELM4            DISK ADDRESS & DISPLACEMENT DONE             
+         MVC   10(4,R2),29(RF)     RETURN DISK ADDRESS                          
+*                                                                               
+IADRELM3 DS    0H                                                               
+*                                                                               
+         SR    R6,RF               GET ELEMENT DISPLACEMENT                     
+         BM    *-2                                                              
+         STCM   R6,3,14(R2)        RETURN ELEMENT DISPLACEMENT                  
+*                                                                               
+IADRELM4 DS    0H                                                               
+*                                                                               
+         MVC   16(1,R2),IADRSRC    RETURN RECORD ID                             
+         B     IADRREPX                                                         
+*                                                                               
+IADRERR  MVI   0(R2),255           FLAG AS NO DATA FOUND                        
+         B     IADRREPX                                                         
+*                                                                               
+IADRREPX DS    0H                                                               
+         XIT1                                                                   
+*                                                                               
+IADRKEY  DC    XL(L'KEY)'00'       CURRENT KEY      SAVEAREA                    
+         EJECT                                                                  
+***********************************************************************         
+*                                                                     *         
+*        ROUTINE TO SEARCH RECORD FOR SPECIFIC ELEMENT                *         
+*              SECOND ENTRY POINT TO FIND NEXT ELEMENT OF TYPE        *         
+*                                                                     *         
+*                                                                     *         
+*NTRY    R6 ==> START OF RECORD TO SEARCH                             *         
+*               IF LOOKING FOR NEXT ELEMENT R6 POINTS TO LAST ELEMENT *         
+*                  FOUND                                              *         
+*        IADRELCD = ELEMENT CODE TO SEARCH FOR                        *         
+*                                                                     *         
+*EXIT    R6 ==> FOUND ELEMENT                                         *         
+*                                                                     *         
+*        CC IS ^= IF NO ELEMENT FOUND                                 *         
+*                                                                     *         
+***********************************************************************         
+         SPACE 2                                                                
+IADRGTEL DS    0H                  FIND FIRST ELEMENT OF TYPE                   
+*                                                                               
+         LA    R6,33(R6)           POINT TO FIRST ELEMENT IN RECORD             
+         B     IADRGT10                                                         
+*                                                                               
+IADRNXEL DS    0H                  FIND NEXT ELEMENT OF TYPE                    
+*                                                                               
+         SR    R0,R0                                                            
+         IC    R0,1(R6)            BUMP TO NEXT ELEMENT IN RECORD               
+         AR    R6,R0                                                            
+*                                                                               
+IADRGT10 DS    0H                  FIND NEXT ELEMENT OF TYPE                    
+*                                                                               
+         CLI   0(R6),0             CHECK FOR EOR                                
+         BE    IADRGTX1                                                         
+*                                                                               
+         CLC   IADRELCD,0(R6)      LOOK FOR ELEMENT CODE MATCH                  
+         BE    IADRGTX                                                          
+         B     IADRNXEL                                                         
+*                                                                               
+IADRGTX1 DS    0H                                                               
+*                                                                               
+         LTR   R6,R6               SET UNEQUAL CC                               
+         B     IADRGTX                                                          
+*                                                                               
+IADRGTX2 DS    0H                                                               
+*                                                                               
+         CR    R6,R6               SET EQUAL   CC                               
+*                                                                               
+IADRGTX  DS    0H                                                               
+*                                                                               
+         BR    RE                                                               
+         EJECT                                                                  
+         LTORG                                                                  
+         SPACE 2                                                                
+         DS    CL256               FOR NEW Z/OS PROCESSOR                       
+IADRELCD DC    X'00'               ELEMENT FIND ROUTINE WORKAREA                
+*                                                                               
+IADRTAB  DS    0X                  ADDRESS TABLE                                
+IADRTYPE DC    XL1'00'             ADDRESS TYPE                                 
+IADRTPAQ EQU   C'1'                SPECIFIC ADDRESS FROM AN ELEMENT             
+IADRTPRQ EQU   C'2'                REP                                          
+IADRTPPQ EQU   C'3'                PUB DEFAULT ADDRESS                          
+IADRID   DC    XL3'00'             ADDRESS IDENTIFIER - CLT/OFF/AGY             
+IADRADDR DC    XL4'00'             ADDRESS OF ELEMENT OR REP #                  
+IADRCDTA DS    0CL7                CLIENT DATA FOR PUB AOV ADDRESS CALL         
+IADRAGY  DS    CL2                   AGENCY                                     
+IADRMED  DS    CL1                   MEDIA                                      
+IADRCLT  DS    CL3                   CLIENT CODE                                
+IADROFF  DS    CL1                   CLIENT OFFICE                              
+IADRCODE DS    CL3                   "WORK" CLIENT CODE                         
+IADRSRC  DC    XL1'00'             SOURCE RECORD FOR REPS                       
+IADRADRQ EQU   C'A'                  PUB ADDRESS                                
+IADRBUYQ EQU   C'B'                  BUY                                        
+IADRCONQ EQU   C'C'                  CONTRACT                                   
+IADRPUBQ EQU   C'P'                  PUB                                        
+IADRREPQ EQU   C'R'                  REP                                        
+IADRTABL EQU   *-IADRTAB           TABLE LENGTH                                 
+*                                                                               
+         DROP                                                                   
+*                                                                               
+         TITLE 'PRWRITER - ADDRESS/REP - OUTPUT - OADRREP'                      
+***********************************************************************         
+*                                                                     *         
+*        ROUTINE TO PRINT ADDR/REP DATA ON OUTPUT                     *         
+*                                                                     *         
+*NTRY   0-9    -  1ST 10 BYTES OF NAME                                *         
+*       10-13  -  RECORD DISK ADDRESS                                 *         
+*       14-15  -  ELEMENT DISPLACEMENT IN RECORD                      *         
+*       16     -  RECORD IDENTIFIER 'B', 'P', 'C', 'R', 'A'           *         
+*       17     -  SE NUMBER FOR FILES IF DOING AOR REPORT             *         
+*                                                                     *         
+*        GLARGS   = C'C' - CONTRACT ADDRESS                           *         
+*                   C'B' - AD BILL REP ADDRESS                        *         
+*                   C'P' - PAY      ADDRESS                           *         
+*                   C'T' - TRAFFIC  ADDRESS                           *         
+*                   C'S' - SHIPPING ADDRESS                           *         
+*                   C'H' - PRODUCTION HOUSE ADDRESS                   *         
+*                   C'A' - DEFAULT  ADDRESS                           *         
+*        GLARGS+1 = C'A' - ADDRESS                                    *         
+*                   C'B' - REP CODE & NAME OR NAME & ADDRESS          *         
+*                   C'C' - REP CODE FOR REPS                          *         
+*                   C'E' - E-MAIL ADDRESS                             *         
+*                   C'F' - FAX NUMBER                                 *         
+*                   C'N' - NAME ONLY                                  *         
+*                   C'T' - TELEPHONE NUMBER                           *         
+*                   C'W' - ATTENTION NAME (WHO)                       *         
+*        GLARGS+2 = C'A' - ADDRESS ENTRY                              *         
+*                   C'R' - REP     ENTRY                              *         
+*                                                                     *         
+*        GLARGS+3 = C'0' - ADDRESS LINES 1 & 2                        *         
+*                   C'1' - ADDRESS LINE  1                            *         
+*                   C'2' - ADDRESS LINE  2                            *         
+*                   C'3' - ADDRESS NAME                               *         
+*                                                                     *         
+***********************************************************************         
+         SPACE 2                                                                
+         DS    0D                                                               
+OADRREP  NMOD1 0,**+OADR                                                        
+*                                                                               
+         USING SPOOLD,R8           ESTABLISH SPOOL WORKAREA                     
+         USING SYSD,R9             ESTABLISH PRINTWRITER WORKAREA               
+         USING GLOBALD,RA          ESTABLISH DRIVER WORKAREA                    
+*                                                                               
+         LA    R7,PBLOCK           ESTABLISH PRINT BLOCK                        
+         USING PBLOCK,R7                                                        
+*                                                                               
+         L     RC,GLAWORKD         RESET WORKING STORAGE POINTER                
+         USING GEND,RC                                                          
+*                                                                               
+         MVI   PAOSESAV,0          INIT SE SAVEAREA                             
+*                                                                               
+         CLI   MYLTYP,C'M'         IF MID-LINE MUST CLEAR IT                    
+         BNE   *+10                                                             
+         XC    0(140,R3),0(R3)      CLEAR MIDLINE                 L14           
+*                                                                               
+*        BUILD LABEL AREA FOR TOTALS AND HEADLINES                              
+*                                                                               
+         MVC   LABLAREA,SPACES     INIT OUTPUT AREAS                            
+         MVC   CODEAREA,SPACES                                                  
+         MVC   NAMEAREA,SPACES                                                  
+*                                                                               
+         TM    GLINDS,GLTOTLIN     IF DOING TOTALS                              
+         BO    *+12                                                             
+         CLI   MYPOSO,C'H'         OR HEADLINE                                  
+         BNE   OADLBLX                                                          
+*                                                                               
+         GOTO1 BLDLBLA             BUILD LABEL AREA                             
+*                                                                               
+OADLBLX  DS    0H                                                               
+*                                                                               
+*        FILL IN LABEL AREA BASED ON ADDR/REP TYPE                              
+*                                                                               
+         CLI   GLARGS+2,C'R'       SKIP UNLESS REP DATA ASKED FOR               
+         BE    *+8                                                              
+         CLI   16(R2),C'R'         OR REP DATA FOUND                            
+         BNE   OADRLBLX                                                         
+*                                                                               
+         MVC   LABLAREA,SPACES     INIT LABLAREA                                
+*                                                                               
+         CLI   GLARGS,C'P'         PAY                                          
+         BNE   *+10                                                             
+         MVC   LABLAREA(7),=C'PAY REP'                                          
+*                                                                               
+         CLI   GLARGS,C'C'         CONTRACT                                     
+         BNE   *+10                                                             
+         MVC   LABLAREA(12),=C'CONTRACT REP'                                    
+*                                                                               
+         CLI   GLARGS,C'T'         TRAFFIC                                      
+         BNE   *+10                                                             
+         MVC   LABLAREA(11),=C'TRAFFIC REP'                                     
+*                                                                               
+         CLI   GLARGS,C'H'         PRODUCTION HOUSE                             
+         BNE   *+10                                                             
+         MVC   LABLAREA(11),=C'PROD. HOUSE'                                     
+*                                                                               
+         CLI   GLARGS,C'B'         AD BILLING REP                               
+         BNE   *+10                                                             
+         MVC   LABLAREA(12),=C'BILLING REP.'                                    
+*                                                                               
+         CLI   0(R2),255             IF MISSING REP                             
+         BNE   OADRLBLX                                                         
+*                                                                               
+         MVC   CODEAREA(4),=C'****'  DISPLAY MESSAGE                            
+         MVC   NAMEAREA(10),=C'** NONE **'                                      
+*                                                                               
+         CLI   MYLTYP,C'H'         IF NOT HEADLINE                              
+         BE    *+16                                                             
+         MVC   CODEAREA(3),=C'N/A'      PRINT N/A                               
+         MVC   NAMEAREA,SPACES                                                  
+*                                                                               
+         B     OADRREPY            EXIT THRU GENERAL OUTPUT ROUTINE             
+*                                                                               
+OADRLBLX DS    0H                                                               
+*                                                                               
+         CLI   0(R2),X'FF'         EXIT IF NO DATA GIVEN                        
+         BE    OADRREPX                                                         
+*                                                                               
+         CLI   GLARGS+1,C'C'       IF REP CODE ONLY ASKED FOR                   
+         BNE   OADRRCDX                                                         
+*                                                                               
+         MVC   CODEAREA(4),0(R2)   PRINT IT                                     
+*                                                                               
+         B     OADRREPY            EXIT THRU GENERAL OUTPUT ROUTINE             
+*                                                                               
+OADRRCDX DS    0H                                                               
+*                                                                               
+*        READ RECORD USING DISK ADDRESS                                         
+*                                                                               
+         OC    10(4,R2),10(R2)     SKIP IF NO DISK ADDRESS AVAILABLE            
+         BZ    OADRREPX                                                         
+*                                                                               
+         MVC   AIO,AIO3            USE I/O AREA 3 FOR REPREC & PUBREC           
+*                                                                               
+         CLI   16(R2),C'C'         IF CONTRACT ELEMENT                          
+         BNE   *+10                                                             
+         MVC   AIO,AIO2               USE I/O AREA 2 FOR PCONREC                
+*                                                                               
+         MVC   OADRFILE,FILENAME   SAVE CURRENT FILE NAME                       
+*                                                                               
+         MVC   FILENAME,=CL8'PUBFIL'  USE PUBFILE                               
+*                                                                               
+         CLI   16(R2),C'C'         IF REP                                       
+         BE    *+8                                                              
+         CLI   16(R2),C'R'         OR CONTRACT                                  
+         BNE   *+10                                                             
+         MVC   FILENAME,=CL8'PRTFILE'   USE PRINT FILE                          
+*                                                                               
+*                                                                               
+         MVC   KEY+27(4),10(R2)    SET DISK ADDRESS                             
+*                                                                               
+         CLI   17(R2),0            IF SE NUMBER PASSED                          
+         BE    *+8                                                              
+         ICM   RF,15,PBUTLA        AND UTL ADDRESS KNOWN                        
+         BZ    *+16                                                             
+         MVC   PAOSESAV,4(RF)      SAVE SE NUMBER                               
+         MVC   4(1,RF),17(R2)      SET NEEDED SE NUMBER                         
+*                                                                               
+         MVI   ERROR,0             INIT EROR BYTE                               
+         MVI   ERROPT,C'Y'         RETURN AFTER ERROR                           
+*                                                                               
+         GOTO1 GETREC              READ IN RECORD                               
+*                                                                               
+         MVC   FILENAME,OADRFILE   RESTORE FILE NAME                            
+         CLI   PAOSESAV,0          IF SE NUMBER SAVED                           
+         BE    *+14                                                             
+         L     RF,PBUTLA                                                        
+         MVC   4(1,RF),PAOSESAV    RESTORE IT                                   
+*                                                                               
+         CLI   ERROR,0             EXIT ON ERRORS                               
+         BNE   OADRREPX                                                         
+*                                                                               
+         L     R4,AIO              POINT TO RECORD                              
+*                                                                               
+         SR    RF,RF                                                            
+         ICM   RF,3,14(R2)         GET ELEMENT DISPLACEMENT       L14           
+         LA    RF,0(RF,R4)         POINT TO ELEMENT               L14           
+*                                                                               
+         CLI   GLARGS+1,C'B'       CHECK IF NAME WANTED                         
+         BE    OADRNAM                                                          
+         CLI   GLARGS+1,C'C'                                                    
+         BE    OADRNAM                                                          
+         CLI   GLARGS+1,C'N'                                                    
+         BE    OADRNAM                                                          
+*                                                                               
+         CLI   GLARGS+1,C'A'       ADDRESS MAY WANT NAME                        
+         BNE   OADRNAMN                                                         
+*                                                                               
+         CLI   GLARGS+3,C'3'          3 MEANS PRINT NAME ONLY                   
+         BE    OADRNAM                                                          
+*                                                                               
+         CLI   GLARGS+3,C'0'          0,1, 2 MEAN PRINT ADDRESS ONLY            
+         BNL   OADRNAMN                                                         
+*                                                                               
+OADRNAM  DS    0H                                                               
+*                                                                               
+         CLI   16(R2),C'R'         IF REP RECORD IN CORE                        
+         BNE   *+20                                                             
+         MVC   NAMEAREA(30),PREPNAME-PREPRECD(R4) PUT OUT REP NAME              
+         MVC   CODEAREA(4),PREPKREP-PREPKEY(R4)   & REP NUMBER                  
+         B     OADRNAMX                                                         
+*                                                                               
+         CLI   16(R2),C'C'         CONTRACT RECORD HAS NO NAME                  
+         BE    OADRNAMX                                                         
+*                                                                               
+         CLI   16(R2),C'P'         UP THE CREEK IF NOT A PUB RECORD             
+         BE    OADRNAM4                                                         
+*                                                                               
+         CLI   16(R2),C'A'            OR A PUB ADDRESS RECORD                   
+         BNE   OADRNAMX                                                         
+*                                                                               
+OADRNAM4 DS    0H                                                               
+*                                                                               
+         CLI   0(RF),PUBPAOVQ      IF ADDRESS OVERRIDE ELEMENT                  
+         BL    *+22                                                             
+         CLI   0(RF),PUBSAOVQ                                                   
+         BH    *+14                                                             
+         MVC   NAMEAREA(30),PGADNAME-PGADELEM(RF) PUT OUT NAME                  
+         B     OADRNAMX                                                         
+*                                                                               
+         CLI   0(RF),PUBNAMQ        IF PUB NAME & ADDRESS ELEMENT               
+         BNE   *+14                                                             
+         MVC   NAMEAREA(20),PUBNAME-PUBNAMD(RF) PUT OUT PUB NAME                
+         B     OADRNAMX                                                         
+*                                                                               
+OADRNAMX DS    0H                                                               
+*                                                                               
+         CLI   GLARGS+1,C'N'       SKIP IF NAME ONLY WANTED                     
+         BNE   *+10                                               L14           
+         MVC   CODEAREA,SPACES     CLEAR CODE                                   
+*                                                                               
+*                                                                               
+         CLI   MYLTYP,C'H'         FINISHED IF HEADLINE FIELD                   
+         BE    OADRREPY            EXIT THRU GENERAL OUTPUT ROUTINE             
+*                                                                               
+         CLI   GLARGS+1,C'N'       FINISHED IF NAME OR NAME & CODE              
+         BE    *+8                 WANTED                                       
+         CLI   GLARGS+1,C'B'                                                    
+         BNE   *+8                                                              
+         B     OADRREPY            EXIT THRU GENERAL OUTPUT ROUTINE             
+*                                                                               
+OADRNAMN DS    0H                                                               
+*                                                                               
+*        ADDRESS                                                                
+*                                                                               
+OADRADR  DS    0H                                                               
+*                                                                               
+         CLI   GLARGS+1,C'A'       FINISHED UNLESS ADDRESS WANTED L14           
+         BNE   OADRADRN                                           L14           
+*                                                                               
+         CLI   16(R2),C'C'         CONTRACT RECORD HAS NO ADDRESS IN IT         
+         BE    OADRADRN                                                         
+*                                                                               
+         MVC   BLOCK(L'SPACES),SPACES  INIT WORKAREA              L14           
+*                                                                               
+         CLI   GLARGS+3,C'3'          3 MEANS PRINT NAME ONLY                   
+         BE    *+12                                                             
+*                                                                               
+         CLI   GLARGS+3,C'0'       SKIP IF ADDRESS ONLY                         
+         BNL   OADRADRA                                                         
+*                                                                               
+         MVC   BLOCK+14(6),CODEAREA  ADD IN REP CODE                            
+         MVC   BLOCK+22(30),NAMEAREA    NAME                      L14           
+*                                                                               
+OADRADRA DS    0H                                                               
+*                                                                               
+         CLI   16(R2),C'R'         IF REP RECORD IN CORE                        
+         BNE   OADRADRB                                                         
+*                                                                               
+         CLI   GLARGS+3,C'3'          3 MEANS PRINT NAME ONLY                   
+         BE    OADRADD1                                                         
+*                                                                               
+         LA    R1,BLOCK+54            FIRST OUTPUT AREA                         
+*                                                                               
+         CLI   GLARGS+3,C'2'          SKIP IF ADDRESS LINE 2                    
+         BE    *+14                                                             
+         MVC   0(30,R1),PREPLIN1-PREPRECD(R4) ADDRESS LINE 1                    
+         LA    R1,32(R1)                      BUMP OUTPUT POINTER               
+*                                                                               
+         CLI   GLARGS+3,C'1'          SKIP IF ADDRESS LINE 1                    
+         BE    *+10                                                             
+         MVC   0(30,R1),PREPLIN2-PREPRECD(R4)                                   
+*                                                                               
+         B     OADRADD1                                                         
+*                                                                               
+OADRADRB DS    0H                                                               
+*                                                                               
+         CLI   16(R2),C'P'         UP THE CREEK IF NOT A PUB RECORD             
+         BE    *+8                                                              
+         CLI   16(R2),C'A'               OR A PUB ADDRESS RECORD                
+         BNE   OADRADDX                                                         
+*                                                                               
+         CLI   0(RF),PUBPAOVQ      IF ADDRESS OVERRIDE LEMENT                   
+         BL    OADRADRC                                                         
+         CLI   0(RF),PUBSAOVQ                                                   
+         BH    OADRADRC                                                         
+*                                                                               
+         CLI   GLARGS+3,C'3'          3 MEANS PRINT NAME ONLY                   
+         BE    OADRADD1                                                         
+*                                                                               
+         LA    R1,BLOCK+54            FIRST OUTPUT AREA                         
+*                                                                               
+         CLI   GLARGS+3,C'2'          SKIP IF ADDRESS LINE 2                    
+         BE    *+14                                                             
+         MVC   0(30,R1),PGADLIN1-PGADELEM(RF) ADDRESS LINE 1                    
+         LA    R1,32(R1)                      BUMP OUTPUT POINTER               
+*                                                                               
+         CLI   GLARGS+3,C'1'          SKIP IF ADDRESS LINE 1                    
+         BE    *+10                                                             
+         MVC   0(30,R1),PGADLIN2-PGADELEM(RF) ADDRESS LINE 2                    
+*                                                                               
+         B     OADRADD1                                                         
+*                                                                               
+OADRADRC DS    0H                                                               
+*                                                                               
+         CLI   0(RF),PUBNAMQ       IF PUB NAME AND ADDRESS ELM                  
+         BNE   OADRADRD                                                         
+*                                                                               
+         CLI   GLARGS+3,C'3'          3 MEANS PRINT NAME ONLY                   
+         BE    OADRADD1                                                         
+*                                                                               
+         LA    R1,BLOCK+54            FIRST OUTPUT AREA                         
+*                                                                               
+         CLI   GLARGS+3,C'2'          SKIP IF ADDRESS LINE 2                    
+         BE    *+14                                                             
+         MVC   0(30,R1),PUBLINE1-PUBNAMD(RF) ADDRESS LINE 1                     
+         LA    R1,32(R1)                      BUMP OUTPUT POINTER               
+*                                                                               
+         CLI   GLARGS+3,C'1'          SKIP IF ADDRESS LINE 1                    
+         BE    *+10                                                             
+         MVC   0(30,R1),PUBLINE2-PUBNAMD(RF) ADDRESS LINE 2                     
+*                                                                               
+         B     OADRADD1                                                         
+*                                                                               
+OADRADRD DS    0H                                                               
+*                                                                               
+OADRADD1 DS    0H                                                               
+*                                                                               
+         OC    BLOCK(132),SPACES   FORCE UPPERCASE                              
+*                                                                               
+         CLI   MYLTYP,C'M'         IF MIDLINE                                   
+         BNE   OADRDTL                                                          
+*                                                                               
+         MVC   BLOCK(12),LABLAREA  COPY LABEL                     L14           
+         MVI   BLOCK+12,C'='       SET PUNCTUATION                L14           
+         MVI   BLOCK+20,C'='                                      L14           
+*                                                                               
+         CLC   BLOCK+54(30),SPACES   SKIP IF NO DATA                            
+         BNH   *+8                                                              
+         MVI   BLOCK+52,C','                                      L14           
+*                                                                               
+         CLC   BLOCK+86(30),SPACES   SKIP IF NO DATA                            
+         BNH   *+8                                                              
+         MVI   BLOCK+84,C','                                                    
+*                                                                               
+         GOTO1 SQUASHER,DMCB,BLOCK,132 STRIP OUT SPACES                         
+*                                                                               
+         XC    0(142,R3),0(R3)     CLEAR OUTPUT MID-LINE                        
+*                                                                               
+         ZIC   RF,DMCB+7           PRINT DATA                                   
+         EX    RF,*+8                                                           
+         B     *+10                                                             
+         MVC   0(0,R3),BLOCK                                                    
+*                                                                               
+OADRMIDX DS    0H                                                               
+*                                                                               
+         B     OADRADDX            ALL DONE                                     
+*                                                                               
+*           PROCESS FOR DETAIL                                                  
+*                                                                               
+OADRDTL  DS    0H                                                               
+*                                                                               
+         GOTO1 SQUASHER,DMCB,BLOCK,52  STRIP BLANKS FROM CODE AND NAME          
+*                                                                               
+         LR    RE,R3               COPY START OF OUTPUT                         
+*                                                                               
+         CLI   GLARGS+3,C'3'       NAME ONLY ?                                  
+         BE    *+12                YES                                          
+*                                                                               
+         CLI   GLARGS+3,C'0'       SKIP IF ADDRESS ONLY                         
+         BNL   OADRDTL1                                                         
+*                                                                               
+         ZIC   RF,DMCB+7           MAX 30 BYTES TO OUTPUT                       
+         CH    RF,=H'30'                                                        
+         BNH   *+8                                                              
+         LA    RF,30                                                            
+*                                                                               
+         BCTR  RF,0                DECREMENT FOR EXECUTE                        
+         EX    RF,*+8                                                           
+         B     *+10                                                             
+         MVC   0(0,RE),BLOCK                                                    
+*                                                                               
+         LA    RE,198(RE)          COPY START OF OUTPUT           L14           
+*                                                                               
+OADRDTL1 DS    0H                                                               
+*                                                                               
+         CLC   BLOCK+54(30),SPACES   SKIP IF NO DATA                            
+         BNH   *+14                  BELOW NAME                   L14           
+         MVC   0(30,RE),BLOCK+54                                                
+         LA    RE,198(RE)                                                       
+*                                                                               
+         CLC   BLOCK+86(30),SPACES   SKIP IF NO DATA                            
+         BNH   *+10                                                             
+         MVC   0(30,RE),BLOCK+86                                                
+*                                                                               
+OADRDTLX DS    0H                                                               
+*                                                                               
+OADRADDX DS    0H                                                               
+*                                                                               
+         B     OADRREPX            ALL DONE                       L14           
+*                                                                               
+OADRADRN DS    0H                                                               
+*                                                                               
+*        FAX NUMBER                                                             
+*                                                                               
+OADRFAX  DS    0H                                                               
+*                                                                               
+         CLI   GLARGS+1,C'F'       PROCESS FAX                                  
+         BNE   OADRFAXN                                                         
+*                                                                               
+         CLI   16(R2),C'R'         IF REP RECORD IN CORE                        
+         BNE   OADRFAXB                                                         
+         CLI   PREPELEM+1-PREPRECD(R4),PREPFAX-PREPELEM AND FAX IN ELM          
+         BL    OADRFAXB                                                         
+         MVC   0(L'PREPFAX,R3),PREPFAX-PREPRECD(R4)  PRINT FAX #                
+         B     OADRFAXX                                                         
+*                                                                               
+OADRFAXB DS    0H                                                               
+*                                                                               
+         CLI   16(R2),C'P'         UP THE CREEK IF NOT A PUB RECORD             
+         BE    OADRFAXF                                                         
+*                                                                               
+         CLI   16(R2),C'A'               OR A PUB ADDRESS RECORD                
+         BNE   OADRFAXX                                                         
+*                                                                               
+OADRFAXF DS    0H                                                               
+*                                                                               
+         CLI   0(RF),PUBPAOVQ      IF ADDRESS OVERRIDE ELEMENT                  
+         BL    OADRFAXK                                                         
+         CLI   0(RF),PUBSAOVQ                                                   
+         BH    OADRFAXK                                                         
+         OC    PGADFAX-PGADELEM(L'PGADFAX,RF),SPACES                            
+         CLC   PGADFAX-PGADELEM(L'PGADFAX,RF),SPACES    IF FAX PRESENT          
+         BNH   OADRFAXK                                                         
+         MVC   0(L'PGADFAX,R3),PGADFAX-PGADELEM(RF)  PRINT FAX #                
+         B     OADRFAXX                                                         
+*                                                                               
+OADRFAXK DS    0H                                                               
+*                                                                               
+         CLI   0(RF),PUBSADQ       IF PUB SUPPLEMENTAL ELEMENT                  
+         BNE   OADRFAXX                                                         
+         CLI   PUBSADEL+1-PUBSADD(RF),PUBSFAXN-PUBSADD AND FAX IN ELM           
+         BL    OADRFAXX                                                         
+         MVC   0(L'PUBSFAXN,R3),PUBSFAXN-PUBSADD(RF)  PRINT FAX #               
+         B     OADRFAXX                                                         
+*                                                                               
+OADRFAXX DS    0H                                                               
+*                                                                               
+         MVC   NAMEAREA,0(R3)      COPY OUTPUT                                  
+         B     OADRREPY            EXIT THRU GENERAL OUTPUT ROUTINE             
+*                                                                               
+         B     OADRREPX                                                         
+*                                                                               
+OADRFAXN DS    0H                                                               
+*                                                                               
+*        TELEPHONE NUMBER                                                       
+*                                                                               
+OADRTEL  DS    0H                                                               
+*                                                                               
+         CLI   GLARGS+1,C'T'       PROCESS TEL                                  
+         BNE   OADRTELN                                                         
+*                                                                               
+         CLI   16(R2),C'R'         IF REP RECORD IN CORE                        
+         BNE   *+14                                                             
+         MVC   0(L'PREPTEL,R3),PREPTEL-PREPRECD(R4)  PRINT TEL #                
+         B     OADRTELX                                                         
+*                                                                               
+         CLI   16(R2),C'P'         UP THE CREEK IF NOT A PUB RECORD             
+         BE    OADRTEL4                                                         
+*                                                                               
+         CLI   16(R2),C'A'               OR A PUB ADDRESS RECORD                
+         BNE   OADRTELX                                                         
+*                                                                               
+OADRTEL4 DS    0H                                                               
+*                                                                               
+         CLI   0(RF),PUBPAOVQ      IF ADDRESS OVERRIDE ELEMENT                  
+         BL    *+22                                                             
+         CLI   0(RF),PUBSAOVQ                                                   
+         BH    *+14                                                             
+         MVC   0(L'PGADTEL,R3),PGADTEL-PGADELEM(RF)    PRINT TEL #              
+         B     OADRTELX                                                         
+*                                                                               
+         CLI   0(RF),PUBSADQ       IF PUB SUPPLEMENTAL ELEMENT                  
+         BNE   *+14                                                             
+         MVC   0(L'PUBTEL,R3),PUBTEL-PUBSADD(RF)  PRINT TEL #                   
+         B     OADRTELX                                                         
+*                                                                               
+OADRTELX DS    0H                                                               
+*                                                                               
+         MVC   NAMEAREA,0(R3)      COPY OUTPUT                                  
+         B     OADRREPY            EXIT THRU GENERAL OUTPUT ROUTINE             
+*                                                                               
+         B     OADRREPX                                                         
+*                                                                               
+OADRTELN DS    0H                                                               
+*                                                                               
+*        ATTENTION NAME                                                         
+*                                                                               
+OADRATN  DS    0H                                                               
+*                                                                               
+         CLI   GLARGS+1,C'W'       PROCESS ATTENTION NAME (WHO)                 
+         BNE   OADRATNN                                                         
+*                                                                               
+         MVC   OADRWORK,SPACES     INIT WORKAREA                                
+         LA    R1,OADRWORK                                                      
+*                                                                               
+         CLI   16(R2),C'R'         IF REP RECORD IN CORE                        
+         BNE   *+14                                                             
+         MVC   0(L'PREPATTN,R1),PREPATTN-PREPRECD(R4)  PRINT ATTENTION          
+         B     OADRATN1                                                         
+*                                                                               
+         CLI   16(R2),C'C'         CONTRACT RECORD                              
+         BNE   *+14                                                             
+         MVC   0(L'PCATNAM,R1),PCATNAM-PCATELD(RF)  PRINT ATTENTION             
+         B     OADRATN1                                                         
+*                                                                               
+         CLI   16(R2),C'P'         UP THE CREEK IF NOT A PUB RECORD             
+         BE    OADRATN4                                                         
+*                                                                               
+         CLI   16(R2),C'A'               OR A PUB ADDRESS RECORD                
+         BNE   OADRATNX                                                         
+*                                                                               
+OADRATN4 DS    0H                                                               
+*                                                                               
+         CLI   0(RF),PUBPAOVQ      IF ADDRESS OVERRIDE ELEMENT                  
+         BL    *+22                                                             
+         CLI   0(RF),PUBSAOVQ                                                   
+         BH    *+14                                                             
+         MVC   0(L'PGADATTN,R1),PGADATTN-PGADELEM(RF)  PRINT ATN NAME           
+         B     OADRATN1                                                         
+*                                                                               
+         CLI   0(RF),PUBSADQ       IF PUB SUPPLEMENTAL ELEMENT                  
+         BNE   *+14                                                             
+         MVC   0(L'PUBATTN,R1),PUBATTN-PUBSADD(RF)  PRINT ATTN NAME             
+         B     OADRATN1                                                         
+*                                                                               
+OADRATN1 DS    0H                                                               
+*                                                                               
+         SR    RF,RF                                                            
+         ICM   RF,1,MYOLEN         GET OUTPUT LENGTH                            
+         BZ    OADRATN2              NO LENGTH                                  
+*                                                                               
+         BCTR  RF,0                DECREMENT FOR EXECUTE                        
+         EX    RF,*+8                                                           
+         B     *+10                                                             
+         MVC   0(0,R3),OADRWORK    MOVE OUT ATTENTION NAME                      
+*                                                                               
+OADRATN2 DS    0H                                                               
+*                                                                               
+OADRATNX DS    0H                                                               
+*                                                                               
+         MVC   NAMEAREA,OADRWORK   COPY OUTPUT                                  
+         B     OADRREPY            EXIT THRU GENERAL OUTPUT ROUTINE             
+*                                                                               
+         B     OADRREPX                                                         
+*                                                                               
+OADRATNN DS    0H                                                               
+*                                                                               
+*        E-MAIL ADDRESS                                                         
+*                                                                               
+OADREML  DS    0H                                                               
+*                                                                               
+         CLI   GLARGS+1,C'E'       PROCESS E-MAIL ADDRESS                       
+         BNE   OADREMLN                                                         
+*                                                                               
+         MVC   OADRWORK,SPACES     INIT WORKAREA                                
+         LA    R1,OADRWORK                                                      
+*                                                                               
+         CLI   16(R2),C'P'         UP THE CREEK IF NOT A PUB RECORD             
+         BE    OADREML4                                                         
+*                                                                               
+         CLI   16(R2),C'A'               OR A PUB ADDRESS RECORD                
+         BNE   OADREMLX                                                         
+*                                                                               
+OADREML4 DS    0H                                                               
+*                                                                               
+         CLI   0(RF),PUBPAOVQ      IF ADDRESS OVERRIDE ELEMENT                  
+         BL    OADREML5                                                         
+         CLI   0(RF),PUBSAOVQ                                                   
+         BH    OADREML5                                                         
+         OC    PGADEADD-PGADELEM(L'PGADEADD,RF),SPACES                          
+         CLI   PGADEADD-PGADELEM(RF),C' '           IF E-MAIL PRESENT           
+         BNH   OADREML1                                                         
+         MVC   0(L'PGADEADD,R1),PGADEADD-PGADELEM(RF)  PRINT E-MAIL             
+         B     OADREML1                                  ADDRESS                
+*                                                                               
+OADREML5 DS    0H                                                               
+*                                                                               
+*                                                                               
+OADREML1 DS    0H                                                               
+*                                                                               
+         SR    RF,RF                                                            
+         ICM   RF,1,MYOLEN         GET OUTPUT LENGTH                            
+         BZ    OADREML2              NO LENGTH                                  
+*                                                                               
+         BCTR  RF,0                DECREMENT FOR EXECUTE                        
+         EX    RF,*+8                                                           
+         B     *+10                                                             
+         MVC   0(0,R3),OADRWORK    MOVE OUT E-MAIL                              
+*                                                                               
+OADREML2 DS    0H                                                               
+         B     OADRREPX            ALL DONE                                     
+*                                                                               
+OADREMLX DS    0H                                                               
+*                                                                               
+         MVC   NAMEAREA,OADRWORK   COPY OUTPUT                                  
+         B     OADRREPY            EXIT THRU GENERAL OUTPUT ROUTINE             
+*                                                                               
+OADREMLN DS    0H                                                               
+*                                                                               
+OADRREPY DS    0H                                                               
+         LTR   RB,RB               ^= CC MEANS  GENERAL OUTPUT ROUTINE          
+         XIT1                                                                   
+*                                                                               
+OADRREPX DS    0H                                                               
+         CR    RB,RB               NORMAL EXIT                                  
+         XIT1                                                                   
+*                                                                               
+         LTORG                                                                  
+*                                                                               
+         DS    CL256               FOR NEW Z/OS PROCESSOR                       
+OADRFILE DC    CL8' '              FILE NAME SAVEAREA                           
+OADRWORK DS    CL132               WORKAREA                                     
+*                                                                               
+         DROP                                                                   
+*                                                                               
+         TITLE   'PRWRIADR DSECTS / STORAGE'                                    
+* PRWRIWORKD                                                                    
+         PRINT   OFF                                                            
+       ++INCLUDE PRWRIWORKD                                                     
+         PRINT ON                                                               
+* DRGLOBAL                                                                      
+         PRINT   OFF                                                            
+       ++INCLUDE DRGLOBAL                                                       
+         PRINT   ON                                                             
+* PRVALTABD                                                                     
+         PRINT   OFF                                                            
+       ++INCLUDE PRVALTABD                                                      
+         PRINT   ON                                                             
+* DRIVETABLE                                                                    
+         PRINT   OFF                                                            
+       ++INCLUDE DRIVETABLE                                                     
+         PRINT   ON                                                             
+* DRINTRECD2                                                                    
+         PRINT   OFF                                                            
+       ++INCLUDE DRINTRECD2                                                     
+         PRINT   ON                                                             
+* DDSPOOLD                                                                      
+         PRINT   OFF                                                            
+       ++INCLUDE DDSPOOLD                                                       
+         PRINT   ON                                                             
+* DDSPLWORKD                                                                    
+         PRINT OFF                                                              
+       ++INCLUDE DDSPLWORKD                                                     
+         PRINT   ON                                                             
+* PRGENFILE                                                                     
+         PRINT OFF                                                              
+       ++INCLUDE PRGENFILE                                                      
+         PRINT   ON                                                             
+* PRGLOBEQUS                                                                    
+         PRINT OFF                                                              
+       ++INCLUDE PRGLOBEQUS                                                     
+         PRINT   ON                                                             
+* DDCOMFACSD                                                                    
+         PRINT OFF                                                              
+       ++INCLUDE DDCOMFACSD                                                     
+         PRINT   ON                                                             
+PGETADRD DSECT                                                                  
+         PRINT OFF                                                              
+       ++INCLUDE PPGETADRD                                                      
+         PRINT   ON                                                             
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'081PRWRIADR  04/22/03'                                      
+         END                                                                    

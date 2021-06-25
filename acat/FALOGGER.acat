@@ -1,0 +1,739 @@
+*          DATA SET FALOGGER   AT LEVEL 012 AS OF 01/07/19                      
+*&&      SET   NOP=N,HDR=N                                                      
+*CATALP FALOGGER                                                                
+                                                                                
+***********************************************************************         
+*NORMAL CALL FROM SYSTEM IS WITH R1 POINTING TO TCB LIST ENTRY FOR    *         
+*TASK THAT HAS JUST COMPLETED. TCB LIST ENTRY STARTS WITH C'*TASK'    *         
+*                                                                     *         
+*SPECIAL CALL WITH R1 POINTING TO AN OUTPUT AREA.                     *         
+*                                                                     *         
+*IF THE FIRST CHARACTER OF THE OUTPUT AREA IS C'*', THEN A WHOLE      *         
+*BLOCK IS WRITTEN.                                                    *         
+*IF THE BLOCK BEGINS WITH *VTAM, THE WHOLE BLOCK IS WRITTEN AND       *         
+*THE DISK ADDRESS RETURNED AT BUFFER+5.                               *         
+*                                                                     *         
+*IF THE FIRST CHAR IS NOT A C'*', THEN OUTPUT IS TREATED AS A RECORD  *         
+*WHOSE FIRST CHARACTER MUST BE LESS THAN C'A'                         *         
+***********************************************************************         
+FALOGGER TITLE 'FACILITIES OUTPUT LOGGING'                                      
+         PRINT NOGEN                                                            
+LOGGER   CSECT                                                                  
+         ENTRY ADRBUFF                                                          
+*                                                                               
+         NMOD1 WORKX-WORKD,**LOGR**                                             
+         USING WORKD,RC                                                         
+         SAM24                     SET IN 24-BIT MODE                           
+         LR    R3,R1               R3=A(TCB) OR INPUT I/O AREA                  
+         USING TCBD,R3                                                          
+         L     RA,=V(SYSFAC)       RA=A(SYSTEM FACILITY LIST)                   
+         USING SYSFACD,RA                                                       
+         L     R9,VSSB             R9=A(SSB)                                    
+         USING SSBD,R9                                                          
+         PROT  OFF                 DISSABLE CALLER'S STORAGE PROTECTION         
+*                                                                               
+INIT     BC    0,INITX             INITIALISE FIRST CALL ONLY                   
+*                                                                               
+INIT1    L     RF,VADRFILE                                                      
+         MVC   52(2,RF),ADRLENB    SET BLOCK LENGTH IN DTF DBLKSZ               
+         OI    52(RF),X'80'        SET F/L REC FLAG IN DTF DBLKSZ               
+         L     R6,X'10'(,R0)       GET CVT                                      
+         USING CVTMAP,R6                                                        
+         L     R6,CVTSMCA          GET SMCA                                     
+         MVC   SMF_SID,SMCASID-SMCABASE(R6)                                     
+         OI    SMF_FLG,X'12'       SET VS2 SYSTEM                               
+         MVC   SM2_SID,SMCASID-SMCABASE(R6)                                     
+         OI    SM2_FLG,X'12'                                                    
+*                                                                               
+INIT2    MVI   INIT+1,X'F0'        SET TO BRANCH AROUND INIT                    
+         CLC   0(8,R3),=C'*INITIAL'                                             
+         BE    LOGXIT                                                           
+INITX    EQU   *                                                                
+         EJECT                                                                  
+***********************************************************************         
+*TEST WHAT TYPE OF CALL                                               *         
+***********************************************************************         
+LOG1     MVI   FLAG,0              CLEAR FLAG BYTE                              
+         CLC   0(5,R3),=C'*TASK'   TEST IF POINTING TO TCB ENTRY                
+         BNE   LOGSPC              NO MUST BE SPECIAL CALL                      
+*                                                                               
+         ICM   R4,15,TCBUTL        R4=A(UTL)                                    
+         BZ    LOGXIT                                                           
+         USING UTLD,R4                                                          
+         TM    TSTAT4,TST4TWA      TEST TWA LOGGING REQUIRED                    
+         BZ    *+8                                                              
+         BRAS  RE,LOGTTWA                                                       
+*&&UK*&& BAS   RE,LOGTST           TEST FOR CPU TWA LOG                         
+         EJECT                                                                  
+***********************************************************************         
+*NORMAL CALL R3 POINTS TO TCB ENTRY. MOVE TASK DATA TO ADRBUFF.       *         
+***********************************************************************         
+LOGMVE   L     R7,ADRNEXT          MOVE TASK DATA TO LOG BUFFER                 
+         USING ADRRECD,R7                                                       
+         LA    R8,ADRBUFF                                                       
+         AH    R8,ADRLENB          R8=A(END OF LOG BUFFER)                      
+*                                                                               
+         MVC   ADRTCB,TCBSTATS     MAIN STATS FROM TCBSTATS                     
+*                                                                               
+         MVC   ADRAGYID,TAGY                                                    
+         MVC   ADRUSER,TUSER                                                    
+         MVC   ADRAGYPE,TAGYPER    AGENCY CODE FOR TPERSON                      
+         MVC   ADRPERS,TPERSON     PERSON ID FOR PPS                            
+         OC    ADRPERS,ADRPERS                                                  
+         BNZ   LOGMVE2                                                          
+         MVC   ADRPERS,TPASSWD     PASSWORD NUMBER FOR NON-PPS                  
+*                                                                               
+LOGMVE2  MVC   ADRFLAG1,TSTAT6     SET STEREO AND SCRIPT FLAGS                  
+         NI    ADRFLAG1,TST6STRO+TST6SCRP+TST6STFU                              
+         TM    TSTAT8,TST8PC32                                                  
+         BZ    *+8                                                              
+         OI    ADRFLAG1,ADRFPC32   SET 32 BIT PC MODE                           
+         TM    TCBINDS1,TCBFUPD                                                 
+         BZ    *+8                                                              
+         OI    ADRFLAG1,ADRFUPD    SET UPDATIVE TRANSACTION FLAG                
+         TM    TCBINDS1,TCBFABND                                                
+         BZ    *+8                                                              
+         OI    ADRFLAG1,ADRFABND   SET TRANSACTION ABENDED                      
+*                                                                               
+         MVI   ADRFLAG2,ADRFRL80   SET 80-CHR RECORDS                           
+         MVC   DUB(1),TCBINDS2                                                  
+         NI    DUB,TCBFCTC+TCBFCTD+TCBFUNLK+TCBFCRO+TCBFCDB                     
+         OC    ADRFLAG2,DUB                                                     
+         TM    TSTATD,TSTATCPV                                                  
+         BZ    *+8                                                              
+         OI    ADRFLAG2,ADRFCTPV   SET CONNECTED WITH PRE-VALIDATED P/W         
+*                                                                               
+         MVC   ADRXPI,TXPINFO      SET EXTERNAL PROGRAM DATA                    
+         NI    TXPTYPE,255-TXPTCT  TURN OFF THIS IS =CT TRANS FLAG              
+         MVC   ADRDSPAC,SSBDSPAC                                                
+         MVC   ADRDAYNO,SSBDAYNO                                                
+         MVC   ADRTCB1,TCBPERF1    PERFORMANCE DATA TO ADRFILE                  
+         MVC   ADRSYSIX,SSBSYSIX   FACPAK AOR/TOR                               
+*                                                                               
+         LG    GR1,SSBCPUTK        BUMP CPU USED BY ALL TASKS                   
+         AGF   GR1,TCBCPUTK                                                     
+         STG   GR1,SSBCPUTK                                                     
+         MVC   SSBCPUSE,TCBCPUSE   SAVE CPU USED IN TOTAL                       
+*                                                                               
+         CLI   ADRSYSNO,1          TEST SERVICE REQUEST                         
+         BNE   *+12                                                             
+         CLI   ADRPRGNO,10         TEST CONNECT                                 
+         BNE   *+10                                                             
+         MVC   ADROSIN,TOSIN       SET ORIGINAL SYSTEM INPUT NUMBER             
+*                                                                               
+         TIME  BIN                 GET DATE/TIME IN 1/100 SEC UNITS             
+         STCM  R0,15,SMF_TME       TIME IN BINARY 1/100 SECOND                  
+         STCM  R1,15,SMF_DTE       DATE IN PACKED JULIAN 0CYYDDD+               
+*                                                                               
+         L     R5,VSYSFAC0                                                      
+         USING COMFACSD,R5                                                      
+*                                                                               
+         GOTO1 CDATCON,P1,(6,SMF_DTE),(10,DUB)                                  
+         CLC   DUB,SSBDATE                                                      
+         BE    LOGCOUNT            DATE IS SAME SO CONTINUE                     
+*                                                                               
+         MVC   SSBDATE,DUB         NEW DATE                                     
+         GOTO1 (RF),(R1),,(3,SSBDATEB)                                          
+         GOTO1 (RF),(R1),(3,SSBDATEB),(0,WORK)                                  
+         GOTO1 CGETDAY,P1,WORK,WORK+10                                          
+         MVC   SSBDAYNO,P1         SET DAY NUMBER IN SSB                        
+         MVC   ADRDAYNO,SSBDAYNO   AND RESET THE ADRREC ONE TOO                 
+*                                                                               
+         MVC   SSBTPOPC,=F'1'      SET TO INITIAL                               
+***      MVC   SSBSIN,=F'1'        NOW USING GLOBAL SIN - DO NOT RESET          
+         MVI   SSBSECV,0                                                        
+*                                                                               
+         DROP  R5                                                               
+*                                                                               
+         MVC   WORK+2(30),=C'RESET DATE TO DD/MM/YY  '                          
+         MVC   WORK+16(8),SSBDATE                                               
+         MVC   WORK(2),=H'24'                                                   
+         LA    R5,WORK                                                          
+         WTO   TEXT=(R5)                                                        
+*                                                                               
+         XR    R2,R2                                                            
+         LAM   AR2,AR2,SSBTBLET                                                 
+         SAC   512                                                              
+         ICM   R2,15,TABSADDR-FATABSD(R2)                                       
+         USING TORDUMPD,R2                                                      
+         IC    R0,SSBSYSID         NOW SEE IF SSB IS OK                         
+         N     R0,=X'0000000F'                                                  
+         MHI   R0,TDLENQ                                                        
+         AR    R2,R0               INDEX INTO OUR ENTRY                         
+         XC    TDREGB,TDREGB       CLEAR DUP DUMP FIELD                         
+         LAM   AR2,AR2,=F'0'                                                    
+         DROP  R2                                                               
+         SAC   0                                                                
+*                                                                               
+LOGCOUNT MVI   BYTE,1                                                           
+LOGCNT0  XR    R2,R2                                                            
+         LAM   AR2,AR2,SSBTBLET                                                 
+         SAC   512                                                              
+         ICM   R2,15,TABSSTAT-TABSADDR(R2)                                      
+         JZ    LOGCNTX                                                          
+         CLI   BYTE,1                                                           
+         JE    LOGCNT1                                                          
+         A     R2,=A(DSSLOGSE-DSSLOGD)                                          
+         LLC   R0,ADRSYSNO                                                      
+         SLL   R0,6                                                             
+         AR    R2,R0               INDEX TO SE                                  
+         J     LOGCNT2                                                          
+*                                                                               
+LOGCNT1  A     R2,=A(DSSLOGFA-DSSLOGD)                                          
+         LLC   R0,ADRSYSIX                                                      
+         SLL   R0,6                                                             
+         AR    R2,R0               INDEX TO FACPAK                              
+         USING DSLLOGD,R2                                                       
+                                                                                
+LOGCNT2  LA    RF,DSLTRANS                                                      
+         LA    R1,1                                                             
+         BRAS  RE,LOGCUPD                                                       
+                                                                                
+         LA    RF,DSLQUEUE                                                      
+         L     R1,ADRSTTM          CALCULATE QUEUE TIME                         
+         S     R1,ADRINTM                                                       
+         BRAS  RE,LOGCUPD                                                       
+                                                                                
+         LA    RF,DSLTIME                                                       
+         L     R1,ADRNDTM          CALCULATE TOTAL TIME                         
+         S     R1,ADRSTTM                                                       
+         BRAS  RE,LOGCUPD                                                       
+                                                                                
+         LA    RF,DSLCPU                                                        
+         L     R1,ADRCPUTK         GET REAL CPU                                 
+         BRAS  RE,LOGCUPD                                                       
+                                                                                
+         LA    RF,DSLIOS           GET IO                                       
+         XR    R1,R1                                                            
+         ICM   R1,7,ADRIOCNT                                                    
+         BRAS  RE,LOGCUPD                                                       
+                                                                                
+         LA    RF,DSLLOCKS         GET LOCKS                                    
+         XR    R1,R1                                                            
+         ICM   R1,3,TCBLKRT                                                     
+         BRAS  RE,LOGCUPD                                                       
+                                                                                
+         LA    RF,DSLWAITS         GET WAITS                                    
+         XR    R1,R1                                                            
+         ICM   R1,3,TCBLKRW                                                     
+         BRAS  RE,LOGCUPD                                                       
+                                                                                
+         LA    RF,DSLWATIM         GET WAIT TIME                                
+         ICM   R1,15,TCBLKRTW                                                   
+         BRAS  RE,LOGCUPD                                                       
+                                                                                
+         CLI   BYTE,1              PASS 1 ADV                                   
+         JNE   LOGCNTX                                                          
+         MVI   BYTE,2              DO PASS 2 SE                                 
+         J     LOGCNT0                                                          
+*                                                                               
+LOGCUPD  ST    R2,SAVER2           SAVE R2 VALUE                                
+         LR    R2,RF               RF POINTS TO COUNTER                         
+         LA    RF,7                USE RF AS LOOP COUNT                         
+         SAM31                                                                  
+LOGCUP1  L     R0,0(,R2)                                                        
+         AR    R1,R0               UPDATE COUNT                                 
+         CS    R0,R1,0(R2)                                                      
+         JE    *+8                                                              
+         JCT   RF,LOGCUP1          LOOP UP TO 7 IF CS FAILS                     
+         SAM24                                                                  
+         L     R2,SAVER2                                                        
+         BR    RE                  RESTORE R2 AND EXIT                          
+*                                                                               
+LOGCNTX  LAM   AR2,AR2,=F'0'                                                    
+         DROP  R2                                                               
+         SAC   0                                                                
+*                                                                               
+LOGSMF   TM    SSBSTAT5,SSBADRSM   TEST IF WRITING SMF ADRFILE RECORDS          
+         BZ    LOGSMFX                                                          
+*&&HDR                                                                          
+         ICM   R1,15,=V(SMFREC)    COPY HEADER FROM TASKER                      
+         MVC   SMFDMAP(8),SMFDMAP-SMF_HDR(R1)                                   
+         MVC   SMFDHDR(32),SMFDHDR-SMF_HDR(R1)                                  
+         MVC   SMFDATAL,=Y(SMF_RECX-SMF_ADRF)                                   
+*&&                                                                             
+         MVC   SMF_ADRF,0(R7)      COPY ADRREC DATA TO SMF RECORD               
+         MVC   SMF_LOCK,TCBPERF2   COPY LOCKING DATA TO SMF RECORD              
+         MVC   SMF_CPUU(8),TCBCPUSE                                             
+         XC    SMF_LNUI(16),SMF_LNUI                                            
+         TM    TCBINDS2,TCBFCTC    TEST CONNECT TRANSACTION                     
+         BZ    LOGSMF1                                                          
+         MVC   SMF_LNUI,TCBLNUID   SET LOGON USERID NAME                        
+         MVC   SMF_LNPI,TCBLNPID   SET LOGON PERSON NAME                        
+LOGSMF1  SMFWTM SMF_HDR                                                         
+         ST    RF,SMFERR           SAVE RETURN CODE                             
+LOGSMFX  EQU   *                                                                
+*                                                                               
+         LA    R7,L'ADRREC(R7)                                                  
+         ST    R7,ADRNEXT                                                       
+         CR    R7,R8                                                            
+         BL    LOGXIT              EXIT IF NOT LAST ENTRY IN BUFFER             
+*                                                                               
+LOGSUM   LA    R7,ADRBUFF          POINT TO START OF BUFFER                     
+         ST    R7,ADRNEXT          RESET NEXT POINTER AT BUFFER-12              
+         SR    R5,R5                                                            
+         SR    R6,R6                                                            
+         SR    RE,RE                                                            
+*                                                                               
+LOGSUM1  CLI   0(R7),C'A'          TEST IF NORMAL TASK DATA ENTRY               
+         BL    LOGSUM2                                                          
+         SR    R0,R0                                                            
+         ICM   R0,7,ADRIOCNT                                                    
+         AR    R6,R0               R6=TOTAL NUM OF I/O'S THIS BUFF              
+         L     RF,ADRNDTM                                                       
+         CL    RF,ADRSTTM                                                       
+         BNL   *+10                                                             
+         SR    RF,RF                                                            
+         B     *+8                                                              
+         SL    RF,ADRSTTM                                                       
+         ALR   R5,RF               R5=TOTAL TRANS TIME THIS BUFF                
+         CL    RF,ADRCPUTM                                                      
+         BNL   *+10                                                             
+         SR    RF,RF                                                            
+         B     *+8                                                              
+         SL    RF,ADRCPUTM         RF=I/O TIME THIS BUFF TRANSACTION            
+         ALR   RE,RF               RE=TOTAL I/O TIME THIS BUFF                  
+*                                                                               
+LOGSUM2  LA    R7,L'ADRREC(R7)     BUMP TO NEXT TRANSACTION                     
+         CR    R7,R8                                                            
+         BL    LOGSUM1                                                          
+         MVC   SSBVARIO,SSBMAXIO                                                
+         LTR   R6,R6               EXIT IF NO I/O'S THIS BUFFER                 
+         BZ    LOGSUMX                                                          
+*                                                                               
+LOGSUM3  LR    R1,R6               COMPUTE NUMBER OF I/O'S IN HIT ENTER         
+         M     R0,HITETIME                                                      
+         LTR   R5,R5                                                            
+         BZ    LOGSUM4                                                          
+         DR    R0,R5               R1=HITETIME*R6/R5                            
+         LH    R0,SSBMAXIO                                                      
+         CR    R1,R0               R1=NUM OF I/O'S IN 10 SECONDS                
+         BH    LOGSUM4                                                          
+         SRL   R0,3                R0=MAXIOS/8                                  
+         CR    R1,R0                                                            
+         BNL   *+6                                                              
+         LR    R1,R0                                                            
+         STH   R1,SSBVARIO         SET VARIABLE MAX I/O'S                       
+*                                                                               
+LOGSUM4  LTR   RE,RE               COMPUTE AVERAGE I/O TIME                     
+         BNP   LOGSUMX                                                          
+         SRDA  RE,32                                                            
+         DR    RE,R6                                                            
+         CL    RF,SLOWIOTM         COMPARE AVERAGE TO SLOW VALUE                
+         BNH   LOGSUMX                                                          
+*                                                                               
+LOGSUM5  GOTO1 VTICTOC,DUB,C'SSET'                                              
+         MVC   SLOWMSG+4(3),SSBSYSNA                                            
+         GOTO1 VDMOD000,P1,VWCTYPE,SLOWMSG,LSLOWMSG,C'LVL2'                     
+         GOTO1 VTICTOC,DUB,C'RSET'                                              
+*                                                                               
+LOGSUMX  LA    R5,ADRBUFF          POINT TO INTERNAL ADRBUFF                    
+         B     LOGWRT                                                           
+         DROP  R7                                                               
+         EJECT                                                                  
+***********************************************************************         
+*R3 DOES NOT POINT TO A TCB ENTRY. SPECIAL CALL TO REQUEST LOGGING.   *         
+***********************************************************************         
+LOGSPC   CLI   0(R3),C'*'          IF STARTS WITH C'*' THEN WHOLE BLK           
+         BNE   LOGSPC0                                                          
+         OI    FLAG,RETURNDA       SET TO RETURN DISK ADDR                      
+         LR    R5,R3               POINT TO EXTERNAL BUFFER                     
+         B     LOGWRT              AND WRITE WHOLE BUFFER TO ADRFILE            
+*                                                                               
+LOGSPC0  CLC   0(8,R3),=C'OVERHEAD'                                             
+         JNE   LOGSPC1                                                          
+         LHI   R0,1                SUBTYPE 0001                                 
+         J     LOGSPC3                                                          
+*                                                                               
+LOGSPC1  CLI   0(R3),C'A'          IGNORE IF FIRST CHR NOT LT C'A'              
+         BNL   LOGXIT                                                           
+*NOP*    BRAS  RE,BADLOG           CODE TO TEST IF BAD CALL                     
+*                                                                               
+LOGSPC2  CLC   0(3,R3),=C'$CT'     TEST SECURITY VIOLATION FROM $CT             
+         BNE   *+12                                                             
+         LHI   R0,2                SUBTYPE 0002                                 
+         B     LOGSPC3                                                          
+         CLC   0(3,R3),=C'$PQ'     TEST SHUTTLE ACTIVITY LOG RECORD             
+         BNE   LOGSPC4                                                          
+         LHI   R0,3                SUBTYPE 0003                                 
+         CLI   3(R3),C'T'                                                       
+         BNE   LOGSPC3                                                          
+         L     RF,PQPOPCNT         BUMP $PQT TIME POP RECORDS                   
+         AHI   RF,1                                                             
+         ST    RF,PQPOPCNT                                                      
+         TM    PQPOPCNT+3,X'1F'    RECORD EVERY 32 POPS                         
+         BNZ   LOGSPC4                                                          
+*                                                                               
+LOGSPC3  TM    SSBSTAT5,SSBADRSM   TEST IF WRITING SMF ADRFILE RECORDS          
+         BZ    LOGSPC4                                                          
+*&&HDR                                                                          
+         ICM   R1,15,=V(SMFREC)    COPY HEADER FROM TASKER                      
+         MVC   SM2DMAP(8),SMFDMAP-SMF_HDR(R1)                                   
+         MVC   SM2DHDR(32),SMFDHDR-SMF_HDR(R1)                                  
+         MVC   SM2DATAL,=Y(SM2_RECX-SM2_DATA)                                   
+*&&                                                                             
+         STH   R0,SM2_STY          SET SUBTYPE                                  
+         TIME  BIN                 GET DATE/TIME IN 1/100 SEC UNITS             
+         STCM  R0,15,SM2_TME       TIME IN BINARY 1/100 SECOND                  
+         STCM  R1,15,SM2_DTE       DATE IN PACKED JULIAN 0CYYDDD+               
+         MVC   SM2_DATA,0(R3)                                                   
+         SMFWTM SM2_HDR                                                         
+         ST    RF,SMFERR           SAVE RETURN CODE                             
+*                                                                               
+LOGSPC4  EQU   *                                                                
+*                                                                               
+LOGSPCN  L     R7,ADRNEXT          MOVE SPECIAL DATA TO ADRBUFF                 
+         MVC   0(L'ADRREC,R7),0(R3)                                             
+         LA    R7,L'ADRREC(R7)                                                  
+         ST    R7,ADRNEXT                                                       
+         LA    R0,ADRBUFF                                                       
+         AH    R0,ADRLENB                                                       
+         CR    R7,R0                                                            
+         BL    LOGXIT              EXIT IF NOT LAST ENTRY IN BUFFER             
+         LA    R5,ADRBUFF          POINT TO INTERNAL ADRBUFF                    
+         ST    R5,ADRNEXT          RESET NEXT POINTER AT BUFFER-12              
+         B     LOGWRT                                                           
+         EJECT                                                                  
+***********************************************************************         
+*WRITE LOG BUFFER TO ADRFILE. R5 POINTS TO I/O AREA.                  *         
+***********************************************************************         
+LOGWRT   XC    P6,P6               CLEAR RETURN DISK ADDRESS                    
+         LA    R0,P6                                                            
+         ST    R0,P5                                                            
+         CLI   ADRACTV,0           TEST LOGGING TO ADRFILE ACTIVE               
+         BNE   LOGWRT1                                                          
+         XC    P3,P3                                                            
+         B     LOGWRT2                                                          
+*                                                                               
+LOGWRT1  MVI   SSBMTIND,0          SUSPEND MULTI-TASKING WAITS                  
+         GOTO1 VTICTOC,DUB,C'SSET'                                              
+         LH    RF,ADRLENB                                                       
+         GOTO1 VDADDS,P1,VWTCKD,(R5),(RF),VADRFILE                              
+         GOTO1 VTICTOC,DUB,C'RSET'                                              
+         MVI   SSBMTIND,C'M'       RESTORE MULTI-TASKING                        
+*                                                                               
+LOGWRT2  TM    FLAG,RETURNDA       TEST TO RETURN DISK ADDRESS                  
+         BZ    *+10                                                             
+         MVC   5(4,R3),P6          RETURN IN IN BUFF+5                          
+         OC    P3(2),P3                                                         
+         BZ    LOGXIT                                                           
+         CLC   P3(2),=X'0004'                                                   
+         BNE   LOGERR                                                           
+*                                                                               
+         L     RE,=V(ADRFILE)                                                   
+         USING DTFPHD,RE                                                        
+         MVC   DNEXT,=X'00010000'  RESET                                        
+         DROP  RE                                                               
+         B     LOGWRT                                                           
+*                                                                               
+LOGERR   SAC   0                                                                
+         MVI   ADRACTV,0           INHIBIT WRITING TO ADRFILE                   
+         MVC   IOERR(24),P1        SAVE PARAM LIST                              
+         GOTO1 VTICTOC,DUB,C'SSET'                                              
+         MVC   ERRMSG+4(3),SSBSYSNA                                             
+         GOTO1 VDMOD000,P1,VWCTYPE,ERRMSG,LERRMSG,C'LVL1'                       
+         GOTO1 VTICTOC,DUB,C'RSET'                                              
+*                                                                               
+LOGXIT   EQU   *                                                                
+         PROT  ON                  RESTORE CALLER'S STORAGE PROTECTION          
+         XMOD1 1                                                                
+         EJECT                                                                  
+***********************************************************************         
+*SUBROUTINE TO WRITE TWA TO ADRFILE                                   *         
+***********************************************************************         
+LOGTWA   NTR1                                                                   
+         L     RF,TCBTWA           POINT RF TO **TWAN**                         
+         LR    R1,RF                                                            
+         AHI   RF,-32                                                           
+         AHI   R1,-64                                                           
+         MVC   0(8,R1),0(RF)       MOVE TO TWA-64 (IN TIA)                      
+*                                                                               
+         MVC   0(5,R1),=C'**TWA'   MAKE SURE **TWA IS THERE                     
+         MVC   16(48,R1),TCBSTATS  COPY STATS TO FRONT OF TWA                   
+         GOTO1 =V(LOGGER),(R1)     PUT TWA TO RECORDER FILE                     
+         MVC   8(56,R1),0(R1)      PUT **TWA BACK                               
+*                                                                               
+LOGTWAX  NI    FLAG,255-RETURNDA   RESET THIS BACK TO NO                        
+         XIT1                                                                   
+         EJECT                                                                  
+***********************************************************************         
+*LOG THE TWA OF TRANSACTIONS THAT HAVE A LONG TOTAL CPU TIME THAT IS  *         
+*ALSO CONSIDERED LONG COMPARED WITH NUMBER OF I/OS ISSUED             *         
+***********************************************************************         
+LOGTST   ST    RE,SVTSTRE                                                       
+         CLC   TCBCPUTK,LONGTIME                                                
+         BL    LOGTSTX                                                          
+         CLC   TCBSYM,=C'NONENONE' IGNORE AUTO SRS                              
+         BE    LOGTSTX                                                          
+*NOP*    SR    R1,R1                                                            
+*NOP*    SR    RE,RE                                                            
+*NOP*    L     RF,TCBCPUTM                                                      
+*NOP*    ICM   R1,7,TCBIOCNT       R1=NUMBER OF I/OS                            
+*NOP*    BZ    *+6                                                              
+*NOP*    DR    RE,R1                                                            
+*NOP*    C     RF,LONGTPIO         TEST TU'S PER I/O > 30 MS                    
+*NOP*    BL    LOGTSTX                                                          
+         BAS   RE,LOGTWA                                                        
+LOGTSTX  L     RE,SVTSTRE                                                       
+         BR    RE                                                               
+         EJECT                                                                  
+***********************************************************************         
+* LITERALS AND CONSTANTS                                              *         
+***********************************************************************         
+ERRMSG   DC    C'*FACPAK* ADRFILE ERROR - LOGGING TERMINATED'                   
+LERRMSG  EQU   *-ERRMSG                                                         
+*                                                                               
+SLOWMSG  DC    C'*FACPAK* I/O TIME VERY SLOW - CHECK FOR CONTENTION'            
+LSLOWMSG EQU   *-SLOWMSG                                                        
+*                                                                               
+SLOWIOTM DC    A(3840)             100 MILLISECS IN TUS                         
+LONGTPIO DC    A(1280)             30 MILLISECS IN TUS                          
+HITETIME DC    A(384000)           10 SECONDS IN TUS HIT ENTER FOR NEXT         
+*                                                                               
+LONGTIME DC    A(5*1000000)        FIVE SECONDS IN MICROSECONDS                 
+*                                                                               
+         LTORG                                                                  
+*                                                                               
+ADRACTV  DC    X'01'               ZERO IF INHIBITING ADRFILE WRITES            
+PQPOPCNT DC    F'0'                $PQT TIMER POP COUNT                         
+         DS    0D                                                               
+         DC    CL8'*ADRSMF*'                                                    
+SMF_HDR  DS    0XL24               RECORD HEADER WITH SUBTYPES                  
+SMF_LEN  DC    AL2(SMF_RECX-*)     LENGTH INCLUDING THIS FIELD                  
+SMF_SEG  DC    H'0'                SEGMENT DESCRIPTOR (SET TO ZERO)             
+SMF_FLG  DC    X'C0'               FLAGS 80=SUBSYSTEM,40=SUBTYPE FORMAT         
+SMF_RTY  DC    AL1(249)            RECORD TYPE                                  
+SMF_TME  DC    XL4'00'             TIME IN 1/100 SEC                            
+SMF_DTE  DC    PL4'0'              DATE P'0CYYMMMF'                             
+SMF_SID  DC    CL4'    '           SYSTEM ID                                    
+SMF_SSI  DC    CL4'    '           SUBSYSTEM ID                                 
+SMF_STY  DC    XL2'0001'           SUBTYPE                                      
+*&&HDR                                                                          
+SMFDMAP  DS    0XL8                MAP OF DDS RECORD DATA                       
+SMFDHDRO DS    XL2                 OFFSET TO DDS HEADER                         
+SMFDHDRL DS    XL2                 LENGTH OF DDS HEADER                         
+SMFDATAO DS    XL2                 OFFSET TO DDS DATA 1 AREA                    
+SMFDATAL DS    XL2                 LENGTH OF DDS DATA 1 AREA                    
+SMFDMAPX EQU   *                                                                
+*                                                                               
+SMFDHDR  DS    0CL32               DDS HEADER                                   
+SMFDJOB  DS    CL8                 JOB NAME                                     
+SMFDSTEP DS    CL16                STEP/PROC NAME                               
+SMFDJES  DS    CL8                 JES NAME                                     
+SMFDHDRX EQU   *                                                                
+*&&                                                                             
+SMF_ADRF DC    XL80'00'            FACPAK ADRREC DATA                           
+SMF_LOCK DC    XL24'00'            FACPAK LOCKING DATA                          
+*                                                                               
+SMF_CPUU DC    XL8'00'             CPU USAGE                                    
+SMF_LNUI DC    CL8' '              LOGON USERID ALPHA                           
+SMF_LNPI DC    CL8' '              LOGON PERSON ALPHA                           
+*                                                                               
+SMF_RECX EQU   *                                                                
+*                                                                               
+         DS    0D                                                               
+         DC    CL8'*ADRSM2*'                                                    
+SM2_HDR  DS    0XL24               RECORD HEADER WITH SUBTYPES                  
+SM2_LEN  DC    AL2(SM2_RECX-*)     LENGTH INCLUDING THIS FIELD                  
+SM2_SEG  DC    H'0'                SEGMENT DESCRIPTOR (SET TO ZERO)             
+SM2_FLG  DC    X'C0'               FLAGS 80=SUBSYSTEM,40=SUBTYPE FORMAT         
+SM2_RTY  DC    AL1(249)            RECORD TYPE                                  
+SM2_TME  DC    XL4'00'             TIME IN 1/100 SEC                            
+SM2_DTE  DC    PL4'0'              DATE P'0CYYMMMF'                             
+SM2_SID  DC    CL4'    '           SYSTEM ID                                    
+SM2_SSI  DC    CL4'    '           SUBSYSTEM ID                                 
+SM2_STY  DC    XL2'0002'           SUBTYPE                                      
+*&&HDR                                                                          
+SM2DMAP  DS    0XL8                MAP OF DDS RECORD DATA                       
+SM2DHDRO DS    XL2                 OFFSET TO DDS HEADER                         
+SM2DHDRL DS    XL2                 LENGTH OF DDS HEADER                         
+SM2DATAO DS    XL2                 OFFSET TO DDS DATA 1 AREA                    
+SM2DATAL DS    XL2                 LENGTH OF DDS DATA 1 AREA                    
+SM2DMAPX EQU   *                                                                
+*                                                                               
+SM2DHDR  DS    0CL32               DDS HEADER                                   
+SM2DJOB  DS    CL8                 JOB NAME                                     
+SM2DSTEP DS    CL16                STEP/PROC NAME                               
+SM2DJES  DS    CL8                 JES NAME                                     
+SM2DHDRX EQU   *                                                                
+*&&                                                                             
+SM2_DATA DC    XL80'00'            FACPAK SPECIAL DATA                          
+*&&HDR                                                                          
+SM2_DAT2 DC    XL48'00'                                                         
+*&&                                                                             
+SM2_RECX EQU   *                                                                
+*                                                                               
+         DS    0D                                                               
+SMFERR   DC    F'0'                SMFWTM RETURN CODE                           
+IOERR    DC    6F'0'               DADDS PARAM LIST ON I/O ERROR                
+         DC    XL6'00'                                                          
+ADRLENB  DC    H'6400'             BUFF-18=BLKSIZE                              
+ADRNUMR  DC    H'080'              BUFF-16=NUMBER OF RECORDS IN BUFFER          
+ADRLENR  DC    H'080'              BUFF-14=LENGTH OF RECORD                     
+ADRNEXT  DC    A(ADRBUFF)          BUFF-12=POINTER TO NEXT BUFFER SLOT          
+         DC    CL8'*ADRBUF*'       BUFF-06=LABEL                                
+ADRBUFF  DC    6400X'00'                                                        
+ADRBUFFX EQU   *-1                                                              
+         EJECT                                                                  
+***********************************************************************         
+* CHECK FOR BAD CALLS TO LOGGER                                       *         
+***********************************************************************         
+BADLOG   NTR1  BASE=*                                                           
+         CLC   0(3,R3),BLOG        IN CASE WE EVER PATCH                        
+         BNE   BADLOGX                                                          
+         MVC   MSG1H+5(4),SSBSYSN4 SET FACPAK ID                                
+*                                                                               
+         LR    R4,RD                                                            
+         L     R4,4(R4)                                                         
+         L     R4,4(R4)            REGISTERS COMING INTO LOGGER                 
+         ICM   R0,15,12(R4)        RE                                           
+         ST    R0,FULL                                                          
+         GOTO1 =V(HEXO24),P1,FULL+1,MSGRE,3                                     
+         ICM   R5,15,64(R4)        RB                                           
+         ST    R5,FULL                                                          
+         GOTO1 (RF),(R1),FULL+1,MSGRB,3                                         
+         SR    R0,R5                                                            
+         ST    R0,FULL                                                          
+         GOTO1 (RF),(R1),FULL+1,MSGREB,3                                        
+         MVC   MSGEYE,20(R5)                                                    
+*                                                                               
+         XR    R0,R0                                                            
+         WTO   TEXT=((MSG1H,C),(MSG2H,D),(0,E))                                 
+*                                                                               
+BADLOGX  XIT1                                                                   
+*                                                                               
+         DS    0D                                                               
+         DC    CL8'*BADLOG*'                                                    
+BLOG     DC    XL4'0003F300'                                                    
+         DC    XL4'00000000'                                                    
+*                                                                               
+MSG1H    DC    AL2(20)                                                          
+         DC    CL20'FAC???? ***BADLOG***'                                       
+*                                                                               
+MSG2H    DC    AL2(45)                                                          
+MSGEYE   DC    CL12' '                                                          
+         DC    CL01' '                                                          
+         DC    CL03'RE='                                                        
+MSGRE    DC    CL06'??????'                                                     
+         DC    CL01' '                                                          
+         DC    CL03'RB='                                                        
+MSGRB    DC    CL06'??????'                                                     
+         DC    CL01' '                                                          
+         DC    CL06'RE-RB='                                                     
+MSGREB   DC    CL06'??????'                                                     
+*                                                                               
+         LTORG                                                                  
+         EJECT                                                                  
+***********************************************************************         
+*SUBROUTINE TO WRITE TWA TO ADRFILE                                   *         
+***********************************************************************         
+LOGATWA  NTR1  BASE=*                                                           
+         L     RF,TCBTWA           POINT RF TO **TWAN**                         
+         LR    R1,RF                                                            
+         AHI   RF,-32                                                           
+         AHI   R1,-64                                                           
+         MVC   0(8,R1),0(RF)       MOVE TO TWA-64 (IN TIA)                      
+*                                                                               
+         MVC   0(5,R1),=C'**TWA'   MAKE SURE **TWA IS THERE                     
+         MVC   16(48,R1),TCBSTATS  COPY STATS TO FRONT OF TWA                   
+         GOTO1 =V(LOGGER),(R1)     PUT TWA TO RECORDER FILE                     
+         MVC   8(56,R1),0(R1)      PUT **TWA BACK                               
+*                                                                               
+LOGATWAX NI    FLAG,255-RETURNDA   RESET THIS BACK TO NO                        
+         XIT1                                                                   
+         LTORG                                                                  
+         EJECT                                                                  
+***********************************************************************         
+*SUBROUTINE TO WRITE TWA TO DDTRACE                                   *         
+***********************************************************************         
+LOGTTWA  NTR1  BASE=*                                                           
+         L     RF,TCBTWA           POINT RF TO **TWAN**                         
+         LR    R1,RF                                                            
+         SH    RF,=H'32'                                                        
+         SH    R1,=H'64'                                                        
+         MVC   0(8,R1),0(RF)       MOVE TO TWA-64 (IN TIA)                      
+*                                                                               
+         MVC   0(5,R1),=C'**TWA'   MAKE SURE **TWA IS THERE                     
+         MVC   16(48,R1),TCBSTATS  COPY STATS TO FRONT OF TWA                   
+*                                                                               
+         L     RF,TCBTWA                                                        
+         LR    R1,RF                                                            
+         AHI   R1,-50              BACK R1 UP TO LEN POSITION                   
+         LA    RF,64(RF)                                                        
+LOGTTWA1 SR    R0,R0                                                            
+         ICM   R0,1,0(RF)          BUMP THROUGH FIELD                           
+         BZ    LOGTTWA2                                                         
+         AR    RF,R0                                                            
+         LR    RE,RF                                                            
+         SR    RE,R1                                                            
+         CHI   RE,4000             TRACE UP TO 4000 BYTES OF TWA                
+         BNH   LOGTTWA1                                                         
+*                                                                               
+LOGTTWA2 SR    RF,R1               CALCULATE AND SET LEN                        
+         STH   RF,0(R1)                                                         
+         LR    RF,R1                                                            
+*                                                                               
+         GOTO1 =V(DDTRACE),DUB,X'00000002',(RF)                                 
+*                                                                               
+         L     RF,TCBTWA                                                        
+         SH    RF,=H'64'                                                        
+         MVC   8(56,RF),0(RF)      PUT **TWA BACK                               
+*                                                                               
+LOGTTWAX NI    FLAG,255-RETURNDA   RESET THIS BACK TO NO                        
+         XIT1                                                                   
+         LTORG                                                                  
+         EJECT                                                                  
+WORKD    DSECT                                                                  
+DUB      DS    D                                                                
+FULL     DS    F                                                                
+HALF     DS    H                                                                
+BYTE     DS    X                                                                
+BYTE1    DS    X                                                                
+P1       DS    A                                                                
+P2       DS    A                                                                
+P3       DS    A                                                                
+P4       DS    A                                                                
+P5       DS    A                                                                
+P6       DS    A                                                                
+SVTSTRE  DS    A                                                                
+SAVER2   DS    A                                                                
+FLAG     DS    X                                                                
+RETURNDA EQU   X'80'               RETURN DISK ADDRESS                          
+WORK     DS    CL32                                                             
+WORKX    EQU   *                                                                
+         EJECT                                                                  
+*FAADRREC                                                                       
+       ++INCLUDE FAADRREC                                                       
+*FASYSFAC                                                                       
+       ++INCLUDE FASYSFAC                                                       
+*FASSB                                                                          
+       ++INCLUDE FASSB                                                          
+*FATABSD                                                                        
+       ++INCLUDE FATABSD                                                        
+*FATABSDMP                                                                      
+       ++INCLUDE FATABSDMP                                                      
+*FATCB                                                                          
+       ++INCLUDE FATCB                                                          
+*FAUTL                                                                          
+       ++INCLUDE FAUTL                                                          
+*DMDTFPH                                                                        
+       ++INCLUDE DMDTFPH                                                        
+*DMDSHDR                                                                        
+       ++INCLUDE DMDSHDR                                                        
+*DDCOMFACS                                                                      
+       ++INCLUDE DDCOMFACS                                                      
+*                                                                               
+         CVT     DSECT=YES                                                      
+         IAZJSAB DSECT=YES                                                      
+         IEESMCA                                                                
+         IEFTIOT1                                                               
+         IEZJSCB                                                                
+         IHAASCB                                                                
+         IHAASSB                                                                
+         IHAPSA                                                                 
+         IHASTCB                                                                
+*NOP*    IKJTCB                    HAS TCBSYS WHICH CLASHES WITH FATCB          
+                                                                                
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'012FALOGGER  01/07/19'                                      
+         END                                                                    

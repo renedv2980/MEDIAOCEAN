@@ -1,0 +1,406 @@
+*          DATA SET REFLSCANX  AT LEVEL 021 AS OF 07/17/96                      
+*CATALP REFLSCAN                                                                
+***********************************************************************         
+* HISTORY:                                                            *         
+*                                                                     *         
+* 17JUL96 SKU HISTORY LOST. CHANGE SCANNER SEPARATOR FROM ',' TO '*'  *         
+*                                                                     *         
+***********************************************************************         
+         TITLE 'SCAN FLIGHT FIELD AND BUILD TABLE OF SCHEDULE DATES'            
+* MODULE SCANS FLIGHT FIELD AND BUILDS ENTRIES CONSISTING OF MONDAY             
+* TO SUNDAY DATES OF ACTIVE WEEKS OF SCHEDULE.  EFFECTIVE DATE                  
+* ELEMENTS FOR BUY RECORD CAN BE DEDUCED FROM THESE ENTRIES.                    
+*                                                                               
+*              P1 =  A(COMFACS)                                                 
+*              P2 =  A(CONTRACT START/END IN EBCDIC YYMMDD)                     
+*              P3 =  A(FLIGHT FIELD HEADER)                                     
+*              P4 =  A(200 BYTE AREA FOR FLIGHT ENTRIES)                        
+*                                                                               
+REFLSCAN CSECT                                                                  
+         PRINT NOGEN                                                            
+         NMOD1 WORKX-WORKD,REFLSCAN,CLEAR=YES                                   
+         USING WORKD,RC                                                         
+         SPACE                                                                  
+INIT     ST    R1,VPARAM           SAVE A(PARAM LIST)                           
+         LM    R2,R5,0(R1)                                                      
+         SPACE                                                                  
+INIT2    STM   R2,R5,VCOMFACS      SAVE PARAMS                                  
+         MVC   STDAT,0(R3)         CONTRACT S/E                                 
+         MVC   ENDAT,6(R3)                                                      
+         USING COMFACSD,R2                                                      
+         MVC   VSCANNER,CSCANNER   BUILD LIST OF ROUTINE ADDRESSES              
+         MVC   VDATVAL,CDATVAL                                                  
+         MVC   VADDAY,CADDAY                                                    
+         MVC   VGETDAY,CGETDAY                                                  
+         DROP  R2                                                               
+         SPACE                                                                  
+* FIND MONDAY OF CONTRACT START WEEK                                            
+*                                                                               
+FINDMON  GOTO1 VGETDAY,DMCB,STDAT,DMCB+8                                        
+         CLI   DMCB,MONDAY                                                      
+         BE    FINDMON2            START DATE IS ALREADY MONDAY                 
+         SPACE                                                                  
+         ZIC   R5,DMCB             DAY NUMBER                                   
+         BCTR  R5,0                                                             
+         LNR   R5,R5               CHANGE SIGN TO BACK DATE UP                  
+         GOTO1 VADDAY,DMCB,STDAT,MONDAT,(R5)                                    
+         B     BLDTAB                                                           
+         SPACE                                                                  
+FINDMON2 MVC   MONDAT,STDAT        SET FIRST MONDAY                             
+         EJECT                                                                  
+* BUILD CONTRACT DATE TABLE - MONDAY,SUNDAY,WEEK NUMBER                         
+*                                                                               
+BLDTAB   LA    R2,TABLE                                                         
+         USING TABENTD,R2                                                       
+         LA    R3,1                INITIALIZE WEEK COUNTER                      
+         MVC   MON,MONDAT          SET FIRST MONDAY OF TABLE                    
+         SPACE                                                                  
+BLDTAB2  GOTO1 VADDAY,DMCB,MON,SUN,6                                            
+         STH   R3,WKNUM                                                         
+         SPACE                                                                  
+         GOTO1 (RF),(R1),SUN,WRKDAT,1                                           
+         CLC   WRKDAT,ENDAT        IS NEXT MONDAY PAST CONTRACT END             
+         BH    BLDTAB4             YES-TABLE FINISHED                           
+         LA    R2,LTABENT(R2)      POINT TO NEXT ENTRY                          
+         MVC   MON,WRKDAT          SET NEXT MONDAY                              
+         LA    R3,1(R3)            INCREMENT COUNTER                            
+         B     BLDTAB2             BUILD NEXT ENTRY                             
+         SPACE                                                                  
+BLDTAB4  STH   R3,LASTWK           SAVE LAST WEEK                               
+         DROP  R2                                                               
+         EJECT                                                                  
+* REGISTER CONVENTIONS FOR REST OF CODE ARE AS FOLLOWS                          
+* R2 POINTS TO SCANNER BLOCK                                                    
+* R3 COUNTER OF BLOCKS                                                          
+* R4 LAST WEEK NUMBER OF FLIGHT ENTRY                                           
+* R5 FIRST WEEK NUMBER OF FLIGHT ENTRY                                          
+* R6 POINTS TO LAST BYTE OF SECOND FIELD DATA                                   
+* R8 POINTS TO CONTRACT DATE TABLE                                              
+* R9 POINTS TO FLIGHT DATE ENTRY                                                
+*                                                                               
+DOSCAN   LA    R2,WORK                                                          
+         GOTO1 VSCANNER,DMCB,VFLDHDR,(R2),C',=*-'                               
+         SPACE                                                                  
+         ZIC   R3,DMCB+4                                                        
+         LTR   R3,R3                                                            
+         BP    DOSCAN1                                                          
+         MVI   FERN,INVERR                                                      
+         B     ERROR                                                            
+         SPACE                                                                  
+DOSCAN1  CLI   DMCB+4,15           CAN'T BE MORE THAN 15 BLOCKS                 
+         BNH   DOSCAN2                                                          
+         MVI   FERN,28             ERROR, INPUT TOO LONG                        
+         B     ERROR                                                            
+         SPACE 1                                                                
+DOSCAN2  STH   R3,NUMFLT           NUMBER OF SCANNER BLOCKS SAVED               
+         LA    R8,TABLE                                                         
+         USING TABENTD,R8                                                       
+         LA    R9,ENTRIES                                                       
+         USING FLTENTD,R9                                                       
+         SPACE                                                                  
+* VALIDATE AND ANALYZE SCANNER BLOCK                                            
+*                                                                               
+SCAN     GOTO1 VDATVAL,DMCB,(1,12(R2)),WRKDAT                                   
+         OC    DMCB(4),DMCB        VALID DATE FOUND                             
+         BZ    FRSTST              NO-LOOK FOR 'S'                              
+         SPACE                                                                  
+FRSTDAT  EQU   *                   CHECK DATE FOR SEQUENTIALITY                 
+         CLC   MON(2),SUN          DOES WEEK SPAN YEARS                         
+         BE    FRSTDAT2            NO                                           
+         SPACE                                                                  
+         CLC   WRKDAT+2(4),SUN+2   YES-USE SPECIAL LOGIC                        
+         BH    *+8                                                              
+         B     FSTFLT              ITS THIS WEEK                                
+         CLC   WRKDAT+2(4),MON+2                                                
+         BL    FRSTDAT3            TRY NEXT WEEK                                
+         B     FSTFLT                                                           
+         SPACE                                                                  
+FRSTDAT2 CLC   WRKDAT+2(4),MON+2                                                
+         BL    FRSTDAT3            LESS THAN MONDAY-TRY NEXT WEEK               
+         CLC   WRKDAT+2(4),SUN+2                                                
+         BH    FRSTDAT3                                                         
+         B     FSTFLT              SEQUENCE CHECKS-WEEK FOUND                   
+         SPACE                                                                  
+FRSTDAT3 CLC   WKNUM,LASTWK                                                     
+         BE    FRSTDATR            END OF TABLE REACHED-ERROR                   
+         LA    R8,LTABENT(R8)      POINT TO NEXT TABLE ENTRY                    
+         B     FRSTDAT                                                          
+         SPACE                                                                  
+FRSTDATR MVI   FERN,SEQOROUT                                                    
+         B     ERROR                                                            
+         SPACE                                                                  
+FRSTST   CLI   0(R2),1             IS FIRST FIELD LENGTH ONE                    
+         BNE   FRSTSTR             NO-ERROR                                     
+         CLI   12(R2),C'S'         HAS 'S' BEEN INPUT                           
+         BE    FRSTST2                                                          
+         SPACE                                                                  
+FRSTSTR  MVI   FERN,INVERR                                                      
+         B     ERROR                                                            
+         SPACE                                                                  
+FRSTST2  CLC   MON+2(4),MONDAT+2   CHECK TABLE POINTS TO FIRST WEEK             
+         BE    FSTFLT              IT DOES                                      
+         SPACE                                                                  
+         MVI   FERN,SEQOROUT       NO-SEQUENCE ERROR                            
+         B     ERROR                                                            
+         SPACE                                                                  
+FSTFLT   LH    R5,WKNUM            FIRST WEEK NUMBER                            
+         MVC   FLTSTART,MON        SET MONDAY OF START WEEK                     
+         CLI   1(R2),0             TEST FOR SECOND FIELD INPUT                  
+         BNE   SCAN2               GO AND CONTINUE SCAN ANALYSIS                
+         CH    R5,LASTWK           FOR 1 PART EXPRESSIONS, CHECK                
+         BL    *+12                                                             
+         CH    R3,=H'1'            FOR RUN PAST CONTRACT END DATE.              
+         BH    FRSTSTR                                                          
+         SPACE                                                                  
+         MVC   FLTEND,SUN                                                       
+         OI    FLTIND,EVERY        EVERY WEEK INDICATOR ON                      
+         MVI   FLTWKS,1            SET NUMBER OF WEEKS                          
+         OI    FLTCNTL,NFORM       DATE EXPRESSION IMPLICITLY -1W               
+         CLI   12(R2),C'S'                                                      
+         BNE   *+8                                                              
+         OI    FLTCNTL,SONLY       SET INDICATOR FOR ENTRY OF ONLY 'S'          
+         B     RESET                                                            
+         EJECT                                                                  
+SCAN2    LA    RF,22(R2)           POINT RF TO SECOND FIELD DATA                
+         ZIC   R6,1(R2)            L'SECOND FIELD                               
+         LR    R1,R6               SAVE LENGTH                                  
+         AR    R6,RF                                                            
+         BCTR  R6,0                POINT R6 TO LAST BYTE                        
+         CLI   0(R6),C'A'          TEST FOR ALTERNATION SUFFIX                  
+         BE    *+8                                                              
+         B     SECDAT                                                           
+         SPACE                                                                  
+         OI    FLTIND,ALT                                                       
+         MVI   0(R6),SPACE         ERASE A                                      
+         BCTR  R1,0                ADJUST SECOND FIELD LENGTH                   
+         BCTR  R6,0                POINT R6 TO NEW LAST BYTE                    
+         STC   R1,1(R2)                                                         
+         SPACE                                                                  
+SECDAT   GOTO1 VDATVAL,DMCB,(1,22(R2)),WRKDAT                                   
+         OC    DMCB(4),DMCB        VALID DATE FOUND                             
+         BZ    END                 NO                                           
+         SPACE                                                                  
+* CHECK DATE AGAINST TABLE FOR SEQUENTIALITY                                    
+*                                                                               
+SECDAT2  CLC   MON(2),SUN          IS WEEK IN SAME YEAR                         
+         BE    SECDAT4                                                          
+         SPACE                                                                  
+         CLC   WRKDAT+2(4),SUN+2                                                
+         BH    *+8                                                              
+         B     SECDAT6                                                          
+         CLC   WRKDAT+2(4),MON+2                                                
+         BL    SECDAT5                                                          
+         B     SECDAT6                                                          
+         SPACE                                                                  
+SECDAT4  CLC   WRKDAT+2(4),MON+2                                                
+         BL    SECDAT5                                                          
+         CLC   WRKDAT+2(4),SUN+2                                                
+         BH    SECDAT5             TRY AGAIN                                    
+         B     SECDAT6             FOUND ENTRY                                  
+         SPACE                                                                  
+SECDAT5  CLC   WKNUM,LASTWK                                                     
+         BL    *+8                                                              
+         B     SECDATR             DATE OUTSIDE TABLE RANGE                     
+         LA    R8,LTABENT(R8)      BUMP DOWN TO NEXT ENTRY                      
+         B     SECDAT2                                                          
+         SPACE                                                                  
+SECDATR  MVI   FERN,SEQOROUT                                                    
+         B     ERROR                                                            
+         SPACE                                                                  
+SECDAT6  LH    R4,WKNUM                                                         
+         LR    RF,R4                                                            
+         SR    RF,R5               SUB END WK FROM FRST WK IN FLT               
+         LA    RF,1(RF)            ADD 1 TO GIVE CORRECT NUM OF WKS             
+         STC   RF,FLTWKS                                                        
+         MVC   FLTEND,SUN                                                       
+         OI    FLTCNTL,DATES       INDICATE DATE-TO-DATE EXPRESSION             
+         CH    R4,LASTWK           HAS LAST WEEK BEEN REACHED                   
+         BL    SECFLT              NO-MORE TO GO                                
+         CH    R3,=H'1'            YES-TEST THAT NO MORE INPUT FOLLOWS          
+         BE    SECFLT              OK                                           
+         MVI   FERN,INVERR         TRAILING INPUT-RECOGNIZE ERROR               
+         B     ERROR                                                            
+         SPACE                                                                  
+END      CLI   1(R2),1             IF SECOND FIELD LENGTH IS 1,                 
+         BNE   SECWK               INPUT MUST BE 'E'                            
+         SPACE                                                                  
+         CLI   22(R2),C'E'                                                      
+         BE    END2                                                             
+         MVI   FERN,INVERR                                                      
+         B     ERROR                                                            
+         SPACE                                                                  
+END2     LH    R4,LASTWK                                                        
+         LR    RF,R4                                                            
+         SR    RF,R5               SUB END WK FROM FRST WK IN FLT               
+         LA    RF,1(RF)            ADD 1 TO GIVE CORRECT NUM OF WKS             
+         OI    FLTCNTL,DATES       DATE-DATE EXPRESSION                         
+         CH    R3,=H'1'            DOES ANY INPUT FOLLOW 'E'                    
+         BE    UPTABPT             NO-GO TO UPDATE TABLE POINTER                
+         MVI   FERN,SEQOROUT       SEQUENCE ERROR                               
+         B     ERROR                                                            
+         SPACE                                                                  
+SECWK    CLI   0(R6),C'W'          LOOK FOR 'W' AT END                          
+         BE    SECWK2              IT'S THERE                                   
+         MVI   FERN,INVERR         INVALID SECOND FIELD EXPRESSION              
+         B     ERROR                                                            
+         SPACE                                                                  
+SECWK2   ZIC   R1,1(R2)                                                         
+         CH    R1,=H'3'            ONLY TWO DIGITS MAY PRECEDE 'W'              
+         BH    *+8                                                              
+         B     SECWK4                                                           
+         SPACE                                                                  
+         MVI   FERN,TOOLONG                                                     
+         B     ERROR                                                            
+         SPACE                                                                  
+SECWK4   BCTR  R1,0                SUBTRACT 1 FOR W                             
+         BCTR  R1,0                AND 1 FOR EX LENGTH                          
+         MVC   DUB(2),=XL2'F0F0'                                                
+         EX    R1,*+8                                                           
+         B     *+10                                                             
+         MVZ   DUB(0),22(R2)                                                    
+         CLC   DUB(2),=XL2'F0F0'   TEST FOR NUMERIC DATA                        
+         BE    SECWK6              ITS VALID                                    
+         SPACE                                                                  
+         MVI   FERN,NONNUM                                                      
+         B     ERROR                                                            
+         SPACE                                                                  
+SECWK6   EX    R1,*+8              PACK NUMBER OF WEEKS                         
+         B     *+10                                                             
+         PACK  DUB,22(0,R2)                                                     
+         CVB   RF,DUB                                                           
+         LTR   RF,RF                                                            
+         BZ    SECWKR              ZERO IS NOT VALID INPUT                      
+         OI    FLTCNTL,NFORM       NWEEKS EXPRESSION                            
+         TM    FLTIND,ALT          FOR ALTERNATE WEEKS AND NWA                  
+         BZ    SECWK8              INPUT FORMAT,                                
+         SLL   RF,1                MULTIPLY N BY 2 AND SUBTRACT                 
+         BCTR  RF,0                1 TO FIND NUMBER OF WEEKS.                   
+         SPACE                                                                  
+SECWK8   BCTR  RF,0                                                             
+         LR    R4,R5               COMPUTE LAST                                 
+         AR    R4,RF               WEEK                                         
+         LA    RF,1(RF)            RESTORE NUMBER OF WEEKS                      
+         CH    R4,LASTWK                                                        
+         BH    SECWKR              PAST END OF CONTRACT-ERROR                   
+         BL    UPTABPT             UPDATE CONTRACT TABLE POINTER                
+         CH    R3,=H'1'            IF LAST WEEK REACHED, NO                     
+         BE    UPTABPT             INPUT MAY FOLLOW                             
+         SPACE                                                                  
+SECWKR   MVI   FERN,SEQOROUT                                                    
+         B     ERROR                                                            
+         SPACE                                                                  
+* UPDATE CONTRACT DATE TABLE POINTER                                            
+*                                                                               
+UPTABPT  LA    R1,LTABENT          LENGTH OF TABLE ENTRY                        
+         STC   RF,FLTWKS                                                        
+         BCTR  RF,0                DECREMENT WK CNT FOR RIGHT DISPLCMNT         
+         MR    R0,RF               MULTIPLY BY NUMBER OF WEEKS                  
+         AR    R8,R1               ADD DISPLACEMENT TO CURRENT POINTER          
+         MVC   FLTEND,SUN          MOVE LAST SUNDAY TO TABLE                    
+         SPACE                                                                  
+SECFLT   TM    FLTIND,ALT          IF ALTERNATION BIT IS ON,                    
+         BO    *+8                 DO NOT TURN ON EVERY WEEK                    
+         OI    FLTIND,EVERY        BIT.                                         
+         SPACE                                                                  
+         EJECT                                                                  
+RESET    CH    R4,LASTWK           LAST WEEK TERMINATES SCAN                    
+         BE    EXIT                                                             
+         LA    R8,LTABENT(R8)      POINT TO NEXT TABLE ENTRY                    
+         LA    R9,LFLTENT(R9)      POINT TO NEXT FLIGHT ENTRY                   
+         LA    R2,32(R2)           POINT TO NEXT SCANNER BLOCK                  
+         BCT   R3,SCAN                                                          
+         SPACE                                                                  
+EXIT     L     R1,VPARAM                                                        
+         XC    0(4,R1),0(R1)       SUCCESSFUL PROCESSING                        
+         MVC   4(2,R1),NUMFLT      PASS BACK NUMBER OF FLIGHT ENTRIES           
+         LA    R3,LFLTENT                                                       
+         MH    R3,NUMFLT           LENGTH OF FLIGHT ENTRIES                     
+         BCTR  R3,0                LESS 1 FOR EX                                
+         L     R2,VOUTPUT                                                       
+         EX    R3,*+8                                                           
+         B     EXXMOD                                                           
+         MVC   0(0,R2),ENTRIES                                                  
+         SPACE                                                                  
+ERROR    L     R1,VPARAM                                                        
+         MVC   0(1,R1),FERN                                                     
+         SPACE                                                                  
+EXXMOD   XMOD1 1                                                                
+         EJECT                                                                  
+         LTORG                                                                  
+         SPACE                                                                  
+* EQUATES                                                                       
+SPACE    EQU   C' '                                                             
+EVERY    EQU   X'80'                                                            
+ALT      EQU   X'40'                                                            
+MONDAY   EQU   X'01'                                                            
+NFORM    EQU   X'01'               NWEEKS INPUT FORMAT                          
+DATES    EQU   X'02'               DATE TO DATE INPUT FORMAT                    
+SONLY    EQU   X'04'                                                            
+MISINP   EQU   1                   MISSING INPUT                                
+INVERR   EQU   2                   INVALID INPUT                                
+NONNUM   EQU   3                   NON-NUMERIC INPUT                            
+TOOLONG  EQU   28                  INPUT IS TOO LONG                            
+SEQOROUT EQU   132                 SEQUENCE ERROR OR DATE OUTSIDE TABLE         
+         SPACE                                                                  
+         SPACE                                                                  
+* DSECT TO COVER TABLE ENTRIES                                                  
+*                                                                               
+TABENTD  DSECT                                                                  
+MON      DS    CL6                 YYMMDD EBCDIC                                
+SUN      DS    CL6                                                              
+WKNUM    DS    H                                                                
+LTABENT  EQU   (*-MON)                                                          
+         SPACE                                                                  
+* DSECT TO COVER FLIGHT DATE ENTRIES                                            
+*                                                                               
+FLTENTD  DSECT                                                                  
+FLTSTART DS    CL6                 YYMMDD - MONDAY OF FIRST WEEK                
+FLTEND   DS    CL6                        - SUNDAY OF LAST WEEK                 
+FLTIND   DS    B                                                                
+*                                  X'80' - EVERY WEEK                           
+*                                  X'40' - ALTERNATE WEEKS                      
+FLTWKS   DS    B                   NUMBER OF WEEKS                              
+FLTCNTL  DS    B                   CONTROL VALUES FOR INPUT SYNTAX              
+*                                  PASSED TO EFFDAT                             
+LFLTENT  EQU   (*-FLTSTART)                                                     
+         SPACE                                                                  
+* DSECT TO COVER WORKING STORAGE                                                
+*                                                                               
+WORKD    DSECT                                                                  
+VPARAM   DS    V                                                                
+VCOMFACS DS    V                                                                
+VCONDATE DS    V                                                                
+VFLDHDR  DS    V                                                                
+VOUTPUT  DS    V                                                                
+         SPACE                                                                  
+VSCANNER DS    V                                                                
+VDATVAL  DS    V                                                                
+VGETDAY  DS    V                                                                
+VADDAY   DS    V                                                                
+         SPACE                                                                  
+DUB      DS    D                                                                
+DMCB     DS    6F                                                               
+         SPACE                                                                  
+STDAT    DS    CL6                                                              
+ENDAT    DS    CL6                                                              
+MONDAT   DS    CL6                                                              
+WRKDAT   DS    CL6                                                              
+         SPACE                                                                  
+LASTWK   DS    H                                                                
+NUMFLT   DS    H                   NUMBER OF DATE ENTRIES                       
+FERN     DS    C                                                                
+BYTE     DS    C                                                                
+         SPACE                                                                  
+         DS    0F                                                               
+WORK     DS    15CL32              SCANNER AREA                                 
+ENTRIES  DS    CL240               AREA FOR FLIGHT DATE ENTRIES                 
+TABLE    DS    64CL14              CONTRACT DATE TABLE AREA                     
+WORKX    EQU   *                                                                
+         SPACE                                                                  
+*              DDCOMFACS                                                        
+         PRINT OFF                                                              
+       ++INCLUDE DDCOMFACS                                                      
+         PRINT ON                                                               
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'021REFLSCANX 07/17/96'                                      
+         END                                                                    

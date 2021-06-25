@@ -1,0 +1,880 @@
+*          DATA SET DDGEN      AT LEVEL 008 AS OF 10/22/13                      
+*PROCESS USING(WARN(15))                                                        
+*CATALP DDGEN                                                                   
+         TITLE 'DDGEN - DATA DICTIONARY COMPILER'                               
+**********************************************************                      
+*                                                        *                      
+* PRODUCES A DATA DICTIONARY OBJECT MODULE FROM MESSAGE  *                      
+* RECORDS RESIDING UNDER GENDIR/GENFIL. OBJECT MODULE IS *                      
+* THEN PASSED TO LINKAGE EDITOR WHICH PRODUCES A LOAD    *                      
+* PHASE FOR A GIVEN SYSTEM AND LANGUAGE.  SYSTEM AND     *                      
+* LANGUAGE MUST BE SPECIFIED.  FORMAT OF PHASE NAME IS   *                      
+*   <T00DSL>, WHERE S=SYSTEM NUMBER AND L=LANGUAGE CODE  *                      
+* JCL IS GLEE.DDS.JCL(DDGEN)                             *                      
+*                                                        *                      
+* INPUT JCL CARD DATA LINES:                             *                      
+* REQUIRED:                                              *                      
+*   SYSTEM=<NAME OF FACPAK SYSTEM (SEE FASYSLST)>        *                      
+* OPTIONAL:                                              *                      
+*   DECK=<Y> LISTING OF OBJECT MODULE CARDS              *                      
+*   TRACE=<Y> LISTING OF INTERNAL PROGRAM TABLES         *                      
+*                                                        *                      
+* OUTPUT RETURN CODES:                                   *                      
+*   0 : EVERYTHING WENT FINE--GO LINK                    *                      
+*   2 : THERE IS AN ERROR SOMEWHERE                      *                      
+**********************************************************                      
+         EJECT                                                                  
+***********************************************************************         
+*==================== MAIN (HIGHEST LEVEL ROUTINE) ===================*         
+*                                                                               
+DDGEN    CSECT                                                                  
+         PRINT NOGEN                                                            
+         NBASE 0,*DDGEN*,=V(REGSAVE),RA,R9                                      
+*                                                                               
+         L     R8,=V(CPRINT)                                                    
+         USING DPRINT,R8                                                        
+*                                                                               
+         B     MAIN                                                             
+         SPACE 1                                                                
+         ENTRY UTL                                                              
+         ENTRY SSB                                                              
+         EJECT                                                                  
+MAIN     BAS   RE,VALCARDS         VALIDATE JCL CARD DATA LINES                 
+         BNE   BXIT                  EXIT IF ERROR                              
+*                                                                               
+         GOTO1 VDATAMGR,DMCB,=C'DMOPEN',=C'CONTROL',FLIST,MSGREC                
+*                                                                               
+         OPEN  (PHASES,OUTPUT)                                                  
+         OPEN  (OBJFIL,OUTPUT)                                                  
+*                                                                               
+MAIN10   BAS   RE,INITIAL          GENERAL INITIALIZATION                       
+         SPACE 1                                                                
+         L     RE,AOBJTAB          CLEAR OBJECT TABLE                           
+         L     RF,LOBJTAB          NOTE: SVBSYS & SVBLNG ARE DEFINED            
+         XCEF  (RE),(RF)                                                        
+*                                                                               
+MAIN20   BAS   RE,LNGCTRL          SEE IF WE NEED TO LOOP BACK TO               
+         BNE   MXIT                 PROCESS ANOTHER LANGUAGE                    
+         SPACE 1                                                                
+         BAS   RE,GTSYSNME         GET SYSTEM NAME                              
+         MVC   MID1+9(L'SYSTEM),SYSTEM                                          
+         SPACE 1                                                                
+         MVI   WORK,1              SET UP PARAMETERS FOR LNGDISP                
+         MVC   WORK+1(1),SVBLNG                                                 
+         LA    RE,WORK              INPUT LIST                                  
+         ST    RE,DMCB                                                          
+         LA    RE,MID2+11           OUTPUT AREA                                 
+         ST    RE,DMCB+4                                                        
+         MVI   DMCB+4,L'LANGFUL                                                 
+         BAS   RE,LNGDISP          GET LANGUAGE NAME ONTO MIDLINE               
+*                                                                               
+MAIN30   BAS   RE,BLDPBLK                  BUILD PARAMETER BLOCK                
+         GOTO1 =V(DDBLDICT),DMCB,PARMBLK   BUILD OBJECT TABLE                   
+         BE    *+6                                                              
+         DC    H'0'                                                             
+         SPACE 1                                                                
+         BAS   RE,GETPBLK          GET OUTPUT PARAMETERS                        
+         BZ    MAIN20                                                           
+         BAS   RE,SHWRSLT          SHOW RESULTS                                 
+         L     R1,AOBJNXT          UPDATE OBJECT TABLE POINTER                  
+         A     R1,DICTLEN                                                       
+         ST    R1,AOBJNXT                                                       
+         L     R1,LOBJNXT          UPDATE OBJECT TABLE LENGTH                   
+         S     R1,DICTLEN                                                       
+         BNM   *+6                  DIE IF WE RAN OUT OF ROOM                   
+         DC    H'0'                                                             
+         ST    R1,LOBJNXT                                                       
+         SPACE 1                                                                
+         LA    R5,SVLNGPRC         UPDATE LANGS PROCESSED LIST                  
+         ZIC   R4,0(R5)                                                         
+         LA    R4,1(R4)                                                         
+         STC   R4,0(R5)                                                         
+         LA    R5,1(R5)            BUMP LIST POINTER TO                         
+         BCT   R4,*-4               NEXT LOCATION                               
+         MVC   0(L'SVBLNG,R5),SVBLNG                                            
+         B     MAIN20              IF MULTIPLE LANG SELECTED                    
+*                                                                               
+MXIT     DS    0H                                                               
+         CLOSE (PHASES,)                                                        
+         CLOSE (OBJFIL,)                                                        
+*                                                                               
+BXIT     BAS   RE,BXITPROC                                                      
+*                                  EXIT WITH RETURN CODE=0 IF OBJECT            
+BXXIT    XBASE RC=RETCODE,RL=1       MODULE CARDS PRODUCED FOR LINKAGE          
+***********************************************************************         
+         SPACE 3                                                                
+***********************************************************************         
+*============ EXIT FOR NTR'S RETURNING CONDITION CODE (CC) ===========*         
+CCEQUAL  SR    RF,RF                                                            
+CCNEQUAL LTR   RF,RF                                                            
+EXIT     XIT1                                                                   
+***********************************************************************         
+         EJECT                                                                  
+***********************************************************************         
+*========= VALIDATE JCL CARD DATA LINES AS DEFINED IN CARDTBL ========*         
+VALCARDS NTR1                                                                   
+*                                                                               
+         OPEN  (PARMS,OUTPUT)                                                   
+*                                                                               
+         MVI   JCLFLAG,0                                                        
+*                                                                               
+*&&US*&& MVC   SVLNGLST(3),=X'020004'                                           
+*&&UK*&& MVC   SVLNGLST(3),=X'020003'                                           
+         OI    JCLFLAG,JCLLNGQ     SET DEFAULT LANGUAGES                        
+*                                                                               
+VC10     GOTO1 =V(CARDS),DMCB,LINEBUFF,=C'RE00'                                 
+         CLC   =C'/*',LINEBUFF     IF END OF JCL                                
+         BE    VCEND                 CHECK REQUIRED CARDS INPUT                 
+*                                                                               
+         LA    R1,PARMS            PASS PARAMETER CARDS TO DDPNEQU              
+         PUT   (R1),LINEBUFF                                                    
+*                                                                               
+         CLI   LINEBUFF,C'*'       ASTERISK IN COLUMN 1 DENOTES COMMENT         
+         JE    VC10                                                             
+*                                                                               
+         LA    R2,CARDTBL          INITIALISE TABLE POINTER                     
+*                                                                               
+         MVI   ERROR,3             ASSUME CARD NOT IN CARDTBL                   
+VC20     CLI   0(R2),0             AT END OF TABLE YET?                         
+         BNE   VC30                 NO, CONTINUE                                
+         LA    RE,VC10              YEP, SAVE ADDRESS OF NEXT STEP,             
+         B     PBADLINE              AND PRINT ERROR MESSAGE                    
+*                                                                               
+VC30     ZIC   R1,CLENGTH(R2)           TRY TO IDENTIFY CARD                    
+         BCTR  R1,0                                                             
+         EXCLC R1,LINEBUFF,CSTRING(R2)  CARD MATCH WITH ANY IN TABLE?           
+         BE    VC40                      YEP, DO NEXT STEP                      
+         LA    R2,L'CARDTBL(R2)          NOPE, GET NEXT ENTRY                   
+         B     VC20                                                             
+*                                                                               
+VC40     MVC   ERROR,CERROR(R2)    GET ERROR CODE                               
+         ZIC   RF,CROUTINE(R2)     GET ROUTINE #                                
+         SLL   RF,2                RF=(ROUTINE #)*4                             
+         B     *+0(RF)             BRANCH TO PROCESSING ROUTINE                 
+*                                    FROM JUMP TABLE                            
+         B     VCSYS                                                            
+         B     VCDECK                                                           
+         B     VCTRCE                                                           
+         B     VCDDSIO                                                          
+         B     VCDSPACE                                                         
+*                                                                               
+VCEND    DS    0H                                                               
+         CLOSE (PARMS,)                                                         
+*                                                                               
+         MVI   ERROR,4             ASSUME SYSTEM IS NOT DEFINED                 
+         TM    JCLFLAG,JCLSYSQ     CHECK IF SYSTEM IS DEFINED                   
+         BO    VCEND10              YEP, IT'S DEFINED                           
+         LA    RE,VCEND10          SET RETURN ADDRESS                           
+         B     ERRPRNT              PRINT ERROR MESSAGE                         
+*                                                                               
+VCEND10  TM    JCLFLAG,JCLSYSQ+JCLLNGQ                                          
+         BO    CCEQUAL                                                          
+         B     CCNEQUAL                                                         
+         EJECT                                                                  
+*                                                                               
+*============ ROUTINES TO PROCESS EACH JCL CARD DATA LINE ============*         
+*                                                                               
+*------------------------------ SYSTEM= ------------------------------*         
+*                                                                               
+VCSYS    LA    R6,SYSLST           SYSTEM=<FASYSLST ENTRY>                      
+         USING SYSLSTD,R6                                                       
+         LH    R2,0(R6)            R2=LENGTH OF SYSTEM TABLE ENTRY              
+         LA    R3,EXSYSLX-1        R3=A(END OF TABLE), EXTENDED                 
+         LA    R6,6(R6)            R6-->FIRST ENTRY                             
+*                                                                               
+VCSLP1   CLC   LINEBUFF+7(7),SYSLNAME   CMPRE AGNST LONG EXPRSSN                
+         BE    XVCSYS1                                                          
+         CLC   LINEBUFF+7(3),SYSLSHRT   CMPRE AGNST SHRT EXPRSSN                
+         BE    XVCSYS1                                                          
+         BXLE  R6,R2,VCSLP1                                                     
+         LA    RE,VC10             ERROR, SET RETURN ADDRESS                    
+         B     PBADLINE             AND PRINT THE BAD LINE                      
+*                                                                               
+XVCSYS1  MVC   SVBSYS,SYSLNUM      SAVE NATIVE SYSTEM NUMBER                    
+         MVC   SVREQSYS,SYSLSHRT   SAVE SHORT SYSTEM NAME                       
+         OI    JCLFLAG,JCLSYSQ                                                  
+         B     VC10                                                             
+         DROP  R6                                                               
+*                                                                               
+*------------------------------- DECK= -------------------------------*         
+*                                                                               
+VCDECK   LA    R3,LINEBUFF+5                                                    
+         BAS   RE,TSTYESNO                                                      
+         BNE   VCDECK02                                                         
+VCDECK01 OI    SWITCH1,SWIDECK        DECK=YES                                  
+         B     VC10                                                             
+*                                                                               
+VCDECK02 NI    SWITCH1,X'FF'-SWIDECK  DECK=NO                                   
+         B     VC10                                                             
+*                                                                               
+*------------------------------ TRACE= -------------------------------*         
+*                                                                               
+VCTRCE   LA    R3,LINEBUFF+6                                                    
+         BAS   RE,TSTYESNO                                                      
+         BNE   VCTRCE02               MAKE TRACE=NO                             
+VCTRCE01 OI    SWITCH1,SWITRAC        TRACE=YES                                 
+         B     VC10                                                             
+*                                                                               
+VCTRCE02 NI    SWITCH1,X'FF'-SWITRAC  TRACE=NO                                  
+         B     VC10                                                             
+*                                                                               
+*------------------------------ DDSIO= -------------------------------*         
+*                                                                               
+VCDDSIO  ICM   RF,15,=V(DDSIO)                                                  
+         JZ    *+10                                                             
+         MVC   0(8,RF),LINEBUFF+6     DDSIO LOAD MODULE NAME                    
+         J     VC10                                                             
+*                                                                               
+*------------------------------ DSPACE= ------------------------------*         
+*                                                                               
+VCDSPACE LA    RF,SSB                                                           
+         MVC   SSODSPAC-SSOOFF(,RF),LINEBUFF+7  DSPACE IDENTIFIER               
+         J     VC10                                                             
+         SPACE 3                                                                
+TSTYESNO NTR1                                                                   
+*                                                                               
+*         ON ENTRY,                                                             
+*            R3-->STRING NEEDED TO BE CHECKED                                   
+*                                                                               
+         MVI   ERROR,2             ASSUME INPUT <> YES OR NO                    
+         CLC   0(3,R3),=C'YES'      CHECK FOR CORRECT INPUT                     
+         BE    CCEQUAL                                                          
+         CLI   0(R3),C'Y'           CHECK FOR CORRECT INPUT                     
+         BE    CCEQUAL                                                          
+         CLC   0(2,R3),=C'NO'       CHECK FOR CORRECT INPUT                     
+         BE    CCNEQUAL                                                         
+         CLI   0(R3),C'N'           CHECK FOR CORRECT INPUT                     
+         BE    CCNEQUAL                                                         
+*                                                                               
+         LA    RE,CCNEQUAL         NOT EQUAL TO ANY OF ABOVE                    
+         B     PBADLINE            TURN SWITCH OFF ANYWAY UPON RETURN           
+***********************************************************************         
+         EJECT                                                                  
+***********************************************************************         
+*========================== INITIALIZATION ===========================*         
+INITIAL  NTR1                                                                   
+*                                                                               
+         MVC   TITLE,SPACES                                                     
+         MVC   TITLE(28),=C'DDGEN - DICTIONARY GENERATOR'                       
+         ZAP   LINE,=P'75'                                                      
+*                                                                               
+         MVC   MID1(8),=C'SYSTEM ='                                             
+         MVC   MID2(10),=C'LANGUAGE ='                                          
+*                                                                               
+         MVC   AOBJNXT,AOBJTAB     INITIAL OBJECT TABLE POINTER                 
+         MVC   LOBJNXT,LOBJTAB     INITIAL L(OBJECT TABLE)                      
+         SPACE 1                                                                
+         B     EXIT                                                             
+***********************************************************************         
+         EJECT                                                                  
+***********************************************************************         
+*========================== LANGUAGE CONTROL =========================*         
+LNGCTRL  NTR1                                                                   
+*                                                                               
+         CLC   LLSTCNT,SVLNGLST    DID ALL LANGUAGES YET?                       
+         BE    CCNEQUAL                                                         
+         BL    *+6                                                              
+         DC    H'0'                                                             
+         SPACE 1                                                                
+LC05     ZIC   R1,LLSTCNT                                                       
+         LA    R1,1(R1)            UPDATE # OF LANGUAGES PROCESS"ED"            
+         STC   R1,LLSTCNT                                                       
+         LA    R6,SVLNGLST         GET LANGCODE OF NEXT LANGUAGE                
+         LA    R6,1(R6)                                                         
+         BCT   R1,*-4                                                           
+         CLI   0(R6),1             SKIP THE OTHER ENGLISH                       
+         BE    LC05                                                             
+         CLI   0(R6),2              LANGUAGE CODES, SKIP THEM                   
+         BE    LC05                                                             
+         MVC   SVBLNG,0(R6)        SVBLNG=LANGUAGE TO PROCESS                   
+         SPACE 1                                                                
+         ZAP   LINE,=P'75'         FORCE PAGE EJECT                             
+         B     CCEQUAL                                                          
+***********************************************************************         
+         EJECT                                                                  
+***********************************************************************         
+*======================== BUILD PARAMETER BLOCK ======================*         
+BLDPBLK  NTR1                                                                   
+*                                                                               
+         XC    PARMBLK(6*L'PARMBLK),PARMBLK                                     
+         LA    R1,PARMBLK                                                       
+         USING BLDICTD,R1                                                       
+*                                                                               
+         MVC   P1IATAB,AOBJNXT                                                  
+*                                                                               
+         MVC   P2IADTCN,VDATCON                                                 
+         MVC   P2ILANG,SVBLNG                                                   
+*                                                                               
+         MVC   P3IADMGR,VDATAMGR                                                
+         MVI   P3ITEST,C'A'        ALWAYS PRODUCE "A" VERSION                   
+*                                                                               
+         MVC   P4ILTAB,LOBJNXT                                                  
+*                                                                               
+         MVC   P5ISYST,SVBSYS                                                   
+         DROP  R1                                                               
+*                                                                               
+         B     EXIT                                                             
+***********************************************************************         
+         SPACE 3                                                                
+***********************************************************************         
+*========================= GET PARAMETER BLOCK =======================*         
+GETPBLK  DS    0H                                                               
+*                                                                               
+         LA    R1,PARMBLK                                                       
+         USING BLDICTD,R1                                                       
+*                                                                               
+         L     RF,P1OAPSNM          RF=A(PHASENAME)                             
+         MVC   PHASENM,0(RF)                                                    
+*                                                                               
+         MVC   DICTLEN,P2ODCTLN     L(DICTIONARY)                               
+*                                                                               
+         OC    P3ORDCNT,P3ORDCNT     # OF GOOD RECORDS READ                     
+         DROP  R1                                                               
+*                                                                               
+         BR    RE                                                               
+***********************************************************************         
+         EJECT                                                                  
+***********************************************************************         
+*========================== GET LANGUAGE NAME ========================*         
+GTLNGNME NTR1                                                                   
+*                                                                               
+*         GET NAME OF LANGUAGE WHOSE CODE IS IN ONEBYTE                         
+*                                                                               
+GLN05    LA    R6,LANGTAB          R6-->LANGUAGE TABLE                          
+         USING LANGTABD,R6                                                      
+         LH    R2,0(R6)            R2=L(LANGUAGE TABLE ENTRY)                   
+         LA    R3,LANGTABX-1       R3=A(END OF TABLE)                           
+         LA    R6,6(R6)            R6-->FIRST ENTRY                             
+*                                                                               
+GLN10    CLC   ONEBYTE,LANGCODE                                                 
+         BE    GLN20               FOUND LANGUAGE,                              
+         BXLE  R6,R2,GLN10                                                      
+         DC    H'0'                                                             
+GLN20    MVC   LANGUAGE,LANGFUL     HOLD ONTO ITS NAME                          
+*                                                                               
+         B     EXIT                                                             
+***********************************************************************         
+         SPACE 3                                                                
+***********************************************************************         
+*=========================== GET SYSTEM NAME =========================*         
+GTSYSNME NTR1                                                                   
+*                                                                               
+*         GET NAME OF SYSTEM WHOSE CODE IS IN SVBSYS                            
+*                                                                               
+GSN05    LA    R6,SYSLST           R6-->SYSTEM TABLE                            
+         USING SYSLSTD,R6                                                       
+         LH    R2,0(R6)            R2=L(SYSTEM TABLE ENTRY)                     
+         LA    R3,EXSYSLX-1        R3=A(END OF TABLE)                           
+         LA    R6,6(R6)            R6-->FIRST ENTRY                             
+*                                                                               
+GSN10    CLC   SYSLNUM,SVBSYS                                                   
+         BE    GSN20               FOUND SYSTEM,                                
+         BXLE  R6,R2,GSN10                                                      
+         DC    H'0'                                                             
+GSN20    MVC   SYSTEM,SYSLNAME      HOLD ONTO ITS NAME                          
+*                                                                               
+         B     EXIT                                                             
+***********************************************************************         
+         EJECT                                                                  
+***********************************************************************         
+*============== LAST MINUTE STUFF BEFORE EXITING PROGRAM =============*         
+BXITPROC NTR1                                                                   
+*                                                                               
+         ZAP   LINE,=P'99'         FORCE NEW PAGE FOR RESULTS                   
+         TM    JCLFLAG,JCLLNGQ+JCLSYSQ  SEE IF WE CAN PRINT A                   
+         BNO   BP05                      NAME FOR VALID LANGUAGE                
+         CLI   SVLNGPRC,0          SEE IF ANY LANGUAGES PROCESSED               
+         BNE   BP03                                                             
+         MVC   P+51(L'NODICT),NODICT  NO DICTIONARY GENERATED                   
+         GOTO1 =V(PRINTER)                                                      
+         GOTO1 =V(PRINTER)                                                      
+         B     BP05                                                             
+*                                                                               
+BP03     LA    RE,SVLNGPRC         SET UP PARAMETERS FOR LNGDISP                
+         ST    RE,DMCB                                                          
+         LA    RE,MID2+11                                                       
+         ST    RE,DMCB+4                                                        
+         MVI   DMCB+4,7            L(OUTPUT NAME) I WANT                        
+         BAS   RE,LNGDISP                                                       
+*                                                                               
+BP05     DS    0H                                                               
+         MVI   RETCODE,0                                                        
+*                                                                               
+         MVC   P+51(L'ERRNFND),ERRNFND                                          
+         TM    SWITCH1,SWIEROR                                                  
+         BNO   BP15                                                             
+         MVC   P+51(L'ERRFND),ERRFND                                            
+         MVI   RETCODE,2                 ERROR--DO NOT LINK AT ALL              
+BP15     GOTO1 =V(PRINTER)                                                      
+         MVC   P(13),=C'RETURN CODE ='                                          
+         EDIT  RETCODE,(2,P+14),FILL=0                                          
+         GOTO1 =V(PRINTER)                                                      
+         MVC   P+((L'P-L'EOJOBDC)/2)(L'EOJOBDC),EOJOBDC                         
+         GOTO1 =V(PRINTER)                                                      
+*                                                                               
+         B     EXIT                                                             
+***********************************************************************         
+         EJECT                                                                  
+***********************************************************************         
+*========================= DISPLAY LANG NAMES ========================*         
+LNGDISP  NTR1                                                                   
+*                                                                               
+*         AT ENTRY,                                                             
+*           DMCB+0(4) = A(LIST OF LANGUAGES TO DISPLAY)                         
+*           DMCB+4(1) = L(EACH NAME FOR OUTPUT)                                 
+*           DMCB+5(3) = A(OUTPUT AREA)                                          
+*                                                                               
+         L     R2,DMCB             R2-->LIST OF LANGUAGE CODES                  
+         ZIC   RF,DMCB+4           RF = INDIVIDUAL OUTPUT LENGTH                
+         ZICM  R4,DMCB+5,(7)       RF-->OUTPUT AREA                             
+         SPACE 1                                                                
+         BCTR  RF,0                RF=EX LENGTH                                 
+         ZIC   R6,0(R2)            R6=# OF LANGUAGES TO PROCESS                 
+LDSP10   LA    R2,1(R2)            R2-->NEXT LANGUAGE CODE                      
+         MVC   ONEBYTE,0(R2)       ONEBYTE IS PARAMETER TO GTLNGNME             
+         BAS   RE,GTLNGNME         GET LANG NAME INTO LANGUAGE                  
+         EXMVC RF,0(R4),LANGUAGE                                                
+         BCT   R6,*+8                                                           
+         B     EXIT                                                             
+         AR    R4,RF               R4-->LAST CHAR OF MOVE INSTRUCTION           
+         CLI   0(R4),C' '          IGNORE TRAILING BLANKS                       
+         BNE   *+10                                                             
+         BCT   R4,*-8                                                           
+         DC    H'0'                                                             
+         MVI   1(R4),C','          PUT COMMA AFTER LAST NON-BLANK               
+         LA    R4,2(R4)             CHAR, AND BUMP TO NEXT LOCATION             
+         B     LDSP10              DO NEXT LANGUAGE NAME                        
+***********************************************************************         
+         EJECT                                                                  
+***********************************************************************         
+*============================ SHOW RESULTS ===========================*         
+SHWRSLT  NTR1                                                                   
+*                                                                               
+         TM    SWITCH1,SWITRAC     PRINT OBJECT TABLE?                          
+         BZ    SHW10                NO                                          
+         LA    R2,=CL30'*** OBJECT TABLE ***'                                   
+         L     R7,AOBJNXT                                                       
+         L     RE,8(R7)                                                         
+         AR    RE,R7                                                            
+         ST    RE,ATABEND                                                       
+         BAS   RE,PRTTAB           PRINT OBJECT TABLE                           
+*                                                                               
+SHW10    DS    0H                                                               
+         BAS   RE,WRTOBJ           BUILD OBJECT MODULE                          
+*                                                                               
+         B     EXIT                                                             
+         EJECT                                                                  
+*------------------- PRINT THE CONTENTS OF A TABLE -------------------*         
+PRTTAB   NTR1                                                                   
+*                                                                               
+*         AT ENTRY,                                                             
+*           R7-->BEGINNING OF TABLE,                                            
+*           ATABEND = A(END OF TABLE)                                           
+*                                                                               
+         ZAP   LINE,=P'75'                                                      
+         MVC   P(30),0(R2)         TITLE OF A TABLE                             
+         GOTO1 =V(PRINTER)                                                      
+*                                                                               
+PR10     MVC   P(80),0(R7)                                                      
+         GOTO1 =V(PRINTER)                                                      
+         XC    HEXBUFF,HEXBUFF     PRINT THE CONTENTS IN HEX                    
+         GOTO1 =V(HEXOUT),DMCB,(R7),HEXBUFF,80,=C'SEP'                          
+         OC    16(4,R1),16(R1)                                                  
+         BNZ   *+6                                                              
+         DC    H'0'                                                             
+         MVC   P(80),HEXBUFF                                                    
+         GOTO1 =V(PRINTER)                                                      
+         MVC   P(80),HEXBUFF+80                                                 
+         GOTO1 =V(PRINTER)                                                      
+         MVI   P,C' '                                                           
+         GOTO1 =V(PRINTER)                                                      
+*                                                                               
+         LA    RE,80                                                            
+         C     R7,ATABEND                                                       
+         BNL   PRXIT                                                            
+         LA    R7,1(R7)                                                         
+         BCT   RE,*-12                                                          
+         B     PR10                                                             
+*                                                                               
+PRXIT    B     EXIT                                                             
+         EJECT                                                                  
+*------------------------ WRITE OBJECT MODULE ------------------------*         
+WRTOBJ   NTR1                                                                   
+*                                                                               
+         TM    SWITCH1,SWIDECK     TEST FOR LISTING REQUESTED                   
+         BZ    WO01                                                             
+*                                                                               
+         ZAP   LINE,=P'75'                                                      
+         MVC   TITLE,SPACES                                                     
+         MVC   TITLE(12),=C'PHASENAME : '                                       
+         MVC   TITLE+12(8),PHASENM                                              
+         MVC   SUB1,SPACES                                                      
+         MVC   SUB2,SPACES                                                      
+         MVC   P,SPACES                                                         
+         GOTO1 =V(PRINTER)                                                      
+         GOTO1 =V(PRINTER)                                                      
+*                                                                               
+WO01     L     R2,AOBJNXT          BEGINNING OF DICTIONARY                      
+         L     R3,DICTLEN          L(DICTIONARY)                                
+         XC    OUTBUFF,OUTBUFF     ESD CARD                                     
+         MVI   OUTBUFF,X'02'                                                    
+         MVC   OUTBUFF+1(3),=C'ESD'                                             
+         MVC   OUTBUFF+10(2),=H'16'                                             
+         MVC   OUTBUFF+14(2),=H'01'                                             
+         MVC   OUTBUFF+16(8),PHASENM                                            
+         MVC   OUTBUFF+24(4),=F'0'                                              
+         STCM  R3,7,OUTBUFF+29                                                  
+         MVC   OUTBUFF+72(8),=C'00000001'                                       
+         BAS   RE,PUTOBJ                                                        
+         SR    R4,R4                                                            
+         LA    R5,2                LINE NUMBER                                  
+*                                                                               
+WOLP1    LTR   R3,R3                                                            
+         BZ    WO02                                                             
+         MVI   OUTBUFF,X'02'                                                    
+         MVC   OUTBUFF+1(3),=C'TXT'                                             
+         ST    R4,DUB                                                           
+         MVC   OUTBUFF+5(3),DUB+1  ORIGIN                                       
+         MVC   OUTBUFF+14(2),=H'1'                                              
+         CVD   R5,DUB                                                           
+         MVC   OUTBUFF+72(4),=C'0000'                                           
+         UNPK  OUTBUFF+76(4),DUB                                                
+         OI    OUTBUFF+79,X'F0'                                                 
+         CH    R3,=H'56'                                                        
+         BNH   WOLP1X                                                           
+         MVC   OUTBUFF+10(2),=H'56'                                             
+         MVC   OUTBUFF+16(56),0(R2)                                             
+         BAS   RE,PUTOBJ                                                        
+         LA    R2,56(R2)                                                        
+         SH    R3,=H'56'                                                        
+         LA    R4,56(R4)                                                        
+         LA    R5,1(R5)                                                         
+         B     WOLP1                                                            
+*                                                                               
+WOLP1X   EQU   *                                                                
+         STH   R3,DUB              LAST TXT CARD MAY BE LESS THAN 56            
+         MVC   OUTBUFF+10(2),DUB                                                
+         BCTR  R3,R0                                                            
+         EX    R3,*+8                                                           
+         B     *+10                                                             
+         MVC   OUTBUFF+16(0),0(R2)                                              
+         BAS   RE,PUTOBJ                                                        
+         LA    R5,1(R5)                                                         
+*                                                                               
+WO02     MVI   OUTBUFF,X'02'       END CARD                                     
+         MVC   OUTBUFF+1(3),=C'END'                                             
+         CVD   R5,DUB                                                           
+         MVC   OUTBUFF+72(4),=C'0000'                                           
+         UNPK  OUTBUFF+76(4),DUB                                                
+         OI    OUTBUFF+79,X'F0'                                                 
+         BAS   RE,PUTOBJ                                                        
+         MVC   OUTBUFF(80),=CL80' NAME ' NAME CARD                              
+         LA    R2,OUTBUFF+6                                                     
+         MVC   0(8,R2),PHASENM                                                  
+         LA    R2,1(R2)                                                         
+         CLI   0(R2),C' '                                                       
+         BNE   *-8                                                              
+         MVC   0(3,R2),=C'(R)'                                                  
+         BAS   RE,PUTOBJ                                                        
+*                                                                               
+         MVC   DICTCARD+6(8),PHASENM                                            
+         LA    R1,PHASES           WRITE *DICT CARD TO FILE                     
+         PUT   (R1),DICTCARD                                                    
+*                                                                               
+         B     EXIT                                                             
+         EJECT                                                                  
+*................ WRITE OBJECT MODULE LINE TO THE FILE ...............*         
+PUTOBJ   NTR1                                                                   
+*                                                                               
+         LA    R1,OBJFIL           WRITE LINE TO FILE                           
+         PUT   (R1),OUTBUFF                                                     
+*                                                                               
+         TM    SWITCH1,SWIDECK     TEST FOR LISTING REQUESTED                   
+         BZ    PO02                                                             
+*                                                                               
+         MVC   P(80),OUTBUFF       PRINT ALPHA DATA                             
+         GOTO1 =V(PRINTER)                                                      
+         XC    HEXBUFF,HEXBUFF                                                  
+         GOTO1 =V(HEXOUT),DMCB,OUTBUFF,HEXBUFF,80,=C'SEP'                       
+         OC    16(4,R1),16(R1)                                                  
+         BNZ   *+6                                                              
+         DC    H'0'                                                             
+*                                                                               
+         MVC   P(80),HEXBUFF       PRINT DATA IN HEX                            
+         GOTO1 =V(PRINTER)                                                      
+         MVC   P(80),HEXBUFF+80                                                 
+         GOTO1 =V(PRINTER)                                                      
+         GOTO1 =V(PRINTER)                                                      
+*                                                                               
+PO02     MVC   OUTBUFF,SPACES      CLEAR OUTPUT LINE                            
+         B     EXIT                                                             
+***********************************************************************         
+         EJECT                                                                  
+***********************************************************************         
+*======================= PRINT MESSAGE RECORD ========================*         
+         SPACE 1                                                                
+PRTRECD  DS    0H                                                               
+         MVC   P(60),MSGREC+4                                                   
+         ST    RE,SAVERE                                                        
+         GOTO1 =V(PRINTER)                                                      
+         L     RE,SAVERE                                                        
+         BR    RE                                                               
+***********************************************************************         
+         SPACE 3                                                                
+***********************************************************************         
+*========================== ERROR HANDLING ===========================*         
+PBADLINE ST    RE,SAVERE                                                        
+         MVC   P(L'LINEBUFF),LINEBUFF                                           
+         GOTO1 =V(PRINTER)                                                      
+         B     *+8                                                              
+ERRPRNT  ST    RE,SAVERE                                                        
+         LA    RE,ERRTAB                                                        
+         CLI   ERROR,0             ERROR = 0 IS UNDEFINED                       
+         BNE   *+6                                                              
+         DC    H'0'                                                             
+         ZIC   RF,ERROR                                                         
+         BCTR  RF,0                COMPENSATE FOR OFF-BY-1-ERROR                
+         MH    RF,=H'40'                                                        
+         AR    RE,RF                                                            
+         MVC   P,SPACES                                                         
+         MVC   P+7(10),=C'*** ERROR '                                           
+         MVC   P+17(L'ERRMSG0),0(RE)                                            
+         GOTO1 =V(PRINTER)                                                      
+         GOTO1 =V(PRINTER)                                                      
+         MVI   ERROR,0             RESET ERROR CODE                             
+         OI    SWITCH1,SWIEROR     ERROR ENCOUNTERED                            
+         L     RE,SAVERE           RESTORE RE                                   
+         BR    RE                                                               
+***********************************************************************         
+         EJECT                                                                  
+         LTORG                                                                  
+         EJECT                                                                  
+***********************************************************************         
+*============ OBJECT MODULE OUTPUT FILE DATA CONTROL BLOCK ===========*         
+         SPACE 1                                                                
+OBJFIL   DCB   DDNAME=OBJFIL,DSORG=PS,RECFM=FB,MACRF=PM                         
+PHASES   DCB   DDNAME=PHASES,DSORG=PS,RECFM=FB,MACRF=PM,LRECL=14                
+PARMS    DCB   DDNAME=PARMS,DSORG=PS,RECFM=FB,MACRF=PM,LRECL=80                 
+***********************************************************************         
+         SPACE 3                                                                
+***********************************************************************         
+*============================= JCL CARDS =============================*         
+         SPACE 1                                                                
+*         CARDTBL DEFINES JOB CONTROL INPUT PARAMETER CARDS                     
+*         AL1    LENGTH OF CARD NAME                                            
+*         AL1    ACTION ROUTINE NUMBER                                          
+*         AL1    ERROR NUMBER                                                   
+*         XL1    ACTION FLAGS                                                   
+*         CL8    CARD NAME                                                      
+*                                                                               
+CARDTBL  DS    0CL15                                                            
+         DC    AL1(07,01,1),X'00',CL11'SYSTEM='                                 
+         DC    AL1(05,02,2),X'00',CL11'DECK='                                   
+         DC    AL1(06,03,2),X'00',CL11'TRACE='                                  
+         DC    AL1(05,04,0),X'00',CL11'DDSIO='                                  
+         DC    AL1(06,05,0),X'00',CL11'DSPACE='                                 
+CARDTBLX DC    AL1(00)                                                          
+CLENGTH  EQU   0                                                                
+CROUTINE EQU   1                                                                
+CERROR   EQU   2                                                                
+CFLAG    EQU   3                                                                
+CSTRING  EQU   4                                                                
+***********************************************************************         
+         EJECT                                                                  
+***********************************************************************         
+*====================== MISCELLANEOUS CONSTANTS ======================*         
+*                                                                               
+         DS    0H                                                               
+ERRFND   DC    CL30'     *** ERRORS FOUND ***     '                             
+ERRNFND  DC    CL30'    *** NO ERRORS FOUND ***   '                             
+NODICT   DC    CL30' ** NO DICTIONARY GENERATED **'                             
+EOJOBDC  DC    CL10'END OF JOB'                                                 
+*                                                                               
+*--------------------------- ERROR MESSAGES --------------------------*         
+ERRTAB   DS    0H                                                               
+ERRMSG0  DS    0CL40                                                            
+ERRMS01  DC    CL40'INVALID SYSTEM REQUESTED'                                   
+ERRMS02  DC    CL40'OPTIONS ARE "YES" OR "NO" ONLY'                             
+ERRMS03  DC    CL40'UNKNOWN CARD SPECIFIED'                                     
+ERRMS04  DC    CL40'NO SYSTEM SPECIFIED'                                        
+ERRMS05  DC    CL40'OBJECT TABLE OVERFLOW'                                      
+*                                                                               
+*------------------------- ADDRESS CONSTANTS -------------------------*         
+*                                                                               
+ACOMFACS DC    A(COMFACS)          A(COMMON FACILITIES)                         
+AOBJTAB  DC    A(OBJTAB)                                                        
+LOBJTAB  DC    A(OBJTABX-OBJTAB)    L(TABLE)                                    
+AOBJTABX DC    A(OBJTABX)                                                       
+*                                                                               
+** COMMON FACILITIES                                                            
+COMFACS  DS    0F                                                               
+VDATAMGR DC    V(DATAMGR)                                                       
+VDATCON  DC    V(DATCON)                                                        
+*                                                                               
+*---------------------------- DATAMANAGER ----------------------------*         
+*                                                                               
+UTL      DC    F'0',X'0A'                                                       
+*                                                                               
+         DS    0L                                                               
+         DC    CL16'*SSB*SSB*SSB*SSB'                                           
+* ++INCLUDE FASSBOFF                                                            
+         PRINT OFF                                                              
+       ++INCLUDE FASSBOFF                                                       
+         PRINT ON                                                               
+         ORG   SSOOFF                                                           
+SSB      DC    XL(SSOOFFX-SSOOFF)'00'                                           
+         ORG   SSOXTND                                                          
+         DC    X'FF'               SET EXTENDED OFFLINE SSB                     
+         ORG   SSOMTIND            SYSTEM DATAMGR FLAGS                         
+         DC    AL1(SSOWRTN)        WRITE=NO (DON'T OPEN FOR UPDATE)             
+         ORG   SSODSPAC                                                         
+         DC    C'N'                FORCE DSPACE=N                               
+         ORG                                                                    
+*                                                                               
+FLIST    DS    0H                                                               
+         DC    CL8'NGENDIR '                                                    
+         DC    CL8'NGENFIL '                                                    
+         DC    CL8'X       '                                                    
+*---------------------------------------------------------------------*         
+*                                                                               
+DELIM2   DC    CL2'>>'                                                          
+END2     DC    XL2'FFFF'           END OF ADDRS OR LITERALS                     
+HOLES    DC    XL3'010140'         AL1(1),AL1(1),C' '                           
+STAMPS   DC    CL23' '             LEVEL NUMBER AND DATE                        
+SYSTBLE  DC    17X'FF'             TABLE OF SYSTEMS PROCESSED                   
+*                                                                               
+DDDISKQ  EQU   X'80'               DD#DISK                                      
+DELIM    EQU   C'>'                DELIMITER                                    
+END1     EQU   X'FE'               END OF TABLE MARKER                          
+HEX01ON  EQU   X'01'                                                            
+PANACEA  EQU   24                                                               
+SPLITTER EQU   C':'                SPECIAL EQUATE NUMBER INDICATOR              
+***********************************************************************         
+         EJECT                                                                  
+***********************************************************************         
+*=================== MISCELLANEOUS WORKING STORAGE ===================*         
+*                                                                               
+MISCWORK DS    0H                                                               
+*                                                                               
+*------------------------- ADDRESS CONSTANTS -------------------------*         
+*                                                                               
+ABASEX   DS    A                   END ADDRESS OBJECT TABLE                     
+AOBJNXT  DS    A                   A(NEXT LOCATION IN OBJECT TABLE)             
+ATABEND  DS    A                   A(END OF TABLE)                              
+RELLC    DS    A                   RELATIVE LOCATION COUNTER                    
+DICTLEN  DS    F                   L(DICTIONARY)                                
+LOBJNXT  DS    F                   L(REMAINDER OF OBJECT TABLE)                 
+*                                                                               
+*------------------------------- FLAGS -------------------------------*         
+*                                                                               
+SWITCH1  DS    XL1                 DEFAULT OFF                                  
+SWIDECK  EQU   X'01'               IF ON THEN PRINT OBJECT PROGRAM              
+SWITRAC  EQU   X'02'               IF ON THEN PRINT LITTAB & OBJTAB             
+SWISPLT  EQU   X'08'               IF ON THEN SPLITTER IS PRESENT               
+SWIEROR  EQU   X'10'               IF ON AT LEAST ON ERROR ENCOUNTERED          
+SWIMULT  EQU   X'20'               IF ON THEN MULTI. LANG. MODE                 
+*                                                                               
+JCLFLAG  DS    XL1                 JCL CONTROL FLAG                             
+JCLSYSQ  EQU   X'80'               SYSTEM IS VALIDLY DEFINED                    
+JCLLNGQ  EQU   X'40'               LANGUAGE IS VALIDLY DEFINED                  
+*                                                                               
+*-------------------------------- MISC -------------------------------*         
+*                                                                               
+DMCB     DS    6F                                                               
+PARMBLK  DS    6F                                                               
+DUB      DS    D                                                                
+PHASENM  DS    CL8                 PHASE NAME                                   
+SAVERE   DS    A                   SAVE RE                                      
+NUMMSG   DS    H                   NUMBER OF MSG RECDS READ                     
+ERROR    DS    XL1                 ERROR CODE (SEE ERRTAB ABOVE)                
+RETCODE  DS    XL1                 XBASE RETURNCODE (SAME AS OLD DDGEN)         
+LLSTCNT  DS    XL1                 # OF TIMES LOOPED                            
+LANGUAGE DS    CL(L'LANGFUL)       FULL LANGUAGE NAME                           
+SYSTEM   DS    CL(L'SYSLNAME)      FULL SYSTEM NAME                             
+ONEBYTE  DS    XL1                 TEMP ONE-BYTE STORAGE                        
+WORK     DS    CL17                                                             
+DICTCARD DC    C'*DICT XXXXXXXX'   FOR INCLUDE BOOK                             
+*                                                                               
+*------------------------------ BUFFERS ------------------------------*         
+*                                                                               
+HEXBUFF  DS    CL160               TO STORE ALPHA DATA IN HEX                   
+LINEBUFF DS    CL80                DATA LINE WORK BUFFER                        
+MSGREC   DS    CL4004                                                           
+OUTBUFF  DS    CL80                OBJECT LINE                                  
+*                                                                               
+*---------------------------- SAVE STORAGE ---------------------------*         
+*                                                                               
+SVBSYS   DS    CL1                 EBCDIC SYSTEM CODE                           
+SVBLNG   DS    CL1                 LANGUAGE CODE                                
+SVLANG   DS    CL3                 ABBREV LANGUAGE NAME                         
+SVREQSYS DS    CL3                 REQUESTED SYSTEM                             
+SVREQLNG DS    CL3                 REQUESTED LANGUAGE                           
+SVLNGLST DS    XL10                LIST OF SELECTED LANGUAGES                   
+*                                   +0     : # OF LANGS IN LIST                 
+*                                   +1..+7 : LIST OF LANG CODES                 
+SVLNGPRC DS    XL10                LIST OF PROCESSED LANGUAGES                  
+*                                   +0     : # OF LANGS IN LIST                 
+*                                   +1..+7 : LIST OF LANG CODES                 
+MISCWRKQ EQU   *-MISCWORK                                                       
+***********************************************************************         
+         EJECT                                                                  
+***********************************************************************         
+*================ FACPAK'S SYSTEMS -- DSECT AND TABLE ================*         
+*                                                                               
+*------------------------------- DSECT -------------------------------*         
+       ++INCLUDE FASYSLSTD                                                      
+*                                                                               
+*------------------------------- TABLE -------------------------------*         
+DDGEN    CSECT                                                                  
+       ++INCLUDE FASYSLST                                                       
+* EXTENDED FACPAK SYSTEM TABLE ENTRIES                                          
+         ORG   SYSLSTX                                                          
+         DC    X'0F0F',C'GENERALGEN',C'  ',X'0000'                              
+EXSYSLX  DC    X'FFFF'                                                          
+***********************************************************************         
+         EJECT                                                                  
+***********************************************************************         
+*=============== FACPAK'S LANGUAGES -- DSECT AND TABLE ===============*         
+*                                                                               
+*------------------------------- DSECT -------------------------------*         
+       ++INCLUDE FALANG                                                         
+*                                                                               
+*------------------------------- TABLE -------------------------------*         
+DDGEN    CSECT                                                                  
+       ++INCLUDE FALANGTAB                                                      
+***********************************************************************         
+         EJECT                                                                  
+***********************************************************************         
+*================== INTERNAL DATA PROCESSING TABLES ==================*         
+*                                                                               
+* OBJECT TABLE: TABLE OF DATA COMBINED BUILT FROM LITTAB AND LOCTAB             
+*               IN A FORMAT SUITABLE FOR PROCESSING BY DICTATE                  
+*               DATA DICTIONARY SYSTEM AFTER LINKAGE TO OUTPUT PHASES           
+*    FORMAT:                                                                    
+*      <CL8(PHASENAME)><AL4(BLOCKED TABLE LENGTH)><AL2(ENTRY COUNT)>            
+*      <00><EQUATE# INDEX LIST{<AL2(LITERAL ADDRESS)>}><FFFF>                   
+*      <LITERAL DATA LIST{<AL1(LITERAL COUNT)>                                  
+*      <LIST{<AL1(LITERAL LENGTH)>}><LIST{<LITERAL STRING>}>}><FFFF>            
+*                                                                               
+OBJTAB   DS    0F                                                               
+         DS    1200000X'00'                                                     
+OBJTABX  DS    0H                                                               
+***********************************************************************         
+         EJECT                                                                  
+***********************************************************************         
+*============================ DPRINT DSECT ===========================*         
+       ++INCLUDE DDDPRINT                                                       
+***********************************************************************         
+         EJECT                                                                  
+***********************************************************************         
+*======================== MESSAGE RECORD DSECT =======================*         
+       ++INCLUDE GEGENMSG                                                       
+***********************************************************************         
+         EJECT                                                                  
+***********************************************************************         
+*=========================== PARAMETER DSECT =========================*         
+       ++INCLUDE DDBLDICTD                                                      
+***********************************************************************         
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'008DDGEN     10/22/13'                                      
+         END                                                                    

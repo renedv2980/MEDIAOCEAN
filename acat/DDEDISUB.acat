@@ -1,0 +1,1151 @@
+*          DATA SET DDEDISUB   AT LEVEL 058 AS OF 02/04/16                      
+*CATALP EDISUB                                                                  
+         TITLE 'DDEDISUB -- ROUTINES FOR USE BY EDICT SUBTASKS'                 
+         MACRO                                                                  
+&NAME    PRNT  &A,&N,&PRINT=                                                    
+&NAME    MVC   P(17),=CL17'&A'                                                  
+         TIME  DEC                                                              
+         ST    R0,PRNTDUB&N                                                     
+         MVI   PRNTDUB&N+4,X'0F'                                                
+         UNPK  PRNTIME&N,PRNTDUB&N.(5)                                          
+         MVC   P+18(2),PRNTIME&N                                                
+         MVI   P+20,C':'                                                        
+         MVC   P+21(2),PRNTIME&N+2                                              
+         MVI   P+23,C':'                                                        
+         MVC   P+24(2),PRNTIME&N+4                                              
+         MVI   P+26,C'.'                                                        
+         MVC   P+27(2),PRNTIME&N+6                                              
+         AIF   ('&PRINT' EQ 'ALWAYS').SKIP                                      
+         L     RF,=V(TRACEFLG)                                                  
+         CLI   0(RF),C'Y'                                                       
+         BNE   *+10                                                             
+.SKIP    L     RF,=V(PRINTER)                                                   
+         BASR  RE,RF                                                            
+         MVI   P,C' '                                                           
+         MVC   P+1(L'P-1),P                                                     
+         MEND                                                                   
+         EJECT                                                                  
+**********************************************************************          
+* EID SUBROUTINES                                                               
+*     FINDEST  - EXTACT EDICT RECORD                                            
+*     INITPQRD - READ PQ ENTRY AND SET PQHDR AND *HDR* INFO                     
+*     PQGETLIN - READ PQ LINE BY LINE AFTER THE INITPQRD                        
+*     POSTSENT - MARK ETI RECORD AS SENT AND/OR DELIVERED                       
+*     CONVDSKA - CONVERT KEY TO DISK ADDRESS TO GET EDICT RECORD                
+**********************************************************************          
+EDISUB   CSECT                                                                  
+         PRINT NOGEN                                                            
+         ENTRY FINDDEST                                                         
+         ENTRY INITPQRD                                                         
+         ENTRY PQGETLIN                                                         
+         ENTRY POSTSENT                                                         
+         ENTRY CONVDSKA                                                         
+                                                                                
+**********************************************************************          
+* FIND AN EDICT RECORD KEY IN THE DESTINATION TABLE.  UPON ENTRY,               
+*   ON EXIT,  R1 POINTS TO AN AREA IN THIS ROUTINE'S WORKING STORAGE.           
+*               VALUES MUST BE EXTRACTED IMMEDIATELY UPON RETURN!!!             
+*               CONDITION CODE SET NOT EQUAL IF ENTRY NOT FOUND                 
+**********************************************************************          
+         USING CIDATAD,R6                                                       
+FINDDEST NMOD1 FNDDESTX-FNDDESTD,**FNDS**                                       
+         USING FNDDESTD,RC                                                      
+         LR    R2,R1                                                            
+         USING DSTPARMD,R2                                                      
+*                                                                               
+         L     RA,=V(CPRINT)                                                    
+         USING DPRINT,RA                                                        
+*                                                                               
+* DSTKEY IS ONLY 24-BIT ADDR AND 1ST BYTE IS USED (A/R/T).                      
+         SR    R3,R3                                                            
+         ICM   R3,7,DSTKEY+1       KEY TO SEARCH FOR                            
+*                                                                               
+         L     R8,DSTMAJNM         MAJOR RESOURCE NAME                          
+         LA    R9,=C'DSTTABLE'     MINOR RESOURCE NAME                          
+         MVC   P+30(8),0(R8)                                                    
+         MVC   P+40(8),0(R9)                                                    
+         PRNT  ENQUEUE,1                                                        
+         ENQ   ((8),(9),E,8)       ENQUEUE THE DESTINATION TABLE                
+*                                                                               
+         SAM31                                                                  
+         L     R4,DSTTBL           START OF TABLE                               
+         LR    R1,R4                                                            
+         SHI   R1,2                R1 = A(2 BYTE ENTRY LEN)                     
+         SR    R5,R5                                                            
+         ICM   R5,3,0(R1)          R5 = ENTRY LEN                               
+*                                                                               
+VFND10   CLI   0(R4),X'FF'         END OF TABLE?                                
+         BNE   VFND20                                                           
+         SAM24                                                                  
+*                                                                               
+         MVC   P+30(8),0(R8)                                                    
+         MVC   P+40(8),0(R9)                                                    
+         PRNT  DEQUEUE,1                                                        
+         DEQ   ((8),(9),8)         DEQUEUE THE DESTINATION TABLE                
+*                                                                               
+         SR    R1,R1               NO ENTRY FOUND -- SET CC NOT EQUAL           
+         LTR   RB,RB                                                            
+         B     VFNDXIT                                                          
+*                                                                               
+         USING DESTTABD,R4                                                      
+VFND20   CLI   DSTCNTRL,0          MATCH ON EDICT KEY?                          
+         BNE   VFND30                                                           
+         CLC   DESTNAME,0(R3)                                                   
+         BE    VFND50                                                           
+         AR    R4,R5                                                            
+         B     VFND10                                                           
+*                                                                               
+VFND30   CLI   DSTCNTRL,C'A'       MATCH ON ADV EASYLINK MAILBOX?               
+         BE    VFND35                                                           
+         CLI   DSTCNTRL,C'T'       (TESTING)                                    
+         BE    VFND35                                                           
+         CLI   DSTCNTRL,C'Q'       (FQA)                                        
+         BNE   VFND40                                                           
+VFND35   CLC   DESTADVN,0(R3)                                                   
+         BE    VFND50                                                           
+         AR    R4,R5                                                            
+         B     VFND10                                                           
+*                                                                               
+VFND40   CLI   DSTCNTRL,C'R'       MATCH ON REP EASYLINK MAILBOX?               
+         BE    *+6                                                              
+         DC    H'0'                WHO CALLED US?                               
+         CLC   DESTREPN,0(R3)                                                   
+         BE    VFND50                                                           
+         AR    R4,R5                                                            
+         B     VFND10                                                           
+*                                                                               
+VFND50   MVC   DESTNTRY,0(R4)      DESTINATION TABLE ENTRY                      
+         DROP  R4                                                               
+*                                                                               
+         SAM24                                                                  
+         MVC   P+30(8),0(R8)                                                    
+         MVC   P+40(8),0(R9)                                                    
+         PRNT  DEQUEUE,1                                                        
+         DEQ   ((8),(9),8)         DEQUEUE THE DESTINATION TABLE                
+*                                                                               
+         LA    R1,DESTNTRY         PASS BACK A(BLOCK)                           
+         SR    RF,RF               SET CC EQUAL                                 
+         LTR   RF,RF                                                            
+*                                                                               
+VFNDXIT  XIT1  REGS=(R1)                                                        
+         DROP  R2,RA,RB,RC                                                      
+                                                                                
+         LTORG                                                                  
+*********************************************************************           
+* DSECT                                                                         
+*********************************************************************           
+FNDDESTD DSECT                                                                  
+         DS    0D                                                               
+DESTNTRY DS    XL(255)             RETURN A(THIS BLOCK)                         
+*DESTNTRY DS    XL(DESTTBLQ)        RETURN A(THIS BLOCK)                        
+PRNTDUB1 DS    D                                                                
+PRNTIME1 DS    CL9                                                              
+FNDDESTX EQU   *                                                                
+         EJECT                                                                  
+*********************************************************************           
+* INITIALIZE TO READ A PRINT QUEUE REPORT.  RETURN CC NOT EQUAL IF              
+* LOGICAL REPORT WAS NOT FOUND.  ON INPUT, R1 POINTS TO PQPARMD.                
+*********************************************************************           
+EDISUB   CSECT                                                                  
+         DS    XL((4*K)-(*-EDISUB))                                             
+INITPQRD NMOD1 INPQWRKX-INPQWRKD,**INPQ**                                       
+         USING INPQWRKD,RC                                                      
+         LR    R2,R1                                                            
+         USING PQPARMD,R2                                                       
+*                                                                               
+         L     RA,=V(CPRINT)                                                    
+         USING DPRINT,RA                                                        
+*                                                                               
+         MVI   PQREPOK,C'N'                                                     
+         L     RE,APQBUFF          A(PRINT QUEUE BUFFER)                        
+         L     RF,=F'14336'                                                     
+         XCEFL                                                                  
+*                                                                               
+         L     R3,ATBLNTRY         A(TABLE ENTRY)                               
+         USING XMTTABLD,R3                                                      
+*                                                                               
+         L     R6,ACITABLE         PRINT QUEUE INFO TABLE                       
+         ZIC   R0,XMTPRTQ                                                       
+         BCTR  R0,0                                                             
+         MHI   R0,CITBLLNQ                                                      
+         AR    R6,R0               R6 = A(THIS PQ ENTRY)                        
+*                                                                               
+         LA    RF,INDEX            USE REP NUM TO INITIALIZE BUFFER             
+         XC    INDEX,INDEX                                                      
+         USING UKRECD,RF                                                        
+         MVC   UKSRCID,=H'1'       DUMMY UID#                                   
+         MVC   UKREPNO,XMTREFNO                                                 
+         MVI   UKFLAG,UKFLNUM+UKFLCIA                                           
+         GOTO1 ADTAMGR,DMCB3,(0,=C'INDEX'),CFPQID,INDEX,APQHDR,APQBUFF          
+         CLI   DMCB3+8,0                                                        
+         BE    *+6                                                              
+         DC    H'0'                                                             
+         DROP  RF                                                               
+*                                                                               
+         L     RF,APQHDR                                                        
+         XC    0(256,RF),0(RF)                                                  
+         MVI   4(RF),C'L'          SILLY PARAMETER FOR RANDOM READ              
+         GOTO1 ADTAMGR,DMCB3,(0,=C'RANDOM'),CFPQID,0,APQHDR,APQBUFF             
+         CLI   DMCB3+8,0                                                        
+         BE    *+6                                                              
+         DC    H'0'                                                             
+*                                                                               
+         L     RF,APQHDR                                                        
+         USING PQPLD,RF                                                         
+         TM    QLSTAT,X'80'        REPORT IN STATUS ACTIVE?                     
+         BZ    VINPQ10             NO                                           
+         CLC   XMTUSRID,QLSRCID    IS THE REPORT STILL THERE?                   
+         BNE   VINPQ10                                                          
+         CLC   XMTREFNO,QLREPNO                                                 
+         BNE   VINPQ10                                                          
+         CLC   XMTCRTIM,QLAGELT                                                 
+         BE    VINPQ20                                                          
+         DROP  RF                                                               
+*                                                                               
+VINPQ10  PRNT  REPORTNOTFOUND,3,PRINT=ALWAYS                                    
+         B     VINPQX                                                           
+*                                                                               
+VINPQ20  SR    R0,R0                                                            
+         ICM   R0,3,XMTLOGNO       LOGICAL REPORT NUMBER WE WANT                
+         BCTR  R0,0                R0 = NO. OF LOGICAL REPORTS TO SKIP          
+         LTR   R0,R0                                                            
+         BZ    VINPQ40                                                          
+         DROP  R3                                                               
+*                                                                               
+VINPQ30  GOTO1 ADTAMGR,DMCB3,(0,=C'READ'),CFPQID,0,AEDHDR,APQBUFF               
+         CLI   DMCB3+8,0           READ A RECORD                                
+         BNE   VINPQX                                                           
+         L     RF,AEDHDR                                                        
+         CLC   =C'*** END OF DDS MESSAGE ***',1(RF)                             
+         BNE   VINPQ30                                                          
+         BCT   R0,VINPQ30                                                       
+*                                                                               
+VINPQ40  L     RF,AEDHDR                                                        
+         XC    0(256,RF),0(RF)                                                  
+         GOTO1 ADTAMGR,DMCB3,(0,=C'READ'),CFPQID,0,AEDHDR,APQBUFF               
+         CLI   DMCB3+8,0           READ A RECORD                                
+         BNE   VINPQX              END OF PQ CONTROL INTERVAL                   
+         L     RF,AEDHDR                                                        
+         CLC   =C'*HDR*',5(RF)     IS THIS A HEADER RECORD?                     
+         BNE   VINPQ40             NO -- FIND BEGINNING OF LOGICAL RPT          
+         MVI   PQREPOK,C'Y'                                                     
+*                                                                               
+VINPQX   CLI   PQREPOK,C'Y'                                                     
+         BE    *+12                                                             
+         LA    R1,1                NO PQ REPORT -- SET CC NOT EQUAL             
+         B     *+6                                                              
+         SR    R1,R1               REPORT FOUND -- SET CC EQUAL                 
+         LTR   R1,R1                                                            
+         XIT1                                                                   
+         DROP  R2,RA,RB,RC                                                      
+                                                                                
+         LTORG                                                                  
+*********************************************************************           
+* DSECTS                                                                        
+*********************************************************************           
+INPQWRKD DSECT                                                                  
+DMCB3    DS    10F                                                              
+PRNTDUB3 DS    D                                                                
+PRNTIME3 DS    CL9                                                              
+INDEX    DS    XL40                                                             
+PQREPOK  DS    C                   'Y' OR 'N'                                   
+INPQWRKX EQU   *                                                                
+         EJECT                                                                  
+**********************************************************************          
+* RETURN ONE LINE AT A TIME OF A PRINT QUEUE REPORT.                            
+* RETURN CC NOT EQUAL AT END OF REPORT                                          
+**********************************************************************          
+EDISUB   CSECT                                                                  
+         DS    XL((8*K)-(*-EDISUB))                                             
+PQGETLIN NMOD1 RDPQWRKX-RDPQWRKD,**RDLN**                                       
+         USING RDPQWRKD,RC                                                      
+         LR    R2,R1                                                            
+         USING PQPARMD,R2                                                       
+*                                                                               
+         L     R3,ATBLNTRY         A(TABLE ENTRY)                               
+         USING XMTTABLD,R3                                                      
+         L     R6,ACITABLE         PRINT QUEUE INFO TABLE                       
+         ZIC   R0,XMTPRTQ                                                       
+         BCTR  R0,0                                                             
+         MHI   R0,CITBLLNQ                                                      
+         AR    R6,R0               R6 = A(THIS PQ ENTRY)                        
+*                                                                               
+         LA    R9,255              MAX LENGTH FOR DOWNLOADABLE REPORT           
+         CLI   XMTMETH,C'P'        BDE-FTP METHOD?                              
+         BNE   *+8                                                              
+         LA    R9,999              999 FOR BDF DOWNLOADABLE REPORT              
+*                                  BLANK PADDED THE BUFFER                      
+VRDPQL10 L     RE,APQLINE          A(PQ RECORD BUFFER)                          
+         LA    RF,1(R9)                                                         
+         SR    R0,R0                                                            
+         SR    R1,R1                                                            
+         ICM   R1,8,=C' '                                                       
+         MVCL  RE,R0                                                            
+*                                                                               
+         GOTO1 ADTAMGR,DMCB2,(X'01',=C'READ'),CFPQID,0,APQLINE,        +        
+               APQBUFF,0                                                        
+         CLI   DMCB2+8,0           READ A RECORD                                
+         BNE   NOMORE              END OF PQ CONTROL INTERVAL                   
+         L     R4,APQLINE                                                       
+         CLC   =C'*** END OF DDS MESSAGE ***',1(R4)                             
+         BE    NOMORE                                                           
+*                                                                               
+         CLC   =C'++DDS',1(R4)     DDS CONTROL CARD?                            
+         BE    GOT1                YES -- LEAVE IT ALONE                        
+         TR    1(255,R4),TROUTBND  TRANSLATE NON-PRINTABLE INTO SPACES          
+         CLC   1(255,R4),MYSPACES                                               
+         BE    GOT1                                                             
+*                                                                               
+         L     RF,APQHDR                                                        
+         TM    QLTYPE-PQPLD(RF),QLTYDL  DOWNLOADABLE REPORT?                    
+         BZ    GOT1                NO                                           
+*                                                                               
+         CLI   1(R4),C':'          END OF REPORT?                               
+         BE    VRDPQL10            YES                                          
+*                                                                               
+         LR    R1,R4               R4 = A(START OF RECORD)                      
+         AH    R1,DMCB2+22         R1 = A(JUST PAST END OF RECORD)              
+         LA    R0,X'5E'            SEMICOLON (END OF LOGICAL RECORD)            
+         SRST  R1,R4               SEARCH FOR SEMICOLON IN RECORD               
+         BC    4,GOT1              SEMICOLON FOUND, SO NO MERGE NEEDED          
+*                                                                               
+         LH    R5,DMCB2+22         CURRENT LENGTH OF THIS RECORD                
+*                                                                               
+VRDPQL50 MVC   WORK2,MYSPACES      READ NEXT PQ LINE                            
+         GOTO1 ADTAMGR,DMCB2,(X'01',=C'READ'),CFPQID,0,WORK2,APQBUFF,0          
+         CLI   DMCB2+8,0                                                        
+         BNE   NOMORE              SHOULD NEVER HAPPEN: NO CONTINUATION         
+*                                                                               
+         LH    R1,DMCB2+22         LENGTH OF THIS RECORD                        
+         LR    RF,R5               KEEP THIS LENGTH FOR MERGE                   
+         AR    R5,R1               ADD TO CURRENT LENGTH OF THIS RECORD         
+*                                  (INCLUDE A BLANK BEFORE THIS MERGE)          
+*                                                                               
+         CR    R5,R9               TOO BIG?                                     
+         BH    FAIL                YES - FAIL                                   
+*                                                                               
+         TR    WORK2+1(255),TROUTBND  TRANSL NON-PRINTABLE INTO SPACES          
+         AR    RF,R4               PT TO END OF THE INPUT BUFFER                
+         BCTR  R1,0                -1 FOR CC CHAR                               
+         EX    R1,*+8                                                           
+         B     *+10                                                             
+         MVC   1(0,RF),WORK2+1     MERGE THIS P-LINE TO THE RECORD              
+*                                  (INCLUDE A BLANK BEFORE THIS MERGE)          
+*                                                                               
+         CLI   XMTMETH,C'F'        FTP METHOD?                                  
+         BE    GOT1                YES - ONLY MERGE 1ST AND 2ND LINES           
+*                                                                               
+         LA    R1,2(R1,RF)         R1 = A(JUST PAST END OF RECORD)              
+         LA    R0,X'5E'            SEMICOLON (END OF LOGICAL RECORD)            
+         SRST  R1,RF               SEARCH FOR SEMICOLON IN RECORD               
+         BC    4,GOT1              SEMICOLON FOUND                              
+         B     VRDPQL50                                                         
+*                                                                               
+FAIL     L     RF,APQLINE          DOWNLOAD RECORD EXCEED 255                   
+         MVC   0(2,RF),=X'FFFF'    RETURN X'FFFF' TO USER                       
+         B     GOT1                                                             
+NOMORE   LA    R1,1                SET CC NOT EQUAL                             
+         B     *+6                                                              
+GOT1     SR    R1,R1               SET CC EQUAL                                 
+         LTR   R1,R1                                                            
+         XIT1                                                                   
+         DROP  R2,R3,RB,RC                                                      
+                                                                                
+         LTORG                                                                  
+         EJECT                                                                  
+**********************************************************************          
+* CONSTANTS                                                                     
+**********************************************************************          
+MYSPACES DC    256C' '                                                          
+         SPACE                                                                  
+TROUTBND DS    0XL256                                                           
+*                                                                               
+*                0.1.2.3.4.5.6.7.8.9.A.B.C.D.E.F.                               
+         DC    X'40404040404040404040404040404040' 00-0F                        
+         DC    X'40404040404040404040404040404040' 10-1F                        
+         DC    X'40404040404040404040404040404040' 20-2F                        
+         DC    X'40404040404040404040404040404040' 30-3F                        
+         DC    X'404142434445464748494A4B4C4D4E4F' 40-4F                        
+         DC    X'505152535455565758595A5B5C5D5E5F' 50-5F                        
+         DC    X'606162636465666768696A6B6C6D6E6F' 60-6F                        
+         DC    X'707172737475767778797A7B7C7D7E7F' 70-7F                        
+         DC    X'808182838485868788898A8B8C8D8E8F' 80-8F                        
+         DC    X'909192939495969798999A9B9C9D9E9F' 90-9F                        
+         DC    X'A0A1A2A3A4A5A6A7A8A9AAABACADAEAF' A0-AF                        
+         DC    X'B0B1B2B3B4B5B6B7B8B9BABBBCBDBEBF' B0-BF                        
+         DC    X'C0C1C2C3C4C5C6C7C8C9CACBCCCDCECF' C0-CF                        
+         DC    X'D0D1D2D3D4D5D6D7D8D9DADBDCDDDEDF' D0-DF                        
+         DC    X'E0E1E2E3E4E5E6E7E8E9EAEBECEDEEEF' E0-EF                        
+         DC    X'F0F1F2F3F4F5F6F7F8F9FAFBFCFDFEFF' F0-FF                        
+                                                                                
+*********************************************************************           
+* DSECTS                                                                        
+*********************************************************************           
+RDPQWRKD DSECT                                                                  
+DMCB2    DS    10F                                                              
+WORK2    DS    XL256                                                            
+RDPQWRKX EQU   *                                                                
+         EJECT                                                                  
+*********************************************************************           
+* SET EDICT RECORD STATUS                                                       
+*********************************************************************           
+EDISUB   CSECT                                                                  
+         DS    XL((12*K)-(*-EDISUB))                                            
+POSTSENT NMOD1 POSTWRKX-POSTWRKD,**EDST**                                       
+         USING POSTWRKD,RC                                                      
+*                                                                               
+         LR    R2,R1                                                            
+         USING EDFPARMD,R2                                                      
+*                                                                               
+         L     RA,=V(CPRINT)                                                    
+         USING DPRINT,RA                                                        
+*                                                                               
+         BC    0,SKIPOPEN          ONLY OPEN EDICT FILE ONCE                    
+         MVI   *-3,X'F0'           *** SELF-MODIFYING CODE ***                  
+         GOTO1 EADTAMGR,DMCB,=C'DADDS',DAOPEN,EDCTBLK,0,A(EDICTFL),0,0          
+         GOTO1 EADTAMGR,DMCB,=C'DADDS',RDID,EDCTBLK,0,                 +        
+               A(EDICTFL),=X'00010100',0                                        
+         OC    12(2,R1),12(R1)                                                  
+         BZ    *+6                                                              
+         DC    H'0'                DIE ON ANY ERROR                             
+         MVC   EDCTBKSZ+2(2),DMCB+14  RETURNED PHYSICAL RECORD LENGTH           
+         LA    RF,EDCTBLK                                                       
+         USING EDFILD,RF                                                        
+         CLI   EDFMON,EDFMONPQ                                                  
+         BE    *+6                                                              
+         DC    H'0'                WE'RE LOOKING AT THE WRONG RECORD            
+         MVC   EDCTLRCL,EDFLRECL   LOGICAL RECORD LENGTH                        
+         DROP  RF                                                               
+SKIPOPEN DS    0H                                                               
+*                                                                               
+         OC    EDCTBKSZ,EDCTBKSZ   MUST BE POSITIVE BLOCKSIZE                   
+         BNZ   *+6                                                              
+         DC    H'0'                                                             
+         OC    EDCTLRCL,EDCTLRCL   MUST BE POSITIVE LRECL                       
+         BNZ   *+6                                                              
+         DC    H'0'                                                             
+         CLC   EDCTLRCL,=H'256'                                                 
+         BNH   *+6                                                              
+         DC    H'0'                MAX LRECL IS 256 FOR NOW                     
+*                                                                               
+         MVI   OKFLAG,C'Y'         ASSUME OK                                    
+         MVI   ERRMSG,C'Y'         ASSUME ERROR MESSAGE NEEDED                  
+         L     R8,EMAJORNM         MAJOR RESOURCE NAME                          
+*                                                                               
+         XC    AXMTNTRY,AXMTNTRY                                                
+         USING XMTTABLD,R3                                                      
+         LA    R3,JUNKNTRY                                                      
+         TM    EACTION,EACTFILQ    DISK ADDRESS GIVEN, NOT A(TBLNTRY)?          
+         BZ    *+14                                                             
+         MVC   XMTDSKAD,ETBLNTRY                                                
+         B     PSTE10                                                           
+*                                                                               
+         LA    R7,=C'XMTTABLE'                                                  
+         MVC   P+30(8),0(R8)                                                    
+         MVC   P+40(8),0(R7)                                                    
+         PRNT  ENQUEUE,2                                                        
+         ENQ   ((8),(7),E,8)       ENQUEUE TRANSMIT TABLE                       
+*                                                                               
+         SAM31                                                                  
+         L     RF,EXMTTBLE                                                      
+         AHI   RF,-8                                                            
+         L     RF,0(RF)            NUMBER OF ENTRIES IN TABLE                   
+         ST    RF,DMCB+8                                                        
+         GOTO1 =V(BINSRCH),DMCB,ETBLNTRY,EXMTTBLE,,XMTTBLQ,XMTKEYQ,0            
+*                                                                               
+         ICM   R4,15,DMCB          A(RECORD IN TABLE)                           
+         TMH   R4,X'8000'          WAS RECORD FOUND?                            
+         BNO   *+6                 YES                                          
+         DC    H'0'                IT WAS THERE BEFORE                          
+*                                                                               
+         ST    R4,AXMTNTRY         STORE A(THIS TABLE ENTRY)                    
+         MVC   JUNKNTRY,0(R4)      SAVE THE TABLE ENTRY                         
+         SAM24                                                                  
+*                                                                               
+PSTE10   MVC   FULL3,XMTDSKAD      DISK ADDRESS OF ENTRY                        
+         MVC   FULL4(3),FULL3      TTTTBB (NO LOGICAL RECORD NUMBER)            
+         MVI   FULL4+3,0                                                        
+         GOTO1 =V(HEXOUT),DMCB,FULL4,BLKNAME,4,=C'TOG'                          
+         CLC   =F'8',DMCB+16                                                    
+         BE    *+6                                                              
+         DC    H'0'                                                             
+*                                                                               
+         LA    R9,BLKNAME                                                       
+         MVC   P+30(8),0(R8)                                                    
+         MVC   P+40(8),0(R9)                                                    
+         PRNT  ENQUEUE,2                                                        
+         ENQ   ((8),(9),E,8)       ENQUEUE EDICT FILE BLOCK                     
+*                                                                               
+         GOTO1 EADTAMGR,DMCB,=C'DADDS',RDID,EDCTBLK,0,                 +        
+               A(EDICTFL),FULL4,0                                               
+         OC    12(2,R1),12(R1)                                                  
+         BZ    *+12                                                             
+         MVI   OKFLAG,C'N'                                                      
+         B     PSTE700             IGNORE THIS ONE                              
+*                                                                               
+         ZIC   R1,FULL3+3          LOGICAL RECORD NUMBER                        
+         BCTR  R1,0                                                             
+         MH    R1,EDCTLRCL         OFFSET INTO BLOCK OF THIS RECORD             
+         LA    R4,EDCTBLK                                                       
+         AR    R4,R1               A(RECORD WITHIN BLOCK)                       
+         USING EDFILD,R4                                                        
+*                                                                               
+         OC    EFILREC,EFILREC     CALLER WANTS RECORD?                         
+         BZ    PSTE30                                                           
+         L     RF,EFILREC          YES                                          
+         LH    R1,EDCTLRCL                                                      
+         BCTR  R1,0                                                             
+         EX    R1,*+8                                                           
+         B     *+10                                                             
+         MVC   0(0,RF),EDFILD                                                   
+*                                                                               
+PSTE30   TM    EACTION,EACTFILQ    TABLE ADDRESS GIVEN?                         
+         BO    PSTE100             NO -- NOT MUCH POINT IN ASSERTING            
+         CLC   EDFPQUID,XMTUSRID   ARE WE AT THE CORRECT ENTRY?                 
+         BE    *+6                                                              
+         DC    H'0'                                                             
+         CLC   EDFPQSUB,XMTSUBID                                                
+         BE    *+6                                                              
+         DC    H'0'                                                             
+         CLC   EDFPQREF,XMTREFNO                                                
+         BE    *+6                                                              
+         DC    H'0'                                                             
+         CLC   EDFPQTIM,XMTCRTIM                                                
+         BE    *+6                                                              
+         DC    H'0'                                                             
+         CLC   EDFPQSEQ,XMTLOGNO                                                
+         BE    *+6                                                              
+         DC    H'0'                                                             
+         CLC   EDFPQDSS,XMTDSTNO                                                
+         BE    *+6                                                              
+         DC    H'0'                                                             
+*                                                                               
+PSTE100  CLI   EACTION2,0                                                       
+         BE    PSTE200                                                          
+*                                                                               
+         TM    EACTION2,EACTNTFQ   EMAIL NTF SENT(BDE)?                         
+         BZ    PSTE110                                                          
+*                                                                               
+         CLI   EDFMETH,C'T'        BDE-EMAIL?                                   
+         BE    *+14                                                             
+         CLI   EDFMETH,C'P'        BDE-FTP?                                     
+         BE    *+6                                                              
+         DC    H'0'                ONLY BDE CAN HAVE EMAIL NTF ACTION           
+*                                                                               
+         L     RF,EABDEDTA                                                      
+         MVC   EDFBDDOC,0(RF)      A(DOC ID NUMBER)                             
+         MVC   EDFSNTDY,EDAYNUM    EMAIL NTF DAY REPLACE SENT DAY               
+         MVC   EDFSNTIM,ETIME      EMAIL NTF TIME REPLACE SENT TIME             
+         B     PSTE500                                                          
+*                                                                               
+PSTE110  TM    EACTION2,EACTDELQ   DELETE(BDE)?                                 
+         BZ    PSTE130                                                          
+         TM    EDFSTAT,EDFSTSNT    YES -- WAS REPORT SENT ALREADY?              
+         BO    *+12                                                             
+         MVI   OKFLAG,C'N'         NO -- WHAT IS HAPPENING?                     
+         B     PSTE700                                                          
+*                                                                               
+         CLI   EDFMETH,C'T'        BDE-EMAIL?                                   
+         BE    *+14                                                             
+         CLI   EDFMETH,C'P'        BDE-FTP?                                     
+         BE    *+6                                                              
+         DC    H'0'                ONLY BDE CAN HAVE DELETE ACTION              
+*                                                                               
+         L     RF,EABDEDTA                                                      
+         MVC   EDFBDDOC,0(RF)      A(DOC ID NUMBER)                             
+         MVC   EDFBDRDY,EDFRCVDY   SAVE RECEIVE DAY                             
+         MVC   EDFBDRTM,EDFRCVTM   SAVE RECEIVE TIME                            
+         OC    EDFBDRDY,EDFBDRDY   ANY RECEIVE DAY?                             
+         BNZ   PSTE120                                                          
+         MVC   EDFBDRDY,EDAYNUM    KEEP DELETE DAY INSTEAD                      
+         MVC   EDFBDRTM,ETIME      KEEP DELETE TIME INSTEAD                     
+         MVC   EDFSNTDY,EDAYNUM    DELETE DAY REPLACE SENT DAY                  
+         MVC   EDFSNTIM,ETIME      DELETE TIME REPLACE SENT TIME                
+*                                                                               
+PSTE120  MVC   EDFRCVDY,EDAYNUM    DELETE DAY REPLACE RECEIVE DAY               
+         MVC   EDFRCVTM,ETIME      DELETE TIME REPLACE RECEIVE TIME             
+         B     PSTE500                                                          
+*                                                                               
+PSTE130  EQU   *                                                                
+         TM    EACTION2,EACTFWDQ   REPORT FORWORDED?                            
+         BZ    PSTE140                                                          
+         TM    EDFSTAT,EDFSTSNT    YES -- WAS REPORT SENT ALREADY?              
+         BO    *+12                                                             
+         MVI   OKFLAG,C'N'         NO -- WHAT IS HAPPENING?                     
+         B     PSTE700                                                          
+*                                                                               
+         CLI   EDFMETH,C'Z'        ENCODA?                                      
+         BE    *+6                                                              
+         DC    H'0'                ONLY ENCODA CAN HAVE FORWORD ACTION          
+*                                                                               
+         MVI   EDFENFLG,EDDENF02Q                                               
+         B     PSTE500                                                          
+*                                                                               
+PSTE140  EQU   *                                                                
+         TM    EACTION2,EACTACCQ   REPORT ACCEPTED?                             
+         BZ    PSTE150                                                          
+         TM    EDFSTAT,EDFSTSNT    YES -- WAS REPORT SENT ALREADY?              
+         BO    *+12                                                             
+         MVI   OKFLAG,C'N'         NO -- WHAT IS HAPPENING?                     
+         B     PSTE700                                                          
+*                                                                               
+         CLI   EDFMETH,C'I'        ECN?                                         
+         BNE   PSTE145                                                          
+*                                                                               
+         L     RF,EAEZDTA                                                       
+         MVC   EDFECNTN,0(RF)      A(ECN TRACKING NUMBER)                       
+         MVC   EDFACCDY,EDAYNUM    ACCEPT DAY                                   
+         MVC   EDFACCTM,ETIME      ACCEPT TIME                                  
+         B     PSTE500                                                          
+*                                                                               
+PSTE145  EQU   *                                                                
+         CLI   EDFMETH,C'E'        EASYLINK?                                    
+         BE    *+8                                                              
+         B     PSTE500                                                          
+*                                                                               
+         L     RF,EAEZDTA                                                       
+         MVC   EDFEZLED,0(RF)      A(EASYLINK LEDGER NUMBER)                    
+         MVC   EDFACCDY,EDAYNUM    ACCEPT DAY                                   
+         MVC   EDFACCTM,ETIME      ACCEPT TIME                                  
+         MVC   EDFSNTDY,EDAYNUM    SENT DAY                                     
+         MVC   EDFSNTIM,ETIME      SENT TIME                                    
+         B     PSTE500                                                          
+*                                                                               
+PSTE150  EQU   *                                                                
+         TM    EACTION2,EACTREAQ    REPORT IS RETRIED?                          
+         BZ    PSTE160                                                          
+         TM    EDFSTAT,EDFSTSNT    YES -- WAS REPORT SENT ALREADY?              
+         BO    *+12                                                             
+         MVI   OKFLAG,C'N'         NO -- WHAT IS HAPPENING?                     
+         B     PSTE700                                                          
+*                                                                               
+         CLI   EDFMETH,C'I'        ECN?                                         
+         BNE   PSTE500                                                          
+*                                                                               
+         L     RF,EAEZDTA                                                       
+         MVC   EDFECNTN,0(RF)      A(ECN TRACKING NUMBER)                       
+         MVC   EDFACCDY,EDAYNUM    ACCEPT DAY                                   
+         MVC   EDFACCTM,ETIME      ACCEPT TIME                                  
+         OI    EDFECNFL,EDFECN1Q   FLAG RETRIED                                 
+         B     PSTE500                                                          
+*                                                                               
+PSTE160  TM    EACTION2,EACTREJQ   MARK REPORT REJECTED?                        
+         BO    *+8                                                              
+         B     PSTE500                                                          
+*                                                                               
+         TM    EDFSTAT,EDFSTSNT    YES -- WAS REPORT SENT ALREADY?              
+         BO    *+12                                                             
+         MVI   OKFLAG,C'N'         NO -- WHAT IS HAPPENING?                     
+         B     PSTE700                                                          
+*                                                                               
+         OI    EDFSTAT,EDFSTCAN    REPORT HAS BEEN MARKED CANCELLED             
+*                                                                               
+         OC    AXMTNTRY,AXMTNTRY                                                
+         BZ    PSTE165                                                          
+         L     R5,AXMTNTRY         CHANGE STATUS BYTE IN XMTTABLE               
+         AHI   R5,XMTSTAT-XMTTABLD                                              
+         MVC31 0(L'EDFSTAT,R5),EDFSTAT                                          
+*                                                                               
+*                                                                               
+PSTE165  CLI   EDFMETH,C'I'        ECN?                                         
+         BNE   PSTE170                                                          
+*                                                                               
+         L     RF,EAEZDTA                                                       
+         MVC   EDFECNTN,0(RF)      A(ECN TRACKING NUMBER)                       
+         MVC   EDFRCVDY,EDAYNUM    REJECT DAY                                   
+         MVC   EDFRCVTM,ETIME      REJECT TIME                                  
+         OI    EDFECNFL,EDFECN2Q   FLAG REJECTED                                
+         MVC   EDFEZERR,EEZCANER   EZ/ECN CANCELLATION ERROR CODE               
+         B     PSTE500                                                          
+*                                                                               
+PSTE170  CLI   EDFMETH,C'O'        PDF?                                         
+         BNE   PSTE175                                                          
+         MVC   EDFRCVDY,EDAYNUM    REJECT DAY                                   
+         MVC   EDFRCVTM,ETIME      REJECT TIME                                  
+*        OI    EDFECNFL,EDFECN2Q   FLAG REJECTED                                
+         MVC   EDFEZERR,EEZCANER   PDF  CANCELLATION ERROR CODE                 
+         B     PSTE500                                                          
+*                                                                               
+PSTE175  CLI   EDFMETH,C'P'        BDE-FTP?                                     
+         BNE   PSTE180                                                          
+         L     RF,EABDEDTA                                                      
+         MVC   EDFBDDOC,0(RF)      SAVE ERROR# IN "DOC ID" FIELD                
+         MVC   EDFRCVDY,EDAYNUM    REJECT DAY                                   
+         MVC   EDFRCVTM,ETIME      REJECT TIME                                  
+         B     PSTE500                                                          
+*                                                                               
+PSTE180  CLI   EDFMETH,C'E'        EASYLINK?                                    
+         BE    *+8                                                              
+         B     PSTE500                                                          
+*                                                                               
+         L     RF,EAEZDTA                                                       
+         MVC   EDFEZLED,0(RF)      A(EASYLINK LEDGER NUMBER)                    
+*        MVC   EDFRCVDY,EDAYNUM    REJECT DAY                                   
+*        MVC   EDFRCVTM,ETIME      REJECT TIME                                  
+         MVC   EDFEZERR,EEZCANER   EAZYLINK CANCELLATION ERROR CODE             
+         B     PSTE500                                                          
+*                                                                               
+PSTE200  CLI   EACTION,0                                                        
+         BNE   *+6                                                              
+         DC    H'0'                CALLER GAVE NO ACTION TO TAKE                
+*                                                                               
+         TM    EACTION,EACTRDQ     READ RECORD, BUT DON'T UPDATE?               
+         BO    PSTE700             RIGHT                                        
+*                                                                               
+         TM    EACTION,EACTSNTQ    MARK REPORT SENT?                            
+         BZ    PSTE250                                                          
+         TM    EDFSTAT,EDFSTWTG    YES -- WAS REPORT WAITING?                   
+         BO    PSTE220                                                          
+         MVI   OKFLAG,C'N'         NO -- WHY DID WE SEND IT?                    
+         TM    EDFSTAT,EDFSTJNK    WAS REPORT MARKED UNSENTABLE?                
+         BZ    *+8                                                              
+         MVI   ERRMSG,C'N'         YES -- DON'T PRINT ERROR MESSAGE             
+         B     PSTE700                                                          
+*                                                                               
+PSTE220  OI    EDFSTAT,EDFSTSNT    REPORT HAS BEEN MARKED SENT                  
+         NI    EDFSTAT,X'FF'-EDFSTWTG  NO LONGER WAITING                        
+*                                                                               
+         OC    AXMTNTRY,AXMTNTRY                                                
+         BZ    PSTE230                                                          
+         L     R5,AXMTNTRY         CHANGE STATUS BYTE IN XMTTABLE               
+         AHI   R5,XMTSTAT-XMTTABLD                                              
+         MVC31 0(L'EDFSTAT,R5),EDFSTAT                                          
+*                                                                               
+PSTE230  CLI   EDFMETH,C'E'        EASYLINK?                                    
+         BNE   *+14                                                             
+         L     RF,EAEZDTA                                                       
+         MVC   EDFDARFX,14(RF)     A(DARE FAX RECORD KEY)                       
+*                                                                               
+         CLI   EDFMETH,C'F'        FTP?                                         
+         BNE   *+14                                                             
+         L     RF,EAFTPDTA         A(FTP DATA)                                  
+         MVC   EDFFTPDT,0(RF)                                                   
+*                                                                               
+         CLI   EDFMETH,C'D'        DARE?                                        
+         BNE   *+14                                                             
+         L     RF,EADARDTA         A(DARE DATA)                                 
+         MVC   EDFDARDT,0(RF)                                                   
+*                                                                               
+         CLI   EDFMETH,C'T'        BDE-EMAIL?                                   
+         BE    *+12                                                             
+         CLI   EDFMETH,C'P'        BDE-FTP?                                     
+         BNE   PSTE240                                                          
+         TM    EACTION,EACTDSTQ    OVERRIDE CURRENT DESTINATION?                
+         BZ    *+14                NO                                           
+         L     RF,EADEST           A(NEW DESTINATION)                           
+         MVC   EDFDEST,0(RF)                                                    
+*                                                                               
+PSTE240  MVC   EDFPAGES,ENUMPAGE   NUMBER OF PAGES                              
+*                                                                               
+         CLI   EDAYNUM,0           DAY/TIME GIVEN?                              
+         BE    *+20                                                             
+         MVC   EDFRCVDY,EDAYNUM    YES, USE THEM                                
+         MVC   EDFRCVTM,ETIME                                                   
+         B     PSTE250                                                          
+*                                                                               
+         GOTO1 =V(DATCON),DMCB,(5,0),(3,THREE)                                  
+         ZIC   R0,THREE+2          DAY NUMBER IN BINARY                         
+         CVD   R0,DUB              PACKED                                       
+         L     R0,DUB+4                                                         
+         SRL   R0,4                SHIFT OUT THE SIGN                           
+         STC   R0,EDFSNTDY         DAY NUMBER, PWOS                             
+*                                                                               
+         TBIN  SECS,DDSTIME=YES                                                 
+         L     RE,=A(60*60*24)     NUMBER OF SECONDS AT MIDNIGHT                
+         SR    RE,R0               MINUS CLOCK ADJUST = DDS MIDNIGHT            
+         CR    R1,RE                                                            
+         BH    *+10                IT'S PAST MIDNIGHT                           
+         AR    R1,R0               ADD TIME FOR U.S. CLOCK ADJUST               
+         B     *+6                                                              
+         SR    R1,RE               SUBTRACT DDS MIDNIGHT => MILITARY            
+         SR    R0,R0                                                            
+         D     R0,=F'60'                                                        
+         SR    R0,R0                                                            
+         D     R0,=F'60'                                                        
+         CVD   R1,DUB                                                           
+         L     R1,DUB+4                                                         
+         SRL   R1,4                                                             
+         STC   R1,EDFSNTIM         MILITARY HOURS (PWOS)                        
+         CVD   R0,DUB                                                           
+         L     R0,DUB+4                                                         
+         SRL   R0,4                                                             
+         STC   R0,EDFSNTIM+1       MILITARY MINUTES (PWOS)                      
+*                                                                               
+PSTE250  TM    EACTION,EACTDLVQ    MARK REPORT DELIVERED?                       
+         BZ    PSTE310                                                          
+*                      DARE DLNNOT MAY BE PROCESSED EARLIER THAN SENT           
+         CLI   EDFMETH,C'D'        DARE?                                        
+         BE    PSTE260             YES-OK                                       
+*                                                                               
+         TM    EDFSTAT,EDFSTSNT    YES -- WAS REPORT SENT ALREADY?              
+         BO    PSTE260                                                          
+         MVI   OKFLAG,C'N'         NO -- WHAT IS HAPPENING?                     
+         CLI   EDFMETH,C'T'        BDE-EMAIL?                                   
+         BE    *+12                                                             
+         CLI   EDFMETH,C'P'        BDE-FTP?                                     
+         BNE   *+8                                                              
+         MVI   ERRMSG,C'N'         SINCE BDE/F WILL RETRY, NO ERR MSG           
+         B     PSTE700                                                          
+PSTE260  DS    0H                                                               
+*                                                                               
+         OI    EDFSTAT,EDFSTRCV    REPORT HAS BEEN MARKED DELIVERED             
+*                                                                               
+         OC    AXMTNTRY,AXMTNTRY                                                
+         BZ    PSTE270                                                          
+         L     R5,AXMTNTRY         CHANGE STATUS BYTE IN XMTTABLE               
+         AHI   R5,XMTSTAT-XMTTABLD                                              
+         MVC31 0(L'EDFSTAT,R5),EDFSTAT                                          
+*                                                                               
+PSTE270  CLI   EDFMETH,C'I'        ECN?                                         
+         BNE   PSTE280                                                          
+         L     RF,EAEZDTA                                                       
+         MVC   EDFECNTN,0(RF)      A(ECN TRACKING NUMBER)                       
+         B     PSTE290                                                          
+*                                                                               
+PSTE280  CLI   EDFMETH,C'E'        EASYLINK?                                    
+         BNE   PSTE300                                                          
+         L     RF,EAEZDTA                                                       
+         MVC   EDFEZLED,0(RF)      A(EASYLINK LEDGER NUMBER)                    
+*                                                                               
+PSTE290  MVC   EDFEZRLN,L'EDFEZLED(RF)   SAVE RETURNED FAX#                     
+*                                                                               
+PSTE300  CLI   EDFMETH,C'X'        FAXGATE?                                     
+         BNE   *+20                                                             
+         L     RF,EAFXGDTA         A(FAXGATE DATA)                              
+         MVC   EDFFXGTJ,0(RF)      FAXGATE JOB-ID                               
+         MVC   EDFFXGTS,6(RF)      FAXGATE FINAL RETURNED STATUS                
+*                                                                               
+         TM    EACTION,EACTDSTQ    OVERRIDE CURRENT DESTINATION?                
+         BZ    *+14                NO                                           
+         L     RF,EADEST           A(NEW DESTINATION)                           
+         MVC   EDFDEST,0(RF)                                                    
+         B     PSTE400                                                          
+*                                                                               
+PSTE310  TM    EACTION,EACTCANQ    MARK REPORT CANCELLED?                       
+         BZ    PSTE350                                                          
+         TM    EDFSTAT,EDFSTSNT    YES -- WAS REPORT SENT ALREADY?              
+         BO    *+12                                                             
+         MVI   OKFLAG,C'N'         NO -- WHAT IS HAPPENING?                     
+         B     PSTE700                                                          
+*                                                                               
+         OI    EDFSTAT,EDFSTCAN    REPORT HAS BEEN MARKED CANCELLED             
+*                                                                               
+         OC    AXMTNTRY,AXMTNTRY                                                
+         BZ    PSTE330                                                          
+         L     R5,AXMTNTRY         CHANGE STATUS BYTE IN XMTTABLE               
+         AHI   R5,XMTSTAT-XMTTABLD                                              
+         MVC31 0(L'EDFSTAT,R5),EDFSTAT                                          
+*                                                                               
+PSTE330  CLI   EDFMETH,C'E'        EASYLINK?                                    
+         BNE   *+20                                                             
+         L     RF,EAEZDTA                                                       
+         MVC   EDFEZLED,0(RF)      A(EASYLINK LEDGER NUMBER)                    
+         MVC   EDFEZERR,EEZCANER   EAZYLINK CANCELLATION ERROR CODE             
+*                                                                               
+         CLI   EDFMETH,C'I'        ECN?                                         
+         BNE   *+20                                                             
+         L     RF,EAEZDTA                                                       
+         MVC   EDFECNTN,0(RF)      A(ECN TRACKING NUMBER)                       
+         MVC   EDFEZERR,EEZCANER   EAZYLINK CANCELLATION ERROR CODE             
+*                                                                               
+         CLI   EDFMETH,C'O'        PDF?                                         
+         BNE   *+10                                                             
+         MVC   EDFEZERR,EEZCANER   CANCEL, SEE ERROR                            
+*                                                                               
+         CLI   EDFMETH,C'X'        FAXGATE?                                     
+         BNE   *+20                                                             
+         L     RF,EAFXGDTA         A(FAXGATE DATA)                              
+         MVC   EDFFXGTJ,0(RF)      FAXGATE JOB-ID                               
+         MVC   EDFFXGTS,6(RF)      FAXGATE FINAL RETURNED STATUS                
+*                                                                               
+         CLI   EDFMETH,C'M'        MQ E-MAIL?                                   
+         BNE   *+14                                                             
+         L     RF,EAMQDTA          A(MQ E-MAIL DATA)                            
+         MVC   EDFMQERR,0(RF)      CANCELLATION ERROR CODE                      
+*                                                                               
+         TM    EACTION,EACTDSTQ    OVERRIDE CURRENT DESTINATION?                
+         BZ    *+14                NO                                           
+         L     RF,EADEST           A(NEW DESTINATION)                           
+         MVC   EDFDEST,0(RF)                                                    
+         B     PSTE400                                                          
+*                                                                               
+PSTE350  TM    EACTION,EACTJNKQ    MARK REPORT UNSENDABLE?                      
+         BZ    PSTE500                                                          
+         TM    EDFSTAT,EDFSTJNK    YES -- WAS REPORT MARKED UNSENDABLE?         
+         BO    PSTE500                                                          
+         TM    EDFSTAT,EDFSTWTG    NO  -- WAS REPORT WAITING?                   
+         BO    *+12                                                             
+         MVI   OKFLAG,C'N'         NO -- HOW DID WE GET HERE?                   
+         B     PSTE700                                                          
+*                                                                               
+         OI    EDFSTAT,EDFSTJNK    REPORT HAS BEEN MARKED UNSENDABLE            
+         NI    EDFSTAT,X'FF'-EDFSTWTG  NO LONGER WAITING                        
+*                                                                               
+         OC    AXMTNTRY,AXMTNTRY                                                
+         BZ    PSTE360                                                          
+         L     R5,AXMTNTRY         CHANGE STATUS BYTE IN XMTTABLE               
+         AHI   R5,XMTSTAT-XMTTABLD                                              
+         MVC31 0(L'EDFSTAT,R5),EDFSTAT                                          
+*                                                                               
+PSTE360  MVC   EDFERROR,EERRORCD   ERROR REASON CODE                            
+*                                                                               
+         CLI   EDFMETH,C'T'        BDE-EMAIL?                                   
+         BE    *+12                                                             
+         CLI   EDFMETH,C'P'        BDE-FTP?                                     
+         BNE   PSTE380                                                          
+         TM    EACTION,EACTDSTQ    OVERRIDE CURRENT DESTINATION?                
+         BZ    *+14                NO                                           
+         L     RF,EADEST           A(NEW DESTINATION)                           
+         MVC   EDFDEST,0(RF)                                                    
+*                                                                               
+PSTE380  CLI   EDFMETH,C'F'        FTP?                                         
+         BNE   *+14                                                             
+         L     RF,EAFTPDTA         A(FTP DATA)                                  
+         MVC   EDFFTPDT,0(RF)                                                   
+         CLI   EDFMETH,C'D'        DARE?                                        
+         BNE   *+14                                                             
+         L     RF,EADARDTA         A(DARE DATA)                                 
+         MVC   EDFDARDT,0(RF)                                                   
+         B     PSTE500                                                          
+*                                                                               
+PSTE400  MVC   EDFRCVDY,EDFSNTDY   ASSUME DELIVERY DAY IS SAME AS SENT          
+         CLI   EDAYNUM,0           ANY DELIVERY DAY GIVEN?                      
+         BE    *+10                                                             
+         MVC   EDFRCVDY,EDAYNUM    YES, USE IT                                  
+         MVC   EDFRCVTM,EDFSNTIM   ASSUME DELIVERY TIME IS SAME AS SENT         
+         OC    ETIME,ETIME         ANY DELIVERY TIME GIVEN?                     
+         BZ    *+10                                                             
+         MVC   EDFRCVTM,ETIME      YES, USE IT                                  
+         DROP  R3,R4                                                            
+*                                                                               
+PSTE500  GOTO1 EADTAMGR,DMCB,=C'DADDS',WTID,EDCTBLK,EDCTBKSZ,          +        
+               A(EDICTFL),FULL4,0                                               
+         OC    12(2,R1),12(R1)                                                  
+         BZ    *+6                                                              
+         DC    H'0'                DIE ON ANY ERROR                             
+*                                                                               
+PSTE700  MVC   P+30(8),0(R8)                                                    
+         MVC   P+40(8),0(R9)                                                    
+         PRNT  DEQUEUE,2                                                        
+         DEQ   ((8),(9),8)         DEQUEUE EDICT FILE BLOCK                     
+*                                                                               
+         TM    EACTION,EACTFILQ    DISK ADDRESS GIVEN, NOT A(TBLNTRY)?          
+         BO    PSTE900             YES -- WE NEVER ENQUEUED THE TABLE           
+*                                                                               
+         MVC   P+30(8),0(R8)                                                    
+         MVC   P+40(8),0(R7)                                                    
+         PRNT  DEQUEUE,2                                                        
+         DEQ   ((8),(7),8)         DEQUEUE TRANSMIT TABLE                       
+*                                                                               
+PSTE900  CLI   OKFLAG,C'Y'                                                      
+         BE    PSTEOK                                                           
+         LA    R1,1                SET CC NOT EQUAL                             
+         CLI   ERRMSG,C'N'                                                      
+         BE    PSTEX                                                            
+         PRNT  CANT_UPDATESTATUS,2,PRINT=ALWAYS                                 
+         L     RE,EMAJORNM         MAJOR RESOURCE NAME                          
+         MVC   PSTEMJOB,0(RE)                                                   
+         GOTO1 EADTAMGR,DMCB,=C'OPMSG',('PSTEMSGQ',PSTEMSG)                     
+         B     PSTEX                                                            
+*                                                                               
+PSTEOK   SR    R1,R1               SET CC EQUAL                                 
+*                                                                               
+PSTEX    LTR   R1,R1                                                            
+*                                                                               
+         XIT1                                                                   
+         DROP  R2,RA,RB,RC                                                      
+         EJECT                                                                  
+*********************************************************************           
+* CONSTANTS                                                                     
+*********************************************************************           
+EDCTBKSZ DC    A(0)                EDICT FILE PHYSICAL RECORD LENGTH            
+EDCTLRCL DS    H                   LOGICAL RECORD LENGTH                        
+EDICTFL  DMDA                                                                   
+PSTEMSG  DS    0C                                                               
+         DC    C'AUTONOTE*'                                                     
+PSTEMAIL DC    C'US-MF_FAC_NOTIFY:'                                             
+PSTEMJOB DC    CL8'????????'                                                    
+         DC    C' ERROR UPDATING EDICT FILE.'                                   
+PSTEMSGQ EQU   *-PSTEMSG                                                        
+         LTORG                                                                  
+                                                                                
+*********************************************************************           
+* DSECTS                                                                        
+*********************************************************************           
+POSTWRKD DSECT                                                                  
+DUB      DS    D                                                                
+DMCB     DS    10F                                                              
+AXMTNTRY DS    F                   A(XMIT TABLE ENTRY)                          
+JUNKNTRY DS    XL(XMTTBLQ)         BOGUS PLACE FOR FAKE TABLE ENTRY             
+BLKNAME  DS    CL8                 EDICT FILE DISK ADDRESS                      
+FULL3    DS    F                                                                
+FULL4    DS    F                                                                
+THREE    DS    XL3                                                              
+OKFLAG   DS    C                   'Y' OR 'N'                                   
+ERRMSG   DS    C                   'Y' OR 'N'                                   
+PRNTDUB2 DS    D                                                                
+PRNTIME2 DS    CL9                                                              
+         DS    0D                                                               
+EDCTBLK  DS    (18*K)X              EDICT FILE BLOCK                            
+POSTWRKX EQU   *                                                                
+         EJECT                                                                  
+**********************************************************************          
+* CONVERT TO DISK ADDRESS                                                       
+**********************************************************************          
+EDISUB   CSECT                                                                  
+         DS    XL((16*K)-(*-EDISUB))                                            
+                                                                                
+CONVDSKA NMOD1 CONVWRKX-CONVWRKD,**CONV**                                       
+         USING CONVWRKD,RC                                                      
+*                                                                               
+         LR    R2,R1                                                            
+         USING CONVDSKD,R2                                                      
+*                                                                               
+         L     RA,=V(CPRINT)                                                    
+         USING DPRINT,RA                                                        
+*                                                                               
+         BC    0,DONTOPEN          ONLY OPEN EDICT FILE ONCE                    
+         MVI   *-3,X'F0'           *** SELF-MODIFYING CODE ***                  
+         GOTO1 CONVDMGR,DMCB4,=C'DADDS',DAOPEN,EDICTBLK,0,             +        
+               A(EDICTFIL),0,0                                                  
+         GOTO1 CONVDMGR,DMCB4,=C'DADDS',RDID,EDICTBLK,0,               +        
+               A(EDICTFIL),=X'00010100',0                                       
+         OC    12(2,R1),12(R1)                                                  
+         BZ    *+6                                                              
+         DC    H'0'                DIE ON ANY ERROR                             
+         LA    RF,EDICTBLK                                                      
+         USING EDFILD,RF                                                        
+         CLI   EDFMON,EDFMONPQ                                                  
+         BE    *+6                                                              
+         DC    H'0'                WE'RE LOOKING AT THE WRONG RECORD            
+         MVC   EDICTRPT+1(1),EDFBKPTK PHYSICAL RECORDS PER TRACK                
+         MVC   EDICTTPD,EDFTKPDY   TRACKS PER DAY                               
+         MVC   EDICTRPB,EDFRCPBK   LOGICAL RECORDS PER BLOCK                    
+         DROP  RF                                                               
+*                                                                               
+DONTOPEN DS    0H                                                               
+         L     R3,CONVOFF          A(NEW-STYLE REFERENCE NUMBER)                
+         CLI   CONVACTN,CONVDSKO   CONVERT OFFSET TO DISK ADDRESS?              
+         BE    DSKADR              YES                                          
+         CLI   CONVACTN,CONVDSKF   CONVERT DISK ADDRESS TO OFFSET?              
+         BE    *+6                 YES                                          
+         DC    H'0'                INVALID ACTION                               
+*                                                                               
+         SR    R0,R0               PREPARE FOR DIVIDE                           
+         SR    R1,R1                                                            
+         ICM   R1,3,CONVDSK        TRACK NUMBER                                 
+         BCTR  R1,0                                                             
+         LH    RF,EDICTTPD         TRACKS PER DAY                               
+         DR    R0,RF               R1 = QUOTIENT                                
+         LA    R1,1(R1)            R1 = DAY NUMBER                              
+         CVD   R1,DUB4                                                          
+         UNPK  0(2,R3),DUB4        FIRST TWO DIGITS OF NUMBER ARE DAY           
+         OI    1(R3),X'F0'                                                      
+*                                                                               
+         MH    R0,EDICTRPT         R0 = BLOCKS UP TO THIS TRACK                 
+         ZIC   R1,CONVDSK+2        R1 = BLOCK NUMBER FROM DISK ADDRESS          
+         BCTR  R1,0                                                             
+         AR    R0,R1               R0 = TOTAL BLOCKS PRIOR TO THIS ONE          
+         XC    HALF,HALF                                                        
+         MVC   HALF+1(1),EDICTRPB                                               
+         MH    R0,HALF             R0 = TOTAL RECORDS PRIOR TO THIS ONE         
+         ZIC   R1,CONVDSK+3        R1 = LOGICAL RECORD NUM. FROM DSKADR         
+         AR    R0,R1               R0 = LOGICAL RECNUM FROM DAY START           
+         CVD   R0,DUB4                                                          
+         UNPK  2(6,R3),DUB4        LAST SIX DIGITS OF NUMBER IS OFFSET          
+         OI    7(R3),X'F0'                                                      
+*                                                                               
+         MVC   P+30(5),=C'DA = '                                                
+         GOTO1 =V(HEXOUT),DMCB4,CONVDSK,P+35,4,=C'TOG'                          
+         CLC   =F'8',DMCB4+16                                                   
+         BE    *+6                                                              
+         DC    H'0'                                                             
+         MVC   P+48(19),=C'REFERENCE NUMBER = '                                 
+         MVC   P+67(8),0(R3)                                                    
+         PRNT  CONVERT,4,PRINT=ALWAYS                                           
+         B     CONVX                                                            
+*                                                                               
+DSKADR   PACK  DUB4,0(2,R3)                                                     
+         CVB   RF,DUB4             RF = DAY NUMBER                              
+         BCTR  RF,0                                                             
+         MH    RF,EDICTTPD         RF = STARTING TRACK NUMBER THIS DAY          
+         PACK  DUB4,2(6,R3)                                                     
+         CVB   R1,DUB4             R1 = RECORD OFFSET INTO DAY                  
+         BCTR  R1,0                                                             
+*                                                                               
+         SR    R0,R0               PREPARE FOR DIVIDE                           
+         ZIC   RE,EDICTRPB         NUMBER OF LOGICAL RECORDS PER BLOCK          
+         DR    R0,RE                                                            
+         AHI   R0,1                                                             
+         STC   R0,CONVDSK+3        R0 = LOGICAL RECORD NUMBER                   
+         SR    R0,R0               PREPARE FOR DIVIDE                           
+         LH    RE,EDICTRPT         NUMBER OF BLOCKS PER TRACK                   
+         DR    R0,RE                                                            
+         LA    RF,1(R1,RF)         RF = TRACK NUMBER                            
+         STCM  RF,3,CONVDSK                                                     
+         AHI   R0,1                                                             
+         STC   R0,CONVDSK+2        R0 = BLOCK NUMBER                            
+*                                                                               
+         MVC   P+30(19),=C'REFERENCE NUMBER = '                                 
+         MVC   P+49(8),0(R3)                                                    
+         MVC   P+60(5),=C'DA = '                                                
+         GOTO1 =V(HEXOUT),DMCB4,CONVDSK,P+65,4,=C'TOG'                          
+         CLC   =F'8',DMCB4+16                                                   
+         BE    *+6                                                              
+         DC    H'0'                                                             
+         PRNT  CONVERT,4,PRINT=ALWAYS                                           
+*                                                                               
+CONVX    XIT1                                                                   
+         DROP  R2,RA,RB,RC                                                      
+         EJECT                                                                  
+**********************************************************************          
+* CONSTANTS                                                                     
+**********************************************************************          
+K        EQU   1024                                                             
+YES      EQU   C'Y'                                                             
+NO       EQU   C'N'                                                             
+*                                                                               
+EDICTTPD DS    H                   TRACKS PER DAY                               
+EDICTRPT DC    H'0'                PHYSICAL RECORDS PER TRACK                   
+EDICTRPB DS    X                   LOGICAL RECORDS PER BLOCK                    
+EDICTFIL DMDA  FILABL=EDICTFL                                                   
+         LTORG                                                                  
+         EJECT                                                                  
+**********************************************************************          
+* DSECTS                                                                        
+**********************************************************************          
+CONVWRKD DSECT                                                                  
+DUB4     DS    D                                                                
+DMCB4    DS    10F                                                              
+PRNTDUB4 DS    D                                                                
+PRNTIME4 DS    CL9                                                              
+HALF     DS    H                                                                
+         DS    0D                                                               
+EDICTBLK DS    (18*K)X              EDICT FILE BLOCK                            
+CONVWRKX EQU   *                                                                
+         EJECT                                                                  
+* DDEDICTWRK                                                                    
+       ++INCLUDE DDEDICTWRK                                                     
+         EJECT                                                                  
+* DDEDICTFIL                                                                    
+       ++INCLUDE DDEDICTFIL                                                     
+         EJECT                                                                  
+* DMGREQUS                                                                      
+         PRINT OFF                                                              
+       ++INCLUDE DMGREQUS                                                       
+         PRINT ON                                                               
+* DMPRTQL                                                                       
+         PRINT OFF                                                              
+       ++INCLUDE DMPRTQL                                                        
+         PRINT ON                                                               
+* DMPRTQK                                                                       
+         PRINT OFF                                                              
+       ++INCLUDE DMPRTQK                                                        
+         PRINT ON                                                               
+* DDDPRINT                                                                      
+         PRINT OFF                                                              
+       ++INCLUDE DDDPRINT                                                       
+         PRINT ON                                                               
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'058DDEDISUB  02/04/16'                                      
+         END                                                                    

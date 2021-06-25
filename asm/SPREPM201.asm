@@ -1,0 +1,106 @@
+*          DATA SET SPREPM201  AT LEVEL 016 AS OF 01/26/90                      
+*PHASE SPM201A,+0,NOAUTO                                                        
+         TITLE 'SPREPM201-BRAND PERFORMANCE SPECS'                              
+         PRINT NOGEN                                                            
+SPM201   CSECT                                                                  
+         FSPEC USE,SP0003                                                       
+         FSPEC READ,BUYS                                                        
+         FSPEC READ,GOALS                                                       
+         FSPEC GET,MARKET                                                       
+         FSPEC GET,STATION                                                      
+         FSPEC OPEN,DEMFILES                                                    
+         SPROG 0,THRU,8                                                         
+         SSPEC  H1,1,MEDIA                                                      
+         SSPEC  H1,50,SP#BRNPR,35,C                                             
+         SSPEC  H2,50,SP#BRNPR,35,CU                                            
+         SSPEC  H1,100,AGYNAME                                                  
+         SSPEC  H2,1,REQUESTOR                                                  
+         SSPEC  H2,100,AGYADD                                                   
+         SSPEC  H3,51,PERIOD                                                    
+         SSPEC  H4,1,CLIENT                                                     
+         SSPEC  H4,100,RATING                                                   
+         SSPEC  H4,51,MGROUP                                                    
+         SSPEC  H5,1,PRODUCT                                                    
+         SSPEC  H5,100,BOOK                                                     
+         SSPEC  H7,100,EQUIV                                                    
+         SSPEC  H6,1,ESTIMATE                                                   
+         SSPEC  H4,1,PGROUP                                                     
+         SSPEC  H9,51,DAYPART                                                   
+         SSPEC  H8,100,PAGE                                                     
+         SSPEC  H8,111,REPORT                                                   
+         SPROG 0,THRU,6                                                         
+         SSPEC  H10,1,11C'-'                                                    
+         SSPEC  H10,12,23C'-'                                                   
+         SSPEC  H10,39,35C'-'                                                   
+         SSPEC  H10,76,9C'-'                                                    
+         SSPEC  H11,71,SP#AVPCT,9,C                                             
+         SSPEC  H11,80,SP#ACHMT,5,R                                             
+         SSPEC  H12,1,SP#DAPLN,10,L                                             
+         SSPEC  H12,20,SP#DOLLA,7,C                                             
+         SSPEC  H12,45,SP#DOLLA,7,C                                             
+         SSPEC  H12,64,SP#SPOTS,5,C                                             
+         SSPEC  H12,81,SP#DOLLA,4,C                                             
+         SSPEC  H13,1,11C'-'                                                    
+         SSPEC  H13,12,23C'-'                                                   
+         SSPEC  H13,39,35C'-'                                                   
+         SSPEC  H13,76,9C'-'                                                    
+         SPROG 1,2                                                              
+         SSPEC  H11,1,SP#MRKT,6,L                                               
+         SPROG 3,4                                                              
+         SSPEC  H6,51,SP#PRSUM,33,C                                             
+         SPROG 5,6                                                              
+         SSPEC  H6,51,SP#PDSUM,32,C                                             
+         SPROG 7,8                                                              
+         SSPEC  H6,51,SP#CLSUM,32,C                                             
+         SPROG 5,THRU,6                                                         
+         SSPEC  H11,1,SP#PRDEM,13,L                                             
+         SSPEC  H11,17,SP#GOALD,12,C                                            
+         SSPEC  H11,42,SP#PRCHD,16,C                                            
+         SPROG 1,THRU,4                                                         
+         SSPEC  H10,87,44C'-'                                                   
+         SSPEC  H11,13,SP#GOALP,9,R                                             
+         SSPEC  H11,29,C')----'                                                 
+         SSPEC  H11,42,C'----'                                                  
+         SSPEC  H11,54,C'----'                                                  
+         SSPEC  H13,87,44C'-'                                                   
+         SPROG 1,3,5                                                            
+         SSPEC  H12,14,SP#PNTS,5,C                                              
+         SSPEC  H12,31,SP#CPP,3,C                                               
+         SSPEC  H12,39,SP#PNTS,5,C                                              
+         SSPEC  H12,56,SP#CPP,3,C                                               
+         SSPEC  H12,71,SP#PTSPN,9,C                                             
+         SPROG 2,4,6                                                            
+         SSPEC  H12,14,SP#IMPS,4,C                                              
+         SSPEC  H12,31,SP#CPM,3,C                                               
+         SSPEC  H12,39,SP#IMPS,4,C                                              
+         SSPEC  H12,56,SP#CPM,3,C                                               
+         SSPEC  H12,70,SP#IMPS2,10,C                                            
+         SPROG 7,THRU,8                                                         
+         SSPEC  H11,22,SP#GOAL,8,C                                              
+         SSPEC  H12,20,SP#DOLLA,7,C                                             
+         SSPEC  H13,20,SP#DOLLA,7,CU                                            
+         SSPEC  H11,44,SP#PURCH,9,C                                             
+         SSPEC  H12,45,SP#DOLLA,7,C                                             
+         SSPEC  H13,45,SP#DOLLA,7,CU                                            
+         SSPEC  H12,1,SP#DAPLN,10,L                                             
+         SSPEC  H13,1,SP#DAPLN,10,LU                                            
+         SSPEC  H12,64,SP#SPOTS,5,C                                             
+         SSPEC  H13,64,SP#SPOTS,5,CU                                            
+         SSPEC  H11,81,SP#PCNT,4,R                                              
+         SSPEC  H12,81,SP#DOLLA,4,R                                             
+         SSPEC  H13,81,SP#DOLLA,4,RU                                            
+         SPROG  0,THRU,6                                                        
+         SSPEC  LANG,4                                                          
+         SSPEC  H11,71,SP#PTSPN,9,C                                             
+         SPROG  1,3,5                                                           
+         SSPEC  LANG,4                                                          
+         SSPEC  H12,71,SP#AVPCT,9,C                                             
+         SPACE                                                                  
+* SPDDEQUS                                                                      
+         PRINT OFF                                                              
+       ++INCLUDE SPDDEQUS                                                       
+         PRINT ON                                                               
+         SPACE                                                                  
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'016SPREPM201 01/26/90'                                      
+         END                                                                    

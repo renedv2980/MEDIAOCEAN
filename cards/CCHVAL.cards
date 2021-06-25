@@ -1,0 +1,393 @@
+/*                                                                              
+*CATALP CCHVAL                                                                  
+*/                                                                              
+                                                                                
+#include <standard.h>                                                           
+#include <stdio.h>                                                              
+#include <ctype.h>                                                              
+#include <dds.h>                                                                
+#include <help.h>                                                               
+                                                                                
+extern struct vald *val;                                                        
+extern struct jcld *jcl;                                                        
+extern struct stringsd *strings;                                                
+extern struct helpkeyd *helpkey;                                                
+extern struct dmblock *bptr;                                                    
+                                                                                
+extern char heading(::);                                                        
+extern char fieldname(::);                                                      
+extern char dataline(::);                                                       
+                                                                                
+extern char ovspace(::);                                                        
+                                                                                
+char keydata(::);                                                               
+                                                                                
+#define badparse(cntstr,s) return(baderror(cntstr,s))                           
+#define movchr(src,des) memcpy(des,src,strlen(src))                             
+                                                                                
+badjcl()                                                                        
+/*                                                                              
+  This routine validates the processing options found in the jcl after          
+  the STDIN dd card. It puts its results in a DSECT called jcl which            
+  is later used in the key validation routines.                                 
+*/                                                                              
+{                                                                               
+    char jclcard(:100:),token1(:20:),token2(:20:),*s,*t;                        
+    char *strip(),*gets(),*scantoken();                                         
+    int i;                                                                      
+                                                                                
+    jcl->protect = 'Y';                                                         
+    jcl->write = 'Y';                                                           
+    jcl->restrict = 'Y';                                                        
+    jcl->file = 'L';                                                            
+    jcl->debug = 'N';                                                           
+                                                                                
+    while(strip(gets(jclcard)) != NULL){                                        
+        s = scantoken(jclcard,token1);                                          
+        t = scantoken(s+1,token2);                                              
+                                                                                
+        if(*s != '=')                                                           
+            badparse("EQUAL SIGN EXPECTED : %s",jclcard);                       
+        else if(*token2 == NULL)                                                
+            badparse("OPTION EXPECTED : %s",jclcard);                           
+        else if(*t != NULL)                                                     
+            badparse("END OF OPTION EXPECTED : %s",jclcard);                    
+        else if(strcmp(token1,"SYSTEM") == 0)                                   
+            strcpy(strings->system,token2);                                     
+        else if(strcmp(token1,"PROGRAM") == 0)                                  
+            strcpy(strings->program,token2);                                    
+        else if(strcmp(token1,"SCREEN") == 0)                                   
+            strcpy(strings->screen,token2);                                     
+        else if(strcmp(token1,"FIELD") == 0)                                    
+            strcpy(strings->field,token2);                                      
+        else if(strcmp(token1,"PROTECT") == 0){                                 
+            if(yesorno(token2,&jcl->protect,jclcard))                           
+                return(1);                                                      
+        }                                                                       
+        else if(strcmp(token1,"RESTRICT") == 0){                                
+            if(yesorno(token2,&jcl->restrict,jclcard))                          
+                return(1);                                                      
+        }                                                                       
+        else if(strcmp(token1,"WRITE") == 0){                                   
+            if(yesorno(token2,&jcl->write,jclcard))                             
+                return(1);                                                      
+        }                                                                       
+        else if(strcmp(token1,"FILE") == 0){                                    
+            if(strcmp(token2,"ADV") == 0)                                       
+                jcl->file = 'L';                                                
+            else if(strcmp(token2,"TST") == 0)                                  
+                jcl->file = 'T';                                                
+            else                                                                
+                badparse("INVALID FILE NAME : %s",jclcard);                     
+        }                                                                       
+        else if(strcmp(token1,"DEBUG") == 0){                                   
+            if(yesorno(token2,&jcl->debug,jclcard))                             
+                return(1);                                                      
+        }                                                                       
+        else                                                                    
+            badparse("INVALID OPTION : %s",jclcard);                            
+    }                                                                           
+                                                                                
+    /* validates the key oriented options, e.g. SYSTEM, PROGRAM, etc. */        
+    if(badstrings())                                                            
+        return(1);                                                              
+    jcl->system = helpkey->system;                                              
+    jcl->program = helpkey->program;                                            
+    jcl->screen = helpkey->screen;                                              
+    jcl->field = helpkey->field;                                                
+                                                                                
+    return(0);                                                                  
+}                                                                               
+                                                                                
+yesorno(token,jclval,parm)                                                      
+char *token,*jclval,*parm;                                                      
+/*                                                                              
+  This validates a token for yes or no and puts the corressponding              
+  character 'Y' or 'N' in the location pointed to by jclval.                    
+*/                                                                              
+{                                                                               
+    if(strcmp(token,"YES") == 0)                                                
+        *jclval = 'Y';                                                          
+    else if(strcmp(token,"NO") == 0)                                            
+        *jclval = 'N';                                                          
+    else                                                                        
+        badparse("YES OR NO EXPECTED : %s",parm);                               
+    return(0);                                                                  
+}                                                                               
+                                                                                
+valkey()                                                                        
+/*                                                                              
+  processfile() calls this routine to validate the key definition               
+  found in dataline. The routine traces a heirarchy of rules in the             
+  routines that follow in an attempt to find the key to be invalid.             
+  In the process, the DSECT, val, is filled with the results of the             
+  validation. If val->badkey becomes false, processfile() will then             
+  go ahead with the processing of the text. Otherwise, it will skip             
+  the text to the next key definition.                                          
+*/                                                                              
+{                                                                               
+    val->badkey = parseisbad()     ºº                                           
+                  jclnotmatching() ºº                                           
+                  isrestricted()   ºº                                           
+                  isprotected();                                                
+    return(!val->badkey);                                                       
+}                                                                               
+                                                                                
+parseisbad()                                                                    
+{                                                                               
+    sepkeyhead();                                                               
+    val->parsebad = badkeydata()   ºº                                           
+                    badstrings();                                               
+    return(val->parsebad);                                                      
+}                                                                               
+                                                                                
+sepkeyhead()                                                                    
+/*                                                                              
+  This routine seperates the key definition from the heading definition         
+  that follows on the dataline. The heading starts after the                    
+  occurance of a '/' and is put into the variable heading. The rest             
+  is put into keydata for parsing.                                              
+*/                                                                              
+{                                                                               
+    char *raise();                                                              
+    int pos;                                                                    
+                                                                                
+    *heading = '/';                                                             
+    strcpy(keydata,dataline+5);                                                 
+    raise(keydata);                                                             
+    pos = strpos(keydata,'/');                                                  
+    if(pos>0){                                                                  
+        strcpy(heading,keydata+pos+1);                                          
+        heading(:26:) = NULL;                                                   
+        keydata(:pos:) = NULL;                                                  
+    }                                                                           
+}                                                                               
+                                                                                
+badkeydata()                                                                    
+/*                                                                              
+  This routine parses keydata into the DSECT, strings, for further              
+  validation by badstrings()                                                    
+*/                                                                              
+{                                                                               
+    char *s,*scantoken();                                                       
+                                                                                
+    s = scantoken(keydata,strings->system);                                     
+    if(*s != ',')                                                               
+        badparse("COMMA EXPECTED  : %s",s);                                     
+    s = scantoken(s+1,strings->program);                                        
+    if(*s != ',')                                                               
+        badparse("COMMA EXPECTED  : %s",s);                                     
+    s = scantoken(s+1,strings->screen);                                         
+    if(*s != ',')                                                               
+        badparse("COMMA EXPECTED  : %s",s);                                     
+    s = scantoken(s+1,strings->field);                                          
+    if(*s != NULL)                                                              
+        badparse("END OF KEYDEF EXPECTED  : %s",s);                             
+    return(badstrings());                                                       
+}                                                                               
+                                                                                
+badstrings()                                                                    
+/*                                                                              
+  This routine validates the fields of the DSECT, strings, for validity         
+  of system name, program name, screen name, and field name. It                 
+  places the corresponding values for the given names in the DSECT,             
+  helpkey. If all goes well, helpkey will now contain a legal key               
+  for help records. The validation will then proceed with checking              
+  this key against the jcl options in the routines to follow.                   
+*/                                                                              
+{                                                                               
+    char getsysovnum(),getprognum();                                            
+    int field;                                                                  
+                                                                                
+    helpkey->system = getsysovnum(strings->system);                             
+    if(helpkey->system == 0)                                                    
+        badparse("INVALID SYSTEM NAME : %s",strings->system);                   
+                                                                                
+    if(strcmp(strings->program,"ALL") == 0)                                     
+        helpkey->program = 0;                                                   
+    else{                                                                       
+        helpkey->program = getprognum(helpkey->system,strings->program);        
+        if(helpkey->program == 0)                                               
+            badparse("INVALID PROGRAM NAME : %s",strings->program);             
+    }                                                                           
+                                                                                
+    if(strcmp(strings->screen,"ALL") == 0)                                      
+        helpkey->screen = 0;                                                    
+    else if(strlen(strings->screen) != 2 ºº !hexstr(strings->screen))           
+        badparse("SYNTAX ERROR ON SCREEN : %s",strings->screen);                
+    else{                                                                       
+        chexin(strings->screen,&helpkey->screen,2);                             
+        if(helpkey->screen < 0x80)                                              
+            badparse("INVALID SCREEN NUMBER : %s",strings->screen);             
+    }                                                                           
+                                                                                
+    if(strcmp(strings->field,"ALL") == 0)                                       
+        helpkey->field = 0;                                                     
+    else if(!decimalstr(strings->field))                                        
+        badparse("SYNTAX ERROR ON FIELD : %s",strings->field);                  
+    else{                                                                       
+        field = atoi(strings->field);                                           
+        if(field == 0 ºº field > 256)                                           
+            badparse("INVALID FIELD NUMBER : %s",strings->field);               
+        helpkey->field = field;                                                 
+    }                                                                           
+                                                                                
+    helpkey->page = 1;                                                          
+    return(0);                                                                  
+}                                                                               
+                                                                                
+jclnotmatching()                                                                
+/*                                                                              
+  A valid key must be one that matches the options in the jcl.                  
+  This routine checks to see if that is true.                                   
+*/                                                                              
+{                                                                               
+    val->jclmatching = (helpkey->system  == jcl->system)         &&             
+       (jcl->program == 0 ºº helpkey->program == jcl->program)   &&             
+       (jcl->screen == 0  ºº helpkey->screen  == jcl->screen)    &&             
+       (jcl->field == 0   ºº helpkey->field   == jcl->field);                   
+    return(!val->jclmatching);                                                  
+}                                                                               
+                                                                                
+isrestricted()                                                                  
+/*                                                                              
+  If a screen or field is not found and the jcl option restrict is              
+  yes, then the key will be rejected.                                           
+*/                                                                              
+{                                                                               
+    *fieldname = NULL;                                                          
+    val->restricted = isspecificfield()                     &&                  
+                      (screennotfound() ºº fieldnotfound()) &&                  
+                      jcl->restrict == 'Y';                                     
+    if(*heading == '/')                                                         
+        strcpy(heading,fieldname);                                              
+    return(val->restricted);                                                    
+}                                                                               
+                                                                                
+isspecificfield()                                                               
+/*                                                                              
+  Either the program, screen, or field could be labled 'ALL,' in                
+  which case the key would not refer to a specific field.                       
+*/                                                                              
+{                                                                               
+    val->specificfield = helpkey->program != 0  &&                              
+                         helpkey->screen  != 0  &&                              
+                         helpkey->field   != 0;                                 
+    return(val->specificfield);                                                 
+}                                                                               
+                                                                                
+screennotfound()                                                                
+/*                                                                              
+  This tries to load the screen into the data area, ovspace.                    
+*/                                                                              
+{                                                                               
+    val->screenfound = cloader(helpkey->system,helpkey->program,                
+                               helpkey->screen,ovspace);                        
+    return(!val->screenfound);                                                  
+}                                                                               
+                                                                                
+fieldnotfound()                                                                 
+/*                                                                              
+  This routine searches the screen in ovspace for the extended field            
+  id that matches helpkey->field. If it finds it, it copies the field           
+  right before it into fieldname assuming that the field contains a             
+  lable for the extended field. For example:                                    
+         CLIENT (.......)                                                       
+  fieldname will hold CLIENT in it. This could be used as a heading             
+  for the help record if no heading is included in the key                      
+  definition.                                                                   
+*/                                                                              
+{                                                                               
+    char *lastfield,*thisfield,*nextfield;                                      
+    int fieldlen;                                                               
+                                                                                
+    lastfield = ovspace; /* backward pointer */                                 
+    thisfield = lastfield + lastfield(:0:); /* field header pointer */          
+    nextfield = thisfield + thisfield(:0:); /* forward pointer */               
+    for(val->fieldfound = FALSE ; !val->fieldfound ;){                          
+        if(thisfield(:0:) == 0) /* end of screen */                             
+            break;                                                              
+        if((thisfield(:1:) & 0x02)           && /* extended field */            
+           (*(nextfield-8) == helpkey->field)){ /* field id matches */          
+            if(lastfield(:1:) & 0x20){/* previous field is protected */         
+                fieldlen = lastfield(:0:) - 8;                                  
+                memcpy(fieldname,lastfield+8,fieldlen);                         
+                fieldname(:fieldlen:) = NULL;                                   
+                fieldname(:26:) = NULL;                                         
+            }                                                                   
+            val->fieldfound = TRUE;                                             
+        }                                                                       
+        /* bump field header pointers */                                        
+        lastfield = thisfield;                                                  
+        thisfield = nextfield;                                                  
+        nextfield += nextfield(:0:);                                            
+    }                                                                           
+    return(!val->fieldfound);                                                   
+}                                                                               
+                                                                                
+isprotected()                                                                   
+/*                                                                              
+  If this key definition was added on-line and the jcl option, protect,         
+  is yes, then the key will be rejected.                                        
+*/                                                                              
+{                                                                               
+    val->protected = recordisfound()    &&                                      
+                     wasaddedonline()   &&                                      
+                     jcl->protect == 'Y';                                       
+    return(val->protected);                                                     
+}                                                                               
+                                                                                
+recordisfound()                                                                 
+/*                                                                              
+  This sees if the record for this key already exists.                          
+*/                                                                              
+{                                                                               
+    helpkey->page = 1;                                                          
+    memset(bptr->key,0,bptr->keylen);                                           
+    memcpy(bptr->key,helpkey,helpkeyl);                                         
+    dmread(bptr);                                                               
+    val->recordfound = (bptr->retflag & 0x10 == 0);                             
+    return(val->recordfound);                                                   
+}                                                                               
+                                                                                
+wasaddedonline()                                                                
+/*                                                                              
+  This routine determines if any of the pages for this key have been            
+  added on-line. If so, it records which ones in val->onlinepages(::).          
+  val->onlinepages(:0:) will hold the total number of pages.                    
+*/                                                                              
+{                                                                               
+    struct stateld *statel;                                                     
+    char *firstel();                                                            
+    int i;                                                                      
+                                                                                
+    memset(val->onlinepages,0,256);                                             
+    val->addedonline = FALSE;                                                   
+    for(i = 1 ; ; ){                                                            
+        getrec(bptr);                                                           
+        statel = (struct stateld *)firstel(bptr,statelq);                       
+        if((statel->flags & 0x80) && jcl->protect == 'Y')                       
+            val->addedonline = val->onlinepages(:i:) = TRUE;                    
+        helpkey->page = ++i;                                                    
+        memset(bptr->key,0,bptr->keylen);                                       
+        memcpy(bptr->key,helpkey,helpkeyl);                                     
+        dmread(bptr);                                                           
+        if(bptr->retflag & 0x10 == 0)                                           
+            break;                                                              
+    }                                                                           
+    val->onlinepages(:0:) = i-1;                                                
+    return(val->addedonline);                                                   
+}                                                                               
+                                                                                
+baderror(cntstr,s)                                                              
+char *cntstr,*s;                                                                
+/*                                                                              
+  This routine is called from the macro, badparse(). It puts an error           
+  message in val->message and returns a 1 which is passed back to               
+  the calling routine.                                                          
+*/                                                                              
+{                                                                               
+    sprintf(val->message,cntstr,s);                                             
+    val->parsebad = TRUE;                                                       
+    return(1);                                                                  
+}                                                                               

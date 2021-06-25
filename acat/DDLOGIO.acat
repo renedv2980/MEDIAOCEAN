@@ -1,0 +1,185 @@
+*          DATA SET DDLOGIO    AT LEVEL 003 AS OF 02/26/20                      
+*CATALP LOGIO                                                                   
+*********************************************************************           
+* NOTE: WTO/R MACRO MAY USE ACCESS REGISTERS(0,1,E,F)               *           
+*                                                                   *           
+* MVS VERSION OF LOGIO  ----- NON-RE-ENTRANT -----                  *           
+*                                                                   *           
+* BECAUSE OF SPEED OF CONSOLE SCROLLING, WRITES TO CONSOLE THAT     *           
+* DO NOT REQUIRE OPERATOR RESPONSE NOW REQUIRE SPECIAL PARAMETER.   *           
+*                                                                   *           
+* NORMAL WRITE TO CONSOLE COMMANDS ARE BUFFERED ON THE ASSUMPTION   *           
+* THAT THEY WILL BE FOLLOWED IMMEDIATELY BY A READ RESPONSE FROM    *           
+* THE OPERATOR. WRITES THAT ARE NOT FOLLOWED IMMEDIATELY BY A READ  *           
+* COMMAND ARE ---LOST---.                                           *           
+*                                                                   *           
+* PARAMETER LISTS ARE AS FOLLOWS                                    *           
+*                                                                   *           
+*                ----BYTE 0 ----    ------ BYTES 1-3 ------         *           
+*                                                                   *           
+* WRITE IMMED   +0    X'FF'               NON-ZERO                  *           
+* HRDCPY ONLY                              BYTE 1 = X'80'           *           
+* OVERRIDE JOBNAME                         BYTE 1 = X'40'           *           
+*               +4   LENGTH               DATA ADDRESS              *           
+*               +8   LENGTH              A(MAX 26C JOBNAME OVERRIDE)*           
+*                                                                   *           
+* WRITE (BFFRD) +0   NOT X'FF'            NON-ZERO                  *           
+* HRDCPY ONLY                              BYTE 1 = X'80'           *           
+* OVERRIDE JOBNAME                         BYTE 1 = X'40'           *           
+*               +4   LENGTH               DATA ADDRESS              *           
+*               +8   LENGTH              A(MAX 26C JOBNAME OVERRIDE)*           
+*                                                                   *           
+* READ          +0     0                      0                     *           
+*               +4   LENGTH               DATA ADDRESS              *           
+*                                                                   *           
+*********************************************************************           
+         TITLE '** LOGIO **  READ AND WRITE OPERATOR CONSOLE '                  
+LOGIO    CSECT                                                                  
+         PRINT NOGEN                                                            
+         NMOD1 WORKX-WORKD,**LOGIO*                                             
+         USING WORKD,RC                                                         
+*                                                                               
+         LR    RA,R1               SAVE PARAM POINTER                           
+         CLI   4(RA),0                                                          
+         JE    *+2                 DIE IF ZERO LENGTH                           
+*                                                                               
+         OC    0(4,RA),0(RA)                                                    
+         BZ    READ                                                             
+         EJECT                                                                  
+         EXTRACT ASIDFLD,'S',FIELDS=(ASID)                                      
+         UNPK  ASIDHEX(L'ASIDHEX+1),ASIDFLD+2(2+1) 12AB?? > F1F2FAFB??          
+         TR    ASIDHEX,=C'0123456789ABCDEF'-X'F0'  F1F2FAFB > C'12AB'           
+*                                                                               
+         LA    R4,ATIOT            GET JOB NAME VIA EXTRACT                     
+         EXTRACT (R4),FIELDS=TIOT                                               
+         L     R4,ATIOT                                                         
+*                                                                               
+         XC    WORK,WORK                                                        
+         TM    1(RA),X'80'                                                      
+         BNO   *+8                                                              
+         OI    WORK+2,X'02'        QUEUE THE MESSAGE FOR HARD COPY ONLY         
+*                                                                               
+         CLI   0(RA),X'FF'         TEST WRITE IMMEDIATE                         
+         BNE   BUFFWT              NO - GO BUFFER MESSAGE                       
+*                                                                               
+* WRITE IMMEDIATE                                                               
+*                                                                               
+         TM    1(RA),X'40'         OVERRIDE JOBNAME                             
+         BZ    WRITE10             NO                                           
+         MVI   WORK+4,C' '         PADD THE FIELD W/ BLANKS                     
+         MVC   WORK+5(35),WORK+4                                                
+         ZICM  RE,8(RA),1          LEN                                          
+         BZ    WRITE10             CAN'T BE ZERO, IGNORE OVERRIDE               
+         CHI   RE,26                                                            
+         BH    WRITE10             CAN'T BE > 26, IGNORE OVERRIDE               
+*                                                                               
+         L     RF,8(RA)            A(JOBNAME OVERRIDE)                          
+         BCTR  RE,0                                                             
+         EX    RE,*+8                                                           
+         B     *+10                                                             
+         MVC   WORK+14(0),0(RF)    OVERRIDE JOBNAME                             
+         B     WRITE20                                                          
+*                                                                               
+WRITE10  MVC   WORK+04(8),0(R4)    MOVE JOB NAME TO MESSAGE                     
+         MVI   WORK+12,C'.'                                                     
+         MVC   WORK+13(8),8(R4)                                                 
+         MVI   WORK+21,C'.'                                                     
+         MVC   WORK+22(8),16(R4)                                                
+WRITE20  MVI   WORK+30,C'-'                                                     
+         LLC   RE,4(RA)            RE=DATA LEN                                  
+         CLI   4(RA),MAXLEN        MAX MESSAGE LEN                              
+         BNH   *+8                                                              
+         LA    RE,MAXLEN           FORCE TO MAX                                 
+         L     RF,4(RA)            DATA ADDR                                    
+         BCTR  RE,0                                                             
+         EX    RE,*+8                                                           
+         B     *+10                                                             
+         MVC   WORK+HDRLEN(0),0(RF)                                             
+*                                                                               
+         LA    RE,HDRLEN+1(RE)     RE=MSG LEN + 4                               
+         STH   RE,WORK             AND SET IN PARAM LIST                        
+         SR    R0,R0               R0 MUST BE CLEARED BEFORE WTO/R CALL         
+         WTO   MF=(E,WORK)                                                      
+         B     EXIT                                                             
+         EJECT                                                                  
+* BUFFERED WRITE - SAVE MESSAGE IN WORK AREA                                    
+*                                                                               
+BUFFWT   DS    0H                                                               
+         TM    1(RA),X'40'         OVERRIDE JOBNAME?                            
+         BZ    BUFFWT10            NO                                           
+         MVI   WORK+12,C' '        PADD THE FIELD W/ BLANKS                     
+         MVC   WORK+13(25),WORK+12                                              
+         ZICM  RE,8(RA),1          LEN                                          
+         BZ    BUFFWT10            CAN'T BE ZERO, IGNORE OVERRIDE               
+         CHI   RE,26                                                            
+         BH    BUFFWT10            CAN'T BE > 26, IGNORE OVERRIDE               
+*                                                                               
+         L     RF,8(RA)            A(JOBNAME OVERRIDE)                          
+         BCTR  RE,0                                                             
+         EX    RE,*+8                                                           
+         B     *+10                                                             
+         MVC   WORK+22(0),0(RF)    OVERRIDE JOBNAME                             
+         B     BUFFWT20                                                         
+*                                                                               
+BUFFWT10 MVC   WORK+22(8),0(R4)    MOVE JOB NAME TO MESSAGE                     
+         MVI   WORK+30,C'.'                                                     
+         MVC   WORK+31(8),8(R4)                                                 
+         MVI   WORK+39,C'.'                                                     
+         MVC   WORK+40(4),=C'ASID'                                              
+         MVC   WORK+44(4),ASIDHEX                                               
+BUFFWT20 MVI   WORK+48,C'-'                                                     
+         MVC   WORK+12(10),=C'+DDSBATCH '                                       
+         ZIC   RE,4(RA)            DATA LEN                                     
+         CLI   4(RA),MAXLEN        MAX MESSAGE LEN                              
+         BNH   *+8                                                              
+         LA    RE,MAXLEN           FORCE TO MAX                                 
+         L     RF,4(RA)            DATA ADDR                                    
+         BCTR  RE,0                                                             
+         EX    RE,*+8                                                           
+         B     *+10                                                             
+         MVC   WORK+49(0),0(RF)    **EXECUTED**                                 
+*                                                                               
+* A(REPLY) 27(JOB PROC STEP)                                                    
+*                                                                               
+         LA    RE,42(RE)           CALC MSG LEN + 4                             
+         STH   RE,WORK+8           AND SET IN PARAM LIST                        
+         B     EXIT                                                             
+         EJECT                                                                  
+* BUILD PARAM LIST FOR WTOR                                                     
+*                                                                               
+READ     DS    0H                                                               
+         LA    R1,WORK             POINT TO PARAM LIST                          
+         L     RF,4(RA)            PICK UP REPLY LEN/ADDR                       
+         ST    RF,0(R1)            AND SET IN PARAM LIST                        
+*                                                                               
+         LA    RF,0(RF)            THEN CLEAR HOB OF RF                         
+         LA    RE,CONSECB          POINT TO ECB                                 
+         ST    RE,4(R1)            AND SET IN PARAM LIST                        
+*                                                                               
+         SR    R0,R0               R0 MUST BE CLEARED BEFORE WTO/R CALL         
+         XC    CONSECB,CONSECB     CLEAR ECB                                    
+         SVC   35                  ISSUE WTOR                                   
+         LA    R1,CONSECB                                                       
+         WAIT  ECB=(1)                                                          
+         B     EXIT                                                             
+*                                                                               
+EXIT     XMOD1 1                                                                
+         EJECT                                                                  
+MAXWTO   EQU   125                 MAX LEN OF A WTO                             
+HDRLEN   EQU   31                  LEN OF JOB DETAILS HEADER                    
+MAXLEN   EQU   94                  MAX LEN OF MSG TEXT                          
+*                                                                               
+         DS    0D                                                               
+WORK     DS    CL256                                                            
+ASIDFLD  DC    F'0'                                                             
+ASIDHEX  DC    CL4'....',C' '      XTRA BYTE FOR UNPK (PART OF HEX OUT)         
+         LTORG                                                                  
+*                                                                               
+WORKD    DSECT                                                                  
+PARMS    DC    6F'0'                                                            
+CONSECB  DC    F'0'                                                             
+ATIOT    DC    F'0'                                                             
+WORKX    EQU   *                                                                
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'003DDLOGIO   02/26/20'                                      
+         END                                                                    

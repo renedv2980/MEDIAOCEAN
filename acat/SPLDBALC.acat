@@ -1,0 +1,982 @@
+*          DATA SET SPLDBALC   AT LEVEL 084 AS OF 07/07/14                      
+*CATALP SPLDBALC                                                                
+                                                                                
+*=============================================================*                 
+* 25AUG10  AHYD  ADD NETR TO IGNORE BALANCE LIST              *                 
+* 03AUG09  AKAT  NEW TOTALS=MEDIA CARD FOR AUTO 134 REQUEST   *                 
+* 23JUL09  AKAT  PROTECT AGAINST FILES WITH >16 AGENCIES!     *                 
+* 07MAY09  AKAT  ADD ESTIMATE BUCKETS TO A/M CLIENT TOTALS    *                 
+*                GENERATE AUTO 134 REQUESTS IF DCB IS PASSED  *                 
+* 20MAY04  MHER  CALL SPBVAL TO GET GROSS BILLED DOLLARS      *                 
+* 28APR96  MHER  CHANGE TO LOAD AND USE GETRATE/CLUNPK        *                 
+*=============================================================*                 
+                                                                                
+         TITLE 'LDBALCK - SPOT - FILE BALANCE CHECK/PRINT'                      
+*        PARAMS VIA R1                                                          
+*  +0    XL1   X'01'=CALCULATE , X'FF'=EOF/PRINT                                
+*        AL3   A(RECORD)                                                        
+*  +4    AL1   C'R'=CALLED BY RECONSTRUCT                                       
+*        AL4   A(FILE NAME)                                                     
+*  +8    AL4   A(0)                                                             
+*  +12   AL4   A(DMLDDEFN)                                                      
+*                                                                               
+         PRINT NOGEN                                                            
+LDBALCK  CSECT                                                                  
+         NMOD1 0,SPLDBALC                                                       
+         USING CTOTD,CTREC                                                      
+         ST    R1,SAVER1                                                        
+*                                                                               
+         BC    0,MAIN02                                                         
+         OI    *-3,X'F0'                                                        
+         L     R4,12(R1)           GET LOAD DEF ADDRESS                         
+         USING LDDEFND,R4                                                       
+         MVC   VPRINTER,LPRINTER                                                
+*                                                                               
+         L     RF,LLOADER                                                       
+         GOTO1 (RF),P1,=CL8'T00A5F',0                                           
+         ICM   R0,15,4(R1)                                                      
+         BNZ   *+6                                                              
+         DC    H'0'                                                             
+         ST    R0,VGETRATE                                                      
+*                                                                               
+         GOTO1 (RF),(R1),=CL8'T00A15',0                                         
+         ICM   R0,15,4(R1)                                                      
+         BNZ   *+6                                                              
+         DC    H'0'                                                             
+         ST    R0,VCLUNPK                                                       
+         DROP  R4                                                               
+*                                                                               
+         L     R0,=A((MAXNTRY*CTOTRL)+4095)                                     
+         SRL   R0,12                                                            
+         SLL   R0,12                                                            
+         GETMAIN RU,LV=(0),LOC=(ANY,ANY),BNDRY=PAGE                             
+         LTR   RF,RF                                                            
+         BZ    *+6                                                              
+         DC    H'0'                                                             
+                                                                                
+         ST    R1,BINPAR2                                                       
+*                                                                               
+MAIN02   L     R1,SAVER1                                                        
+*                                                                               
+         MVI   RECFLAG,X'00'                                                    
+         XC    RECDEF,RECDEF                                                    
+*                                                                               
+         CLI   0(R1),X'FF'         TEST EOF                                     
+         BNE   *+12                                                             
+         BRAS  RE,BSPUT            PUT RECORD TO BINSRCH                        
+         B     ENDF                                                             
+*                                                                               
+         L     R2,0(R1)            GET REC ADDRESS                              
+*                                                                               
+         CLC   =X'0000',0(R2)      VERY FIRST RECORD?                           
+         BE    EXIT                                                             
+*                                                                               
+         USING BUYRECD,R2                                                       
+         TM    BUYRCNTL,BUYRDEL    TEST DELETED                                 
+         BO    EXIT                                                             
+*                                                                               
+         CLI   0(R2),X'06'         AGENCY RECORD?                               
+         BNE   MAIN02A             NO                                           
+*                                                                               
+         LA    R1,AGYTAB           AGENCY TABLE                                 
+*                                                                               
+         MVC   DUB(2),1(R2)        2 CHAR AGENCY                                
+         LR    R6,R2                                                            
+         MVC   DATADISP,=H'24'                                                  
+         MVI   ELCODE,X'02'        GET THE FIRST X'02' ELEM                     
+         BAS   RE,GETEL            HAVE ONE?                                    
+         BNE   EXIT                NO - JUST EXIT!                              
+         LLC   RF,3(R6)            AGENCY BINARY                                
+         SRL   RF,4                STRIP MEDIA BITS                             
+         STC   RF,DUB+2            STORE AFTER AGENCY CODE                      
+*                                                                               
+MAIN02AA CLI   0(R1),X'FF'         END OF TABLE?                                
+         BE    EXIT                YES                                          
+         CLC   2(1,R1),DUB+2       AGENCY HEX ALREADY USED?                     
+         BE    EXIT                YES - BOGUS FILE!                            
+         OC    0(3,R1),0(R1)       EMPTY SLOT?                                  
+         BZ    MAIN02AB            YES                                          
+         LA    R1,3(R1)            NO - BUMP TO NEXT ENTRY                      
+         B     MAIN02AA                                                         
+*                                                                               
+MAIN02AB MVC   0(3,R1),DUB         MOVE AGENCY/HEX TO THE TABLE                 
+         B     EXIT                AND EXIT                                     
+*                                                                               
+MAIN02A  CLC   =X'0E01',0(R2)      STATION BILL BUCKET RECORD                   
+         BNE   MAIN02B             IF NOT - CHECK NEXT TYPE                     
+         OI    RECFLAG,RECSTABQ                                                 
+         MVC   RECDAM,STABKAM-STABUCKD(R2)                                      
+         MVC   RECDCLT,STABKCLT-STABUCKD(R2)                                    
+         MVC   RECDAAGY,STABAGYA-STABUCKD(R2)                                   
+         B     MAIN03                                                           
+*                                                                               
+MAIN02B  CLI   0(R2),X'10'         TEST BUYREC                                  
+         BNH   MAIN02C             NO - CHECK NEXT TYPE                         
+         TM    0(R2),X'08'         TEST 'ORIGINAL' BUY                          
+         BO    EXIT                YES - EXIT                                   
+         OI    RECFLAG,RECBUYQ                                                  
+         MVC   RECDEF,0(R2)                                                     
+         MVC   RECDAAGY,BUYALPHA-BUYREC(R2)                                     
+         B     MAIN03                                                           
+*                                                                               
+MAIN02C  CLI   0(R2),X'00'         X'00'-TYPE RECORD?                           
+         BNE   EXIT                IF NOT - EXIT                                
+         CLC   8(5,R2),=XL5'00'    BILL RECORD?                                 
+         BE    MAIN02D                                                          
+         OI    RECFLAG,RECBILLQ                                                 
+*                                                                               
+         CLI   BRETAIL-BILLREC(R2),X'41'       SUMMARY?                         
+         BE    EXIT                IF YES - DON'T ADD TO TOTALS                 
+         CLI   BTYPE+1-BILLREC(R2),4                                            
+         BNH   EXIT                                                             
+*                                                                               
+         MVC   RECDAM,BKEYAM-BILLREC(R2)                                        
+         MVC   RECDCLT,BKEYCLT-BILLREC(R2)                                      
+         MVC   RECDAAGY,BLINKS+4-BILLREC(R2)                                    
+         B     MAIN03                                                           
+*                                                                               
+MAIN02D  CLI   7(R2),0              ESTIMATE RECORD?                            
+         BNE   MAIN02H              YES                                         
+         OC    4(3,R2),4(R2)        PRODUCT RECORD?                             
+         BNZ   EXIT                 YES - EXIT                                  
+*                                                                               
+         CLI   CPROF+6-CLTHDRD(R2),C'Y'                                         
+         BNE   EXIT                                                             
+*                                                                               
+         GOTO1 VCLUNPK,DUB,(C'N',CKEYCLT-CLTHDRD(R2)),CLIENT1                   
+         GOTO1 VCLUNPK,DUB,(C'Y',CKEYCLT-CLTHDRD(R2)),CLIENT2                   
+         CLC   CLIENT1,CLIENT2                                                  
+         BE    EXIT                                                             
+*                                                                               
+         LA    RE,CLTAAN            CLTAAN TABLE                                
+*                                                                               
+MAIN02E  CLI   0(RE),X'FF'          END OF TABLE?                               
+         BE    MAIN02G              YES - JUST EXIT                             
+         OC    0(3,RE),0(RE)        EMPTY SLOT?                                 
+         BZ    MAIN02F              YES                                         
+         LA    RE,3(RE)             NO - BUMP TO NEXT SLOT                      
+         B     MAIN02E                                                          
+*                                                                               
+MAIN02F  MVC   0(3,RE),CKEYAM-CLTHDRD(R2)                                       
+         B     EXIT                                                             
+*                                                                               
+MAIN02G  CLI   1(RE),X'FE'          DID I SEND A NOTE OUT ALREADY?              
+         BE    EXIT                 YES - DON'T SPAM MY INBOX!                  
+         MVI   1(RE),X'FE'          ONE NOTE SENT OUT FLAG!                     
+         L     R1,SAVER1                                                        
+         L     R4,12(R1)            GET LOAD DEF ADDRESS                        
+         USING LDDEFND,R4                                                       
+         MVC   VDMGR,LDATAMGR                                                   
+         GOTO1 LDATAMGR,DMCB,=C'OPMSG',('CLTMSGQ',CLTMSG)                       
+         B     EXIT                                                             
+         DROP  R4                                                               
+*                                                                               
+MAIN02H  OI    RECFLAG,RECESTQ      INDICATE ESTIMATE RECORD                    
+         MVC   RECDAM,EKEYAM-EKEY(R2)                                           
+         MVC   RECDCLT,EKEYCLT-EKEY(R2)                                         
+*                                                                               
+MAIN03   DS    0H                                                               
+         CLI   CTAM,0              HAVE AGENCY/MEDIA SET                        
+         BE    MAIN04              NO                                           
+         CLC   OAMC,RECDEF         TEST SAME A/M/C                              
+         BE    MAIN06              YES                                          
+         BRAS  RE,BSPUT            PUT RECORD TO BINSRCH                        
+*                                                                               
+MAIN04   XC    CTOTD(CTOTRL),CTOTD                                              
+         MVC   CTAM,RECDAM         MOVE NEW A/M/C                               
+         MVC   CTCLT,RECDCLT       MOVE NEW CLT                                 
+         MVC   OAMC,CTOTD          SAVE NEW A/M/C                               
+         MVC   CTAA,RECDAAGY       MOVE ALPHA AGY                               
+*                                                                               
+         ZAP   CTGO,PZERO          CLEAR TOTALS                                 
+         ZAP   CTGP,PZERO                                                       
+         ZAP   CTBH,PZERO          CLEAR TOTALS                                 
+         ZAP   CTBD,PZERO                                                       
+         ZAP   CTESTBG,PZERO                                                    
+         ZAP   CTESTBP,PZERO                                                    
+*                                                                               
+MAIN06   XR    RF,RF               SET A ZERO AT END OF RECORD                  
+*                                                                               
+         TM    RECFLAG,RECBUYQ                                                  
+         BO    MAIN07                                                           
+         TM    RECFLAG,RECBILLQ                                                 
+         BO    MAIN20                                                           
+         TM    RECFLAG,RECSTABQ                                                 
+         BO    MAIN40                                                           
+         TM    RECFLAG,RECESTQ                                                  
+         BO    MAIN50                                                           
+*                                                                               
+MAIN07   DS    0H                  PROCESS BUY RECORDS                          
+         ICM   RF,3,BUYRLEN                                                     
+         AR    RF,R2                                                            
+         MVI   0(RF),0                                                          
+*                                                                               
+         MVC   SVTIME,BDTIME       SAVE BDTIME BYTE                             
+         MVI   BDTIME,0            MAKE ZERO FOR GETRATE (PB'S)                 
+*                                                                               
+         LA    R3,BDELEM           PROCESS BUYREC                               
+         USING REGELEM,R3                                                       
+         XR    R5,R5                                                            
+*                                                                               
+MAIN08   CLI   RCODE,0             EOR                                          
+         BE    MAIN16                                                           
+         CLI   RCODE,X'06'                                                      
+         BL    MAIN14                                                           
+         CLI   RCODE,X'0E'                                                      
+         BH    MAIN14                                                           
+*                                                                               
+         LA    R1,SPOTS                                                         
+         STM   R1,R3,P1                                                         
+         MVC   P1(1),BUYKPRD       MOVE PRD CODE                                
+         GOTO1 VGETRATE,P1         CALL GETRATE                                 
+*                                                                               
+         L     R0,GROSS            ADD GROSS TO TOTAL                           
+         CVD   R0,DUB                                                           
+         AP    CTGO,DUB                                                         
+*                                                                               
+MAIN10   OC    RPAY,RPAY           TEST PAID                                    
+         BZ    MAIN14                                                           
+         TM    BDSTAT,X'01'        TEST NETPAK                                  
+         BZ    MAIN12              NO                                           
+*                                                                               
+         LR    RE,R3                                                            
+         SR    R0,R0                                                            
+         IC    R0,1(RE)                                                         
+         AR    RE,R0                                                            
+         CLI   0(RE),X'10'         TEST AFFID                                   
+         BE    *-10                                                             
+         CLI   0(RE),X'11'         TEST INTG ELEM                               
+         BNE   *+14                                                             
+         OC    6(2,RE),6(RE)       TEST INTG PAID                               
+         BNE   MAIN12                                                           
+         MVI   P3,C'T'             SET TIME ONLY REQUEST                        
+         GOTO1 (RF),P1             BACK TO GETRATE                              
+*                                                                               
+MAIN12   L     R0,GROSS            ADD GROSS PAID TO TOTAL                      
+         CVD   R0,DUB                                                           
+         AP    CTGP,DUB                                                         
+         B     MAIN14                                                           
+*                                                                               
+MAIN14   ICM   R5,1,RLEN                                                        
+         BZ    MAIN16              GET OUT IF BAD ELEMENT                       
+         BXH   R3,R5,MAIN08                                                     
+*                                                                               
+MAIN16   MVC   BDTIME,SVTIME       RESTORE BDTIME                               
+         B     EXIT                                                             
+         DROP  R2                                                               
+*                                                                               
+MAIN20   DS    0H                  PROCESS BILL RECORDS                         
+         USING BILLREC,R2                                                       
+                                                                                
+         GOTO1 =V(SPBVAL),DMCB,(C'B',BILLREC),SPBVALD,0                         
+         AP    CTBH,SPBVGRSP                                                    
+         B     EXIT                                                             
+         DROP  R2                                                               
+*                                                                               
+MAIN40   DS    0H                  PROCESS STAB RECORDS                         
+         LR    R6,R2                                                            
+*                                                                               
+         CLI   12(R6),X'00'                                                     
+         BNE   EXIT                                                             
+*                                                                               
+         USING STABELEM,R6                                                      
+         MVC   DATADISP,=AL2(STABELEM-STABUCKD)                                 
+         MVI   ELCODE,X'0E'                                                     
+         BAS   RE,GETEL                                                         
+         B     *+8                                                              
+*                                                                               
+MAIN45   BAS   RE,NEXTEL                                                        
+         BNE   EXIT                                                             
+         GOTO1 =V(SPBVAL),DMCB,(C'E',(R6)),SPBVALD,0                            
+         AP    CTBD,SPBVGRSP                                                    
+         B     MAIN45                                                           
+*                                                                               
+MAIN50   DS    0H                                                               
+         USING ESTHDRD,R2          PROCESS ESTIMATE BUCKETS                     
+         LA    R6,EORD             YTD ORDERED GROSS                            
+         LA    R1,13               13 PACKED FIELDS                             
+*                                                                               
+MAIN55   OC    0(6,R6),0(R6)       PACKED?                                      
+         BZ    *+10                NO - DON'T DIE!                              
+         AP    CTESTBG,0(6,R6)     YES - ADD TO PACKED ACCUMULATOR              
+         LA    R6,6(R6)            BUMP TO NEXT PACKED FIELD                    
+         BCT   R1,MAIN55                                                        
+*                                                                               
+         LA    R6,EPAID            YTD PAID GROSS                               
+         LA    R1,13               13 PACKED FIELDS                             
+*                                                                               
+MAIN60   OC    0(6,R6),0(R6)       PACKED?                                      
+         BZ    *+10                NO - DON'T DIE!                              
+         AP    CTESTBP,0(6,R6)     YES - ADD TO PACKED ACCUMULATOR              
+         LA    R6,6(R6)            BUMP TO NEXT PACKED FIELD                    
+         BCT   R1,MAIN60                                                        
+                                                                                
+         B     EXIT                                                             
+         DROP  R6                                                               
+*                                                                               
+         EJECT                                                                  
+***********************************************************************         
+* END OF FILE - PRINT TOTALS FOR CLIENT FROM BINSRCH TABLE            *         
+***********************************************************************         
+         SPACE 1                                                                
+ENDF     L     RA,VCPRINT                                                       
+         USING DPRINT,RA                                                        
+         USING TL,P                                                             
+         ZAP   LINE,P99            FORCE PAGE THROW                             
+         MVI   DOHDR,C'Y'                                                       
+         MVI   UNBALFLG,0          NO ESTIMATE BUCKET UNBALANCES YET            
+*                                                                               
+ENDF01A  MVI   DUMPSTEP,C'Y'                                                    
+         EXTRACT TIOTADR,'S',FIELDS=TIOT                                        
+         L     R1,TIOTADR                                                       
+         CLC   =C'SP119',0(R1)     DUMP STEP?                                   
+         BE    *+8                 YES                                          
+         MVI   DUMPSTEP,C'N'                                                    
+*                                                                               
+         MVI   ANY134,0            NO 134 REQUESTS YET                          
+         LA    R4,RQFIL134         FILE FOR 134 REQUESTS                        
+         OPEN  ((R4),OUTPUT)       OPEN THE FILE                                
+         LTR   RF,RF               DID WE OPEN THE FILE?                        
+         BNZ   *+8                 NO - DON'T GENERATE 134 REQUESTS             
+         OI    ANY134,WANT134      WANT 134 REQUESTS                            
+*                                                                               
+         L     R1,SAVER1                                                        
+         L     RF,4(R1)                                                         
+         N     RF,=X'00FFFFFF'     DROP HOB                                     
+         MVC   HMSG(7),0(RF)       SET FILENAME                                 
+*                                                                               
+         ICM   R2,15,BINPAR2                                                    
+         B     ENDF04                                                           
+*                                                                               
+ENDF02   AHI   R2,CTOTRL           NEXT RECORD                                  
+*                                                                               
+ENDF04   BRAS  RE,ON31             GET NEXT RECORD FROM XA BLOCK                
+         MVC   CTREC,0(R2)                                                      
+         BRAS  RE,OFF31                                                         
+*                                                                               
+         CLI   DOHDR,C'Y'          PRINTING HEADERS                             
+         BNE   ENDF08              NO                                           
+         MVI   DOHDR,C'N'                                                       
+*                                                                               
+         MVC   TLHDR,HMSG                                                       
+         CLC   CTOTD(CTOTKL),EFFS  FINAL TOTAL?                                 
+         BNE   *+14                YES                                          
+         MVC   TL+8(11),=C'FILE  GRAND'                                         
+         B     ENDF07                                                           
+*                                                                               
+         XR    R0,R0                AGENCY BINARY                               
+         IC    R0,CTAM                                                          
+         SRL   R0,4                                                             
+         CVD   R0,DUB                                                           
+         OI    DUB+L'DUB-1,X'0F'                                                
+         UNPK  TLAGYH,DUB                                                       
+*                                                                               
+         MVC   TLAGY,CTAA           AGENCY ALPHA (MAY NOT BE IN TABLE!)         
+*                                                                               
+         LA    R1,AGYTAB            AGENCY TABLE                                
+*                                                                               
+ENDF04A  CLI   0(R1),X'FF'          END OF AGENCY TABLE?                        
+         BE    ENDF04C              YES                                         
+         LLC   RF,2(R1)             AGENCY BINARY                               
+         CR    RF,R0                MATCH ON AGENCY BINARY?                     
+         BE    ENDF04B              YES                                         
+         LA    R1,3(R1)             NO - BUMP TABLE                             
+         B     ENDF04A                                                          
+*                                                                               
+ENDF04B  MVC   TLAGY,0(R1)          AGENCY ALPHA                                
+*                                                                               
+ENDF04C  MVC   SVEOFAGY,TLAGY                                                   
+*                                                                               
+         MVC   BYTE,CTAM            MEDIA                                       
+         NI    BYTE,X'0F'                                                       
+         MVI   TLMED,C'T'                                                       
+         CLI   BYTE,1                                                           
+         BE    ENDF06                                                           
+         MVI   TLMED,C'R'                                                       
+         CLI   BYTE,2                                                           
+         BE    ENDF06                                                           
+         MVI   TLMED,C'N'                                                       
+         CLI   BYTE,3                                                           
+         BE    ENDF06                                                           
+         MVI   TLMED,C'X'                                                       
+*                                                                               
+ENDF06   DS    0H                                                               
+         MVC   SVEOFMED,TLMED                                                   
+*                                                                               
+ENDF07   DS    0H                                                               
+         GOTO1 VPRINTER            PRINT HEADER                                 
+         MVC   TLHDR,UMSG                                                       
+         GOTO1 (RF)                PRINT UNDERLINE AND SPACE                    
+         GOTO1 (RF)                                                             
+*                                                                               
+ENDF08   MVC   P(5),=C'TOTAL'                                                   
+         CLC   CTCLT,EFFS          TOTALS                                       
+         BE    ENDF10                                                           
+         MVC   P(5),SPACES                                                      
+         MVI   CAAN,C'N'           CLIENT AAN=N                                 
+*                                                                               
+         LA    RE,CLTAAN           CLT AAN=Y TABLE                              
+*                                                                               
+ENDF09   CLI   0(RE),X'FF'         END OF TABLE?                                
+         BE    ENDF09A             YES                                          
+         OC    0(3,RE),0(RE)       END OF TABLE?                                
+         BZ    ENDF09A             YES                                          
+         CLC   0(3,RE),CTAM        A/M CLIENT MATCH?                            
+         BE    *+12                YES - SET CLIENT TO AAN=Y                    
+         LA    RE,3(RE)            BUMP TO NEXT ENTRY                           
+         B     ENDF09              AND KEEP LOOKING                             
+         MVI   CAAN,C'Y'                                                        
+*                                                                               
+ENDF09A  GOTO1 VCLUNPK,DUB,(CAAN,CTCLT),SVEOFCLT                                
+         MVC   P(3),SVEOFCLT                                                    
+*                                                                               
+ENDF10   DS    0H                                                               
+         LA    R1,P+07                                                          
+         MVC   DUB,CTGO                                                         
+         BRAS  RE,EDIT                                                          
+*                                                                               
+         LA    R1,P+29                                                          
+         MVC   DUB,CTGP                                                         
+         BRAS  RE,EDIT                                                          
+*                                                                               
+         L     R1,SAVER1                                                        
+         CLI   4(R1),C'R'            TEST CALLED BY RECONSTRUCT                 
+         BE    ENDF20                                                           
+*                                                                               
+         L     RF,4(R1)              FILENAME                                   
+         N     RF,=X'00FFFFFF'       DROP HOB                                   
+         CLC   =C'SPTFIL',0(RF)      SPOT/NET FILE?                             
+         BNE   ENDF14                                                           
+         L     RE,=V(LDSENO)       GET SE# FROM DMLDMOD                         
+         MVC   SYSSE#,0(RE)        MOVE IN SYSTEM NUMBER                        
+         L     R4,12(R1)           GET LOAD DEF ADDRESS                         
+         USING LDDEFND,R4                                                       
+         GOTO1 LDATAMGR,DMCB,(0,DDNAME),SYSSE,0                                 
+         DROP  R4                                                               
+         TM    8(R1),X'10'         SYSTEM NOT FOUND                             
+         BZ    *+6                                                              
+         DC    H'0'                                                             
+         LT    RE,8(,R1)           GET A (DDNADATA)                             
+         BNZ   *+6                                                              
+         DC    H'0'                                                             
+         USING DDNAMED,RE                                                       
+         CLI   DDNASYCH,C'N'       NET SYSTEM?                                  
+         BE    ENDF20              YES - SKIP BAL CHK AND PRINTING              
+*                                                                               
+*                                                                               
+*                                                                               
+*                                                                               
+*        LA    R1,IGNSYSLS           LIST OF FILES TO SKIP                      
+*                                                                               
+*NDF12   CLI   0(R1),X'FF'                                                      
+*        BE    ENDF14                                                           
+*        CLC   0(IGNSYSLQ,R1),0(RF)    A FILE TO IGNORE?                        
+*        BE    ENDF20                  YES - SKIP BAL CHK AND PRINTING          
+*        LA    R1,IGNSYSLQ(R1)                                                  
+*        B     ENDF12                                                           
+*                                                                               
+*                                                                               
+*                                                                               
+*                                                                               
+*                                                                               
+ENDF14   DS    0H                                                               
+         LA    R1,P+51                                                          
+         MVC   DUB,CTBH                                                         
+         BRAS  RE,EDIT                                                          
+*                                                                               
+         CLC   CTOTD(CTOTKL),EFFS       FINAL TOTAL?                            
+         BE    ENDF18                   YES - SKIP AGENCY CHECK                 
+*                                                                               
+         LA    R1,IGNAGYLS                                                      
+ENDF16   CLI   0(R1),X'FF'                                                      
+         BE    ENDF18                                                           
+         CLC   SVEOFAGY,0(R1)     AGENCY TO IGNORE?                             
+         BE    ENDF20     YES - SKIP BALANCE CHECKING & PRINTING                
+         LA    R1,IGNAGYLQ(R1)                                                  
+         B     ENDF16                                                           
+*                                                                               
+ENDF18   LA    R1,P+73                                                          
+         MVC   DUB,CTBD                                                         
+         BRAS  RE,EDIT                                                          
+*                                                                               
+         CLC   CTBH,CTBD                                                        
+         BE    ENDF20                                                           
+         MVC   P+95(12),=CL12'NOT BALANCED'                                     
+*                                                                               
+         CLC   =C'TOTAL',P          DO NOT SEND E-MAILS FOR TOTALS              
+         BE    ENDF20                                                           
+*                                                                               
+         CLI   DUMPSTEP,C'Y'        DUMP STEP?                                  
+         BE    ENDF20               YES - DO NOT SEND E-MAIL                    
+*                                                                               
+         MVC   WARNMSG1+4(2),SVEOFAGY       AGENCY ALPHA                        
+         MVC   WARNMSG2+6(1),SVEOFMED                                           
+         MVC   WARNMSG3+6(3),SVEOFCLT                                           
+*                                                                               
+         L     R1,SAVER1                                                        
+         L     R4,12(R1)           GET LOAD DEF ADDRESS                         
+         USING LDDEFND,R4                                                       
+         GOTO1 LDATAMGR,DMCB,=C'OPMSG',('WARNLQ',WARNMSG)                       
+         DROP  R4                                                               
+*                                                                               
+ENDF20   DS    0H                                                               
+         GOTO1 VPRINTER                                                         
+*                                                                               
+         NI    UNBALFLG,X'FF'-NOWUNBL                                           
+         CLC   CTGO,CTESTBG        GROSS BALANCED?                              
+         BE    ENDF25              YES                                          
+                                                                                
+         OI    UNBALFLG,NOWUNBL+HAVEUNBL                                        
+         LA    R1,P+07             PRINT UNBALANCED MESSAGE                     
+         MVC   DUB,CTESTBG                                                      
+         BRAS  RE,EDIT                                                          
+         MVC   P+40(16),=CL16'GROSS UNBALANCED'                                 
+         GOTO1 VPRINTER                                                         
+*                                                                               
+ENDF25   CLC   CTGP,CTESTBP        PAID BALANCED?                               
+         BE    ENDF30              YES                                          
+         OI    UNBALFLG,NOWUNBL+HAVEUNBL                                        
+         LA    R1,P+07             PRINT UNBALANCED MESSAGE                     
+         MVC   DUB,CTESTBP                                                      
+         BRAS  RE,EDIT                                                          
+         MVC   P+40(15),=CL15'PAID UNBALANCED'                                  
+         GOTO1 VPRINTER                                                         
+*                                                                               
+ENDF30   CLC   CTOTD(CTOTKL),EFFS   FINAL TOTAL?                                
+         BE    ENDF50               YES - DON'T ADD A 34 REQUEST!               
+         CLC   CTCLT,EFFS           WAS THIS A CLIENT TOTAL?                    
+         BE    ENDF40               YES - DON'T ADD A 34 REQUEST!               
+*                                                                               
+         TM    UNBALFLG,NOWUNBL     ANY UNBALANCES FOR THIS CLIENT?             
+         BZ    ENDF40               NO                                          
+*                                                                               
+         TM    ANY134,WANT134       WANT 134 REQUEST?                           
+         BZ    ENDF40               NO - DO NOT ADD 134 REQUEST!                
+*                                                                               
+ENDF35   MVC   REQST134,SPACES      INIT 134 REQUEST TO SPACES                  
+         USING FQRECORD,R3                                                      
+         LA    R3,REQST134                                                      
+         LA    R4,RQFIL134                                                      
+         TM    ANY134,HAVE134       ANY 134 REQUESTS ADDED TO FILE YET?         
+         BNZ   *+8                  YES                                         
+         BAS   RE,INIT134           INIT 134 REQUEST                            
+*                                                                               
+         MVC   FQCODE,=C'34'        34 REQUEST                                  
+         MVC   FQAGY,SVEOFAGY       AGENCY                                      
+         MVC   FQMED,SVEOFMED       MEDIA                                       
+         MVC   FQCLT,SVEOFCLT       CLIENT                                      
+         PUT   (R4),(R3)                                                        
+*                                                                               
+ENDF40   CLC   CTCLT,EFFS           WAS THIS A CLIENT TOTAL?                    
+         BNE   ENDF02               NO                                          
+         MVI   DOHDR,C'Y'                                                       
+         ZAP   LINE,P99             FORCE PAGE THROW                            
+         B     ENDF02                                                           
+*                                                                               
+ENDF50   TM    ANY134,WANT134       WANT ANY 134 REQUESTS?                      
+         BZ    ENDF60               NO                                          
+*                                                                               
+         LA    R3,REQST134                                                      
+         LA    R4,RQFIL134                                                      
+*                                                                               
+         TM    ANY134,HAVE134       ANY 134 REQUESTS ADDED?                     
+         BNZ   ENDF51               YES                                         
+         MVC   REQST134(7),=C'NOCARDS'                                          
+         PUT   (R4),(R3)                                                        
+*                                                                               
+ENDF51   MVC   REQST134,SPACES      RESET TO SPACES                             
+         MVC   REQST134(2),=C'/*'                                               
+         PUT   (R4),(R3)                                                        
+*                                                                               
+ENDF55   CLOSE ((R4))               CLOSE FILE - DON'T CARE ABOUT ERR!          
+*                                                                               
+ENDF60   TM    UNBALFLG,HAVEUNBL    ANY CLIENT UNBALANCED?                      
+         BZ    ENDFX                NO - DONE                                   
+*                                                                               
+         L     R1,SAVER1                                                        
+         L     R4,12(R1)            GET LOAD DEF ADDRESS                        
+*                                                                               
+         MVC   P(9),=C'AUTONOTE*'   SEN AUTONOTE VIA DATAMGR                    
+         L     R5,=V(EID)           EMAIL ID (AKATDDNY,EJORDDNY)                
+         L     R5,12(R5)            A(EMAIL LIST)                               
+         CLC   0(70,R5),SPACES      HAVE ANY EMAIL TO SEND?                     
+         BNH   ENDFX                NO - DONE                                   
+         MVC   P+9(70),0(R5)        MOVE THE LIST TO P                          
+         LA    R5,P+79              POINT TO END OF E-MAIL LIST                 
+         CLI   0(R5),X'40'          LAST CHAR OF E-MAIL LIST?                   
+         BH    *+8                  YES                                         
+         BCT   R5,*-8               NO - LOOK AT PREVIOUS CHAR                  
+         MVC   1(UNBLLQ,R5),UNBLMSG MOVE IN THE REST OF THE MESSAGE             
+         LA    R6,P                 START OF AUTONOTE                           
+         SR    R5,R6                LENGTH OF E-MAIL LIST                       
+         AHI   R5,UNBLLQ+20         LENGTH OF REST OF MESSAGE                   
+*                                                                               
+         USING LDDEFND,R4                                                       
+         GOTO1 LDATAMGR,DMCB,=C'OPMSG',((R5),P)                                 
+         DROP  R4                                                               
+*                                                                               
+ENDFX    B     EXIT                                                             
+*                                                                               
+         EJECT                                                                  
+*                                                                               
+INIT134  NTR1                                                                   
+*                                                                               
+         L     RF,=V(DDSIO)        DDSIO=                                       
+         CLC   0(8,RF),SPACES                                                   
+         BNH   INIT10                                                           
+         MVC   REQST134(6),=C'DDSIO='                                           
+         MVC   REQST134+6(8),0(RF)                                              
+         PUT   (R4),(R3)            ADD REQUEST CARD TO FILE                    
+         MVC   REQST134,SPACES      RESET TO SPACES                             
+*                                                                               
+INIT10   L     RF,=V(SSB)          DSPACE=                                      
+         CLI   SSODSPAC-SSOOFF(RF),X'40'                                        
+         BNH   INIT20                                                           
+         MVC   REQST134(7),=C'DSPACE='                                          
+         MVC   REQST134+7(1),SSODSPAC-SSOOFF(RF)                                
+         PUT   (R4),(R3)            ADD REQUEST CARD TO FILE                    
+         MVC   REQST134,SPACES      RESET TO SPACES                             
+*                                                                               
+INIT20   L     RF,=V(LDWRITE)                                                   
+         MVC   REQST134(6),=C'WRITE='                                           
+         MVI   REQST134+6,C'Y'                                                  
+         CLI   0(RF),C'Y'                                                       
+         BE    *+10                                                             
+         MVC   REQST134+6(2),=C'NO'                                             
+         PUT   (R4),(R3)            ADD REQUEST CARD TO FILE                    
+         MVC   REQST134,SPACES      RESET TO SPACES                             
+*                                                                               
+         LA    R5,S34CARDS          HARDCODED CARDS FOR 134 REQUEST             
+*                                                                               
+INIT30   MVC   REQST134(12),0(R5)   ADD THIS CARD                               
+         PUT   (R4),(R3)            ADD REQUEST CARD TO FILE                    
+         MVC   REQST134,SPACES      RESET TO SPACES                             
+         CLC   =C'/*',0(R5)         JUST ADDED "/*"?                            
+         BE    *+12                 YES - DONE                                  
+         LA    R5,12(R5)            NO - BUMP TO NEXT ENTRY                     
+         B     INIT30                                                           
+*                                                                               
+         OI    ANY134,HAVE134       ADDED 134 REQUEST CARDS                     
+*                                                                               
+         B     EXIT                                                             
+***********************************************************************         
+* ROUTINE TO UPDATE BINSRCH TABLE OF STORED ACCUMULATORS              *         
+* NTRY: CTREC  = CURRENT RECORD INFO                                  *         
+* EXIT: TOTALS UPDATED - CTREC INFO DESTROYED                         *         
+***********************************************************************         
+         SPACE 1                                                                
+BSPUT    NTR1  ,                                                                
+         BRAS  RE,ON31                                                          
+*                              *** A/M/C TOTALS                                 
+         MVI   BINPAR4,X'00'                                                    
+         GOTO1 BINSRCH,BINPAR1,CTOTD                                            
+         TM    0(R1),X'80'         TEST RECORD FOUND                            
+         BZ    BSP02               YES                                          
+         MVI   BINPAR4,X'01'                                                    
+         GOTO1 (RF),(R1),CTOTD                                                  
+         ICM   RF,15,0(R1)         TEST ADDED OK                                
+         BNZ   BSP04                                                            
+         DC    H'0'                TABLE FULL                                   
+*                                                                               
+BSP02    ICM   R2,15,0(R1)         R2=A(CLIENT RECORD)                          
+BS       USING CTOTD,R2                                                         
+         AP    BS.CTGO,CTGO        UPDATE TOTALS IN RECORD                      
+         AP    BS.CTGP,CTGP                                                     
+         AP    BS.CTBH,CTBH                                                     
+         AP    BS.CTBD,CTBD                                                     
+         AP    BS.CTESTBG,CTESTBG                                               
+         AP    BS.CTESTBP,CTESTBP                                               
+*                                                                               
+BSP04    MVC   CTCLT,EFFS      *** A/M TOTALS                                   
+         MVI   BINPAR4,X'00'                                                    
+         GOTO1 BINSRCH,BINPAR1,CTOTD                                            
+         TM    0(R1),X'80'         TEST RECORD FOUND OK                         
+         BZ    BSP06               YES                                          
+         MVI   BINPAR4,X'01'                                                    
+         GOTO1 (RF),(R1),CTOTD                                                  
+         ICM   RF,15,0(R1)         ADDED OK?                                    
+         BNZ   BSP08                                                            
+         DC    H'0'                TABLE FULL                                   
+*                                                                               
+BSP06    ICM   R2,15,0(R1)         R2=A(CLIENT TOTALS RECORD)                   
+         AP    BS.CTGO,CTGO                                                     
+         AP    BS.CTGP,CTGP                                                     
+         AP    BS.CTBH,CTBH                                                     
+         AP    BS.CTBD,CTBD                                                     
+         AP    BS.CTESTBG,CTESTBG                                               
+         AP    BS.CTESTBP,CTESTBP                                               
+*                                                                               
+BSP08    MVC   CTAM,EFFS       *** FILE TOTALS                                  
+         MVI   BINPAR4,X'00'                                                    
+         GOTO1 BINSRCH,BINPAR1,CTOTD                                            
+         TM    0(R1),X'80'         TEST RECORD FOUND OK                         
+         BZ    BSP10               YES                                          
+         MVI   BINPAR4,X'01'                                                    
+         GOTO1 (RF),(R1),CTOTD                                                  
+         ICM   RF,15,0(R1)         ADDED OK?                                    
+         BNZ   XIT                                                              
+         DC    H'0'                TABLE FULL                                   
+*                                                                               
+BSP10    ICM   R2,15,0(R1)         R2=A(FILE TOTALS RECORD)                     
+         AP    BS.CTGO,CTGO                                                     
+         AP    BS.CTGP,CTGP                                                     
+         AP    BS.CTBH,CTBH                                                     
+         AP    BS.CTBD,CTBD                                                     
+         AP    BS.CTESTBG,CTESTBG                                               
+         AP    BS.CTESTBP,CTESTBP                                               
+         B     XIT                                                              
+         DROP  BS                                                               
+         EJECT                                                                  
+***********************************************************************         
+* HANDY ROUTINES AND EXIT POINTS                                      *         
+***********************************************************************         
+         SPACE 1                                                                
+ON31     O     RE,=X'80000000'                                                  
+         BSM   0,RE                                                             
+*                                                                               
+OFF31    N     RE,=X'7FFFFFFF'                                                  
+         BSM   0,RE                                                             
+*                                                                               
+XIT      XIT1  ,                                                                
+         ORG   *-2                                                              
+         BSM   0,RE                                                             
+*                                                                               
+EDIT     MVC   0(20,R1),=X'40202020206B2020206B2020206B2020204B2020'            
+         ED    0(20,R1),DUB                                                     
+         BR    RE                                                               
+*                                                                               
+EXIT     XMOD1 1                                                                
+         EJECT                                                                  
+*                                                                               
+         GETEL R6,DATADISP,ELCODE                                               
+*                                                                               
+WARNMSG  DC    C'AUTONOTE*ERATDDNY:SPLD BILLING IMBALANCE! '                    
+WARNMSG1 DC    C'AGY=  '                                                        
+WARNMSG2 DC    C', MED= '                                                       
+WARNMSG3 DC    C', CLT=   '                                                     
+WARNLQ   EQU   *-WARNMSG                                                        
+*                                                                               
+UNBLMSG  DC    C':SPLD BUCKET IMBALANCE! CHECK OUTPUT FOR UNBALANCES'           
+UNBLLQ   EQU   *-UNBLMSG                                                        
+*                                                                               
+CLTMSG   DC    C'AUTONOTE*AKATDDNY:CLIENT AAN TABLE FULL! '                     
+CLTMSGQ  EQU   *-CLTMSG                                                         
+*                                                                               
+IGNAGYLS DC    C'SJ'                                                            
+IGNAGYLQ EQU   *-IGNAGYLS                                                       
+         DC    C'TC'                                                            
+         DC    C'SW'                                                            
+         DC    C'SX'                                                            
+         DC    C'TM'                                                            
+         DC    C'S5'                                                            
+         DC    C'HD'                                                            
+         DC    C'XD'                                                            
+         DC    C'TG'                                                            
+         DC    C'  '                                                            
+         DC    C'  '                                                            
+         DC    X'FF'                                                            
+*                                                                               
+*&&DO                                                                           
+IGNSYSLS DC    C'SPTFIL0'          TEST SYSTEM                                  
+IGNSYSLQ EQU   *-IGNSYSLS                                                       
+         DC    C'SPTFIL8'          NET1                                         
+         DC    C'SPTFIL9'          NET2                                         
+         DC    C'SPTFILA'          NET3                                         
+         DC    C'SPTFILC'          NET4                                         
+         DC    C'SPTFILJ'          NET5                                         
+         DC    C'SPTFILK'          NET6                                         
+         DC    C'SPTFILP'          NET7                                         
+         DC    C'SPTFILX'          ??                                           
+         DC    C'SPTFILR'          NETR                                         
+         DC    C'SPTFILT'          NETT                                         
+         DC    C'SPTFILW'          NETW                                         
+         DC    C'SPTFILD'          NETZ                                         
+*        DC    C'SPTFILTN'         NETTT                                        
+         DC    X'FF'                                                            
+*&&                                                                             
+TIOTADR  DC    F'0'                                                             
+*                                                                               
+*                                                                               
+DDNAME   DC    CL8'DDNAME'                                                      
+SYSSE    DC    C'SE=',X'0000'                                                   
+         ORG   SYSSE+3                                                          
+         DS    X                                                                
+SYSSE#   DS    X                                                                
+*                                                                               
+*                                                                               
+***********************************************************************         
+* BINSRCH PARAMETERS                                                  *         
+***********************************************************************         
+         SPACE 1                                                                
+         DS    0D                                                               
+         DC    CL8'BINSRCH='                                                    
+BINPAR1  DC    A(0)                                                             
+BINPAR2  DC    A(0)                          A(TABLE)                           
+BINPAR3  DC    A(0)                          CURRENT RECORD COUNT               
+BINPAR4  DC    A(CTOTRL)                     RECORD LENGTH                      
+BINPAR5  DC    A(CTOTKL)                     KEYDSPL=0/KEYLEN=13                
+BINPAR6  DC    A(MAXNTRY)                    MAX ENTRIES                        
+BINPAR7  DC    A(0)                                                             
+BINPAR8  DC    A(0)                                                             
+         EJECT                                                                  
+***********************************************************************         
+* OTHER WORKING STORAGE                                               *         
+***********************************************************************         
+         SPACE 1                                                                
+PZERO    DC    P'0'                                                             
+PONE     DC    P'1'                                                             
+P99      DC    P'99'                                                            
+DOHDR    DC    C'Y'                                                             
+*                                                                               
+DUB      DS    D                                                                
+SAVER1   DS    F                                                                
+VCLUNPK  DS    A                                                                
+VGETRATE DS    A                                                                
+VPRINTER DS    A                                                                
+VDMGR    DS    A                                                                
+BINSRCH  DC    V(BINSRCH)                                                       
+VCPRINT  DC    V(CPRINT)                                                        
+*                                                                               
+SPOTS    DS    F                                                                
+GROSS    DS    F                                                                
+NET      DS    F                                                                
+ADJ      DS    F                                                                
+*                                                                               
+P1       DS    F                                                                
+P2       DS    F                                                                
+P3       DS    F                                                                
+*                                                                               
+BYTE     DS    X                                                                
+TEMP     DS    PL8                 TEMP FOR ADDITION                            
+OAMC     DC    XL3'00'                                                          
+SVTIME   DS    XL1                                                              
+WORK     DS    XL40                                                             
+DATADISP DS    H                                                                
+ELCODE   DS    X                                                                
+*                                                                               
+RECFLAG  DS    X                                                                
+RECBUYQ  EQU   X'01'                                                            
+RECSTABQ EQU   X'02'                                                            
+RECBILLQ EQU   X'04'                                                            
+RECESTQ  EQU   X'08'                                                            
+*                                                                               
+RECDEF   DS    0XL5                                                             
+RECDAM   DS    CL1                                                              
+RECDCLT  DS    CL2                                                              
+RECDKL   EQU   *-RECDEF                                                         
+RECDAAGY DS    CL2                                                              
+*                                                                               
+DMCB     DS    8F                                                               
+*                                                                               
+CTREC    DS    XL(CTOTRL)                                                       
+*                                                                               
+EFFS     DC    8X'FF'                                                           
+*                                                                               
+HMSG     DC    CL26'XXXXXXX AGY 99 XX T TOTALS'                                 
+UMSG     DC    CL26'--------------------------'                                 
+*                                                                               
+S34CARDS DC    C'TOTALS=MEDIA'                                                  
+         DC    C'UNMATCHED   '                                                  
+         DC    C'/*          '                                                  
+*                                                                               
+SVEOFAGY DS    CL2                                                              
+SVEOFMED DS    C                                                                
+SVEOFCLT DS    CL3                                                              
+UNBALFLG DS    XL1                                                              
+HAVEUNBL EQU   X'80'                                                            
+NOWUNBL  EQU   X'40'                                                            
+*                                                                               
+REQST134 DS    CL80                                                             
+ANY134   DS    CL1                                                              
+WANT134  EQU   X'80'                                                            
+HAVE134  EQU   X'40'                                                            
+DUMPSTEP DS    CL1                                                              
+*                                                                               
+         DS    0D                                                               
+RQFIL134 DCB   DDNAME=RQFIL134,DSORG=PS,RECFM=FB,BLKSIZE=3200,         X        
+               LRECL=80,MACRF=PM                                                
+*                                                                               
+CLIENT1  DS    CL3                                                              
+CLIENT2  DS    CL3                                                              
+CAAN     DS    XL1                                                              
+         EJECT                                                                  
+         DS    0D                                                               
+       ++INCLUDE SPBVALD                                                        
+         EJECT                                                                  
+***********************************************************************         
+* LITERAL POOL                                                        *         
+***********************************************************************         
+         LTORG                                                                  
+MAXNTRY  EQU   256*1024            MAX ENTRIES IN XA TABLE                      
+         EJECT                                                                  
+AGYTAB   DC    16XL3'000000'       ROOM FOR 16 AGENCIES                         
+         DC    X'FF'                                                            
+CLTAAN   DS    XL3000                                                           
+         DC    X'FF'                                                            
+         DC    X'FF'                                                            
+***********************************************************************         
+* HEADER PRINT LINE DSECT                                             *         
+***********************************************************************         
+         SPACE 1                                                                
+TL       DSECT                                                                  
+TLHDR    DS    0CL26' '            COMES FROM HMSG/UMSG                         
+         DC    CL12' '                                                          
+TLAGYH   DC    CL02' '                                                          
+         DC    CL01' '                                                          
+TLAGY    DC    CL02' '                                                          
+         DC    CL01' '                                                          
+TLMED    DC    CL01' '                                                          
+         EJECT                                                                  
+***********************************************************************         
+* BINSRCH SAVE RECORD DSECT                                           *         
+***********************************************************************         
+         SPACE 1                                                                
+CTOTD    DSECT                     CLIENT TOTALS RECORD                         
+CTAM     DS    CL1                                                              
+CTCLT    DS    CL2                                                              
+CTOTKL   EQU   *-CTOTD                                                          
+CTAA     DS    CL2                                                              
+*                                                                               
+CTOTS    DS    0CL24                                                            
+CTGO     DS    PL8                 GROSS ORD                                    
+CTGP     DS    PL8                 GROSS PAID                                   
+CTBH     DS    PL8                 GROSS FROM BILL HEADER (BILL REC)            
+CTBD     DS    PL8                 GROSS FROM BILL DETAIL (STAB REC)            
+CTESTBG  DS    PL8                 ESTIMATE BUCKETS GROSS                       
+CTESTBP  DS    PL8                 ESTIMATE BUCKETS PAID                        
+CTOTRL   EQU   *-CTOTD                                                          
+         EJECT                                                                  
+*                                                                               
+FQRECORD DSECT                     SPONSOR STYLE REQUEST CARD                   
+FQAREA   DS    0CL80   COLUMN                                                   
+FQPROG   DS    0CL2    ------                                                   
+FQCODE   DS    CL2        1        PROGRAM CODE                                 
+FQAGY    DS    CL2        3        AGENCY CODE                                  
+FQMED    DS    CL1        5        MEDIA CODE (R/T)                             
+FQCLT    DS    CL3        6        CLIENT CODE                                  
+         EJECT                                                                  
+***********************************************************************         
+* OTHER INCLUDED DSECTS                                               *         
+***********************************************************************         
+         SPACE 1                                                                
+*DDDPRINT                                                                       
+         EJECT                                                                  
+BUYRECD  DSECT                                                                  
+       ++INCLUDE SPGENBUY                                                       
+       ++INCLUDE SPGENBILL                                                      
+       ++INCLUDE SPGENSTAB                                                      
+ESTHDRD  DSECT                                                                  
+       ++INCLUDE SPGENEST                                                       
+CLTHDRD  DSECT                                                                  
+       ++INCLUDE SPGENCLT                                                       
+       ++INCLUDE DDDPRINT                                                       
+         EJECT                                                                  
+       ++INCLUDE DMLDDEFN                                                       
+SSOOFFD  DSECT                                                                  
+       ++INCLUDE FASSBOFF                                                       
+DDNAMED  DSECT                                                                  
+       ++INCLUDE DMDDNAMED                                                      
+         SPACE 2                                                                
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'084SPLDBALC  07/07/14'                                      
+         END                                                                    

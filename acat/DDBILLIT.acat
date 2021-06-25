@@ -1,0 +1,449 @@
+*          DATA SET DDBILLIT   AT LEVEL 008 AS OF 06/05/20                      
+*CATALP BILLIT                                                                  
+BILLIT   TITLE 'BILLIT - WRITE BILLING RECORDS TO SMF'                          
+***********************************************************************         
+*PARM1   XL1   ACTION I=INIT/U=USER/F=FINISH/E=END/C=CANCEL/S=SYSTEM  *         
+*        AL3   A(12 BYTE AREA CONTAINING BILLING REFERENCE) OR ZEROS  *         
+*PARM2   XL1   L'BILLING DATA (MAX 236 FOR ACTION U ONLY)             *         
+*        AL3   A(BILLING USER DATA)                                   *         
+***********************************************************************         
+         SPACE 1                                                                
+         PRINT NOGEN                                                            
+BILLIT   CSECT                                                                  
+         NMOD1 WRKX-WRKD,*BILLIT*                                               
+         USING WRKD,RC             RC=A(WORK)                                   
+         LA    RE,*+6                                                           
+         BSM   0,RE                FORCE 24-BIT MODE                            
+*                                                                               
+         LR    R2,R1               R2=A(PARMS)                                  
+         SR    R3,R3                                                            
+         ICM   R3,7,1(R2)          R3=A(CALLERS BILLING REFERENCE)              
+         LA    R4,BILREC                                                        
+         USING BILRECD,R4          R4=A(SMF BILLING RECORD)                     
+         XC    BILREC,BILREC                                                    
+         MVI   BILRECID,BILRECQ    SET UNIQUE RECORD TYPE FOR FROE              
+*                                                                               
+FRST     CLI   FACPAK,0            TEST FIRST CALL                              
+         BNE   FRSTX                                                            
+         PROT  OFF                 SET DC VALUES FIRST TIME THROUGH             
+*                                                                               
+         MVI   FACPAK,C' '         SET FACPAK ID (BLANK IF OFFLINE)             
+         ICM   RE,15,=V(SSB)                                                    
+         BZ    FRST1                                                            
+         OC    0(2,RE),0(RE)                                                    
+         BZ    FRST1                                                            
+         MVC   FACPAK,SSBSYSN1-SSBD(RE)                                         
+         CLI   FACPAK,C' '                                                      
+         BNE   FRST1                                                            
+         MVI   FACPAK,C'*'         SET UNKNOWN FACPAK ID                        
+*                                                                               
+FRST1    L     R1,X'10'(,0)        GET CPU ID INTO CPU                          
+         L     R1,X'C4'(R1)        R1=A(SMCA) FROM CVT                          
+         MVC   CPU,18(R1)          CPUID=C'SYN ' FROM SMCASID (+16)             
+*                                                                               
+FRST2    LA    R7,DUB              GET ADDRESS SPACE ID INTO ADR                
+         EXTRACT (7),FIELDS=ASID                                                
+         MVC   ASID,DUB+2                                                       
+*                                                                               
+FRST3    LA    R7,DUB              GET JOB/STEP NAMES INTO JOB/STEP             
+         EXTRACT (7),'S',FIELDS=TIOT                                            
+         L     R7,DUB                                                           
+         MVC   JOB,0(R7)                                                        
+         MVC   STEP,8(R7)                                                       
+*                                                                               
+         PROT  ON                  HAVE UPDATED FIRST TIME VALUES               
+FRSTX    EQU   *                                                                
+         EJECT                                                                  
+***********************************************************************         
+* GET DATE AND TIME AND EXTRACT ONLINE/OFFLINE CONTROL BLOCK ADDRESSES*         
+* VALIDATE ACTION LETTER IN PARAM LIST.                               *         
+***********************************************************************         
+         SPACE 1                                                                
+ACTN     SR    R0,R0               GET DATE AND TIME NOW                        
+         SR    R1,R1                                                            
+         TIME  TU                                                               
+         ST    R1,DATE                                                          
+         ST    R0,TIME                                                          
+         STCM  R0,15,BILTIME       SET TIME IN BILLING RECORD                   
+*                                                                               
+ACTN1    SR    R5,R5               R5=ZERO IF OFFLINE                           
+         SR    R6,R6                                                            
+         MVI   TASK,C' '                                                        
+         CLI   FACPAK,C' '                                                      
+         BH    ACTN1A                                                           
+         L     R6,=V(MASTC)        R6=A(MASTC) IF OFFLINE                       
+         B     ACTN2                                                            
+ACTN1A   L     R5,=V(SSB)                                                       
+         L     R5,SSBTKADR-SSBD(R5)                                             
+         USING TCBD,R5             R5=A(TCB ENTRY) IF ONLINE                    
+         MVC   TASK,TCBID+6                                                     
+         L     R6,TCBUTL                                                        
+         USING UTLD,R6             R6=A(UTL ENTRY) IF ONLINE                    
+*                                                                               
+ACTN2    CLI   0(R2),C'I'          INITIALISE BILLING (APPLIC)                  
+         BE    INIT                                                             
+         CLI   0(R2),C'U'          WRITE USER BILLING DATA (APPLIC)             
+         BE    USER                                                             
+         CLI   0(R2),C'F'          FINISH A BILLING SEQUENCE (APPLIC)           
+         BE    FINS                                                             
+         CLI   0(R2),C'O'          INIT AND WRITE USER DATA (APPLIC)            
+         BE    INIT                                                             
+         CLI   0(R2),C'C'          CANCEL A BILLING SEQUENCE (APPLIC)           
+         BE    CANC                                                             
+         CLI   0(R2),C'S'          WRITE SYSTEM BILLING DATA (FACPAK)           
+         BE    SYST                                                             
+         CLI   0(R2),C'E'          END A BILLING SEQUENCE (FACPAK)              
+         BE    ENDB                                                             
+         B     EXIT                EXIT IF UNKNOWN                              
+*                                                                               
+EXIT     XMOD1 1                                                                
+         ORG   *-2                                                              
+         BSM   0,RE                                                             
+         EJECT                                                                  
+***********************************************************************         
+* INITIALISE BILLING. CREATE A UNIQUE 12 CHR BILLING REFERENCE AND    *         
+* SAVE IN SYSTEM CONTROL BLOCK. PASS BACK TO CALLER IF REQUIRED.      *         
+***********************************************************************         
+         SPACE 1                                                                
+INIT     MVC   BILCPU,CPU          CREATE BILLING REF FOR INITIALISE            
+         MVC   BILASID,ASID                                                     
+         MVC   BILTASK,TASK                                                     
+         MVC   BILIDATE,DATE                                                    
+         MVC   BILITIME,TIME                                                    
+         MVI   BILTYPE,BILQINIT    SET INITIALISE TYPE RECORD                   
+         MVI   BILSUBT,0                                                        
+         LTR   R3,R3               GET A(CALLERS BILL REFERENCE AREA)           
+         BZ    *+10                                                             
+         MVC   0(L'BILREF,R3),BILREF                                            
+*                                                                               
+INIT1    CLI   FACPAK,C' '         OFFLINE INITIALISE DATA                      
+         BH    INIT2                                                            
+         LTR   RF,R6               SAVE BILLREF IN V(MASTC)                     
+         BZ    *+10                                                             
+         MVC   MCBILL-MASTD(L'MCBILL,RF),BILREF                                 
+         MVC   BILIJOB,JOB                                                      
+         MVC   BILISTEP,STEP                                                    
+         LA    RF,BILIOFFX-BILLEN                                               
+         STH   RF,BILLEN                                                        
+         B     INIT3                                                            
+*                                                                               
+INIT2    CLI   TSYS,0              ONLINE MUST BE CONNECTED TO APPLIC           
+         BE    EXIT                                                             
+         PROT  OFF                                                              
+         OI    TSTAT1,TSTATBIL     SET BILLING INITIALISED IN UTL               
+         MVC   TCBBILL,BILREF      SET BILLING REF IN TCB                       
+         PROT  ON                                                               
+*                                                                               
+         MVC   BILLUID,TSYM        VTAM LUID                                    
+         MVC   BILAGY,TAGY         AGENCY ALPHA                                 
+         SR    RE,RE                                                            
+         MVC   BILSNAME,SPACES     SYSTEM NAME                                  
+         ICM   RE,7,TASYS                                                       
+         BZ    *+10                                                             
+         MVC   BILSNAME,0(RE)                                                   
+*                                                                               
+         MVC   BILPNAME,SPACES     PROGRAM NAME                                 
+         XR    RE,RE                                                            
+         ICM   RE,7,TAPRG                                                       
+         BZ    INIT2B                                                           
+         L     RF,=V(SSB)          SOFT TAPRG VALUE?                            
+         TM    SSBSTAT4-SSBD(RF),SSBPGDSP                                       
+         BZ    INIT2A              NO                                           
+         XR    RF,RF                                                            
+         ICM   RF,7,TARSYS         REAL SYSTEM                                  
+         BZ    INIT2B                                                           
+         ICM   RF,15,SEPGMS-SELISTD(RF)                                         
+         AR    RE,RF                                                            
+INIT2A   MVC   BILPNAME,0(RE)                                                   
+*                                                                               
+INIT2B   MVC   BILUSRID,TUSER      USER ID NUMBER                               
+         MVC   BILSNUM,TOVSYS      SYSTEM NUMBER                                
+         MVC   BILPNUM,TPRG        PROGRAM NUMBER                               
+         MVC   BILPSWD,TPASSWD     PASSWORD NUMBER                              
+         MVC   BILSAGN,TSAGN       ACCESS GROUP NUMBER                          
+         MVC   BILSIN,TSIN         SYSTEM INPUT NUMBER                          
+         MVC   BILFACID,FACPAK     FACPAK ID CHR                                
+         MVC   BILSENUM,TSYS       SE NUMBER                                    
+         MVC   BILAGSEC,TAGYSEC    AGENCY CODE FOR SECURITY                     
+         MVC   BILAGPER,TAGYPER    AGENCY CODE FOR TPERSON                      
+         MVC   BILPERID,TPERSON    PERSONAL ID NUMBER                           
+         LA    RF,BILIONX-BILLEN                                                
+         STH   RF,BILLEN                                                        
+*                                                                               
+INIT3    BRAS  R9,PUTSMF           PUT RECORD TO SMF                            
+         CLI   0(R2),C'O'                                                       
+         BE    USER1               TEST IF INIT AND USER DATA                   
+         B     EXIT                                                             
+         SPACE 2                                                                
+***********************************************************************         
+* END BILLING. THIS CALL IS USED TO END BILLING IF A CONTROLLER SPOTS *         
+* THAT BILLING IS STILL ACTIVE ON A CHANGE OF CONTROL.                *         
+***********************************************************************         
+         SPACE 1                                                                
+ENDB     BRAS  R9,GETREF           TERMINATE BILLING DATA                       
+         BZ    EXIT                                                             
+         MVC   BILREF,0(R1)        SET BILLING REFERENCE                        
+         MVI   BILTYPE,BILQENDB    SET END BILLING TYPE RECORD                  
+         MVI   BILSUBT,0                                                        
+         BRAS  R9,GETSTATS         GET END STATISTICS                           
+         LA    RF,BILCPUTM-BILLEN                                               
+         STH   RF,BILLEN                                                        
+         BRAS  R9,PUTSMF           PUT SMF RECORD                               
+         BRAS  R9,RESETREF         RESET BILLING REFERENCE                      
+         B     EXIT                                                             
+         SPACE 2                                                                
+***********************************************************************         
+* FINISH BILLING DATA. USED WHEN AN APPLICATION WANTS TO LOGICALLY    *         
+* TERMINATE BILLING FOR THE PASSED OR CURRENT BILLING REFERENCE.      *         
+***********************************************************************         
+         SPACE 1                                                                
+FINS     BRAS  R9,GETREF           FINISH BILLING DATA                          
+         BZ    EXIT                                                             
+         MVC   BILREF,0(R1)        SET BILLING REFERENCE                        
+         MVI   BILTYPE,BILQFINS    SET END BILLING TYPE RECORD                  
+         MVI   BILSUBT,0                                                        
+         BRAS  R9,GETSTATS         GET END STATISTICS                           
+         LA    RF,BILFINAX-BILLEN                                               
+         STH   RF,BILLEN                                                        
+         BRAS  R9,PUTSMF           PUT SMF RECORD                               
+         BRAS  R9,RESETREF         RESET BILLING REFERENCE                      
+         B     EXIT                                                             
+         SPACE 2                                                                
+***********************************************************************         
+* CANCEL BILLING DATA. THIS CALL INDICATES THAT ALL PREVIOUS RECORDS  *         
+* WITH THE PASSED OR EXISTING BILLING REFERENCE ARE TO BE IGNORED.    *         
+***********************************************************************         
+         SPACE 1                                                                
+CANC     BRAS  R9,GETREF           CANCEL BILLING DATA                          
+         BZ    EXIT                                                             
+         MVC   BILREF,0(R1)        SET BILLING REFERENCE                        
+         MVI   BILTYPE,BILQCANC    SET CANCEL TYPE RECORD                       
+         MVI   BILSUBT,0                                                        
+         BRAS  R9,GETSTATS         GET END STATISTICS                           
+         LA    RF,BILCPUTM-BILLEN                                               
+         STH   RF,BILLEN                                                        
+         BRAS  R9,PUTSMF           PUT SMF RECORD                               
+         BRAS  R9,RESETREF         RESET BILLING REFERENCE                      
+         B     EXIT                                                             
+         SPACE 2                                                                
+***********************************************************************         
+* USER CALL- OUTPUT USER DATA. USER MUST HAVE PREVIOUSLY DONE AN INIT *         
+* CALL TO GET BILLING REFERENCE.                                      *         
+***********************************************************************         
+         SPACE 1                                                                
+USER     BRAS  R9,GETREF           WRITE USER BILLING DATA                      
+         BZ    EXIT                                                             
+         MVC   BILREF,0(R1)        SET BILLING REFERENCE                        
+USER1    MVI   BILTYPE,BILQUSER    SET USER DATA TYPE RECORD                    
+         MVI   BILSUBT,0                                                        
+         SR    RF,RF                                                            
+         ICM   RF,1,4(R2)          GET LENGTH OF USER DATA                      
+         BZ    USER2                                                            
+         CH    RF,=H'236'                                                       
+         BH    EXIT                                                             
+         ICM   RE,7,5(R2)          GET USER DATA                                
+         BZ    EXIT                                                             
+         BCTR  RF,0                                                             
+         EX    RF,*+8                                                           
+         B     *+10                                                             
+         MVC   BILUSER(0),0(RE)                                                 
+         LA    RF,1(RF)                                                         
+USER2    LA    RF,BILUSER-BILLEN(RF)                                            
+         STH   RF,BILLEN                                                        
+         BRAS  R9,PUTSMF                                                        
+         B     EXIT                                                             
+         SPACE 2                                                                
+***********************************************************************         
+* SYSTEM CALL - OUTPUT PROCESSING STATS IF BILLING STILL ACTIVE WHEN  *         
+* CONTROL RETURNS TO FACPAK OR OFFLINE CONTROLLER.                    *         
+***********************************************************************         
+         SPACE 1                                                                
+SYST     BRAS  R9,GETREF           SYSTEM BILLING DATA                          
+         BZ    EXIT                                                             
+*&&UK                                                                           
+* BILLIT BEING USED TO LOG REQUEST DETAILS IN UK. DON'T NEED STATS              
+*                                                                               
+         LTR   R5,R5               TEST ONLINE                                  
+         BZ    SYST2                                                            
+         CLI   TOVSYS,5            MPL                                          
+         BNE   SYST1                                                            
+         CLI   TPRG,X'10'          CRAFT                                        
+         BE    EXIT                                                             
+*                                                                               
+SYST1    CLI   TOVSYS,4            MEDIA                                        
+         BNE   SYST2                                                            
+         CLI   TPRG,X'18'          DEN                                          
+         BE    EXIT                                                             
+         CLI   TPRG,X'0D'          TARGET                                       
+         BE    EXIT                                                             
+SYST2    EQU   *                                                                
+*&&                                                                             
+         MVC   BILREF,0(R1)        SET BILLING REFERENCE                        
+         MVI   BILTYPE,BILQSYST    SET SYSTEM BILLING TYPE RECORD               
+         MVI   BILSUBT,0                                                        
+         BRAS  R9,GETSTATS         GET END STATISTICS                           
+         LA    RF,BILFINAX-BILLEN                                               
+         STH   RF,BILLEN                                                        
+         BRAS  R9,PUTSMF                                                        
+         B     EXIT                                                             
+         EJECT                                                                  
+***********************************************************************         
+* SUBROUTINE TO SET R1 POINTING TO 12 CHR BILLING REFERENCE FIELD     *         
+* CALLER CAN PASS THIS IN P1+1(3)                                     *         
+* IF NOT PASSED IS FETCHED FROM THE TCB IF ONLINE                     *         
+***********************************************************************         
+         SPACE 1                                                                
+GETREF   LTR   R1,R3               SET R1 TO CALLER'S BILLING REF               
+         BNZ   GETREF2                                                          
+         LTR   R5,R5               TEST ONLINE/OFFLINE                          
+         BZ    GETREF1                                                          
+         TM    TSTAT1,TSTATBIL     EXIT ONLINE IF BILLING NOT INIT              
+         BZR   R9                                                               
+         LA    R1,TCBBILL          SET R1 TO BILLING REF IN TCB                 
+         B     GETREF2                                                          
+GETREF1  LTR   R1,R6               EXIT OFFLINE IF NO MASTC CSECT               
+         BZR   R9                                                               
+         LA    R1,MCBILL-MASTD(R1)                                              
+GETREF2  LR    R0,R1               USE R0 TO SET CC ON EXIT                     
+         PROT  OFF                                                              
+         OC    0(L'TCBBILL,R1),0(R1)                                            
+         BNZ   *+6                                                              
+         SR    R0,R0                                                            
+         PROT  ON                                                               
+         LTR   R0,R0               SET CC FROM OR CHR                           
+         BR    R9                                                               
+         SPACE 2                                                                
+***********************************************************************         
+* SUBROUTINE TO RESET BILLING REFERENCE TO END BILLING                *         
+***********************************************************************         
+         SPACE 1                                                                
+RESETREF LTR   R5,R5               ONLINE                                       
+         BZ    RESETR1                                                          
+         PROT  OFF                                                              
+         NI    TSTAT1,255-TSTATBIL RESET UTL FLAG                               
+         XC    TCBBILL,TCBBILL     CLEAR TCB INFO                               
+         PROT  ON                                                               
+         BR    R9                                                               
+RESETR1  LTR   RF,R6               OFFLINE                                      
+         BZR   R9                                                               
+         LA    RF,MCBILL-MASTD(RF) CLEAR MASTC BILLING REF                      
+         XC    0(L'MCBILL,RF),0(RF)                                             
+         BR    R9                                                               
+         SPACE 2                                                                
+***********************************************************************         
+* SUBROUTINE TO PUT BILLING RECORD TO MVS SMF DATA FILE               *         
+***********************************************************************         
+         SPACE 1                                                                
+PUTSMF   LH    R0,=H'-20'          FREDS REFERENCE FOR BILLING DATA             
+         LA    R1,BILLEN                                                        
+         CHI   RF,BILMAXLQ         ENSURE NOT TOO LONG                          
+         BNH   *+10                                                             
+         MVC   BILLEN,=AL2(BILMAXLQ)                                            
+*                                                                               
+         SVC   247                                                              
+PUTSMFX  BR    R9                                                               
+         SPACE 2                                                                
+***********************************************************************         
+* SUBROUTINE TO EXTRACT RUN TIME STATISTICS                           *         
+***********************************************************************         
+         SPACE 1                                                                
+GETSTATS XC    BILCPUTM(BILFINAX-BILCPUTM),BILCPUTM                             
+         CLI   FACPAK,C' '                                                      
+         BH    GETS2                                                            
+*                                                                               
+GETS1    LA    R7,DUB              OFFLINE GET JOB AND STEP NAMES               
+         EXTRACT (7),'S',FIELDS=TIOT                                            
+         L     R7,DUB                                                           
+         MVC   BILFJOB,0(R7)                                                    
+         MVC   BILFSTEP,8(R7)                                                   
+         LA    R7,DUB                                                           
+         EXTRACT (7),'S',FIELDS=(ASID)                                          
+         L     R7,DUB                                                           
+         LOCASCB ASID=(7)                                                       
+         L     RF,ASCBEJST-ASCB(R1) GET ELAPSED JOB STEP TIMING (SECS)          
+         M     RE,=F'38400'        CONVERT SECONDS TO MVS TU'S                  
+         STCM  RF,15,BILCPUTM                                                   
+         B     GETSX                                                            
+GETS1A   ICM   RF,15,=V(LOGOC)     GET PAGES AND LINES PRINTED                  
+         BZ    GETS1B                                                           
+         MVC   BILPAGES,LOGORUNP-LOGOD(RF)                                      
+         MVC   BILLINES,LOGORUNL-LOGOD(RF)                                      
+GETS1B   B     GETSX                                                            
+*                                                                               
+GETS2    MVC   BILFJOB,JOB         ONLINE OUTPUT TCB STATISTICS                 
+         MVC   BILFSTEP,STEP                                                    
+         MVC   BILEXCPS+1(3),TCBIOCNT                                           
+         CLI   BILTYPE,BILQSYST    TEST FACPAK SYSTEM CALL                      
+         BNE   GETS2A              NO                                           
+         L     R0,TCBCPUTM         YES HAVE ALREADY UPDATED CPU TIME            
+         MH    R0,=H'384'          CONVERT FACPAK UNITS TO MVS TU'S             
+         STCM  R0,15,BILCPUTM                                                   
+         BR    R9                                                               
+GETS2A   L     R0,TIME             TIME NOW                                     
+         L     R1,TCBTIME          LAST EVENT TIME                              
+         CLR   R0,R1                                                            
+         BNL   *+8                                                              
+         AL    R0,=X'C5C10000'     ADJUST FOR MIDNIGHT                          
+         SLR   R0,R1                                                            
+         AL    R0,TCBCPUTM         CPU TIME USED SO FAR IN THIS TASK            
+         STCM  R0,15,BILCPUTM                                                   
+GETSX    BR    R9                                                               
+         EJECT                                                                  
+FACPAK   DC    X'00'               X'00'=FRSTTIME,X'40'=OFFLINE                 
+CPU      DC    C' '                THIRD CHR OF CPUID                           
+ASID     DC    X'0000'             ADDRESS SPACE ID                             
+JOB      DC    CL8' '              JOB NAME                                     
+STEP     DC    CL8' '              STEP NAME                                    
+SPACES   DC    CL8' '                                                           
+         SPACE 2                                                                
+         LTORG                                                                  
+         SPACE 2                                                                
+WRKD     DSECT                     LOCAL WORKING STORAGE                        
+DUB      DS    D                                                                
+FULL     DS    F                                                                
+HALF     DS    H                                                                
+BYTE     DS    X                                                                
+TASK     DS    C                                                                
+DATE     DS    F                                                                
+TIME     DS    F                                                                
+DMCB     DS    6F                                                               
+*                                                                               
+         DS    H                                                                
+BILREC   DS    CL256               BILLING RECORD                               
+*                                                                               
+WRKX     EQU   *                                                                
+         EJECT                                                                  
+       ++INCLUDE DDBILLREC                                                      
+         EJECT                                                                  
+* FASSB                                                                         
+         PRINT OFF                                                              
+       ++INCLUDE FASSB                                                          
+         PRINT ON                                                               
+* FATCB                                                                         
+         PRINT OFF                                                              
+       ++INCLUDE FATCB                                                          
+         PRINT ON                                                               
+* FAUTL                                                                         
+         PRINT OFF                                                              
+       ++INCLUDE FAUTL                                                          
+         PRINT ON                                                               
+* FASYSFAC                                                                      
+         PRINT OFF                                                              
+       ++INCLUDE FASYSFAC                                                       
+         PRINT ON                                                               
+* FASELIST                                                                      
+         PRINT OFF                                                              
+       ++INCLUDE FASELIST                                                       
+         PRINT ON                                                               
+* DDMASTD                                                                       
+         PRINT OFF                                                              
+       ++INCLUDE DDMASTD                                                        
+         PRINT ON                                                               
+* DDLOGOD                                                                       
+         PRINT OFF                                                              
+       ++INCLUDE DDLOGOD                                                        
+         PRINT ON                                                               
+         IHAASCB                                                                
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'008DDBILLIT  06/05/20'                                      
+         END                                                                    

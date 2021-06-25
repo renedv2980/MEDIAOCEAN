@@ -1,0 +1,326 @@
+*          DATA SET ACSMFBAL   AT LEVEL 002 AS OF 06/24/10                      
+*CATALP ACSMFBAL                                                                
+                                                                                
+***********************************************************************         
+* ACSMFBAL - Create an SMF record for automated balance checking      *         
+*                                                                     *         
+* This module included in:  ACREPNB02 for SOON billing (BAL2)         *         
+*                           ACREPBG02                  (BAL1/BAL3)    *         
+*                           ACREPCK02 odds file        (BAL1)         *         
+*                                                                     *         
+* P1 Byte 0   = INTEGER     Balance type - Set on X'80' to print rec  *         
+*    Byte 1-3 = A(ACWORKD)                                            *         
+* P2 Byte 0   = INTEGER     Set to 2 if two postings - Return 0 if OK *         
+*    Byte 1-3 = A(POSTINGS) One or two posting amounts                *         
+* P3 Byte 1-3 = A(MARKINGS) SJ debits marked                          *         
+* P4 Byte 1-3 = A(RECORDS)  Number of records                         *         
+* P5 Byte 1-3 = A(WKID)     Worker file info                          *         
+* P6 Byte 3-4 = SE NUMBER   Set to SE num to override UTL value       *         
+*                                                                     *         
+* Postings, markings, and records must be defined as PL8              *         
+* Return zero if OK in P2 Byte zero or non-zero if error              *         
+***********************************************************************         
+                                                                                
+         TITLE 'ACSMFBAL - SMF output for auto balancing'                       
+ACSMFBAL CSECT                                                                  
+         PRINT NOGEN                                                            
+         NMOD1 WORKX-WORKD,**SMFB**,CLEAR=YES                                   
+         USING WORKD,RC                                                         
+         USING ACWORKD,RA                                                       
+         ST    R1,APARM                                                         
+         MVC   PARMS(PARML),0(R1)                                               
+         L     RA,AACWORKD          RA=A(ACWORKD)                               
+                                                                                
+         USING COMFACSD,RE                                                      
+         L     RE,ADCOMFAC          A(COMFACS)                                  
+         ICM   RF,15,CSMFOUT                                                    
+         BZ    ERROR                                                            
+         ST    RF,VSMFOUT                                                       
+         DROP  RE                                                               
+                                                                                
+***********************************************************************         
+* Get data and build record                                           *         
+***********************************************************************         
+         USING SMFBRECD,SMFREC                                                  
+         MVC   SMFTAG,=CL8'*SMFREC*'                                            
+         XC    SMFREC,SMFREC                                                    
+         MVC   SMFBLEN,=AL2(SMFBRLNQ)                                           
+         MVC   SMFBSRCE,SPACES                                                  
+         MVC   SMFBUSER,SPACES                                                  
+         MVC   SMFBTXT,SPACES                                                   
+         MVC   SMFBTXT1,SPACES                                                  
+         MVC   SMFBTXT2,SPACES                                                  
+         MVC   SMFBDRS(6*L'SMFBMNY),=6PL8'0'                                    
+                                                                                
+         MVI   SMFBTYPE,C'M'       Money                                        
+         MVC   SMFBINFO,=C'BAL1'   Set type of balance record                   
+         MVC   SMFBINFO+3(1),BALTY                                              
+         OI    SMFBINFO+3,C'0'     Convert binary number to alpha               
+                                                                                
+         MVC   SMFBAGY,QCOMPANY    Agency hex                                   
+         MVC   SMFBAGYA,ALPHAID    Agency alpha                                 
+         MVC   SMFBUID,ORIGINUM    Default User id number                       
+         MVI   SMFBSRCE,C'A'       Default System                               
+         MVC   SMFBSRCE+1(2),QPROG Default program                              
+                                                                                
+         USING MASTD,RF                                                         
+         MVI   RUNIND,0            Set RUNIND flags                             
+         L     RF,ADMASTC                                                       
+         CLI   MCTSTRUN,X'FF'                                                   
+         BNE   *+8                                                              
+         OI    RUNIND,RUNITEST     RUN=TEST                                     
+         CLI   RCWRITE,YES                                                      
+         BE    *+8                                                              
+         OI    RUNIND,RUNIWRNO     WRITE=NO                                     
+                                                                                
+         USING SSBOFFD,RE          Set DSPACE from SSB                          
+         ICM   RE,15,MCSSB                                                      
+         BZ    ERROR                                                            
+         MVC   SMFBDSPC,SSODSPAC                                                
+         CLI   SMFBDSPC,C' '                                                    
+         BH    *+8                                                              
+         MVI   SMFBDSPC,C'A'       Default is production                        
+         DROP  RE                                                               
+                                                                                
+         USING UTLD,RE                                                          
+         ICM   RE,15,MCUTL         Set A(UTL)                                   
+         ST    RE,AUTL                                                          
+         MVC   SMFBSENO,TSYS       SE number                                    
+         OC    SE#2USE,SE#2USE     Use over-ride if passed                      
+         BZ    *+10                                                             
+         MVC   SMFBSENX(2),SE#2USE+2                                            
+         DROP  RE,RF                                                            
+*                                                                               
+         SR    R2,R2               Point to one or two posting amounts          
+         ICM   R2,7,APOST+1                                                     
+         ZAP   SMFBCRS,0(8,R2)     Total posted (credits)                       
+         ZAP   SMFBDRS,0(8,R2)     Total posted (debits)                        
+         CLI   NPOST,2                                                          
+         BNE   *+10                                                             
+         ZAP   SMFBDRS,8(8,R2)     Extra posting passed                         
+*                                                                               
+         L     R2,AMARK                                                         
+         ZAP   SMFBCNT3,0(8,R2)    Total marked (SJ debits)                     
+         L     R2,ARECS                                                         
+         ZAP   SMFBCNT4,0(8,R2)    Total records                                
+                                                                                
+***********************************************************************         
+* Calculate the file date                                             *         
+***********************************************************************         
+         USING WKRECD,R2                                                        
+         GOTO1 DATCON,DMCB,(4,RCDATE),(0,TODAY0)  Todays YYMMDD                 
+         GOTO1 DATCON,DMCB,(4,RCDATE),(15,SMFBDATE)                             
+         SR    R2,R2                                                            
+         ICM   R2,7,AWKID+1                                                     
+         BZ    ACSMF20                                                          
+         UNPK  DUB(3),WKDAY(2)                                                  
+         MVC   WORK+0(4),TODAY0YY                                               
+         MVC   WORK+4(2),DUB                                                    
+         CLC   WORK+4(2),TODAY0DD                                               
+         BNH   ACSMF10                                                          
+         MVC   WORK+4(2),=C'01'    If day is higher must be last month          
+         GOTO1 ADDAY,DMCB,WORK,WORK+6,-1                                        
+         MVC   WORK+0(4),WORK+6                                                 
+         MVC   WORK+4(2),DUB                                                    
+                                                                                
+ACSMF10  GOTO1 DATCON,DMCB,(0,WORK),(15,SMFBDATE)                               
+         MVC   SMFBUID,WKUSRID                                                  
+         MVC   SMFBWPRG,WKSYSPRG   System/Program SPP                           
+         MVC   SMFBWSUB,WKSUBPRG                                                
+         CLI   SMFBWSUB,0                                                       
+         BNE   *+8                                                              
+         MVI   SMFBWSUB,C'*'                                                    
+         MVC   SMFBWDAY,WKDAY                                                   
+         MVC   SMFBWCLS,WKCLASS                                                 
+         MVC   SMFBWSEQ,WKFILNO                                                 
+                                                                                
+***********************************************************************         
+* Resolve Company id and which file based on origin id and SE#        *         
+* Note the control file must have been open already                   *         
+***********************************************************************         
+         USING CTIREC,R3                                                        
+ACSMF20  MVC   SMFBTXT(8),=CL8'USER????'                                        
+         MVC   SMFBSENM,=CL5'ACC??'                                             
+                                                                                
+         USING UTLD,RE                                                          
+         L     RE,AUTL                                                          
+         MVC   SVSE#,TSYS                                                       
+         MVI   TSYS,X'0A'          CONTROL SYSTEM                               
+         DROP  RE                                                               
+                                                                                
+         LA    R3,CXREC            READ CONTROL FILE                            
+         XC    CTIKEY,CTIKEY                                                    
+         MVI   CTIKTYP,CTIKTYPQ                                                 
+         MVC   CTIKNUM,SMFBUID                                                  
+         GOTO1 DATAMGR,DMCB,DMREAD,CTFILE,(R3),(R3)                             
+         CLI   8(R1),0                                                          
+         BNE   ACSMF28             THERE ARE ERRORS                             
+*                                                                               
+         LA    R3,CTIDATA          NO, LOOK FOR ELEMENT                         
+         SR    RE,RE                                                            
+*                                                                               
+ACSMF22  CLI   0(R3),0             END OF RECORD?                               
+         BE    ACSMF28                                                          
+         CLI   0(R3),X'02'                                                      
+         BE    ACSMF25                                                          
+         IC    RE,1(,R3)                                                        
+         AR    R3,RE                                                            
+         B     ACSMF22                                                          
+*                                                                               
+ACSMF25  MVC   SMFBTXT(8),2(R3)    USER ID                                      
+*                                                                               
+         USING CTWREC,R3                                                        
+ACSMF28  LA    R3,CXREC            READ CONTROL FILE AGAIN                      
+         XC    CTWKEY,CTWKEY                                                    
+         MVI   CTWKTYP,CTWKTYPQ                                                 
+         MVI   CTWKREC,C'S'        INDICATE SYSTEM LIST                         
+         MVI   CTWKSYSN,CTWKACC                                                 
+         GOTO1 DATAMGR,DMCB,DMREAD,CTFILE,(R3),(R3)                             
+         CLI   8(R1),0                                                          
+         BNE   ACSMF40             THERE ARE ERRORS                             
+*                                                                               
+         LA    R3,CTWDATA          NO, LOOK FOR ELEMENT                         
+         SR    RE,RE                                                            
+*                                                                               
+         USING SYSELD,R3                                                        
+ACSMF32  CLI   0(R3),0             END OF RECORD?                               
+         BE    ACSMF40                                                          
+         CLI   0(R3),SYSELQ                                                     
+         BNE   ACSMF38                                                          
+         CLC   SYSSEN,SMFBSENO     MATCH ON SE NUMBER                           
+         BNE   ACSMF38                                                          
+         MVC   SMFBSENM,SYSNAME    File name                                    
+         B     ACSMF40                                                          
+*                                                                               
+ACSMF38  IC    RE,1(,R3)                                                        
+         AR    R3,RE                                                            
+         B     ACSMF32                                                          
+                                                                                
+***********************************************************************         
+* Output SMF record                                                   *         
+***********************************************************************         
+         USING UTLD,RE                                                          
+ACSMF40  L     RE,AUTL             Restore SE num in UTL                        
+         MVC   TSYS,SVSE#                                                       
+         DROP  RE                                                               
+                                                                                
+         MVC   SMFPARM(4),=F'12'   File balancing SMF record                    
+         TM    RUNIND,RUNITEST                                                  
+         BZ    *+8                                                              
+         MVI   SMFPARM,X'80'                                                    
+         GOTOR VSMFOUT,SMFPARM,,SMFREC                                          
+         OC    0(4,R1),0(R1)       Was SMF record output OK                     
+         BNZ   ERROR                                                            
+                                                                                
+         TM    BALTY,X'80'         Print SMF record if requested                
+         BZ    OKEXIT                                                           
+         ICM   RF,15,VPRNTBL                                                    
+         BZ    OKEXIT                                                           
+         LLH   R0,SMFBLEN                                                       
+         GOTOR (RF),DMCB,=C'SMFREC',SMFREC,C'DUMP',(R0),=C'1D',        +        
+               (C'P',PRINT)                                                     
+         B     OKEXIT                                                           
+                                                                                
+***********************************************************************         
+* Exit routines                                                       *         
+***********************************************************************         
+ERROR    L     R1,APARM                                                         
+         MVI   4(R1),1                                                          
+         B     EXIT                                                             
+                                                                                
+OKEXIT   L     R1,APARM                                                         
+         MVI   4(R1),0                                                          
+                                                                                
+EXIT     XIT1                                                                   
+                                                                                
+VPRNTBL  DC    V(PRNTBL)                                                        
+CTFILE   DC    C'CTFILE '                                                       
+                                                                                
+         LTORG                                                                  
+                                                                                
+K        EQU   1024                                                             
+YES      EQU   C'Y'                                                             
+NO       EQU   C'N'                                                             
+                                                                                
+WORKD    DSECT                                                                  
+PARMS    DS    0A                  PARAMETER LIST                               
+BALTY    DS    0X                  BALANCE TYPE                                 
+AACWORKD DS    A                   A(ACWORKD)                                   
+NPOST    DS    0X                  NUMBER OF POSTINGS                           
+APOST    DS    A                   A(POSTINGS)                                  
+AMARK    DS    A                   A(MARKINGS)                                  
+ARECS    DS    A                   A(RECORDS)                                   
+AWKID    DS    A                   A(WKID) or zero                              
+SE#2USE  DS    A                   Over-ride SE#                                
+PARML    EQU   *-PARMS                                                          
+*                                                                               
+APARM    DS    A                   A(PARAMETER LIST)                            
+AUTL     DS    A                                                                
+VSMFOUT  DS    V                                                                
+*                                                                               
+SMFPARM  DS    2F                                                               
+*                                                                               
+TODAY0   DS    0CL6                                                             
+TODAY0YY DS    CL2                                                              
+TODAY0MM DS    CL2                                                              
+TODAY0DD DS    CL2                                                              
+*                                                                               
+SVSE#    DS    X                   Save SE# then restore                        
+*                                                                               
+RUNIND   DS    X                   Run indictors                                
+RUNITEST EQU   X'80'               RUN=TEST                                     
+RUNIWRNO EQU   X'40'               WRITE=NO                                     
+RUNISOON EQU   X'20'               SOON JOB                                     
+*                                                                               
+         DS    0D                                                               
+SMFTAG   DS    CL8                                                              
+SMFREC   DS    XL(SMFBRLNQ)                                                     
+*                                                                               
+         DS    0D                                                               
+CXREC    DS    CL(2*K)                                                          
+*                                                                               
+WORKX    EQU   *                                                                
+                                                                                
+*DMWRKRD                                                                        
+         PRINT OFF                                                              
+       ++INCLUDE DMWRKRD                                                        
+         PRINT ON                                                               
+*CTGENFILE                                                                      
+         PRINT OFF                                                              
+       ++INCLUDE CTGENFILE                                                      
+         PRINT ON                                                               
+*ACREPWORKD                                                                     
+         PRINT OFF                                                              
+       ++INCLUDE ACREPWORKD                                                     
+         PRINT ON                                                               
+*FAUTL                                                                          
+         PRINT OFF                                                              
+       ++INCLUDE FAUTL                                                          
+         PRINT ON                                                               
+*FASSB                                                                          
+SSBOFFD  DSECT                                                                  
+         PRINT OFF                                                              
+       ++INCLUDE FASSBOFF                                                       
+         PRINT ON                                                               
+*DDMASTD                                                                        
+         PRINT OFF                                                              
+       ++INCLUDE DDMASTD                                                        
+         PRINT ON                                                               
+*DDSYSELD                                                                       
+         PRINT OFF                                                              
+       ++INCLUDE DDSYSELD                                                       
+         PRINT ON                                                               
+*DDCOMFACS                                                                      
+         PRINT OFF                                                              
+       ++INCLUDE DDCOMFACS                                                      
+         PRINT ON                                                               
+*DDSMFFBAL                                                                      
+       ++INCLUDE DDSMFFBAL                                                      
+         ORG   SMFBTXT1                                                         
+SMFBSENM DS    CL5                                                              
+         ORG   SMFBTXT2+8                                                       
+SMFBINFO DS    CL4                                                              
+         ORG                                                                    
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'002ACSMFBAL  06/24/10'                                      
+         END                                                                    

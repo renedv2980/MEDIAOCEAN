@@ -1,0 +1,392 @@
+*          DATA SET TRXMLPUT   AT LEVEL 001 AS OF 08/07/19                      
+*CATALP TRXMLPUT                                                                
+                                                                                
+*================================================================               
+* THIS VERSION CREATES TWO BUFFERS                                              
+* A USER BUFFER OF 64K AT +0 THAT HAS A(NEXTDATA) F'REMAINING LEN'              
+* AN XML BUFFER OF THE REMAINING STORAGE THAT STARTS AT +65536                  
+*                                                                               
+* BUILD RECORDS FOR XML FLAT FILE                                               
+* XFLEN   DS   XL2      RECORD LEN    +0                                        
+* XFDATA  DS   0XL253   XMLDATA       +2                                        
+*                                                                               
+* CALLS TO THIS ROUTINE ARE                                                     
+* P1+0(1) = L'DATA     =0 FOR XMLHDR                                            
+* P1+1(3) = A(DATA)                                                             
+* P2+1(3) = A(XMLTAB ENTRY)                                                     
+* P3(4)   = A(31-BIT BUFFER)- SET IN HERE XMLINIT CALL                          
+* P4(4)   = A(COMFACS)                                                          
+*===========================================================                    
+                                                                                
+         PRINT NOGEN                                                            
+XMLPUT   CSECT                                                                  
+         NMOD1 WORKX-WORKD,*XMLPUT*                                             
+         USING WORKD,RC                                                         
+*                                                                               
+         MVC   SVPARMS,0(R1)       SAVE CALLING PARMS                           
+         ST    R1,SVR1             SAVE CALLING R1                              
+*                                                                               
+         CLC   SVPXML+2(2),=Y(XMLINITQ)                                         
+         JNE   PUTF02                                                           
+         BRAS  RE,XMLINIT                                                       
+         J     EXIT                                                             
+*                                                                               
+PUTF02   CLC   SVPXML+2(2),=Y(XMLIDQ)  IS THIS SEND XMLID REQUEST               
+         JNE   PUTF04                                                           
+*                                                                               
+         LARL  RE,BXFIDL                                                        
+         MVC   XMLRECL(BXFIDX-BXFIDL),0(RE)                                     
+         BRAS  RE,PUTIT                                                         
+*                                                                               
+         LARL  RE,XMLIDL                                                        
+         MVC   XMLRECL(XMLIDX-XMLIDL),0(RE)    MOVE XMLID TEXT                  
+         BRAS  RE,PUTIT                                                         
+         J     EXIT                                                             
+*                                                                               
+PUTF04   CLC   SVPXML+2(2),=Y(XMLUIDQ)  IS IT RESET USER BUFFER REQ             
+         JNE   PUTF06                                                           
+*                                                                               
+         SAM31                                                                  
+* FIRST 64K IS USER BUFFER                                                      
+         L     RE,SVPBUFF          GET A(BUFFER)                                
+         LA    R0,8(RE)            FIRST DATA GOES AT BUFFER+8                  
+         ST    R0,0(RE)            SET FIRST DATA ADDR                          
+         L     R0,=F'65536'        LEN = 64K-8                                  
+         AHI   R0,-8                                                            
+         ST    R0,4(RE)            AND USABLE DATALEN                           
+         J     EXIT                                                             
+*                                                                               
+PUTF06   MVI   XMLREC,C' '                                                      
+         MVC   XMLREC+1(L'XMLREC-1),XMLREC                                      
+                                                                                
+* LOOK UP TEXT FOR THIS XMLTAG                                                  
+                                                                                
+         L     RF,SVPCOMF                                                       
+         L     RF,CBINSRCH-COMFACSD(RF)                                         
+         L     R0,XMLCNT                                                        
+         GOTO1 (RF),DMCB,SVPXML+2,XMLTAB,(R0),32,(0,2),(R0)                     
+         CLI   0(R1),0                                                          
+         JNE   *+2                                                              
+*                                                                               
+         L     R2,0(R1)            POINT TO XMLTAG ENTRY                        
+         ST    R2,SVXMLTAG         AND SAVE IT                                  
+*                                                                               
+         CLI   SVPDATAL,0          TEST PUT HDR                                 
+         JE    PUTHDR                                                           
+         CLI   SVPDATAL,X'FF'      TEST PUT TRAILER                             
+         JE    PUTTLR                                                           
+*                                                                               
+         MVI   XMLREC,C'<'                                                      
+         MVC   XMLREC+1(28),4(R2)   MOVE XMLTAG TEXT                            
+*                                                                               
+         LA    R6,XMLREC+29                                                     
+         CLI   0(R6),C' '          BACK UP TO LAST NONBLANK CHAR                
+         JH    *+8                                                              
+         JCT   R6,*-8                                                           
+         MVI   1(R6),C'>'                                                       
+         LA    R6,2(R6)                                                         
+*                                                                               
+         LLC   RE,SVPDATAL         GET DATA LEN                                 
+         L     RF,SVPDATA          GET DATA ADDR                                
+                                                                                
+* REMOVE TRAILING SPACES                                                        
+                                                                                
+         LR    R0,RE               SAVE INPUT STRING LEN                        
+         AR    RE,RF               POINT BEYOND LAST CHAR                       
+         BCTR  RE,0                BACK UP TO LAST CHAR                         
+*                                                                               
+PUTF10   CLI   0(RE),C' '                                                       
+         JH    PUTF12                                                           
+         BCTR  RE,0                                                             
+         JCT   R0,PUTF10                                                        
+         J     EXIT                NOTHING TO PRINT - EXIT                      
+                                                                                
+*==========================================================                     
+* NOW TEST FOR SPECIAL CHARACTERS                                               
+*==========================================================                     
+                                                                                
+PUTF12   SR    RE,RF               GIVES DATA LEN -1                            
+         LA    RE,1(RE)                                                         
+         LTR   R0,RE               SET LOOP COUNTER = DATALEN                   
+         JZ    *+2                                                              
+         BCTR  RE,0                                                             
+         LARL  R1,TRTTAB                                                        
+         EX    RE,*+8                                                           
+         J     *+10                                                             
+         TRT   0(0,RF),0(R1)       ANY SPECIAL CHARS?                           
+         JNZ   PUTF20              YES - GO ONE BYTE AT A TIME                  
+                                                                                
+*===================================================================            
+* NO SPECIAL CHARS - JUST MOVE DATA TO OUTPUT                                   
+*===================================================================            
+         EX    RE,*+8              IF NO SPCL CHARS, JUST MOVE DATA             
+         J     *+10                                                             
+         MVC   0(0,R6),0(RF)                                                    
+         LA    R6,1(RE,R6)                                                      
+         J     PUTF40                                                           
+*                                                                               
+PUTF20   LA    RE,1(RE)            RESTORE LEN                                  
+*                                                                               
+PUTF22   CLI   0(RF),X'80'         TEST POSSIBLE SPECIAL CHAR                   
+         JH    PUTF30              NO  - JUST MOVE IT                           
+*                                                                               
+         LA    R1,LITLT                                                         
+         CLI   0(RF),LT                                                         
+         JE    PUTF24                                                           
+         LA    R1,LITGT                                                         
+         CLI   0(RF),GT                                                         
+         JE    PUTF24                                                           
+         LA    R1,LITAMP                                                        
+         CLI   0(RF),AMP                                                        
+         JE    PUTF24                                                           
+         LA    R1,LITAPOS                                                       
+         CLI   0(RF),APOS                                                       
+         JE    PUTF24                                                           
+         LA    R1,LITQUOT                                                       
+         CLI   0(RF),QUOT                                                       
+         JE    PUTF24                                                           
+         J     PUTF30                                                           
+*                                                                               
+PUTF24   MVI   0(R6),AMP           SPCL CHAR HDR CHAR                           
+         LA    R6,1(R6)                                                         
+*                                                                               
+         LLC   RE,0(R1)            GET SPCL CHAR ENTRY LEN                      
+         AHI   RE,-2               SET FOR EX MVC                               
+         EX    RE,*+8                                                           
+         J     *+10                                                             
+         MVC   0(0,R6),1(R1)       MOVE SPCL CHAR STRING                        
+*                                                                               
+         LA    R6,1(RE,R6)         POINT TO NEXT MOVE TO POSN                   
+         MVI   0(R6),SEMI                                                       
+         LA    R6,1(R6)                                                         
+         J     PUTF32                                                           
+*                                                                               
+PUTF30   MVC   0(1,R6),0(RF)       MOVE CHAR TO OUTPUT                          
+         LA    R6,1(R6)                                                         
+*                                                                               
+PUTF32   LA    RF,1(RF)            NEXT INPUT DATA CHAR                         
+         JCT   R0,PUTF22                                                        
+*                                                                               
+PUTF40   MVI   0(R6),C'<'                                                       
+         MVI   1(R6),C'/'                                                       
+         L     R2,SVXMLTAG                                                      
+         MVC   2(28,R6),4(R2)      MOVE TAG                                     
+         LA    R6,30(R6)                                                        
+         CLI   0(R6),C' '                                                       
+         JH    *+8                                                              
+         JCT   R6,*-8                                                           
+         MVI   1(R6),C'>'                                                       
+         LA    R6,2(R6)                                                         
+*                                                                               
+         LA    R0,XMLRECL                                                       
+         SR    R6,R0                                                            
+         STH   R6,XMLRECL          SET RECORD LENGTH                            
+*                                                                               
+         BAS   RE,PUTIT                                                         
+         J     EXIT                                                             
+*                                                                               
+PUTHDR   MVI   XMLREC,C'<'                                                      
+         LA    R6,XMLREC+1                                                      
+         J     PUTTLR10                                                         
+*                                                                               
+PUTTLR   MVI   XMLREC,C'<'                                                      
+         MVI   XMLREC+1,C'/'                                                    
+         LA    R6,XMLREC+2                                                      
+*                                                                               
+PUTTLR10 MVC   0(28,R6),4(R2)      MOVE XMLTAG                                  
+         LA    R6,28(R6)                                                        
+         CLI   0(R6),C' '                                                       
+         JH    *+8                                                              
+         JCT   R6,*-8                                                           
+         MVI   1(R6),C'>'                                                       
+         LA    R6,2(R6)                                                         
+*                                                                               
+         LA    R0,XMLRECL                                                       
+         SR    R6,R0                                                            
+         STH   R6,XMLRECL                                                       
+         BAS   RE,PUTIT                                                         
+         J     EXIT                                                             
+         EJECT                                                                  
+*=================================================================              
+* MOVE DATA TO 31-BIT BUFFER                                                    
+*=================================================================              
+                                                                                
+PUTIT    NTR1                                                                   
+         SAM31                                                                  
+         L     R2,SVPBUFF          POINT TO DATA BUFFER                         
+         A     R2,=F'65536'        POINT TO XML BUFFER                          
+*                                                                               
+         L     R1,0(R2)            GET MOVE TO ADDRESS                          
+         L     R0,4(R2)            GET REMAINING DATALEN                        
+*                                                                               
+         LH    RF,XMLRECL          GET LENGTH OF THIS MOVE                      
+         SR    R0,RF                                                            
+         JNP   *+2                                                              
+         ST    R0,4(R2)            UPDATE REMAINING DATALEN                     
+*                                                                               
+         BCTR  RF,0                                                             
+         EX    RF,*+8                                                           
+         J     *+10                                                             
+         MVC   0(0,R1),XMLRECL                                                  
+*                                                                               
+         LA    RF,1(R1,RF)         POINT TO NEXT MOVE ADDRESS                   
+         ST    RF,0(R2)            AND STORE IN BUFFER                          
+         XC    0(8,RF),0(RF)       CLEAR                                        
+*                                                                               
+EXIT     SAM24                                                                  
+         XIT1                                                                   
+         EJECT                                                                  
+*===============================================================                
+* XMLINIT - OBTAIN/RESET 31-BIT STORAGE                                         
+* NOTE FIRST 65536 BYTES RESERVED FOR APPL STORAGE                              
+*                                                                               
+* BUFFER FORMAT IS                                                              
+*                                                                               
+* +00 ADDRESS OF NEXT ENTRY IN SAVE AREA                                        
+* +04 REMAINING BUFFER LENGTH OF 65536 ALLOWED                                  
+*                                                                               
+* +65536 NEXT DATA ADDRESS IN XML BUILD AREA                                    
+* +65544 REMAINING BUFFER LENGTH IN BUILD AREA                                  
+*===============================================================                
+                                                                                
+XMLINIT  NTR1                                                                   
+         L     R0,=F'1000000'                                                   
+         ST    R0,DUB+4                                                         
+*                                                                               
+         ICM   RE,15,SVPBUFF       ANY BUFFER ACQUIRED YET                      
+         JZ    INIT2               NO                                           
+         ST    RE,DUB                                                           
+         J     INIT22                                                           
+*                                                                               
+INIT2    L     RE,SVPCOMF                                                       
+         ICM   RE,15,CSWITCH-COMFACSD(RE)  NON-ZERO ONLINE ONLY                 
+         JZ    INIT10                                                           
+                                                                                
+*============================================================                   
+* ONLINE - GET XA9 BUFFER FROM GETFACT                                          
+*==============================================================                 
+                                                                                
+         L     R1,SVPCOMF                                                       
+         L     RF,CGETFACT-COMFACSD(,R1)                                        
+         GOTO1 (RF),DMCB,(X'80',DUB),F#XA9ADR                                   
+         J     INIT20                                                           
+                                                                                
+*===========================================================                    
+* OFFLINE - GET 31 BIT STORAGE VIA GETMAIN                                      
+*===========================================================                    
+                                                                                
+INIT10   ICM   R1,15,SVPBUFF       ANY BUFFER ACQUIRED YET                      
+         JZ    INIT12                                                           
+         ST    R1,DUB                                                           
+         J     INIT20                                                           
+*                                                                               
+INIT12   L     R0,=F'1000000'                                                   
+         GETMAIN RU,LV=(0),LOC=(ANY,ANY)                                        
+         LTR   RF,RF                                                            
+         JNZ   *+2                                                              
+         ST    R1,DUB              SAVE BUFFER ADDRESS                          
+*                                                                               
+INIT20   L     R1,SVR1             GET CALLERS R1                               
+         MVC   8(4,R1),DUB         SET A(BUFFER) IN CALLERS PLIST               
+*                                                                               
+INIT22   SAM31                                                                  
+         MVC   SVPBUFF,DUB         SET BUFFER ADDRESS IN SAVED PARMS            
+* FIRST 64K IS USER BUFFER                                                      
+         LM    R0,R1,DUB           GET A(BUFFER),L'BUFFER                       
+         AHI   R0,8                FIRST DATA GOES AT BUFFER+8                  
+         L     R1,=F'65536'        LEN = 64K-8                                  
+         AHI   R1,-8                                                            
+         L     RE,DUB                                                           
+         ST    R0,0(RE)            SET FIRST DATA ADDR                          
+         ST    R1,4(RE)            AND USABLE DATALEN                           
+* REST IS XML BUFFER                                                            
+         LM    R0,R1,DUB           GET A(BUFFER)/L'BUFFER                       
+         A     R0,=F'65544'        XML DATA STARTS AT +65536+8                  
+         S     R1,=F'65536'        ADJUST LEN                                   
+         AHI   R1,-8                                                            
+         L     RE,DUB              TOP OF BUFFER                                
+         A     RE,=F'65536'        START OF XML BUFFER                          
+         ST    R0,0(RE)            SET DATA ADDRESS IN BUFFER                   
+         ST    R1,4(RE)            AND  REMAINING DATA LEN                      
+*                                                                               
+INITX    J     EXIT                                                             
+         EJECT                                                                  
+SPCLTAB  DS    0D                                                               
+*                                                                               
+LITAMP   DC    AL1(LITAMPX-LITAMP),C'amp'                                       
+LITAMPX  EQU   *                                                                
+*                                                                               
+LITLT    DC    AL1(LITLTX-LITLT),C'lt'                                          
+LITLTX   EQU   *                                                                
+*                                                                               
+LITGT    DC    AL1(LITGTX-LITGT),C'gt'                                          
+LITGTX   EQU   *                                                                
+*                                                                               
+LITQUOT  DC    AL1(LITQUOTX-LITQUOT),C'quot'                                    
+LITQUOTX EQU   *                                                                
+*                                                                               
+LITAPOS  DC    AL1(LITAPOSX-LITAPOS),C'apos'                                    
+LITAPOSX EQU   *                                                                
+*                                                                               
+LT       EQU   X'4C'                                                            
+GT       EQU   X'6E'                                                            
+AMP      EQU   X'50'                                                            
+APOS     EQU   X'7D'                                                            
+QUOT     EQU   X'7F'                                                            
+SEMI     EQU   X'5E'                                                            
+         LTORG                                                                  
+*                                                                               
+         DS    0D                                                               
+TRTTAB   DC    X'00000000000000000000000000000000'   00-0F                      
+         DC    X'00000000000000000000000000000000'   10-1F                      
+         DC    X'00000000000000000000000000000000'   20-2F                      
+         DC    X'00000000000000000000000000000000'   30-3F                      
+         DC    X'0000000000000000000000004C000000'   40-4F                      
+         DC    X'50000000000000000000000000000000'   50-5F                      
+         DC    X'00000000000000000000000000006E00'   60-6F                      
+         DC    X'000000000000000000000000007D007F'   70-7F                      
+         DC    XL128'00'                             80-FF                      
+*                                                                               
+BXFIDL   DC    AL2(BXFIDX-BXFIDL)                                               
+BXFID    DC    C'*** BXF REPORT SECTION ***'                                    
+BXFIDX   EQU   *                                                                
+*                                                                               
+XMLIDL   DC    AL2(XMLIDX-XMLIDL)                                               
+XMLID    DC    C'<TrafficHeaderInfo xmlns="http://www.mediaocean.com'           
+         DC    C'/spectra/motrafficbxf" '                                       
+         DC    C'xmlns:xsi="http://www.w3.org/2001'                             
+         DC    C'/XMLSchema-instance">'                                         
+XMLIDX   EQU   *                                                                
+         EJECT                                                                  
+       ++INCLUDE FAFACTS                                                        
+       ++INCLUDE DDCOMFACS                                                      
+*                                                                               
+WORKD    DSECT                                                                  
+DUB      DS    D                                                                
+*                                                                               
+SVPARMS  DS    0XL16                                                            
+SVPDATAL DS    XL1                 DATA LEN 0=HDR/FF=TLR                        
+         ORG   *-1                                                              
+SVPDATA  DS    A                   A(DATA)                                      
+*                                                                               
+SVPXML   DS    F                   XML EQUATE VALUE                             
+*                                                                               
+SVPBUFF  DS    A                   BUFFER IN 31 BIT STORAGE                     
+SVPCOMF  DS    A                   A(COMFACS)                                   
+*                                                                               
+SVR1     DS    A                   CALLERS R1                                   
+SVXMLTAG DS    A                                                                
+*                                                                               
+DMCB     DS    6F                                                               
+*                                                                               
+         DS    C                                                                
+         DS    C                                                                
+XMLRECL  DS    H                                                                
+XMLREC   DS    XL255                                                            
+WORKX    EQU   *                                                                
+*                                                                               
+XMLPUT   CSECT                                                                  
+       ++INCLUDE SPTRAXML                                                       
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'001TRXMLPUT  08/07/19'                                      
+         END                                                                    

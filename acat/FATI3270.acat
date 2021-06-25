@@ -1,0 +1,541 @@
+*          DATA SET FATI3270   AT LEVEL 005 AS OF 08/13/14                      
+*CATALP FATI3270                                                                
+         TITLE 'TI3270 - 3270 TERMINAL INPUT TRANSLATOR'                        
+***********************************************************************         
+* CONVERTS 3270 INPUT DATA STRING IN THE TIA TO INTERNAL FORMAT       *         
+* (SBA)(AD1)(AD2)(DATA) TO (LEN)(ABS#1)(ABS#2)(DATA)                  *         
+* AND MERGES THESE FLDS TO THE TWA. PARAMS VIA R1                     *         
+*                                                                     *         
+* AL4  A(TIA)                                                         *         
+* AL4  A(TWA)                                                         *         
+* AL4  A(UTL)                                                         *         
+*                                                                     *         
+* THE PARAM LIST IS OVERWRITTEN WITH RETURN VALUES                    *         
+*                                                                     *         
+* XL2  TWA INDEX TO FIRST INPUT FLD                                   *         
+* XL2  TWA INDEX TO LAST INPUT FLD                                    *         
+* XL2  NUMBER OF INPUT FLDS (SET TO ZERO IF MERGE ERRORS)             *         
+* XL1  AID VALUE X'00'=ENTER,X'01-24'=PF KEY NUMBER                   *         
+* XL1  N/D                                                            *         
+* XL2  CURSOR SCREEN ADDRESS                                          *         
+* XL2  DISP TO TWA FIELD THAT CURSOR IS IN OR ZERO IF NOT IN FIELD    *         
+* XL1  INDEX TO CURSOR POSITION WITHIN TWA FIELD                      *         
+* XL2  DISP TO FIRST HELP SUPPORTED FIELD CONTAINING '?'              *         
+* XL1  N/D                                                            *         
+***********************************************************************         
+         PRINT NOGEN                                                            
+TI3270   CSECT                                                                  
+         ENTRY CTRYXLAT                                                         
+*                                                                               
+         NMOD1 FLDMRGX-TIOBD,**TI3270                                           
+         USING TIOBD,RC                                                         
+         SAM24                     FORCE 24 BIT MODE                            
+*                                                                               
+         ST    R1,FMRGSR1          SAVE R1                                      
+         MVC   FMRGTIAA(12),0(R1)  SAVE A(TIA) & A(TWA) & A(UTL)                
+         XC    TIOBD(TIOBL),TIOBD                                               
+*                                                                               
+INIT1    L     RF,FMRGUTLA         RF=A(UTL ENTRY)                              
+         USING UTLD,RF                                                          
+         MVC   CTRY,TCTRY          EXTRACT COUNTRY/LANGUAGE/SYSTEM              
+         MVC   LANG,TLANG                                                       
+         MVC   SYS,TOVSYS                                                       
+         MVC   SVCREQ,TSVCREQ+1                                                 
+         MVI   SAVIND2,0           EXTRACT PGMIND2 FROM PROGRAM LIST            
+         XR    RE,RE                                                            
+         ICM   RE,7,TAPRG                                                       
+         BZ    INIT1B                                                           
+         L     R2,=V(SSB)          TEST TAPRG IS DISPLACEMENT                   
+         TM    SSBSTAT4-SSBD(R2),SSBPGDSP                                       
+         BZ    INIT1A                                                           
+         XR    R2,R2                                                            
+         ICM   R2,7,TARSYS                                                      
+         BZ    INIT1B                                                           
+         ICM   R2,15,SEPGMS-SELISTD(R2)                                         
+         AR    RE,R2                                                            
+*                                                                               
+INIT1A   MVC   SAVIND2,PGMIND2-PGMLSTD(RE)                                      
+*                                                                               
+INIT1B   LLC   RE,CTRY             GET COUNTRY CODE                             
+         CHI   RE,15                                                            
+         BNH   *+6                                                              
+         SR    RE,RE                                                            
+         L     R2,=V(SSB)          TEST TO USE ALL CHARACTERS >X'40'            
+         TM    SSBSTAT6-SSBD(R2),SSB6ALLC                                       
+         BZ    INIT1C                                                           
+         SLL   RE,4                                                             
+         A     RE,CTRYXLAT-4       SET TO USE EXTENDED TRANSLATE TABLES         
+         B     INIT1D                                                           
+INIT1C   SLL   RE,4                                                             
+         LA    RE,CTRYXLAT(RE)     INDEX INTO COUNTRY TRANSLATE TABLES          
+INIT1D   LM    R6,R8,4(RE)                                                      
+         STM   R6,R8,VALID                                                      
+*                                                                               
+INIT2    TM    TSTAT6,TST6SCRP     TEST IF PROCESSING A SCRIPT                  
+         BZ    INIT3                                                            
+         ICM   RE,15,TBUFF         SCRUNCH HAS SET AID AND CURSOR               
+         JZ    *+2                 DIE IF TBUFF NOT DEFINED                     
+         MVC   TIOBAID,TBHAID-TBHDATA(RE)                                       
+         MVC   TIOBCURS,TBHCURS-TBHDATA(RE)                                     
+         B     TIA                                                              
+*                                                                               
+INIT3    ICM   RE,15,TBUFF         POINT TO INPUT BUFFER                        
+         BZ    TIA                                                              
+         CLI   4(RE),24            VALID AID BYTE IN BUFFER                     
+         BH    *+10                                                             
+         MVC   TIOBAID,4(RE)       SET PROGRAM FUNCTION KEY                     
+         IC    R6,5(RE)                                                         
+         IC    R7,6(RE)                                                         
+         SLL   R7,26                                                            
+         SRDL  R6,26                                                            
+         STCM  R7,3,TIOBCURS                                                    
+         NI    TIOBCURS,X'0F'      SET CURSOR SCREEN ADDRESS                    
+         EJECT                                                                  
+***********************************************************************         
+* TRANSLATE 3270 INPUT TO STANDARD INTERNAL                           *         
+***********************************************************************         
+TIA      L     R2,FMRGTIAA         R2=A(TIA)                                    
+         LH    R8,4(R2)                                                         
+*                                                                               
+TIA0     AHI   R8,-1               R8=L'INPUT DATA STRING                       
+         BNZ   TIA1                                                             
+         CLI   SVCREQ,0            TEST ZERO INPUT TO APPLIC PROG               
+         BNE   NOINPUT                                                          
+         CLI   SYS,0                                                            
+         BE    NOINPUT                                                          
+         TM    SAVIND2,PGMINOD     TEST APPLIC PROG ALLOWS NO DATA              
+         BZ    NOINPUT                                                          
+         MVI   64(R2),0            YES SET END OF INPUT DATA IN TIA             
+         B     TIA3                CALL MERGE ROUTINE TO SET TWA INDS           
+*                                                                               
+TIA1     TM    TSTAT6,TST6SCRP     SCRUCH HAS SET TIA TO THIS FORMAT            
+         BO    TIA3                                                             
+         CHI   R8,3                                                             
+         BL    ERROR               ERROR IF LT MINIMUM                          
+         AHI   R8,-1                                                            
+         LA    R4,64(R2)           R4=A(SBA)                                    
+         LA    R9,65(R2)                                                        
+*                                                                               
+TIA2     CLI   0(R9),X'11'         THIS CHR (SBA)                               
+         BE    TIA2B                                                            
+TIA2A    LA    R9,1(R9)                                                         
+         BCT   R8,TIA2                                                          
+         MVI   0(R9),0                                                          
+TIA2B    LR    R5,R9                                                            
+         SR    R5,R4               R5=L'3270 FLD                                
+*                                                                               
+         STC   R5,0(R4)            (SBA) TO (LEN)                               
+         OC    1(2,R4),1(R4)                                                    
+         BZ    TIA2C               (AD1)(AD2) IS ZERO                           
+         IC    R6,1(R4)                                                         
+         IC    R7,2(R4)                                                         
+         SLL   R7,26                                                            
+         SRDL  R6,26                                                            
+         STCM  R7,3,1(R4)          (AD1&2)                                      
+         NI    1(R4),X'0F'                                                      
+*                                                                               
+TIA2C    LR    R4,R9                                                            
+         LTR   R8,R8                                                            
+         BNZ   TIA2A                                                            
+         DROP  RF                                                               
+*                                                                               
+TIA3     GOTO1 FLDMRG,FMRGTIAA     NOW MERGE TO TWA                             
+         BNZ   ERROR               EXIT WITH ERROR VALUE                        
+         L     R1,FMRGSR1          RETURN TWA MERGE DATA                        
+         MVC   0(TIOBL,R1),TIOBD                                                
+         B     EXIT                                                             
+*                                                                               
+NOINPUT  EQU   *                                                                
+ERROR    XC    TIOBCNT,TIOBCNT     ZERO INPUT OR INVALID                        
+         L     R1,FMRGSR1                                                       
+         MVC   0(TIOBL,R1),TIOBD   EXIT WITH ZERO INPUT FIELDS COUNT            
+*                                                                               
+EXIT     XMOD1 1                                                                
+         ORG   *-2                                                              
+         BSM   0,RE                                                             
+         EJECT                                                                  
+***********************************************************************         
+* MERGES INPUT FIELDS IN TIA WITH FIELDS IN TWA                       *         
+***********************************************************************         
+FLDMRG   NTR1                                                                   
+         L     R4,FMRGTIAA                                                      
+         L     R5,FMRGTWAA                                                      
+         LA    R4,64(R4)           R4=A(TIA FIELD)                              
+         USING IFLDHDRD,R4                                                      
+         LA    R5,64(R5)           R5=A(TWA FIELD)                              
+         USING FLDHDRD,R5                                                       
+         MVI   FALINK,C'N'                                                      
+         CLC   8(7,R5),=C'<FALINK'                                              
+         BNE   *+8                                                              
+         MVI   FALINK,C'Y'                                                      
+         LLC   R2,IFLDLEN          R2=LENGTH OF TIA FIELD                       
+         LLC   R3,FLDLEN           R3=LENGTH OF TWA FIELD                       
+         XC    FMRGERR,FMRGERR                                                  
+*                                                                               
+FLDM10   MVI   FMRGFLAG,0          RESET FLAG FOR NEXT TWA FIELD                
+         LTR   R2,R2                                                            
+         BZ    FLDM40              TIA END                                      
+         CHI   R3,9                                                             
+         BNL   FLDM11                                                           
+         LTR   R3,R3               TEST VALID TWA FIELD                         
+         JNZ   *+2                                                              
+         CLI   IFLDADR,X'FF'       TEST IF ERASING INPUT FIELDS                 
+         BE    FLDM40                                                           
+         B     FLDMERR             ERROR IF END OF TWA BEFORE TIA END           
+*                                                                               
+FLDM11   CLI   FLDATB,X'FF'        BYPASS NOP FIELDS                            
+         BE    FLDM32                                                           
+         TM    FLDATB,FATBPROT     BYPASS PROT FIELDS                           
+         BO    FLDM30                                                           
+         CLI   IFLDADR,X'FF'       TEST IF ERASING INPUT FIELDS                 
+         BE    FLDM12                                                           
+         CLC   IFLDADR,FLDADR                                                   
+         BE    FLDM12                                                           
+         BH    FLDM20                                                           
+         OC    IFLDADR,IFLDADR     IS TIA FLD ADR ZERO                          
+         BNZ   FLDMERR             NO SEQUENCE ERROR                            
+         LR    R7,R2                                                            
+         AHI   R7,-4               R7=LEN OF DATA -1                            
+         BM    FLDM12                                                           
+         EX    R7,INPSKIP          TEST IF FLD CONTAINS >>>>>>>>...             
+         BNE   FLDM12                                                           
+         AR    R4,R2               YES SKIP THIS INPUT FIELD                    
+         IC    R2,IFLDLEN                                                       
+         B     FLDM10                                                           
+***********************************************************************         
+* FIELD IS INPUT (BUFFER ADDRS MATCH)                                 *         
+***********************************************************************         
+FLDM12   LR    R6,R3                                                            
+         AHI   R6,-8               R6=MAXIMUM LEN OF TWA FLD                    
+         TM    FLDATB,FATBXHDR     TEST EXTENDED HEADER                         
+         BZ    *+8                                                              
+         AHI   R6,-8                                                            
+         LR    R7,R2                                                            
+         AHI   R7,-3               R7=ACTUAL LEN OF DATA                        
+         BZ    FLDM13                                                           
+         TM    FLDATB,FATBDEL      DELETE TRAILING BLANKS                       
+         BO    FLDM13              NO                                           
+         LA    RE,2(R4,R7)         YES POINT TO LAST CHR                        
+         CLI   0(RE),C' '                                                       
+         BNE   FLDM13                                                           
+         AHI   RE,-1                                                            
+         BCT   R7,*-12                                                          
+FLDM13   CR    R6,R7                                                            
+         BNL   *+6                                                              
+         LR    R7,R6               TRUNC INPUT FLD DATA                         
+         CLI   FALINK,C'Y'         TEST FALINK TRANSACTION                      
+         BE    FLDM14              YES-DONT ERASE TO END OF SCREEN              
+         OC    IFLDADR,IFLDADR                                                  
+         BZ    FLDM14                                                           
+         CLC   FLDEOF,IFLDDATA     TEST IF END OF INPUT CHRS                    
+         BNE   FLDM14                                                           
+         MVC   IFLDLEN(3),=X'03FFFF'                                            
+         LA    R2,3                                                             
+         SR    R7,R7               SET ERASING INPUT FIELDS                     
+*                                                                               
+FLDM14   NI    FLDIIND,FINPVAL+X'01' RESET NONUSER INPUT INDS                   
+         AHI   R6,-1                                                            
+         EX    R6,FLDSAVE          SAVE TWA FLD                                 
+         EX    R6,FLDNULL          NULL TWA FLD                                 
+         STC   R7,FLDILEN                                                       
+         AHI   R7,-1                                                            
+         BM    FLDM14B                                                          
+         EX    R7,FLDMOVE          MOVE INPUT FLD TO TWA                        
+         LR    R0,R2                                                            
+         L     RE,VALID                                                         
+         EX    R7,FLDTRNT          TEST IF ANY INVALID CHARACTERS               
+         BZ    *+10                                                             
+         LR    R2,R0                                                            
+         MVI   FMRGFLAG,1          SET TRANSLATED INVALID CHARACTERS            
+         L     RE,LOWER            POINT TO LOWER CASE TRANSLATE                
+         TM    FLDATB,FATBLC                                                    
+         BO    *+8                                                              
+         L     RE,UPPER            POINT TO UPPER CASE TRANSLATE                
+         EX    R7,FLDTRNS                                                       
+FLDM14B  BRAS  RE,FLDMTYPE         SET FLD TYPE INDS                            
+         EX    R6,FLDCOMP                                                       
+         BE    FLDM14C                                                          
+         OI    FLDIIND,FINPTHIS+FINPPREV   FLD CHANGED - SET INP + PRV          
+         NI    FLDIIND,X'FF'-FINPVAL                   + NOT VALIDATED          
+         B     FLDM15                                                           
+FLDM14C  OI    FLDIIND,FINPTHIS+FINPPREV   FLD SAME - SET INP + PRV             
+*                                                                               
+FLDM15   CLC   FLDADR,=XL2'003E'   SET TIOB COUNT/FIRST/LAST FIELD DATA         
+         BNE   FLDM15B                                                          
+         TM    FLDOIND,FOUTTRN     DID PROGRAM XMIT S/R FIELD LAST TIME         
+         BZ    FLDM15A             NO                                           
+         TM    FLDOIND,FOUTMOD     YES WAS IT SET TO MODIFIED LAST TIME         
+         BO    FLDM15B                                                          
+         TM    FLDATB,FATBMOD      OR IS IT PERMANENTLY MODIFIED                
+         BO    FLDM15B                                                          
+FLDM15A  CLI   SVCREQ,0            IGNORE INPUT IN S/R FIELD IF NOT S/R         
+         BE    FLDM17                                                           
+FLDM15B  LR    RE,R5                                                            
+         S     RE,FMRGTWAA                                                      
+         STH   RE,TIOBLAST         UPDATE LAST INPUT FLD INDX                   
+         LH    RF,TIOBCNT                                                       
+         LTR   RF,RF                                                            
+         BNZ   *+8                                                              
+         STH   RE,TIOBFRST         UPDATE FRST INPUT FLD INDX                   
+         LA    RF,1(RF)                                                         
+         STH   RF,TIOBCNT          UPDATE FIELD COUNTER                         
+*                                                                               
+FLDM17   CLI   IFLDADR,X'FF'       TEST IF ERASING INPUT FIELDS                 
+         BE    *+6                                                              
+         AR    R4,R2               UPDATE TO NEXT TIA FIELD                     
+         IC    R2,IFLDLEN                                                       
+         B     FLDM30                                                           
+***********************************************************************         
+* THE ADDRESS IN TIA IS HIGHER THAN THAT IN TWA                       *         
+***********************************************************************         
+FLDM20   BRAS  RA,FLDMNOTI         SET NOT INPUT FLAGS                          
+FLDM30   MVI   FLDOIND,X'00'       ZERO OUTPUT INDICS                           
+         CLI   IFLDADR,X'FF'       TEST IF ERASING INPUT FIELDS                 
+         BNE   *+8                                                              
+         OI    FLDOIND,FOUTTRN                                                  
+         CLI   FMRGFLAG,0          TEST IF TRANSLATED INVALID CHRS              
+         BE    *+8                                                              
+         OI    FLDOIND,FOUTTRN                                                  
+         BRAS  RE,FLDMCURS         TEST CURSOR POSITION                         
+         BRAS  RE,FLDMHELP         TEST HELP REQUEST                            
+FLDM32   AR    R5,R3               UPDATE TO NEXT TWA FIELD                     
+         IC    R3,FLDLEN                                                        
+         B     FLDM10                                                           
+***********************************************************************         
+* ALL INPUT FIELDS IN THE TIA HAVE NOW BEEN MERGED                    *         
+***********************************************************************         
+FLDM40   CHI   R3,9                TEST VALID TWA FIELD                         
+         BNL   FLDM42                                                           
+         LTR   R3,R3               TEST END OF TWA                              
+         BZ    FLDM50                                                           
+         DC    H'0'                                                             
+FLDM42   CLI   FLDATB,X'FF'        TEST NOP FIELD                               
+         BE    FLDM44              DON'T DO MUCH TO IT                          
+         BRAS  RA,FLDMNOTI         SET NOT INPUT FLAGS                          
+         MVI   FLDOIND,X'00'       ZERO OUTPUT INDICS                           
+         BRAS  RE,FLDMCURS         TEST CURSOR POSITION                         
+         BRAS  RE,FLDMHELP         TEST HELP REQUEST                            
+FLDM44   AR    R5,R3                                                            
+         IC    R3,FLDLEN                                                        
+         B     FLDM40                                                           
+FLDM50   XC    1(2,R5),1(R5)       SET BEFORE=AFTER=NOTHING                     
+         B     FLDMEXIT                                                         
+*                                                                               
+FLDMOVE  MVC   FLDDATA(0),IFLDDATA                                              
+FLDTRNS  TR    FLDDATA(0),0(RE)                                                 
+FLDTRNT  TRT   FLDDATA(0),0(RE)                                                 
+FLDNULL  XC    FLDDATA(0),FLDDATA                                               
+FLDTEST  OC    FLDDATA(0),FLDDATA                                               
+FLDCOMP  CLC   FMRGFLD(0),FLDDATA                                               
+FLDSAVE  MVC   FMRGFLD(0),FLDDATA                                               
+INPSKIP  CLC   3(0,R4),FLDSKIP                                                  
+*                                                                               
+FLDMERR  MVI   FMRGERR+1,X'01'     SET ERROR CODE                               
+*                                                                               
+FLDMEXIT OC    FMRGERR,FMRGERR                                                  
+         XIT1                                                                   
+         EJECT                                                                  
+***********************************************************************         
+* SETS NUM/ALPHA/HEX BITS FOR INPUT FIELD                             *         
+***********************************************************************         
+FLDMTYPE SR    R7,R7               SET FIELD NUM/ALPHA/HEX                      
+         ICM   R7,1,FLDILEN                                                     
+         BZR   RE                                                               
+         LA    R8,FLDDATA                                                       
+         OI    FLDIIND,FINPNUM+FINPALF+FINPHEX                                  
+*                                                                               
+FLDMT2   TM    FLDATB,FATBLC       LOWER CASE TESTS                             
+         BZ    FLDMT3                                                           
+         CLI   0(R8),X'81'         TEST LITTLE A                                
+         BL    FLDMT3A                                                          
+         CLI   0(R8),X'A9'         TEST LITTLE Z                                
+         BH    FLDMT3                                                           
+         NI    FLDIIND,X'FF'-(FINPNUM+FINPHEX)  FIELD NOT NUM/HEX               
+         B     FLDMT4                                                           
+*                                                                               
+FLDMT3   CLI   0(R8),C'A'                                                       
+         BNL   *+12                                                             
+FLDMT3A  NI    FLDIIND,X'FF'-(FINPNUM+FINPALF+FINPHEX) NOT NUM/ALFA/HEX         
+         B     FLDMT6                                                           
+FLDMT3B  CLI   0(R8),C'Z'                                                       
+         BNH   FLDMT3C                                                          
+         NI    FLDIIND,X'FF'-FINPALF   FLD NOT ALPHA                            
+         B     FLDMT4                                                           
+FLDMT3C  NI    FLDIIND,X'FF'-FINPNUM   FLD NOT NUM                              
+         CLI   0(R8),C'F'                                                       
+         BNH   *+8                                                              
+         NI    FLDIIND,X'FF'-FINPHEX   FLD NOT HEX                              
+*                                                                               
+FLDMT4   LA    R8,1(R8)                                                         
+         BCT   R7,FLDMT2                                                        
+*                                                                               
+FLDMT6   TM    FLDATB,FATBNUM      REQUIRED NUM FIELD                           
+         BZR   RE                  NO                                           
+         TM    FLDIIND,FINPNUM     IS IT NUM                                    
+         BOR   RE                  YES                                          
+         OI    FLDIIND,FINPINV     NO SET FLD INV                               
+         BR    RE                                                               
+         EJECT                                                                  
+***********************************************************************         
+* SETS FIELD HDR FOR A FIELD THAT IS NOT INPUT                        *         
+***********************************************************************         
+FLDMNOTI TM    FLDATB,FATBPROT     EXIT IF PROTECTED FIELD                      
+         BOR   RA                                                               
+         L     RF,FMRGUTLA                                                      
+         TM    TFLAG-UTLD(RF),TFLAGHLP                                          
+         BOR   RA                                                               
+         NI    FLDIIND,X'FF'-FINPTHIS SET FLD NOT INPUT THIS TIME               
+         TM    FLDOIND,FOUTTRN                                                  
+         BZR   RA                  EXIT IF FIELD TRANS LAST TIME                
+         LR    RF,R3                                                            
+         AHI   RF,-9                                                            
+         TM    FLDATB,FATBXHDR     TEST EXTENDED FIELD HEADER                   
+         BZ    *+8                                                              
+         AHI   RF,-8                                                            
+         EX    RF,FLDTEST          TEST IF FIELD CONTAINS NULLS                 
+         BNZ   *+8                                                              
+         MVI   FLDOLEN,0                                                        
+         MVC   FLDILEN,FLDOLEN                                                  
+         NI    FLDIIND,FINPVAL+X'01' RESET NONUSER INPUT INDS                   
+         CLI   FLDILEN,0                                                        
+         BER   RA                                                               
+         OI    FLDIIND,FINPPREV                                                 
+         BRAS  RE,FLDMTYPE                                                      
+         BR    RA                                                               
+         EJECT                                                                  
+***********************************************************************         
+* SETS CURSOR FIELD DISPLACEMENT & INDEX VALUES                       *         
+***********************************************************************         
+FLDMCURS OC    TIOBCURS,TIOBCURS   TEST CURSOR ADDRESS SET                      
+         BZR   RE                                                               
+         OC    TIOBCURD,TIOBCURD   TEST TWA FIELD DISP SET                      
+         BNZR  RE                                                               
+         CLC   TIOBCURS,FLDADR     TEST CURSOR BEFORE THIS FIELD                
+         BLR   RE                                                               
+         BE    FLDMCUR2                                                         
+         LLC   R1,FLDLEN           CALCULATE FIELD END ADDRESS                  
+         AHI   R1,-8                                                            
+         TM    FLDATB,FATBXHDR     TEST EXTENDED HEADER                         
+         BZ    *+8                                                              
+         AHI   R1,-8               R1=FIELD DATA LENGTH                         
+         SR    RF,RF                                                            
+         ICM   RF,3,FLDADR                                                      
+         AR    RF,R1               RF=FIELD END SCREEN ADDRESS+1                
+         CLM   RF,3,TIOBCURS       TEST CURSOR WITHIN FIELD                     
+         BNHR  RE                                                               
+         SR    RF,R1               RF=FIELD ADDRESS                             
+         ICM   R1,3,TIOBCURS       R1=CURSOR ADDRESS                            
+         SR    R1,RF                                                            
+         STC   R1,TIOBCURI         SET CURSOR INDEX VALUE                       
+FLDMCUR2 L     RF,FMRGTWAA                                                      
+         LA    R1,FLDHDRD                                                       
+         SR    R1,RF                                                            
+         STCM  R1,3,TIOBCURD       SET DISP TO TWA FIELD                        
+         BR    RE                                                               
+         EJECT                                                                  
+***********************************************************************         
+* SET DISPLACEMENT TO FIRST HELP SUPPORTED FIELD                      *         
+***********************************************************************         
+FLDMHELP DS    0H                                                               
+         OC    TIOBHELP,TIOBHELP   TEST FOR PREVIOUS HELP REQUEST               
+         BNZR  RE                                                               
+*                                                                               
+         LA    R0,FLDHDRD          SET R0=DISPLACEMENT TO THIS FIELD            
+         S     R0,FMRGTWAA                                                      
+         CLI   FLDDATA,C'?'        TEST HELP FOR THIS FIELD                     
+         BE    FLDMH4                                                           
+*                                                                               
+         CLM   R0,3,TIOBCURD       TEST THIS IS FIELD WITH CURSOR               
+         BNER  RE                                                               
+         TM    SAVIND2,PGMIHPF1    TEST ALLOW PF1 HELP                          
+         BZR   RE                                                               
+         CLI   TIOBAID,1           TEST FOR PF1                                 
+         BNER  RE                                                               
+*                                                                               
+FLDMH4   TM    FLDATB,FATBXHDR     TEST EXTENDED FIELD HEADER                   
+         BZR   RE                                                               
+         LLC   R1,FLDLEN                                                        
+         AHI   R1,-8                                                            
+         LA    R1,FLDHDRD(R1)      R1=A(FIELD HEADER EXTENSION)                 
+         CLI   0(R1),0             TEST FIELD NUMBER PRESENT                    
+         BER   RE                                                               
+         STCM  R0,3,TIOBHELP       SET DISP TO THIS TWA FIELD                   
+         OI    FLDOIND,FOUTCUR     SET OUTPUT CURSOR HERE                       
+         L     RF,FMRGTWAA                                                      
+         AR    RF,R0                                                            
+         CLI   8(RF),C'?'          DID THEY ASK FOR HELP WITH A ?               
+         BNER  RE                  NO                                           
+         MVI   8(RF),C' '          REPLACE ? WITH SPACE                         
+         OI    6(RF),X'01'         AND SET TO INPUT THIS TIME                   
+         LLC   R1,FLDILEN                                                       
+         CHI   R1,1                ONLY 1 CHR                                   
+         BE    FLDMH5                                                           
+         AHI   R1,-2                                                            
+         EX    R1,*+8              COMPARE THE REST OF THE FIELD                
+         B     *+10                                                             
+         CLC   9(0,RF),FMRGFLD+1   IF THEY ARE THE SAME                         
+         BNER  RE                                                               
+FLDMH5   CLI   FMRGFLD,C' '        AND THE SAVED CHR IS NOT A ?                 
+         BNHR  RE                                                               
+         MVC   8(1,RF),FMRGFLD     PUT BACK SAVED CHR                           
+         BR    RE                                                               
+         MVI   FLDILEN,0           NO INPUT  <-- WAS FLDMH5                     
+         BR    RE                                                               
+         EJECT                                                                  
+***********************************************************************         
+* CONSTANTS,LITERALS,AND WORKING STORAGE                              *         
+***********************************************************************         
+FLDEOF   DS    0CL2                                                             
+*&&US*&& DC    C'//'               END OF INPUT CHRS US (SLASH SLASH)           
+*&&UK*&& DC    C'<>'               END OF INPUT CHRS UK (LT GT)                 
+FLDSKIP  DC    80C'>'              SKIP S/R FLDS CONTAINING THIS TEXT           
+*                                                                               
+         LTORG                                                                  
+*FACTRYXLAT                                                                     
+       ++INCLUDE FACTRYXLAT                                                     
+*                                                                               
+IFLDHDRD DSECT                                                                  
+IFLDLEN  DS    CL1       INPUT FLD LENGTH=(3+L'DATA)=X'00' IF TIA END           
+IFLDADR  DS    CL2       INPUT FLD START SCREEN ADR =(ROW-1)*80+(COL-1)         
+IFLDDATA DS    0C        INPUT FLD DATA                                         
+*FATIOB                                                                         
+       ++INCLUDE FATIOB                                                         
+*                                                                               
+FMRGTIAA DS    A         A(TIA)                                                 
+FMRGTWAA DS    A         A(TWA)                                                 
+FMRGUTLA DS    A         A(UTL)                                                 
+FMRGERR  DS    H         IF NON ZERO MERGE ERROR                                
+SVCREQ   DS    X         SAVE S/R                                               
+SAVIND2  DS    X         SAVE PGMIND2                                           
+FMRGSR1  DS    A         SAVE R1                                                
+*                                                                               
+VALID    DS    A         VALID INPUT CHRS TRT TABLE                             
+UPPER    DS    A         UPPER CASE TRANSLATE TABLE                             
+LOWER    DS    A         LOWER CASE TRANSLATE TABLE                             
+*                                                                               
+CTRY     DS    X         TERMINAL COUNTRY                                       
+LANG     DS    X         TERMINAL LANGUAGE                                      
+SYS      DS    X         TERMINAL SYSTEM                                        
+FMRGFLAG DS    X         FLAG SET NONZERO IF TRANSLATED INPUT DATA              
+FALINK   DS    C         FALINK TRANSACTION=C'Y'                                
+         DS    XL3                                                              
+*                                                                               
+FMRGFLD  DS    CL255     SAVE AREA FOR TWA FLD                                  
+FLDMRGX  EQU   *                                                                
+                                                                                
+*DDFLDHDR                                                                       
+       ++INCLUDE DDFLDHDR                                                       
+*FAPGMLST                                                                       
+       ++INCLUDE FAPGMLST                                                       
+*FASELIST                                                                       
+       ++INCLUDE FASELIST                                                       
+*FASSB                                                                          
+       ++INCLUDE FASSB                                                          
+*FATBHD                                                                         
+       ++INCLUDE FATBHD                                                         
+*FAUTL                                                                          
+       ++INCLUDE FAUTL                                                          
+                                                                                
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'005FATI3270  08/13/14'                                      
+         END                                                                    

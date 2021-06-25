@@ -1,0 +1,1685 @@
+*          DATA SET DMISGENQ   AT LEVEL 010 AS OF 02/08/21                      
+*&&      SET   NOP=N,TR=N                                                       
+*CATALP DMISGENQ                                                                
+***********************************************************************         
+*                                                                               
+* All ISG enqueues will be of this nature for now                               
+*                         DDSENQ.A.WRKF?         Sub-Comand X'FF'               
+*                         DDSENQ.A.WRKF?.TREE               X'FE'               
+*                         DDSENQ.A.WRKF?.PART1              X'FD'               
+*                         DDSENQ.A.WRKF?.PART2              X'FC'               
+*                         DDSENQ.A.WRKF?.######             X'00'               
+*                                                                               
+* Note: R9 is used as return registers so be careful not to use                 
+*                                                                               
+***********************************************************************         
+*P1/0    Task flag        #=Assign an offline task code                         
+*                                                                               
+*P1/1-2  Task code        XX=Offline task code (if Task flag=#)                 
+*                                                                               
+*P1/3    Action value     D=Dequeue resource                                    
+*                         E=Enqueue resource or wait                            
+*                        xF=Enqueue resource unconditionally                    
+*                        xT=Test resource                                       
+*                         K=Clean up, release task resources                    
+*                         S=Suspend, release shared task resources              
+*                        xA=Clean up, release all  resources                    
+*                                                                               
+*P2      A(Resource)      For actions D,E,F,T only                              
+*                         C'PRTQ?'=PRTQ file #                                  
+*                         C'WRKF?'=WRKF file #                                  
+*                         C'WRKZ?'=WRKZ file #                                  
+*                         C'ALL  ' All files, PQ,WF,WZ (Act=A,K)                
+*                                                                               
+*P3/0    Lock type        X'FF' Exclusive Enq/Deq File (master lock)            
+*                         X'FE' Exclusive Enq/Deq Tree                          
+*                         X'FD' Exclusive Enq/Deq Part 1 CI                     
+*                         X'FC' Exclusive Enq/Deq Part 2 CI                     
+*                         X'00' Exclusive Enq/Deq Report (# required)           
+*                         X'EF' Shared    Enq/Deq File                          
+*                                                                               
+*P3/1-3  Report number    Report number of WRKF, PRTQ, etc                      
+*                                                                               
+*P3/0    Return error code                                                      
+*                                                                               
+*P4      Return           A(Enqueue Token) 32 bytes  (not yet)                  
+*                                                                               
+***********************************************************************         
+         TITLE 'DMISGENEQ- ENQUEUE/DEQUEUE RESOURCES'                           
+         PRINT NOGEN                                                            
+DMISGENQ AMODE 31                  Set 31 bit addressing mode                   
+DMISGENQ RMODE ANY                 Set any residency                            
+DMISGENQ CSECT                                                                  
+*                                                                               
+         NMOD1 WRKX-WRKD,DMISGENQ,RR=R7                                         
+         USING WRKD,RC                                                          
+         USING GLOBAL,RA                                                        
+         USING TCBD,R8                                                          
+         SAM31 ,                                                                
+         LARL  RA,GLOBAL                                                        
+         ST    R7,RELO                                                          
+         ST    RD,SAVERD                                                        
+         MVC   P1(24),0(R1)        Save off PARMS                               
+         ST    R1,R1PARM                                                        
+         LA    R8,TCBOFF           Dummy off-line TCB                           
+*                                                                               
+*&&TR*&& MVC   TMSGLN,=AL2(TMSGLNQ)                                             
+*&&TR*&& MVC   TMSG(TMSGLNQ),SPACES                                             
+*                                                                               
+         CLI   INITFLAG,YES                                                     
+         JE    *+8                 Already initialized                          
+         BRAS  RE,INIT                                                          
+         L     R7,XAADDR           R7=(SSB)                                     
+         USING XADSECT,R7                                                       
+         XC    ENQWAITS,ENQWAITS   Reset wait count                             
+                                                                                
+*======================================================================         
+* If on-line, or off-line multi-task, find which task number 1-9, A-N           
+*======================================================================         
+         MVI   LOGERR#,C'S'        No subtask                                   
+*                                                                               
+         CLI   ONLINE,YES          On-line?                                     
+         JE    ISGNQ07             Yes                                          
+         CLI   PROCMODE,OFFMULTI   Off-line multi-task?                         
+         JNE   ISGNQ08             No: Always use first                         
+*                                                                               
+         L     R1,PSATOLD-PSA(,0)  GET A(MVS TCB)                               
+*                                                                               
+         CLI   P1TFLG,C'#'         Assigned task code?                          
+         JE    ISGNQ04             Yes: Set task table entry                    
+*                                  No: Already defined, search table            
+ISGNQ02  CLI   TCBID,X'FF'         End of table                                 
+         JE    *+2                 Die: Task not defined                        
+         CL    R1,TCBSIN           Match on MVS TCB Address                     
+         JE    ISGNQ08             Yes                                          
+         LA    R8,TCBLNQ(,R8)      No, bump                                     
+         J     ISGNQ02             and try next                                 
+*                                                                               
+ISGNQ04  PACK  DUB,P1TFLG+1(2)     Pull task number and set entry               
+         CVB   RF,DUB                                                           
+         CHI   RF,MAXTSKQ          Be sure it fits within task limit            
+         JH    *+2                 No: it doesn't                               
+         MHI   RF,TCBLNQ                                                        
+         AR    R8,RF                                                            
+         ST    R1,TCBSIN           Save MVS TCB Address                         
+         J     ISGNQ08                                                          
+*                                                                               
+ISGNQ07  L     RE,VSSB                                                          
+         USING SSBD,RE                                                          
+         LT    R8,SSBTKADR         R8=A(TCB) on-line only (Active task)         
+         JZ    FAIL                Die if no active task  H'00'                 
+         ST    R8,ATCB                                                          
+         DROP  RE                                                               
+                                                                                
+ISGNQ08  LLC   RF,TCBTASK                                                       
+         STC   RF,NQTASKC          Save of task char value                      
+         NILL  GRF,X'000F'         Convert to number                            
+         CLI   TCBTASK,X'F0'                                                    
+         JH    ISGNQ09                                                          
+         AHI   RF,9                Convert A to I to 10 to 18                   
+         CLI   TCBTASK,X'D0'                                                    
+         JL    ISGNQ09                                                          
+         AHI   RF,9                Convert J to N to 19 to 23                   
+*                                                                               
+ISGNQ09  STC   RF,NQTASK#                                                       
+         BCTR  RF,0                                                             
+         MHI   RF,TENQLNQ*MAXTENQ  Get to task tokens                           
+         L     RE,=A(ENQTASK-XADSECT)                                           
+         AR    RE,R7                                                            
+         AR    RF,RE                                                            
+         ST    RF,ATSKNTRY         Active task token entry                      
+         ST    RF,TCBISGQ          ISG enqueues used, let it be known           
+*                                                                               
+         LLC   RF,NQTASK#                                                       
+         LA    R1,1                                                             
+         BCTR  RF,0                Active task bitwise                          
+         SLL   R1,0(RF)                                                         
+         ST    R1,ACTVTASK                                                      
+                                                                                
+*&&TR*&& BRAS  RE,MSGTK            Offline Task Information                     
+                                                                                
+*======================================================================         
+*        1) Validate Action                                                     
+*        2) Validate lock type                                                  
+*        3) Validate File                                                       
+*        4) Build ENQUEUE Major/Minor                                           
+*        5) Set task token pointer                                              
+*        6) Call routine based on Action                                        
+*======================================================================         
+* Action                                                                        
+*======================================================================         
+ISGNQ10  MVC   NQMAJOR,MAJORNQ     Set Major name                               
+         MVC   NQMINOR,SPACES                                                   
+*                                                                               
+         USING ACTTABD,R2                                                       
+         MVI   ERROR#,2            Invalid action                               
+         LARL  R2,ACTTAB           Validate action value                        
+ISGNQ20  CLI   ACT#,EOT                                                         
+         JE    ISGERR                                                           
+         CLC   ACT#,P1ACT#                                                      
+         JE    ISGNQ30                                                          
+         LA    R2,ACTLNQ(,R2)                                                   
+         J     ISGNQ20                                                          
+                                                                                
+*======================================================================         
+* Lock Type   - report, tree, part 1 CI, part 2 CI                              
+*======================================================================         
+         USING XLOCKD,R3                                                        
+ISGNQ30  XR    R4,R4                                                            
+         CLI   ACT#,C'K'           Clean up Task                                
+         JE    ISGNQ100                                                         
+         CLI   ACT#,C'S'           Suspend shared enqueues for task             
+         JE    ISGNQ100                                                         
+*                                                                               
+         LA    R3,XLOCKTAB                                                      
+         LA    RF,XLOCK#           Max types                                    
+         MVI   ERROR#,3            No such lock type                            
+ISGNQ32  CLC   P3SUBTYP,XLOCKTYP                                                
+         JE    ISGNQ36                                                          
+         LA    R3,XLOCKLNQ(,R3)                                                 
+         JCT   RF,ISGNQ32                                                       
+         J     ISGERR                                                           
+*                                                                               
+ISGNQ36  MVC   NQLEN,XLOCKLEN      Set length of NQ Minor                       
+         MVC   NQINDEX,XLOCKIDX    Index into resource token table              
+         MVC   NQLTYPE,XLOCKLTY    Lock type (shared/exclusive)                 
+         MVC   NQSUBTYP,XLOCKTYP   Subtype (file/report/tree/etc)               
+*                                                                               
+         L     RE,XLOCKNAM                                                      
+         LLC   RF,NQLEN                                                         
+         BCTR  RF,0                Build default model                          
+         EXRL  RF,MVCNQ            NQMINOR(0),0(RE)                             
+         DROP  R3                                                               
+                                                                                
+         USING NQD,NQMINOR                                                      
+         CLI   P3SUBTYP,LOCKREPT   Lock on report number                        
+         JNE   ISGNQ40             No                                           
+*                                                                               
+         MVI   ERROR#,4            Invalid lock number                          
+         XR    RF,RF                                                            
+         ICM   RF,7,P3REPORT                                                    
+         JZ    ISGERR                                                           
+*                                                                               
+         ST    RF,NQRPT#                                                        
+         CVD   RF,DUB                                                           
+         OI    DUB+L'DUB-1,X'0F'                                                
+         UNPK  NQREPT#,DUB         Convert number to character                  
+                                                                                
+*======================================================================         
+* File Type PRTQ, WRKF, WRKZ                                                    
+*======================================================================         
+ISGNQ40  MVC   NQDSPACE,DSPACE     Set dataspace                                
+                                                                                
+         MVI   ERROR#,5            Missing file type                            
+         LT    RE,P2FILE                                                        
+         JZ    ISGERR                                                           
+         MVC   NQFILE,0(RE)        Set file type in Minor                       
+*                                                                               
+         USING FILED,R4                                                         
+         MVI   ERROR#,6            Invalid Enqueue type                         
+         LARL  R4,FILETAB          Validate file of ENQUEUE                     
+ISGNQ42  CLI   0(R4),EOT                                                        
+         JE    ISGERR                                                           
+         CLC   FILENAME,NQFILE     Match of file prefix                         
+         JE    ISGNQ50                                                          
+         LA    R4,FILLNQ(,R4)                                                   
+         J     ISGNQ42                                                          
+*                                                                               
+ISGNQ50  MVC   NQFILNDX,FILENDX                                                 
+         MVC   AFILETKN,FILETOKN                                                
+         L     R1,AFILETKN                                                      
+         AR    R1,R7                                                            
+         ST    R1,AFILETKN                                                      
+         LLC   R6,NQFILEC          Convert file number to dec                   
+         LR    RE,R6                                                            
+         NILL  GRE,X'00F0'         C'0' to '9'                                  
+         NILL  GR6,X'000F'                                                      
+         CHI   RE,X'F0'            This is okay                                 
+         JE    ISGNQ52                                                          
+         MVI   ERROR#,7            Ivalid file number                           
+         CHI   RE,X'C0'            C'A' to C'G'                                 
+         JNE   ISGERR                                                           
+         AHI   R6,9                Add 9 to get 10 to 16                        
+*                                                                               
+ISGNQ52  STC   R6,NQFILE#          Save index 1 to 16                           
+*&&US                                                                           
+         CLI   NQFILNDX,WRKF       Are we dealing with WRKF files?              
+         JNE   ISGNQ59             No                                           
+         CLI   NQDSPACE,C'R'       Is this REP?                                 
+         JNE   ISGNQ59             No                                           
+         MVI   NQDSPACE,C'A'       There are no REP WRKF files                  
+*&&                                                                             
+                                                                                
+*======================================================================         
+* Set task enqueue entry                                                        
+*======================================================================         
+ISGNQ59  XC    ATOKEN,ATOKEN                                                    
+         ZAP   ENQEXCNT,=P'0'      Count of exclusive enqueues                  
+         ZAP   ENQSHCNT,=P'0'      Count of shared enqueues                     
+*                                                                               
+         LHI   R6,MAXTENQ          Max enqueues per task                        
+         L     R4,ATSKNTRY         first entry in this tasks table              
+         USING TENQD,R4                                                         
+ISGNQ60  CLI   TENQTYPE,EXCLQ                                                   
+         JNE   ISGNQ62                                                          
+         AP    ENQEXCNT,=P'1'      Keep count of how many exclusives            
+ISGNQ62  CLI   TENQTYPE,SHARQ                                                   
+         JNE   ISGNQ64                                                          
+         AP    ENQSHCNT,=P'1'      Keep count of how many shared                
+ISGNQ64  CLC   ATOKEN,NULLS        Is pointer set?                              
+         JNE   ISGNQ66             Yes, no need to check for empty              
+         CLC   TENQTKN@,NULLS      Open slot for this enqueue?                  
+         JNE   ISGNQ66             No                                           
+         CLI   P1ACT#,C'E'         Do we want to enqueue?                       
+         JNE   ISGNQ66             No, then no use for an empty                 
+         ST    R4,ATOKEN           Found an empty slot                          
+ISGNQ66  CLC   TENQTEXT,NQMINOR    Does this task have this enqueue?            
+         JNE   ISGNQ68             Not in this slot                             
+         CLC   TENQTYPE,NQLTYPE    Does the lock type match?                    
+         JNE   ISGNQ68             No                                           
+         ST    R4,ATOKEN           Yes, save it                                 
+ISGNQ68  LA    R4,TENQLNQ(,R4)                                                  
+         JCT   R6,ISGNQ60                                                       
+*                                                                               
+         ZAP   ENQTOCNT,ENQEXCNT                                                
+         AP    ENQTOCNT,ENQSHCNT                                                
+*                                                                               
+         CLI   P1ACT#,C'D'         Dequeuing?                                   
+         JNE   ISGNQ70             No                                           
+         MVI   ERROR#,8            Deqing something that's not enq              
+         OC    ATOKEN,ATOKEN                                                    
+         JZ    ISGERR                                                           
+         J     ISGNQ80                                                          
+*                                                                               
+ISGNQ70  OC    ATOKEN,ATOKEN       Found empty or matching enqueue?             
+         JZ    FAIL                . no, needs to be bigger or better           
+*                                                                               
+ISGNQ80  L     R4,ATOKEN           Task table entry                             
+         ST    R4,ATSKNTRY                                                      
+         MVC   ATOKEN,TENQTKN@                                                  
+         DROP  R4                                                               
+*                                                                               
+ISGNQ100 L     RF,ACTRTN                                                        
+         BASR  R9,RF               PASS CONTROL TO ACTION ROUTINE               
+         MVI   LOGERR#,C' '                                                     
+         J     XIT                                                              
+         DROP  R2                                                               
+                                                                                
+ISGERR   DS    0C                                                               
+         LLC   RF,ERROR#                                                        
+         L     R1,R1PARM                                                        
+         STC   RF,P3ERR                                                         
+XIT      XIT1  ,                   Need to return                               
+                                                                                
+MVCNQ    MVC   NQMINOR(0),0(RE)                                                 
+         EJECT                                                                  
+                                                                                
+***********************************************************************         
+* ENQUEUE resource                                                              
+*         File shared or exclusive lock                                         
+*         1) First time to acquire - Call ISGENQ,update tables/counts           
+*         2) Already own and from same task, up task counter                    
+*         3) Already own by another task, up token and task conter              
+***********************************************************************         
+         USING TENQD,R4                                                         
+         USING TOKEND,R5                                                        
+ENQ      L     R4,ATSKNTRY         R4=A(Task Enqueue list entry)                
+*                                                                               
+         CLI   PROCMODE,OFFMULTI                                                
+         JE    ENQM                                                             
+*                                                                               
+         OC    TENQTKN@,TENQTKN@   Was enqueue found in task list?              
+         BNZR  R9                  Yes, this task already owns enqueue          
+                                                                                
+*======================================================================         
+* Set TOKEN list entry for a Report                                             
+*======================================================================         
+         CLI   NQSUBTYP,LOCKREPT   Exclusive report lock                        
+         JNE   ENQ100              No                                           
+*                                                                               
+         L     R5,=A(TOKLREPT-XADSECT)  R5=A(report token table)                
+         AR    R5,R7                                                            
+         LLC   R1,NQFILNDX         Resource number                              
+         AHI   R1,-1                                                            
+         MHI   R1,TOKNLNQ*MAXREXQ  index in to get resource entries             
+         AR    R5,R1               R5=A(resource report token table)            
+*                                                                               
+         XC    ATOKEN,ATOKEN                                                    
+         LHI   R6,MAXREXQ          Max report enqueues for resource             
+ENQ010   CLC   ATOKEN,NULLS          Is pointer set?                            
+         JNE   ENQ020                . yes, no need to check for empty          
+         OC    TOKNTEXT(TOKNCLRQ),TOKNTEXT Open slot for this enqueue?          
+         JNZ   ENQ020                . no                                       
+         ST    R5,ATOKEN             . found an empty slot                      
+ENQ020   CLC   TOKNTEXT,NQMINOR      Does this task have this enqueue?          
+         JNE   ENQ030                . not in this slot                         
+         CLC   TOKNTYPE,NQLTYPE      Is this the same lock type?                
+         JNE   ENQ030                . no                                       
+         ST    R5,ATOKEN             . yes, save it                             
+         J     ENQ040                                                           
+ENQ030   LA    R5,TOKNLNQ(,R5)                                                  
+         JCT   R6,ENQ010                                                        
+*                                                                               
+ENQ040   CLC   ATOKEN,NULLS        Found empty or matching enqueue?             
+         JE    FAIL                . no, needs to be bigger or better           
+         L     R5,ATOKEN                                                        
+         J     ENQ120                                                           
+                                                                                
+*======================================================================         
+* Set TOKEN list entry for a File, TREE, CI, CII                                
+*======================================================================         
+ENQ100   L     R5,AFILETKN         R5=A(resource token list)                    
+         LLC   R1,NQFILE#          File number                                  
+         AHI   R1,-1                                                            
+         MHI   R1,TOKNLNQ*MAXFEXQ  index in to get resource file                
+         AR    R5,R1               R5=A(resource file section)                  
+         LLC   R1,NQINDEX          index by lock type entry                     
+         MHI   R1,TOKNLNQ                                                       
+         AR    R5,R1               R5=A(resource file lock type entry)          
+*                                                                               
+ENQ120   ST    R5,ATSKFTKN                                                      
+*                                                                               
+*&&TR*&& BRAS  RE,MSGNQ            Enqueue requested                            
+*                                                                               
+         CLI   NQSUBTYP,SHARFILE   Shared enqueue                               
+         JE    ENQ400              Yes                                          
+                                                                                
+*======================================================================         
+* Exclusive Enqueue (File, TREE, CI, CII, Report)                               
+*======================================================================         
+ENQ200   L     R5,ATSKFTKN                                                      
+*                                                                               
+         CLC   TOKNTASK,NULLS      Another task has this enqueue?               
+         JNE   ENQ280                                                           
+*                                                                               
+ENQ202   LA    R2,TOKNECB          A(ECB) for ECB@                              
+         ST    R2,NQAECB                                                        
+*                                                                               
+*&&TR*&& BRAS  RE,MSGOB            Enqueue to be obtained                       
+*                                                                               
+         ISGENQ REQUEST=OBTAIN,QNAME=NQMAJOR,RNAME=NQMINOR,            +        
+               RNAMELEN=NQLEN,SCOPE=SYSTEMS,CONTROL=EXCLUSIVE,         +        
+               ENQTOKEN=TOKNTOKN,RESLIST=NO,COND=YES,RNL=NO,           +        
+               CONTENTIONACT=WAIT,WAITTYPE=ECB,ECB@=NQAECB,            +        
+               RETCODE=15,RSNCODE=0                                             
+         LTR   RF,RF               Got it?                                      
+         JZ    ENQ900              Yes                                          
+*                                                                               
+         MVI   LOGERR#,C'E'        Not a warning                                
+         CIJE  RF,4,ENQ270         ISGENQRC_WARN                                
+*                                                                               
+         NILH  GR0,X'0000'                                                      
+         CHI   R0,ISGENQRSN_NOTAUTHORIZEDFORECB                                 
+         JE    ENQXU               Need an unathorized exclusive (IDF)          
+         J     FAIL                                                             
+*                                                                               
+ENQ270   NILH  GR0,X'0000'                                                      
+         CHI   R0,ISGENQRSN_UNPROTECTEDQNAME                                    
+         JE    ENQ900              We got it                                    
+         CHI   R0,ISGENQRSN_ECBWILLBEPOSTED                                     
+         JE    ENQ290              Owned by another job? So wait                
+         MVI   LOGERR#,C'Q'                                                     
+         CHI   R0,ISGENQRSN_TASKOWNSSHARED                                      
+         JE    ENQ280                                                           
+         CHI   R0,ISGENQRSN_TASKOWNSEXCLUSIVE                                   
+         JNE   FAIL                Currently only can be this way               
+*                                                                               
+ENQ280   CLC   TOKNTASK,ACTVTASK   This task holds the enqueue?                 
+         JNE   ENQ282                                                           
+         CLI   TOKNTYPE,EXCLQ                                                   
+         BER   R9                                                               
+*                                                                               
+ENQ282   BRAS  RE,DO_HOLD          Hold off on this enqueue                     
+         JE    ENQ900                                                           
+         J     ENQ202                                                           
+*                                                                               
+ENQ290   BRAS  RE,DO_ECB           Wait until available                         
+         J     ENQ900                                                           
+                                                                                
+*======================================================================         
+* Shared Enqueue (File)                                                         
+*======================================================================         
+ENQ400   L     R5,ATSKFTKN                                                      
+*                                                                               
+         CLI   TOKNTYPE,EXCLQ      is there an exclusive enqueue?               
+         JE    ENQ480              Yes, then hold off on this share             
+         CLC   TOKNTASK,NULLS      Another task has this enqueue?               
+         JNE   ENQ900              Yes, then use the enqueue                    
+*                                                                               
+ENQ402   LA    R2,TOKNECB          A(ECB) for ECB@                              
+         ST    R2,NQAECB                                                        
+*                                                                               
+         ISGENQ REQUEST=OBTAIN,QNAME=NQMAJOR,RNAME=NQMINOR,            +        
+               RNAMELEN=NQLEN,SCOPE=SYSTEMS,CONTROL=SHARED,            +        
+               ENQTOKEN=TOKNTOKN,RESLIST=NO,COND=YES,RNL=NO,           +        
+               CONTENTIONACT=WAIT,WAITTYPE=ECB,ECB@=NQAECB,            +        
+               RETCODE=15,RSNCODE=0                                             
+         LTR   RF,RF               Got it?                                      
+         JZ    ENQ900              Yes                                          
+*                                                                               
+         MVI   LOGERR#,C'E'        Not a warning                                
+         CIJE  RF,4,ENQ470         ISGENQRC_WARN                                
+*                                                                               
+         NILH  GR0,X'0000'                                                      
+         CHI   R0,ISGENQRSN_NOTAUTHORIZEDFORECB                                 
+         JE    ENQSU               Need an unathorized Share (for IDF)          
+         J     FAIL                                                             
+*                                                                               
+ENQ470   NILH  GR0,X'0000'                                                      
+         CHI   R0,ISGENQRSN_UNPROTECTEDQNAME                                    
+         JE    ENQ900              We got it                                    
+         CHI   R0,ISGENQRSN_ECBWILLBEPOSTED                                     
+         JE    ENQ490              Owned by another job? So wait                
+         MVI   LOGERR#,C'Q'                                                     
+         CHI   R0,ISGENQRSN_TASKOWNSSHARED                                      
+         JE    ENQ900                                                           
+         CHI   R0,ISGENQRSN_TASKOWNSEXCLUSIVE                                   
+         JNE   FAIL                                                             
+*                                                                               
+ENQ480   CLC   TOKNTASK,ACTVTASK   This task has the enqueue?                   
+         BER   R9                  Yes, then use it                             
+*                                                                               
+         BRAS  RE,DO_HOLD                                                       
+         JE    ENQ900                                                           
+         J     ENQ402                                                           
+*                                                                               
+ENQ490   BRAS  RE,DO_ECB           Wait until available                         
+         J     ENQ900                                                           
+                                                                                
+*======================================================================         
+* Enqueue Obtained                                                              
+*======================================================================         
+ENQ900   DS    0H                                                               
+*                                                                               
+*&&TR*&& BRAS  RE,MSGEX            Enqueue executed                             
+*                                                                               
+         TIME  TU                                                               
+         ST    R0,TENQOTIM         Time of enqueue obtain                       
+         ST    R5,TENQTKN@         Point to enqueue token entry                 
+         MVC   TENQTEXT,NQMINOR    Enqueue minor name                           
+         MVC   TENQTYPE,NQLTYPE    Lock type                                    
+         MVI   TENQSTAT,ACTIQ      Active Enqueue                               
+         ST    R4,TOKNENQ@         Point to controlling task enq entry          
+         MVC   TOKNTEXT,NQMINOR    Enqueue minor name                           
+         MVC   TOKNTYPE,NQLTYPE    Lock type                                    
+         OC    TOKNTASK,ACTVTASK   Turn on controlling task bit                 
+         MVI   TOKNSTAT,ACTIQ      Active Enqueue                               
+         AP    TOKNENQ#,=P'1'      Enqueue count                                
+         BR    R9                  Done                                         
+                                                                                
+*======================================================================         
+* Shared enqueue w/o an ECB when running unathorized (IDF)                      
+*======================================================================         
+ENQSU    DS    0H                                                               
+*                                                                               
+         ISGENQ REQUEST=OBTAIN,QNAME=NQMAJOR,RNAME=NQMINOR,            +        
+               RNAMELEN=NQLEN,SCOPE=SYSTEMS,CONTROL=SHARED,            +        
+               ENQTOKEN=TOKNTOKN,RESLIST=NO,COND=YES,RNL=NO,           +        
+               CONTENTIONACT=FAIL,RETCODE=15,RSNCODE=0                          
+         LTR   RF,RF               Got it?                                      
+         JZ    ENQ900              Yes                                          
+*                                                                               
+         MVI   LOGERR#,C'E'        Not a warning                                
+         CIJE  RF,4,ENQSU2         ISGENQRC_WARN                                
+         J     FAIL                                                             
+*                                                                               
+ENQSU2   NILH  GR0,X'0000'                                                      
+         CHI   R0,ISGENQRSN_UNPROTECTEDQNAME                                    
+         JE    ENQ900              We got it                                    
+         CHI   R0,ISGENQRSN_TASKOWNSSHARED                                      
+         JE    ENQ900                                                           
+         CHI   R0,ISGENQRSN_NOTIMMEDIATELYAVAILABLE                             
+         JE    ENQSU4              Owned by another job, so wait                
+         CHI   R0,ISGENQRSN_TASKOWNSEXCLUSIVE                                   
+         JNE   FAIL                                                             
+         CLC   TOKNTASK,ACTVTASK   This task has the enqueue?                   
+         BER   R9                  Yes, then use it                             
+*                                                                               
+ENQSU4   BRAS  RE,DO_WAIT                                                       
+         J     ENQSU                                                            
+                                                                                
+*======================================================================         
+* Exclusive enqueue w/o an ECB when running unathorized (IDF)                   
+*======================================================================         
+ENQXU    DS    0H                                                               
+*                                                                               
+         ISGENQ REQUEST=OBTAIN,QNAME=NQMAJOR,RNAME=NQMINOR,            +        
+               RNAMELEN=NQLEN,SCOPE=SYSTEMS,CONTROL=EXCLUSIVE,         +        
+               ENQTOKEN=TOKNTOKN,RESLIST=NO,COND=YES,RNL=NO,           +        
+               CONTENTIONACT=FAIL,RETCODE=15,RSNCODE=0                          
+         LTR   RF,RF               Got it?                                      
+         JZ    ENQ900              Yes                                          
+*                                                                               
+         MVI   LOGERR#,C'E'        Not a warning                                
+         CIJE  RF,4,ENQXU2         ISGENQRC_WARN                                
+         J     FAIL                                                             
+*                                                                               
+ENQXU2   NILH  GR0,X'0000'                                                      
+         CHI   R0,ISGENQRSN_UNPROTECTEDQNAME                                    
+         JE    ENQ900              We got it                                    
+         CHI   R0,ISGENQRSN_TASKOWNSSHARED                                      
+         JE    ENQXU4                                                           
+         CHI   R0,ISGENQRSN_NOTIMMEDIATELYAVAILABLE                             
+         JE    ENQXU6              Owned by another job, so wait                
+         CHI   R0,ISGENQRSN_TASKOWNSEXCLUSIVE                                   
+         JNE   FAIL                Currently only can be this way               
+*                                                                               
+ENQXU4   CLC   TOKNTASK,ACTVTASK   This task holds the enqueue?                 
+         JNE   ENQXU6              . this shouldn't happen                      
+         CLI   TOKNTYPE,EXCLQ                                                   
+         BER   R9                                                               
+*                                                                               
+ENQXU6   BRAS  RE,DO_WAIT                                                       
+         J     ENQXU                                                            
+                                                                                
+*======================================================================         
+* ENQUEUE resource - using enqueue call for offline multitask                   
+*======================================================================         
+ENQM     MVI   LOGERR#,C'M'                                                     
+*                                                                               
+         OC    TENQTOKN,TENQTOKN   Was enqueue found in task list?              
+         BNZR  R9                  Yes, this task already owns enqueue          
+*                                                                               
+         LA    R2,TENQECB          A(ECB) for ECB@                              
+         ST    R2,NQAECB                                                        
+*                                                                               
+         CLI   NQSUBTYP,SHARFILE   Shared enqueue                               
+         JE    ENQM400             Yes                                          
+*                                                                               
+         ISGENQ REQUEST=OBTAIN,QNAME=NQMAJOR,RNAME=NQMINOR,            +        
+               RNAMELEN=NQLEN,SCOPE=SYSTEMS,CONTROL=EXCLUSIVE,         +        
+               ENQTOKEN=TENQTOKN,RESLIST=NO,COND=YES,RNL=NO,           +        
+               CONTENTIONACT=WAIT,WAITTYPE=ECB,ECB@=NQAECB,            +        
+               RETCODE=15,RSNCODE=0,MF=(E,PARMISG)                              
+         LTR   RF,RF               Got it?                                      
+         JZ    ENQM900             YES, and no warnings                         
+*                                                                               
+         CIJE  RF,4,ENQM100        ISGENQRC_WARN otherwise FAIL                 
+*                                                                               
+         NILH  GR0,X'0000'                                                      
+         CHI   R0,ISGENQRSN_NOTAUTHORIZEDFORECB                                 
+         JE    ENQMSU              Need an unathorized Share (for IDF)          
+         J     FAIL                                                             
+*                                                                               
+ENQM100  NILH  GR0,X'0000'                                                      
+         CHI   R0,ISGENQRSN_UNPROTECTEDQNAME                                    
+         JE    ENQM900             This is fine, now have the enqueue           
+         CHI   R0,ISGENQRSN_ECBWILLBEPOSTED                                     
+         JE    ENQM800             Owned by another? Wait                       
+         CHI   R0,ISGENQRSN_TASKOWNSSHARED                                      
+         JE    FAIL                This isn't supported, change needed          
+         CHI   R0,ISGENQRSN_TASKOWNSEXCLUSIVE                                   
+         BER   R9                  Task already has an exlusive                 
+         J     FAIL                                                             
+*                                                                               
+ENQM400  ISGENQ REQUEST=OBTAIN,QNAME=NQMAJOR,RNAME=NQMINOR,            +        
+               RNAMELEN=NQLEN,SCOPE=SYSTEMS,CONTROL=SHARED,            +        
+               ENQTOKEN=TENQTOKN,RESLIST=NO,COND=YES,RNL=NO,           +        
+               CONTENTIONACT=WAIT,WAITTYPE=ECB,ECB@=NQAECB,            +        
+               RETCODE=15,RSNCODE=0,MF=(E,PARMISG)                              
+         LTR   RF,RF               Got it?                                      
+         JZ    ENQM900             Yes, and no warnings                         
+*                                                                               
+         CIJE  RF,4,ENQM500        ISGENQRC_WARN otherwise FAIL                 
+*                                                                               
+         NILH  GR0,X'0000'                                                      
+         CHI   R0,ISGENQRSN_NOTAUTHORIZEDFORECB                                 
+         JE    ENQMXU              Need an unathorized Share (for IDF)          
+         J     FAIL                                                             
+*                                                                               
+ENQM500  NILH  GR0,X'0000'                                                      
+         CHI   R0,ISGENQRSN_UNPROTECTEDQNAME                                    
+         JE    ENQM900             This is fine, now have the enqueue           
+         CHI   R0,ISGENQRSN_ECBWILLBEPOSTED                                     
+         JE    ENQM800             Owned by another? Wait                       
+         CHI   R0,ISGENQRSN_TASKOWNSSHARED                                      
+         BER   R9                  Task already has a share                     
+         CHI   R0,ISGENQRSN_TASKOWNSEXCLUSIVE                                   
+         BER   R9                  Task already has an exlusive                 
+         J     FAIL                                                             
+*                                                                               
+ENQM800  L     R1,NQAECB           A(ECB) to be waited on                       
+         WAIT  ECB=(R1)            Wait until available                         
+*                                                                               
+ENQM900  DS    0H                                                               
+*                                                                               
+*&&TR*&& BRAS  RE,MSGEX            Enqueue executed                             
+*                                                                               
+         MVC   TENQTEXT,NQMINOR    Enqueue minor name                           
+         MVC   TENQTYPE,NQLTYPE    Lock type                                    
+         MVI   TENQSTAT,ACTIQ      Active Enqueue                               
+         BR    R9                  Done                                         
+                                                                                
+*======================================================================         
+* Shared Enqueue w/o ECB running unathorized (IDF) for offline multi            
+*======================================================================         
+ENQMSU   DS    0H                                                               
+*                                                                               
+         ISGENQ REQUEST=OBTAIN,QNAME=NQMAJOR,RNAME=NQMINOR,            +        
+               RNAMELEN=NQLEN,SCOPE=SYSTEMS,CONTROL=SHARED,            +        
+               ENQTOKEN=TENQTOKN,RESLIST=NO,COND=YES,RNL=NO,           +        
+               CONTENTIONACT=FAIL,RETCODE=15,RSNCODE=0                          
+         LTR   RF,RF               Got it?                                      
+         JZ    ENQM900             Yes                                          
+*                                                                               
+         MVI   LOGERR#,C'E'        Not a warning                                
+         CIJE  RF,4,ENQMSU2        ISGENQRC_WARN                                
+         J     FAIL                                                             
+*                                                                               
+ENQMSU2  NILH  GR0,X'0000'                                                      
+         CHI   R0,ISGENQRSN_UNPROTECTEDQNAME                                    
+         JE    ENQM900              We got it                                   
+         CHI   R0,ISGENQRSN_TASKOWNSSHARED                                      
+         JE    ENQM900                                                          
+         CHI   R0,ISGENQRSN_NOTIMMEDIATELYAVAILABLE                             
+         JE    ENQMSU4             Owned by another job, so wait                
+         CHI   R0,ISGENQRSN_TASKOWNSEXCLUSIVE                                   
+         JNE   FAIL                                                             
+         CLC   TOKNTASK,ACTVTASK   This task has the enqueue?                   
+         BER   R9                  Yes, then use it                             
+*                                                                               
+ENQMSU4  BRAS  RE,DO_WAIT                                                       
+         J     ENQMSU                                                           
+                                                                                
+*======================================================================         
+* Exclusive enqueue w/o ECB running unathorized (IDF) for offline multi         
+*======================================================================         
+ENQMXU   DS    0H                                                               
+*                                                                               
+         ISGENQ REQUEST=OBTAIN,QNAME=NQMAJOR,RNAME=NQMINOR,            +        
+               RNAMELEN=NQLEN,SCOPE=SYSTEMS,CONTROL=EXCLUSIVE,         +        
+               ENQTOKEN=TENQTOKN,RESLIST=NO,COND=YES,RNL=NO,           +        
+               CONTENTIONACT=FAIL,RETCODE=15,RSNCODE=0                          
+         LTR   RF,RF               Got it?                                      
+         JZ    ENQM900             Yes                                          
+*                                                                               
+         MVI   LOGERR#,C'E'        Not a warning                                
+         CIJE  RF,4,ENQMXU2        ISGENQRC_WARN                                
+         J     FAIL                                                             
+*                                                                               
+ENQMXU2  NILH  GR0,X'0000'                                                      
+         CHI   R0,ISGENQRSN_UNPROTECTEDQNAME                                    
+         JE    ENQM900             We got it                                    
+         CHI   R0,ISGENQRSN_TASKOWNSSHARED                                      
+         JE    ENQMXU4                                                          
+         CHI   R0,ISGENQRSN_NOTIMMEDIATELYAVAILABLE                             
+         JE    ENQMXU6             Owned by another job, so wait                
+         CHI   R0,ISGENQRSN_TASKOWNSEXCLUSIVE                                   
+         JNE   FAIL                Currently only can be this way               
+*                                                                               
+ENQMXU4  CLC   TOKNTASK,ACTVTASK   This task holds the enqueue?                 
+         JNE   ENQMXU6             . this shouldn't happen                      
+         CLI   TOKNTYPE,EXCLQ                                                   
+         BER   R9                                                               
+*                                                                               
+ENQMXU6  BRAS  RE,DO_WAIT                                                       
+         J     ENQMXU                                                           
+*                                                                               
+         DROP  R4,R5                                                            
+         EJECT                                                                  
+                                                                                
+***********************************************************************         
+* Release resource (AKA - DEQUEUE via ISGENQ)                                   
+***********************************************************************         
+         USING TENQD,R4                                                         
+         USING TOKEND,R5                                                        
+DEQ      L     R4,ATSKNTRY         R4=A(Task enqueue table entry)               
+*                                                                               
+         CLI   PROCMODE,OFFMULTI                                                
+         JE    DEQM                                                             
+*                                                                               
+         LT    R5,TENQTKN@         R5=A(Enqueue token table entry)              
+         JZ    DEQ280              No token entry, get rid of task enq          
+*                                                                               
+         MVI   LOGERR#,C'N'        No token                                     
+         OC    TOKNTOKN,TOKNTOKN   Be sure there is a token to dequeue          
+         JZ    DEQ210              No token, clear enqueue entry                
+*                                                                               
+*&&TR*&& BRAS  RE,MSGDQ            Dequeue requested                            
+*                                                                               
+         MVI   LOGERR#,C'D'        Dequeue failure                              
+*                                                                               
+         CLI   TENQSTAT,HOLDQ      Is this on hold behind another task?         
+         JE    DEQ300              Remove it from waiting list                  
+*                                                                               
+         MVC   FULL,ACTVTASK                                                    
+         XC    FULL,=X'FFFFFFFF'                                                
+         NC    TOKNTASK,FULL       Turn off active task                         
+*                                                                               
+         CLI   TENQTYPE,SHARQ      Shared lock of file                          
+         JNE   DEQ080              No                                           
+*                                                                               
+         MVI   LOGERR#,C'T'        Task bits failed                             
+         OC    TOKNTASK,TOKNTASK   Only if all is off                           
+         JNZ   DEQ220              Not yet                                      
+         J     DEQ100                                                           
+*                                                                               
+DEQ080   CLI   TENQSTAT,WAITQ      Is this waiting for the enqueue              
+         JE    DEQ100              Then we must deq or pass enq request         
+         C     R4,TOKNENQ@         Else be sure of correct exclusive            
+         JNE   FAIL                No, something is out of sync, error          
+*                                                                               
+DEQ100   OC    TENQNXT@,TENQNXT@   Is another task waiting for this             
+         JNZ   DEQ220              Yes                                          
+*                                                                               
+DEQ200   ISGENQ REQUEST=RELEASE,ENQTOKEN=TOKNTOKN,                     +        
+               COND=YES,RETCODE=15,RSNCODE=0                                    
+         LTR   RF,RF                                                            
+         JNZ   FAIL                                                             
+*                                                                               
+*&&TR*&& BRAS  RE,MSGDX            Dequeue released                             
+*                                                                               
+DEQ210   XC    TOKNTEXT(TOKNCLRQ),TOKNTEXT   Clear the token entry              
+DEQ220   AP    TOKNDEQ#,=P'1'      Keep track of the # of dequeues              
+*                                                                               
+         ICM   R3,15,TENQNXT@      Enqueue waiting to be dealt with?            
+         JZ    DEQ250              No                                           
+*                                                                               
+*&&TR*&& BRAS  RE,MSGNE            Dequeue executed                             
+*                                                                               
+N        USING TENQD,R3                                                         
+         LA    R2,N.TENQECB        A(Holding entry ECB)                         
+         ICM   R1,15,TOKNWLIM      Wait limit count                             
+         CHI   R1,MAXWAITQ         Limit to how many waits processed            
+         JL    DEQ240              before a forced dequeue                      
+         XC    TOKNWLIM,TOKNWLIM   Reset wait limit count                       
+*                                                                               
+         POST  (R2)                                                             
+*                                                                               
+*&&TR*&& BRAS  RE,MSGPR            Post and require enqueue                     
+*                                                                               
+         ISGENQ REQUEST=RELEASE,ENQTOKEN=TOKNTOKN,                     +        
+               COND=YES,RETCODE=15,RSNCODE=0                                    
+         LTR   RF,RF                                                            
+         JNZ   FAIL                                                             
+         MVI   N.TENQHRC,TENQHRCN  Next task needs to enqueue resource          
+         J     DEQ242                                                           
+*                                                                               
+DEQ240   AHI   R1,1                bump wait limit                              
+         STCM  R1,15,TOKNWLIM                                                   
+         MVI   N.TENQHRC,TENQHRCE  Pass enqueue to next task                    
+*                                                                               
+         POST  (R2)                Post with no return code                     
+*                                                                               
+*&&TR*&& BRAS  RE,MSGPP            Post and pass enqueue                        
+*                                                                               
+DEQ242   ST    R3,TOKNENQ@         Token now points to next enq in line         
+*                                                                               
+         LLC   RF,N.TENQEYE+3      Task character (1-9,A-N)                     
+         NILL  GRF,X'000F'         Convert to number                            
+         CLI   N.TENQEYE+3,X'F0'                                                
+         JH    DEQ246                                                           
+         AHI   RF,9                Convert A to I to 10 to 18                   
+         CLI   N.TENQEYE+3,X'D0'                                                
+         JL    DEQ246                                                           
+         AHI   RF,9                Convert J to N to 19 to 23                   
+*                                                                               
+DEQ246   LA    R1,1                                                             
+         BCTR  RF,0                Active task bitwise                          
+         SLL   R1,0(RF)                                                         
+         O     R1,TOKNTASK         OR and stick                                 
+         STCM  R1,15,TOKNTASK      Update TOKNTASK w/ next task                 
+*                                                                               
+         DROP  N                                                                
+*                                                                               
+DEQ250   CLI   P1ACT#,C'K'         Cleaning up Task?                            
+         JE    DEQ260              Yes: Don't worry about counts                
+         CLI   P1ACT#,C'S'         Cleaning up task shared enqueues?            
+         JE    DEQ260              Yes: Don't worry about counts                
+         CLI   TENQTYPE,EXCLQ      Did we dequeue an exclusive?                 
+         JNE   DEQ252              No                                           
+         SP    ENQEXCNT,=PL1'1'    Yes: Adjust exclusive count                  
+DEQ252   CLI   TENQTYPE,SHARQ      Did we dequeue a share?                      
+         JNE   DEQ254              No                                           
+         SP    ENQSHCNT,=PL1'1'    Yes: Adjust share count                      
+DEQ254   SP    ENQTOCNT,=PL1'1'    Adjust total enqueue count                   
+         JNZ   DEQ260              Do we have anything enqueued?                
+         XC    TCBISGQ,TCBISGQ     No: Let the TCB know about it                
+*                                                                               
+DEQ260   XC    TENQTEXT(TENQCLRQ),TENQTEXT   Clear enqueue                      
+         BR    R9                                                               
+DEQ280   XC    TENQTEXT(TENQCLRQ),TENQTEXT   Clear enqueue                      
+         MVI   ERROR#,10           Enqueue entry, but no token entry            
+         J     ISGERR                                                           
+*                                                                               
+B        USING TENQD,R1                                                         
+DEQ300   ICM   R1,15,TOKNENQ@      Get the task that owns the enqueue           
+         JNZ   DEQ305              YES: if an enq on hold need owner            
+         J     FAIL                                                             
+*                                                                               
+DEQ305   CR    R1,R4               Dequeuing the active enqueue?                
+         JNE   DEQ310              NO: shouldn't own, should be on hold         
+         J     FAIL                                                             
+*                                                                               
+DEQ310   LR    RF,R1               Save previous task                           
+         ICM   R1,15,B.TENQNXT@    Get next task on hold                        
+         JNZ   DEQ315              YES: didn't reach task in question           
+         J     FAIL                                                             
+*                                                                               
+DEQ315   CR    R1,R4               Is this the task we are dequeuing?           
+         JNE   DEQ310              NO: get next in chain                        
+         LR    R1,RF               Restore previous task and                    
+         MVC   B.TENQNXT@,TENQNXT@ adjust chain pointer                         
+         J     DEQ250                                                           
+         DROP  B,R5                                                             
+                                                                                
+*======================================================================         
+* DEQUEUE resource - after suspended enqueue call for offline multitask         
+*======================================================================         
+DEQM     MVI   LOGERR#,C'D'        Dequeue failure                              
+*                                                                               
+*&&TR*&& BRAS  RE,MSGDQ            Dequeue requested                            
+*                                                                               
+         OC    TENQTOKN,TENQTOKN                                                
+         JZ    DEQM100             No token entry, get rid of task enq          
+*                                                                               
+         ISGENQ REQUEST=RELEASE,ENQTOKEN=TENQTOKN,                     +        
+               COND=YES,RETCODE=15,RSNCODE=0,MF=(E,PARMISG)                     
+         LTR   RF,RF                                                            
+         JNZ   FAIL                                                             
+*                                                                               
+*&&TR*&& BRAS  RE,MSGDX            Dequeue released                             
+*                                                                               
+DEQM100  XC    TENQTEXT(TENQCLRQ),TENQTEXT   Clear enqueue                      
+         BR    R9                                                               
+         DROP  R4                                                               
+         EJECT ,                                                                
+                                                                                
+***********************************************************************         
+* DEQUEUE single task entries (multiple - PQ, WF, WZ)                           
+***********************************************************************         
+         USING TENQD,R6                                                         
+DEQTASK  L     R6,ATSKNTRY                                                      
+*                                                                               
+         LHI   R7,MAXTENQ          # of enqueue entries for a task              
+DTSK010  CLC   TENQTEXT,NULLS      Anything enqueued?                           
+         JE    DTSK020             No                                           
+         CLI   PROCMODE,OFFMULTI   Offline multitask?                           
+         JE    DTSK015             Yes: no need to check pointer                
+         CLC   TENQTKN@,NULLS      Is it pointed to the resource                
+         JE    FAIL                No, something went wrong                     
+DTSK015  CLI   TENQTYPE,SHARQ      Is this a shared enqueue?                    
+         JE    DTSK016             Yes, then release                            
+         CLI   P1ACT#,SHARQ        No, Are we only releasing shares?            
+         JE    DTSK020             Yes                                          
+DTSK016  ST    R6,ATSKNTRY         Enqueue to be released                       
+         BRAS  R9,DEQ              Call dequeue                                 
+DTSK020  LA    R6,TENQLNQ(,R6)                                                  
+         JCT   R7,DTSK010                                                       
+         L     R7,XAADDR                                                        
+*                                                                               
+         XC    TCBISGQ,TCBISGQ     Let TCB know we've cleaned up                
+*                                                                               
+DTSK900  J     XIT                 Just exit since we used R9                   
+         DROP  R6                                                               
+         EJECT ,                                                                
+                                                                                
+***********************************************************************         
+* DEQUEUE all task entries (multiple - PQ, WF, WZ)                              
+***********************************************************************         
+DEQALL   DS    0H                                                               
+         BR    R9                                                               
+         EJECT ,                                                                
+                                                                                
+***********************************************************************         
+* FAIL - check LOGERR# to see where we came from (Sorry)                        
+***********************************************************************         
+FAIL     NTR1  ,                   Store regs                                   
+         WTO   'Entered FAIL code'                                              
+         BRAS  RE,MSGFA            Fail message                                 
+*                                                                               
+         CLI   ONLINE,YES                                                       
+         JNE   *+2                 Just fail for now if off-line                
+         TM    TCBINDS1,TCBFABND   Turned on in FAABEND                         
+         JZ    *+2                                                              
+         WTO   'Failed ABEND'                                                   
+*                                                                               
+FAILXIT  L     RD,SAVERD                                                        
+         J     XIT                 Just return to ABEND                         
+***********************************************************************         
+* Initialize local variables on the first call                        *         
+* PQ'S are initialised from FASTART so this code runs under FASTART   *         
+***********************************************************************         
+INIT     NTR1  BASE=*,LABEL=*                                                   
+         LARL  RA,GLOBAL                                                        
+                                                                                
+*&&TR*&& WTO   'Initializing DMISGENQ'                                          
+                                                                                
+         L     RE,VSSB                                                          
+         USING SSBD,RE                                                          
+         CLC   SSBCNTL,NULLS       Offline if 1st 2 bytes of SSB are 0          
+         JE    INIT000                                                          
+         ICM   R7,15,SSBXAISG      Do we have an XA area in SSB                 
+         JNZ   INIT002                                                          
+         DC    H'0'                No online XA area                            
+         DROP  RE                                                               
+                                                                                
+INIT000  L     R3,=A(XAEND-XADSECT)                                             
+         STORAGE OBTAIN,LENGTH=(3),LOC=ANY,BNDRY=PAGE,COND=NO                   
+         LTR   RF,RF                                                            
+         JNZ   *+2                                                              
+         LR    R7,R1                                                            
+*                                                                               
+INIT002  ST    R7,XAADDR           XA AREA FOR TOKENS                           
+         USING XADSECT,R7                                                       
+*                                                                               
+         L     RE,=A(ENQTASKH-XADSECT)     LABEL THEM                           
+         AR    RE,R7                                                            
+         MVC   0(16,RE),=CL16'*TASK ENQUEUES *'                                 
+         L     RE,=A(TOKLPRTH-XADSECT)                                          
+         AR    RE,R7                                                            
+         MVC   0(16,RE),=CL16'* PRTQ TOKENS  *'                                 
+         L     RE,=A(TOKLWRKH-XADSECT)                                          
+         AR    RE,R7                                                            
+         MVC   0(16,RE),=CL16'* WRKF TOKENS  *'                                 
+         L     RE,=A(TOKLREPH-XADSECT)                                          
+         AR    RE,R7                                                            
+         MVC   0(16,RE),=CL16'*REPORT TOKENS *'                                 
+         L     RE,=A(XAEND-XADSECT)                                             
+         AR    RE,R7                                                            
+         MVC   0(16,RE),=CL16'*END OF XA AREA*'                                 
+*                                                                               
+         L     RE,VSSB                                                          
+         USING SSBD,RE                                                          
+         MVI   ONLINE,NO                                                        
+         CLC   SSBCNTL,NULLS       Offline if 1st 2 bytes of SSB are 0          
+         JZ    INIT10                                                           
+         MVI   ONLINE,YES          On-line                                      
+         MVC   DSPACE,SSBDSPAC                                                  
+         J     INIT20                                                           
+*                                                                               
+INIT10   DS    0H                  Removed 2021                                 
+*NIT10   LHI   R0,4                Offline make non-swapable                    
+*        LNR   R0,R0                                                            
+*        SVC   247                                                              
+*                                                                               
+         CLI   SSOXTND,X'FF'       Test if extended SSB                         
+         JNE   INIT20                                                           
+         MVC   DSPACE,SSODSPAC                                                  
+*                                                                               
+         TM    SSOMTIND,SSOMTAPL   Test if multi-tasking offline                
+         JZ    INIT20                                                           
+         MVI   PROCMODE,OFFMULTI   Process mode multi tasking                   
+         DROP  RE                                                               
+                                                                                
+*======================================================================         
+* INIT THE TASK ENTRY TABLE                                                     
+*======================================================================         
+         USING TENQD,RE                                                         
+INIT20   L     RE,=A(ENQTASK-XADSECT)  A(start of task table)                   
+         AR    RE,R7                                                            
+         LHI   R0,MAXTSKQ          # of tasks                                   
+         LARL  R3,ALPHANUM                                                      
+INIT21   LHI   R1,MAXTENQ          Maximum # of enqueues per task               
+         LARL  R2,ALPHANUM                                                      
+INIT22   XC    TENQD(TENQLNQ),TENQD                                             
+         MVC   TENQEYE,=CL8'TSK?ENQ?'                                           
+         MVC   TENQEYE+3(1),0(R3)                                               
+         MVC   TENQEYE+7(1),0(R2)                                               
+         LA    RE,TENQLNQ(,RE)                                                  
+         LA    R2,1(,R2)                                                        
+         JCT   R1,INIT22                                                        
+         LA    R3,1(,R3)                                                        
+         JCT   R0,INIT21                                                        
+         DROP  RE                                                               
+                                                                                
+*======================================================================         
+* INIT THE REPORT TOKEN LIST FOR RESOURCES                                      
+*======================================================================         
+         USING TOKEND,RE                                                        
+         L     RE,=A(TOKLREPT-XADSECT)                                          
+         AR    RE,R7                                                            
+         LHI   R0,MAXRSCQ          # of resources                               
+         LARL  R3,ALPHANUM                                                      
+INIT31   LHI   R1,MAXREXQ          Maximum report enqueues per resource         
+         LARL  R2,ALPHANUM                                                      
+INIT32   XC    TOKEND(TOKNLNQ),TOKEND                                           
+         MVC   TOKNEYE,=CL8'RES?TKN?'                                           
+         MVC   TOKNEYE+3(1),0(R3)                                               
+         MVC   TOKNEYE+7(1),0(R2)                                               
+         ZAP   TOKNREQ#,=P'0'                                                   
+         ZAP   TOKNENQ#,=P'0'                                                   
+         ZAP   TOKNWT#,=P'0'                                                    
+         ZAP   TOKNDEQ#,=P'0'                                                   
+         LA    RE,TOKNLNQ(,RE)                                                  
+         LA    R2,1(,R2)                                                        
+         JCT   R1,INIT32                                                        
+         LA    R3,1(,R3)                                                        
+         JCT   R0,INIT31                                                        
+         DROP  RE                                                               
+                                                                                
+*======================================================================         
+* INIT THE PRTQ RESOURCE TOKEN LIST                                             
+*======================================================================         
+         USING TOKEND,RE                                                        
+         L     RE,=A(TOKLPRTQ-XADSECT)   Print queue token list                 
+         AR    RE,R7                                                            
+         LHI   R0,MAXPQQ           # of files for resource                      
+         LARL  R3,ALPHANUM                                                      
+INIT41   LHI   R1,MAXFEXQ          # of file exclusive enqueues                 
+         LARL  R2,ALPHANUM                                                      
+INIT42   XC    TOKEND(TOKNLNQ),TOKEND                                           
+         MVC   TOKNEYE,=CL8'PRQ?TKN?'                                           
+         MVC   TOKNEYE+3(1),0(R3)                                               
+         MVC   TOKNEYE+7(1),0(R2)                                               
+         ZAP   TOKNREQ#,=P'0'                                                   
+         ZAP   TOKNENQ#,=P'0'                                                   
+         ZAP   TOKNWT#,=P'0'                                                    
+         ZAP   TOKNDEQ#,=P'0'                                                   
+         LA    RE,TOKNLNQ(,RE)                                                  
+         LA    R2,1(,R2)                                                        
+         JCT   R1,INIT42                                                        
+         LA    R3,1(,R3)                                                        
+         JCT   R0,INIT41                                                        
+         DROP  RE                                                               
+                                                                                
+*======================================================================         
+* INIT THE WRKF RESOURCE TOKEN LIST                                             
+*======================================================================         
+         USING TOKEND,RE                                                        
+         L     RE,=A(TOKLWRKF-XADSECT)  Worker file token list (WRKF)           
+         AR    RE,R7                                                            
+         LHI   R0,MAXWFQ           # of files for resource                      
+         LARL  R3,ALPHANUM                                                      
+INIT51   LHI   R1,MAXFEXQ          # of file exclusive enqueues                 
+         LARL  R2,ALPHANUM                                                      
+INIT52   XC    TOKEND(TOKNLNQ),TOKEND                                           
+         MVC   TOKNEYE,=CL8'WKF?TKN?'                                           
+         MVC   TOKNEYE+3(1),0(R3)                                               
+         MVC   TOKNEYE+7(1),0(R2)                                               
+         ZAP   TOKNREQ#,=P'0'                                                   
+         ZAP   TOKNENQ#,=P'0'                                                   
+         ZAP   TOKNWT#,=P'0'                                                    
+         ZAP   TOKNDEQ#,=P'0'                                                   
+         LA    RE,TOKNLNQ(,RE)                                                  
+         LA    R2,1(,R2)                                                        
+         JCT   R1,INIT52                                                        
+         LA    R3,1(,R3)                                                        
+         JCT   R0,INIT51                                                        
+         DROP  RE                                                               
+                                                                                
+*======================================================================         
+* INIT THE WRKZ RESOURCE TOKEN LIST                                             
+*======================================================================         
+**WRKZ   USING TOKEND,RE                                                        
+*        LARL  RE,TOKLWRKZ         Worker file token list (WRKZ)                
+*        LHI   R0,MAXWZQ           # of files for resource                      
+*        LARL  R3,ALPHANUM                                                      
+*NIT61   LHI   R1,MAXFEXQ          # of file exclusive enqueues                 
+*        LARL  R2,ALPHANUM                                                      
+*NIT62   XC    TOKEND(TOKNLNQ),TOKEND                                           
+*        MVC   TOKNEYE,=CL8'WKZ?TKN?'                                           
+*        MVC   TOKNEYE+3(1),0(R3)                                               
+*        MVC   TOKNEYE+7(1),0(R2)                                               
+*        ZAP   TOKNREQ#,=P'0'                                                   
+*        ZAP   TOKNENQ#,=P'0'                                                   
+*        ZAP   TOKNWT#,=P'0'                                                    
+*        ZAP   TOKNDEQ#,=P'0'                                                   
+*        LA    RE,TOKNLNQ(,RE)                                                  
+*        LA    R2,1(,R2)                                                        
+*        JCT   R1,INIT62                                                        
+*        LA    R3,1(,R3)                                                        
+*        JCT   R0,INIT61                                                        
+*        DROP  RE                                                               
+*                                                                               
+*======================================================================         
+* INIT THE OFFLINE MVS TCB TABLE                                                
+*======================================================================         
+         LARL  R8,TCBOFF           A(start of task table)                       
+         LHI   R0,MAXTSKQ          # of tasks                                   
+         LARL  R3,ALPHANUM                                                      
+INIT71   MVC   TCBID,=C'*TASK N*'                                               
+         MVC   TCBID+6(1),0(R3)                                                 
+         MVC   TCBTASK,0(R3)                                                    
+         LA    R8,TCBLNQ(,R8)                                                   
+         LA    R3,1(,R3)                                                        
+         JCT   R0,INIT71                                                        
+                                                                                
+*======================================================================         
+* Set Time                                                                      
+*======================================================================         
+         BRAS  R9,GETTIM           Get Time/CPUID/ASID/JOBNAME                  
+         MVI   INITFLAG,YES                                                     
+         J     XIT                                                              
+                                                                                
+***********************************************************************         
+* GET TIME                                                                      
+***********************************************************************         
+GETTIM   TIME  TU                  One timer unit=1/38400 SEC                   
+         STM   R0,R1,TIMETU        and date as 0CYYDDD+                         
+         SRDL  R0,32                                                            
+         M     R0,=F'1000'                                                      
+         D     R0,=F'38400'                                                     
+         ST    R1,TIMEMILI         Time in milliseconds                         
+         SR    R0,R0                                                            
+         D     R0,=F'1000'                                                      
+         ST    R1,TIME             Time in seconds                              
+         BR    R9                                                               
+                                                                                
+***********************************************************************         
+* Set timer - value in milliseconds                                             
+*        offline do inline wait STIMER                                          
+*        online do task wait TKWAIT                                             
+***********************************************************************         
+DO_WAIT  ST    RE,SAVERE                                                        
+*                                                                               
+DO_WAIT1 MVI   ERROR#,9            Too many enqueue retries                     
+         LH    R1,ENQWAITS         Count the wait                               
+         AHI   R1,1                                                             
+         STH   R1,ENQWAITS                                                      
+         CHI   R1,MAXWAITS         Did we reach the maximum?                    
+         JNL   ISGERR                                                           
+*                                                                               
+*&&TR*&& BRAS  RE,MSGTW            Timer wait                                   
+*                                                                               
+         CLI   ONLINE,YES          Wait for 100 Milliseconds                    
+         JNE   DO_WAIT6            No                                           
+         LHI   R1,3840             1 millisecond = 38.4 TUS                     
+         ICM   RF,15,=V(TKWAIT)                                                 
+         JZ    DO_WAIT4                                                         
+         BASR  RE,RF                                                            
+         ICM   RE,15,TCBTKWT       Don't count these for task                   
+         JNP   DO_WAITX                                                         
+         BCTR  RE,0                                                             
+         STCM  RE,15,TCBTKWT                                                    
+         J     DO_WAITX                                                         
+*                                                                               
+DO_WAIT4 GOTO1 VTICTOC,DUB,C'SSET'                                              
+DO_WAIT6 LHI   R1,3840             Offline do full timer wait                   
+         ST    R1,FULL                                                          
+         STIMER WAIT,TUINTVL=FULL                                               
+*                                                                               
+         CLI   ONLINE,YES                                                       
+         JNE   DO_WAITX            No                                           
+         GOTO1 VTICTOC,DUB,C'RSET' Yes, reset timmer                            
+*                                                                               
+DO_WAITX L     RE,SAVERE                                                        
+         CHI   RE,0                Always exit not equal after timer            
+         BR    RE                                                               
+         EJECT ,                                                                
+                                                                                
+***********************************************************************         
+* Hold the enqueue and wait on an ECB                                           
+***********************************************************************         
+         USING TENQD,R4                                                         
+         USING TOKEND,R5                                                        
+DO_HOLD  ST    RE,SAVERE                                                        
+*                                                                               
+         L     R1,TOKNENQ@         Enqueue that owns the token                  
+C        USING TENQD,R1                                                         
+                                                                                
+*----------------------------------------------------------------------         
+* Check token owning enq to see if we own it. Post if necessary.                
+*----------------------------------------------------------------------         
+                                                                                
+         CLI   TOKNSTAT,WAITQ      Is this one still waiting                    
+         JNE   DO_HOLD0                                                         
+         CLI   TOKNTYPE,EXCLQ      For exclusive access                         
+         JNE   DO_HOLD0                                                         
+*                                                                               
+         ISGENQ REQUEST=OBTAIN,QNAME=NQMAJOR,RNAME=NQMINOR,TEST=YES,   +        
+               RNAMELEN=NQLEN,SCOPE=SYSTEMS,CONTROL=EXCLUSIVE,         +        
+               ENQTOKEN=TOKNTOKN,RESLIST=NO,COND=YES,RNL=NO,           +        
+               RETCODE=15,RSNCODE=0                                             
+         LTR   RF,RF               Got it?                                      
+         JZ    DO_HOLDX                                                         
+         CIJNE RF,4,DO_HOLD0       ISGENQRC_WARN                                
+         NILH  GR0,X'0000'                                                      
+         CHI   R0,ISGENQRSN_TASKOWNSEXCLUSIVE                                   
+         JNE   DO_HOLD0                                                         
+*                                                                               
+DO_HOLDX LA    RF,TOKNECB          A(ECB) for ECB@                              
+         TM    0(RF),X'40'         Has the owner been posted                    
+         JO    DO_HOLD0                                                         
+         OI    0(RF),X'40'         No so do the post                            
+*                                                                               
+         MVC   TMSGLN,=AL2(TMSGLNQ)                                             
+         MVC   TMSG(TMSGLNQ),SPACES                                             
+         MVC   TMSGTEXT,TOKNTEXT                                                
+         MVC   TMSGTYPE,=C'RE-POSTED '                                          
+         LA    R2,TMSGLN                                                        
+         WTO   TEXT=(R2),MCSFLAG=HRDCPY                                         
+                                                                                
+*----------------------------------------------------------------------         
+                                                                                
+DO_HOLD0 L     R1,TOKNENQ@         RELOAD R1                                    
+                                                                                
+DO_HOLD1 CLC   C.TENQNXT@,NULLS    Find the end of the chain                    
+         JE    DO_HOLD2                                                         
+         L     R1,C.TENQNXT@                                                    
+         J     DO_HOLD1                                                         
+DO_HOLD2 CR    R4,R1               must not point to me                         
+         JE    *+2                                                              
+         ST    R4,C.TENQNXT@       Save next to get this enqueue                
+         DROP  C                                                                
+*                                                                               
+*&&TR*&& BRAS  RE,MSGOW            Holding                                      
+*                                                                               
+         MVI   TENQSTAT,HOLDQ      On hold behind another task                  
+         LA    R2,TENQECB          Set ECB                                      
+         ST    R2,NQAECB                                                        
+         J     DO_ECB1                                                          
+                                                                                
+***********************************************************************         
+* ECB Wait - on entry NQAECB has A(ECB)                                         
+*        offline do inline wait    WAIT                                         
+*        online  do task wait      ADWAIT                                       
+***********************************************************************         
+DO_ECB   ST    RE,SAVERE                                                        
+*                                                                               
+         ST    R4,TOKNENQ@                                                      
+         MVC   TOKNTEXT,NQMINOR    Enqueue minor name                           
+         MVC   TOKNTYPE,NQLTYPE    Lock type                                    
+         OC    TOKNTASK,ACTVTASK   Turn on controlling task bit                 
+         MVI   TOKNSTAT,WAITQ      Waiting for token                            
+         MVI   TENQHRC,TENQHRCW    task will wait for enqueue                   
+         MVI   TENQSTAT,WAITQ      Waiting on ISGENQ ECB                        
+*                                                                               
+DO_ECB1  ST    R5,TENQTKN@         Point to enqueue token entry                 
+         MVC   TENQTEXT,NQMINOR    and task enqueue list entry                  
+         MVC   TENQTYPE,NQLTYPE                                                 
+*                                                                               
+         AP    TOKNWT#,=P'1'       Count waits                                  
+         L     R1,NQAECB           A(ECB) to be waited on                       
+         CLI   ONLINE,YES          If online call ADWAIT                        
+         JNE   DO_ECB4                                                          
+         ICM   RF,15,=V(ADWAIT)    Unless ADWAIT not available                  
+         JZ    DO_ECB4                                                          
+         S     R1,XAADDR           Subtract XAADDR and set FB wait              
+         ICM   R1,B'1000',FB       Not a true I/O wait set FB                   
+         BASR  RE,RF                                                            
+         J     DO_ECB6                                                          
+*                                                                               
+DO_ECB4  WAIT  ECB=(R1)            Wait until available                         
+*                                                                               
+DO_ECB6  MVI   TENQSTAT,ACTIQ      Will now be the active enqueueu              
+         XC    TENQECB,TENQECB     Reset ECB                                    
+*                                                                               
+*&&TR*&& BRAS  RE,MSGWT            Return from wait                             
+*                                                                               
+DO_ECBX  CLI   TENQHRC,TENQHRCE    Did we get passed the enqueue?               
+         MVI   TENQHRC,0                                                        
+         L     RE,SAVERE                                                        
+         BR    RE                                                               
+         DROP  R4,R5                                                            
+         EJECT ,                                                                
+                                                                                
+***********************************************************************         
+* Set trace message (on FAIL or when assembled with TR=Y)                       
+***********************************************************************         
+         USING TENQD,R4                                                         
+         USING TOKEND,R5                                                        
+*                                                                               
+MSGFA    STM   R0,RF,TRACERS       Enqueue requested                            
+         MVC   TRACERS#,=C'#TRACERS'                                            
+         MVC   TMSGLN,=AL2(TMSGLNQ)                                             
+         MVC   TMSG(TMSGLNQ),SPACES                                             
+         MVC   TMSGACT,=CL4'Fail'                                               
+         MVC   TMSGTEXT,NQMINOR                                                 
+         MVC   TMSGLOG#,LOGERR#                                                 
+         MVC   TMSGTYPE,=CL10'Shared'                                           
+         CLI   NQSUBTYP,SHARFILE                                                
+         JE    SETMSG                                                           
+         MVC   TMSGTYPE,=CL10'Exclusive'                                        
+         J     SETMSG                                                           
+*&&TR                                                                           
+MSGNQ    STM   R0,RF,TRACERS       Enqueue requested                            
+         MVC   TMSG(TMSGLNQ),SPACES                                             
+         MVC   TMSGACT,=CL4'Enq '                                               
+         MVC   TMSGTEXT,NQMINOR                                                 
+         MVC   TMSGTYPE,=CL10'Shared'                                           
+         CLI   NQSUBTYP,SHARFILE                                                
+         JE    SETMSGX                                                          
+         MVC   TMSGTYPE,=CL10'Exclusive'                                        
+         J     SETMSG                                                           
+*                                                                               
+MSGOB    STM   R0,RF,TRACERS       Enqueue Obtained                             
+         MVC   TMSG(TMSGLNQ),SPACES                                             
+         MVC   TMSGACT,=CL4'EnqO'                                               
+         MVC   TMSGTEXT,NQMINOR                                                 
+         MVC   TMSGTYPE,=CL10'Shared'                                           
+         CLI   TENQTYPE,SHARFILE                                                
+         JE    SETMSGX                                                          
+         MVC   TMSGTYPE,=CL10'Exclusive'                                        
+         J     SETMSG                                                           
+*                                                                               
+MSGEX    STM   R0,RF,TRACERS       Enqueue executed                             
+         MVC   TMSG(TMSGLNQ),SPACES                                             
+         MVC   TMSGACT,=CL4'EnqX'                                               
+         MVC   TMSGTEXT,NQMINOR                                                 
+         MVC   TMSGTYPE,=CL10'Shared'                                           
+         CLI   NQSUBTYP,SHARFILE                                                
+         JE    SETMSGX                                                          
+         MVC   TMSGTYPE,=CL10'Exclusive'                                        
+         J     SETMSG                                                           
+*                                                                               
+MSGWT    STM   R0,RF,TRACERS       Return from wait                             
+         MVC   TMSG(TMSGLNQ),SPACES                                             
+         MVC   TMSGACT,=CL4'Wk  '                                               
+         MVC   TMSGACT+3(1),TENQHRC                                             
+         MVC   TMSGTEXT,NQMINOR                                                 
+         MVC   TMSGTYPE,=CL10'Shared'                                           
+         CLI   NQSUBTYP,SHARFILE                                                
+         JE    SETMSGX                                                          
+         MVC   TMSGTYPE,=CL10'Exclusive'                                        
+         J     SETMSG                                                           
+*                                                                               
+MSGTW    STM   R0,RF,TRACERS       Timer wait                                   
+         MVC   TMSG(TMSGLNQ),SPACES                                             
+         MVC   TMSGACT,=CL4'Time'                                               
+         MVC   TMSGACT+3(1),TENQHRC                                             
+         MVC   TMSGTEXT,NQMINOR                                                 
+         MVC   TMSGTYPE,=CL10'Shared'                                           
+         CLI   NQSUBTYP,SHARFILE                                                
+         JE    SETMSGX                                                          
+         MVC   TMSGTYPE,=CL10'Exclusive'                                        
+         J     SETMSG                                                           
+*                                                                               
+MSGDQ    STM   R0,RF,TRACERS       Dequeue requested                            
+         MVC   TMSG(TMSGLNQ),SPACES                                             
+         MVC   TMSGACT,=CL4'Deq '                                               
+         MVC   TMSGTEXT,TENQTEXT                                                
+         MVC   TMSGTYPE,=CL10'Shared'                                           
+         CLI   TENQTYPE,SHARQ                                                   
+         JE    SETMSGX                                                          
+         MVC   TMSGTYPE,=CL10'Exclusive'                                        
+         J     SETMSG                                                           
+*                                                                               
+MSGDX    STM   R0,RF,TRACERS       Dequeue executed                             
+         MVC   TMSG(TMSGLNQ),SPACES                                             
+         MVC   TMSGACT,=CL4'DeqR'                                               
+         MVC   TMSGTEXT,TENQTEXT                                                
+         MVC   TMSGTYPE,=CL10'Shared'                                           
+         CLI   TENQTYPE,SHARQ                                                   
+         JE    SETMSGX                                                          
+         MVC   TMSGTYPE,=CL10'Exclusive'                                        
+         J     SETMSG                                                           
+*                                                                               
+MSGOW    STM   R0,RF,TRACERS       Current owning enqueue                       
+         LR    R4,R1                                                            
+         MVC   TMSG(TMSGLNQ),SPACES                                             
+         MVC   TMSGACT,=CL4'Own '                                               
+         MVC   TMSGTEXT,TENQTEXT                                                
+         MVC   TMSGTYPE,=CL10'Shared'                                           
+         CLI   NQSUBTYP,SHARFILE                                                
+         JE    SETMSGX                                                          
+         MVC   TMSGTYPE,=CL10'Exclusive'                                        
+         J     SETMSG                                                           
+*                                                                               
+MSGNE    STM   R0,RF,TRACERS       Next enqueue                                 
+         LR    R4,R3                                                            
+         MVC   TMSG(TMSGLNQ),SPACES                                             
+         MVC   TMSGACT,=CL4'Next'                                               
+         MVC   TMSGTEXT,TENQTEXT                                                
+         MVC   TMSGTYPE,=CL10'Shared'                                           
+         CLI   NQSUBTYP,SHARFILE                                                
+         JE    SETMSGX                                                          
+         MVC   TMSGTYPE,=CL10'Exclusive'                                        
+         J     SETMSG                                                           
+*                                                                               
+MSGPP    STM   R0,RF,TRACERS       Post and pass enqueue                        
+         LR    R4,R3                                                            
+         MVC   TMSG(TMSGLNQ),SPACES                                             
+         MVC   TMSGACT,=CL4'PosP'                                               
+         MVC   TMSGTEXT,TENQTEXT                                                
+         MVC   TMSGTYPE,=CL10'Shared'                                           
+         CLI   NQSUBTYP,SHARFILE                                                
+         JE    SETMSGX                                                          
+         MVC   TMSGTYPE,=CL10'Exclusive'                                        
+         J     SETMSG                                                           
+*                                                                               
+MSGPR    STM   R0,RF,TRACERS       Wait limit reached - require enqueue         
+         LR    R4,R3                                                            
+         MVC   TMSG(TMSGLNQ),SPACES                                             
+         MVC   TMSGACT,=CL4'PosR'                                               
+         MVC   TMSGTEXT,TENQTEXT                                                
+         MVC   TMSGTYPE,=CL10'Shared'                                           
+         CLI   NQSUBTYP,SHARFILE                                                
+         JE    SETMSGX                                                          
+         MVC   TMSGTYPE,=CL10'Exclusive'                                        
+         J     SETMSG                                                           
+*                                                                               
+MSGTK    STM   R0,RF,TRACERS       Task Information                             
+         MVC   TMSG(TMSGLNQ),SPACES                                             
+         MVC   TMSGACT,=CL4'Task'                                               
+         MVC   TMSGTEXT(1),TCBTASK                                              
+         MVC   TMSGTEXT+4(1),P1ACT#                                             
+         L     R1,P2FILE                                                        
+         MVC   TMSGTEXT+6(7),0(R1)                                              
+         EDIT  (B4,TCBSIN),(12,TMSGTEXT+17),ZERO=NOBLANK                        
+         J     SETMSG2                                                          
+*&&                                                                             
+*                                                                               
+SETMSG   MVC   TMSGTASK,0(R4)                                                   
+         MVC   TMSGTOKN,0(R5)                                                   
+*                                                                               
+SETMSG2  CLI   NQFILEC,C'1'        Only trace for WRKF1                         
+*        JNE   SETMSGX                                                          
+*                                                                               
+         LA    R2,TMSGLN                                                        
+         WTO   TEXT=(R2),MCSFLAG=HRDCPY                                         
+*                                                                               
+SETMSGX  LM    R0,RF,TRACERS                                                    
+         BR    RE                                                               
+         DROP  R4,R5                                                            
+                                                                                
+***********************************************************************         
+* All constant values being shared                                              
+***********************************************************************         
+GLOBAL   DS    0Q                                                               
+         LTORG                                                                  
+         EJECT                                                                  
+                                                                                
+***********************************************************************         
+* Program constants                                                             
+***********************************************************************         
+NO       EQU   C'N'                                                             
+YES      EQU   C'Y'                                                             
+EOT      EQU   X'FF'                                                            
+*                                                                               
+CPU      DC    F'0'                CPU ID                                       
+ADR      DC    F'0'                ADDRESS SPACE ID                             
+IDATE    DC    F'0'                DATE INITIALISED (P'0CYYDDD')                
+ITIME    DC    F'0'                TIME INITIALISED (F'SECONDS')                
+*                                                                               
+JOB      DC    CL8' '              JOB NAME                                     
+INITFLAG DC    C'N'                                                             
+XAADDR   DC    A(0)                ADDRESS OF XA AREA                           
+PROCMODE DC    AL1(NO)                                                          
+OFFMULTI EQU   C'M'                                                             
+SPACES   DC    CL80' '                                                          
+NULLS    DC    32X'00'                                                          
+FFS      DC    32X'FF'                                                          
+FB       DC    X'FB'                                                            
+DSPACE   DC    C' '                                                             
+ONLINE   DC    AL1(NO)                                                          
+*                                  Exlusive locks                               
+LOCKREPT EQU   X'00'               . Lock report                                
+LOCKFILE EQU   X'FF'               . Lock master file                           
+LOCKTREE EQU   X'FE'               . Lock tree queue                            
+LOCKCI   EQU   X'FD'               . Lock part 1 CI free queue                  
+LOCKCII  EQU   X'FC'               . Lock part 2 CI free queue                  
+*                                  Shared locks                                 
+SHARFILE EQU   X'EF'               . Share master file                          
+*                                                                               
+LOGERR   DC    CL5'WKER='                                                       
+LOGERR#  DC    C' '                                                             
+LOGER2#  DC    C' '                                                             
+*                                                                               
+MAJORNQ  DC    CL8'DDSENQ'                                                      
+FILENQ   DC    C'D.FFFF#'                                                       
+REPORTNQ DC    C'D.FFFF#.000000'                                                
+TREENQ   DC    C'D.FFFF#.TREE'                                                  
+PART1NQ  DC    C'D.FFFF#.PART1'                                                 
+PART2NQ  DC    C'D.FFFF#.PART2'                                                 
+*                                                                               
+VPRTQLST DC    V(PRTQLST)                                                       
+VWRKFLST DC    V(WRKFLST)                                                       
+VWRKZLST DC    V(WRKZLST)                                                       
+VSSB     DC    V(SSB)                                                           
+VTCB     DC    V(TCB)                                                           
+VTICTOC  DC    V(TICTOC)                                                        
+VDACPUID DC    V(DACPUID)                                                       
+VDAOPEN  DC    V(DAOPEN)                                                        
+VDATRNS  DC    V(DATRNS)                                                        
+*                                                                               
+ACTTAB   DS    0F                          Action table                         
+         DC    C'E',AL1(0,0,0),A(ENQ)       Enqueue resource Wait               
+         DC    C'D',AL1(0,0,0),A(DEQ)       Dequeue resource                    
+*        DC    C'F',AL1(0,0,0),A(FORCENQ)   Enqueue resource                    
+*        DC    C'T',AL1(0,0,0),A(TESTNQ)    Test resource                       
+         DC    C'K',AL1(0,0,0),A(DEQTASK)   Dequeue for the Task                
+         DC    C'S',AL1(0,0,0),A(DEQTASK)   Dequeue shares for the task         
+         DC    C'A',AL1(0,0,0),A(DEQALL)    Dequeue for Address Space           
+         DC    AL1(EOT)                                                         
+*                                                                               
+FILETAB  DS    0F                                                               
+         DC    AL1(0,PRTQ,0,0),C'PRTQ',A(TOKLPRTQ-XADSECT)                      
+         DC    AL1(0,WRKF,0,0),C'WRKF',A(TOKLWRKF-XADSECT)                      
+**WRKZ   DC    AL1(0,WRKZ,0,0),C'WRKZ',A(TOKLWRKZ-XADSECT)                      
+         DC    AL1(EOT)                                                         
+*                                                                               
+XLOCKTAB DS    0F                                                               
+         DC    AL1(LOCKFILE,L'FILENQ,0,EXCLQ),A(FILENQ)                         
+         DC    AL1(SHARFILE,L'FILENQ,0,SHARQ),A(FILENQ)                         
+         DC    AL1(LOCKTREE,L'TREENQ,1,EXCLQ),A(TREENQ)                         
+         DC    AL1(LOCKCI,L'PART1NQ,2,EXCLQ),A(PART1NQ)                         
+         DC    AL1(LOCKCII,L'PART2NQ,3,EXCLQ),A(PART2NQ)                        
+         DC    AL1(LOCKREPT,L'REPORTNQ,4,EXCLQ),A(REPORTNQ)                     
+XLOCK#   EQU   (*-XLOCKTAB)/XLOCKLNQ                                            
+*                                                                               
+ALPHANUM DC    C'123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ'                           
+OTHERSYM DC    C'0!@#$%^&&*()_+-={}|º\:";''<>?,./~ '                           
+*                                                                               
+         DC    0D                                                               
+         DC    CL16'*OFFLINE TCBTAB*'    Offline MVS subtask TCB Table          
+TCBOFF   DC    (MAXTSKQ*TCBLNQ)X'00'                                            
+         DC    X'FF'                                                            
+         EJECT                                                                  
+***********************************************************************         
+* Local working storage DSECT                                                   
+***********************************************************************         
+WRKD     DSECT                                                                  
+*                                                                               
+TRACERS# DS    D                                                                
+TRACERS  DS    16A                                                              
+*                                                                               
+RELO     DS    A                                                                
+SAVERD   DS    A                                                                
+SAVERE   DS    A                                                                
+DUB      DS    D                                                                
+FULL     DS    F                                                                
+HALF     DS    H                                                                
+BYTE     DS    C                                                                
+ACTN     DS    C                                                                
+WORK     DS    CL64                                                             
+*                                                                               
+TIME     DS    F                   TIME IN SECS                                 
+TIMEMILI DS    F                   TIME IN MILLI SECS                           
+TIMETU   DS    F                   TIME TU MACRO R0=TIME IN 1/38400 SEC         
+DATE     DS    F                   TIME TU MACRO R1=DATE P'0CYYDD+'             
+*                                                                               
+ENQWAITS DS    H                   Number of times waited for enqueues          
+         DS    H                                                                
+MAXWAITS EQU   200                 . Max # of waits before giving up            
+*                                                                               
+         DS    F                                                                
+ATCB     DS    A                                                                
+ATSKNTRY DS    A                   Current task entry in task enq list          
+AFILETKN DS    A                   Current token resource table                 
+ATSKFTKN DS    A                   Current file token table entry               
+ATOKEN   DS    A                   Points to current token                      
+ACTVTASK DS    A                   Active task on file enqueue bitwise          
+*                                                                               
+R1PARM   DS    F                                                                
+PARMS    DS    0CL24                                                            
+P1       DS    F                                                                
+P2       DS    F                                                                
+P3       DS    F                                                                
+P4       DS    F                                                                
+P5       DS    F                                                                
+P6       DS    F                                                                
+         ORG   P1                                                               
+P1TFLG   DS    AL1                 Task flag                                    
+P1TOPT   DS    AL2                 Task option                                  
+P1ACT#   DS    AL1                 Action                                       
+P2FILE   DS    A                   A(5 character file name)                     
+P3ERR    DS    0AL1                Error on return                              
+P3SUBTYP DS    AL1                 Subaction (Part1,Part2,Tree)                 
+P3REPORT DS    AL3                 Enqueue number (report number)               
+         ORG                                                                    
+*                                                                               
+         DS    0F                                                               
+NQLEN    DS    AL1                 Length of RNAME                              
+NQSUBTYP DS    X                   Type of lock                                 
+NQFILNDX DS    X                   File index to type of file                   
+NQINDEX  DS    X                   Index into resource file tokens              
+NQLTYPE  DS    C                   Enqueue Lock type (shared/exclusive)         
+NQTASKC  DS    C                   Task character working with                  
+NQTASK#  DS    X                   Task number working with                     
+NQFILE#  DS    X                   Specific file # for Resource                 
+NQAECB   DS    A                   Temporary A(ECB)                             
+NQRPT#   DS    F                   Report number for enqueue                    
+NQMAJOR  DS    CL8                 Enqueue Major                                
+NQMINOR  DS    CL32                Enqueue Minor                                
+*                                                                               
+ERROR#   DS    XL1                                                              
+ERROR#1  EQU   1                                                                
+ERROR#2  EQU   2                                                                
+ERROR#3  EQU   3                                                                
+ERROR#4  EQU   4                                                                
+ERROR#5  EQU   5                                                                
+ERROR#6  EQU   6                                                                
+ERROR#7  EQU   7                                                                
+ERROR#8  EQU   8                                                                
+ERROR#9  EQU   9                                                                
+*                                                                               
+DMCB     DS    6F                                                               
+*                                                                               
+ENQEXCNT DS    PL4                 Count of exclusive enqueues                  
+ENQSHCNT DS    PL4                 Count of shared enqueues                     
+ENQTOCNT DS    PL4                 Total count of enqueues for task             
+                                                                                
+TMSGLN   DS    AL2                 Trace message                                
+TMSG     DS    0C                                                               
+TMSGACT  DS    CL4                 Action                                       
+         DS    C                                                                
+TMSGTEXT DS    CL18                Minor                                        
+         DS    C                                                                
+TMSGTYPE DS    CL10                Type                                         
+         DS    C                                                                
+TMSGTASK DS    CL8                 Task eyecatcher                              
+         DS    C                                                                
+TMSGTOKN DS    CL8                 Token eyecatcher                             
+         DS    C                                                                
+TMSGLOG# DS    C                   Log error #1                                 
+TMSGLNQ  EQU   *-TMSG                                                           
+*                                                                               
+         ISGENQ MF=(L,PARMISG),PLISTVER=MAX                                     
+*                                                                               
+WRKX     EQU   *                                                                
+         EJECT                                                                  
+***********************************************************************         
+* ISGENQ DSECT                                                                  
+***********************************************************************         
+       ++INCLUDE DMISGENQD                                                      
+         EJECT                                                                  
+***********************************************************************         
+* Other DSECTs                                                                  
+***********************************************************************         
+         ISGYENQ                                                                
+         ISGYCON                                                                
+         EJECT                                                                  
+*FASSB                                                                          
+       ++INCLUDE FASSB                                                          
+         ORG SSBD                                                               
+       ++INCLUDE FASSBOFF                                                       
+         EJECT                                                                  
+*FATCB                                                                          
+       ++INCLUDE FATCB                                                          
+         IHAPSA LIST=YES                                                        
+         IHAASCB LIST=YES                                                       
+         IKJTCB LIST=YES                                                        
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'010DMISGENQ  02/08/21'                                      
+         END                                                                    

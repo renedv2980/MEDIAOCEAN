@@ -1,0 +1,1130 @@
+*          DATA SET DEGETINV   AT LEVEL 062 AS OF 09/14/11                      
+*PROCESS USING(WARN(15))           ENABLE ALL USING STATEMENT WARNINGS          
+*CATALP DEGETINV                                                                
+DEGETINV TITLE 'REP INVENTORY FILE READER'                                      
+***********************************************************************         
+*========================== DBLOCK PARAMETER =========================*         
+*       FIELD                           DESCRIPTION                   *         
+* ----------------   -------------------------------------------------*         
+* DBFILE   (req'd) : C'IUN'                                           *         
+* DBAREC   (req'd) : A(buffer area used for I/O)                      *         
+* DBFUNCT  (req'd) : DBGETDEM                                         *         
+* DBCOMFCS (req'd) : A(COMFACS)                                       *         
+* DBSTYPE  (optnl) : X'FF' use rtg src/data src/qlfr/bk type xtnd blk *         
+* DBBEST   (optnl) : C'H'--option to read inventory headers only      *         
+* DBSELBK  (optnl) : to filter on the inventory book (tracks)         *         
+* DBSELMED (req'd) : (U)pgrade                                        *         
+* DBSELSTA (req'd) : station call letters                             *         
+* DBSELAGY (req'd) : alpha agency code                                *         
+* DBSELDAY (optnl) : to filter on the day defined in inventory hdr    *         
+* DBSELTIM (optnl) : to filter on the times defined in inventory hdr  *         
+* DBSELINV (req'd) : inventory number                                 *         
+* DBEXTEND (req'd) : A(extended DBLOCK)--must have C'RINV' link       *         
+***********************************************************************         
+         EJECT                                                                  
+***********************************************************************         
+*============================= UPDATE LOG ============================*         
+*   DATE   LVL USER   DESCRIPTION                                     *         
+* -------- --- ----   ------------------------------------------------*         
+* Sep11/98 051 GLEE - Bump thru DBEXTEND to look for RINV link        *         
+*                                                                     *         
+* Mar12/97 047 GLEE - Support time change markets                     *         
+*                                                                     *         
+* Apr19/96 001 GLEE - New module to read inventory for DEMO system    *         
+***********************************************************************         
+         EJECT                                                                  
+GETINV   CSECT                                                                  
+         PRINT NOGEN                                                            
+         NMOD1 200,**GETINV,RA                                                  
+         LR    R9,RC                                                            
+         USING GINVWRKD,R9         R9 = A(LOCAL WORKING STORAGE)                
+         SR    RC,RC                                                            
+         ICM   RC,7,1(R1)                                                       
+         USING DEGETD,RC           RC = A(W/S)                                  
+         USING COMFACSD,R8         R8 = A(COMFACS)                              
+         USING DBLOCKD,R6          R6 = A(DBLOCK)                               
+         OC    DBSELDAT,DBSELDAT                                                
+         BNZ   FIXDATX                                                          
+         OC    DBSEL1WK,DBSEL1WK                                                
+         BZ    FIXDATX                                                          
+         MVC   DBSELDAT,DBSEL1WK                                                
+FIXDATX  DS    0H                                                               
+                                                                                
+         ICM   R7,15,DBEXTEND                                                   
+GTINV06G BZ    GINOTFND                                                         
+         CLC   0(4,R7),=C'RINV'                                                 
+         BE    *+12                                                             
+         ICM   R7,15,4(R7)                                                      
+         B     GTINV06G                                                         
+         USING DBXINVWK,R7         R7 = A(EXTENDED DBLOCK)                      
+*                                                                               
+* Don't know what to do with FIRST/NEXT time yet!                               
+*&&DO                                                                           
+         DS    0H                  TEST FIRST/NEXT TIME                         
+         CLI   0(R1),0                                                          
+         BNE                        NOT THE FIRST TIME AROUND                   
+*&&                                                                             
+*                                                                               
+         DS    0H                  CHECK IF REP FILES ACTIVE                    
+         GOTO1 CDATAMGR,DMCB,DMREAD,SYSFLES,0                                   
+         ICM   RE,15,12(R1)         GET A(LIST OF FILES)                        
+         BNZ   *+6                                                              
+         DC    H'0'                                                             
+                                                                                
+         ZICM  RF,2(RE),(3)        RF=# OF FILES                                
+         LA    RE,4(RE)            RE-->1ST FILE ENTRY                          
+GTINV012 CLI   3(RE),X'81'         REPDIR IS X'81'                              
+         BE    GTINV014                                                         
+         LA    RE,8(RE)                                                         
+         BCT   RF,GTINV012                                                      
+         B     GINOTFND             IF NOT FOUND, THEN EXIT                     
+GTINV014 TM    0(RE),X'80'         IS IT NOOP?                                  
+         BO    GINOTFND             YES, CAN'T CONTINUE                         
+*                                                                               
+** SOME INITIALIZATION                                                          
+*                                                                               
+         BAS   RE,INITADTB         INITIALIZE ADDRESSES OF TABLES               
+                                                                                
+         DS    0H                  GET TODAY'S DATE                             
+         GOTO1 CDATCON,DMCB,(5,0),(3,BTODAY),0                                  
+         EJECT                                                                  
+         DS    0H                                                               
+         MVI   DEMOFLAG,0                                                       
+         OC    DBSELSTA,DBSELSTA   WAS STATION REQUESTED?                       
+         BZ    GINOTFND             NOPE, CAN'T CONTINUE                        
+         GOTO1 AFIXSTA                                                          
+                                                                                
+         DS    0H                                                               
+*        OC    DBSELINV,DBSELINV   WAS INVENTORY NUMBER SPECIFIED?              
+*        BZ    GINOTFND             NOPE, CAN'T CONTINUE                        
+                                                                                
+         DS    0H                                                               
+         MVC   DBACTBK,DBSELBK                                                  
+                                                                                
+         DS    0H                                                               
+         MVC   DBACTRMK,DBSELRMK                                                
+*                                                                               
+GTINV050 DS    0H                  DAYS & TIMES                                 
+         LA    R1,X'80'                                                         
+         CLI   DBSELDAY,X'FF'       TEST FOR ALL DAYS REQUIRED                  
+         BE    GTINV055                                                         
+         CLI   DBSELDAY,X'7C'       TEST FOR ROTATORS (M-F)                     
+         BE    GTINV055                                                         
+         CLI   DBSELDAY,X'7F'       TEST FOR ROTATORS (M-SU)                    
+         BE    GTINV055                                                         
+         SR    R1,R1                                                            
+         CLI   DBSELDAY,X'03'       TEST SAT-SUN ROTATOR                        
+         BNE   GTINV055                                                         
+         CLI   DBDAYOPT,C'Y'        TEST SPECIAL ROTATOR REQUESTED              
+         BNE   GTINV055                                                         
+         TM    FMSIND1,FMS1SASU     TEST SPECIAL ROTATOR SUPPORTED              
+         BZ    GTINV055                                                         
+         LA    R1,X'81'             SET FOR SPECIAL DQTAB ENTRY                 
+                                                                                
+GTINV055 DS    0H                  BUILD LIST OD DAYS/QTR HOURS                 
+         GOTO1 AGETDQ                                                           
+         BAS   RE,GETMYDQ                                                       
+*                                                                               
+         DS    0H                  GET STATION KEY VALUE (DBACTSTA)             
+         OC    DBACTKMK,DBACTKMK                                                
+         BNZ   *+10                                                             
+         MVC   DBACTKMK,DBSELMK                                                 
+         BAS   RE,GETCALL                                                       
+         STC   R1,CALLEN           SAVE L'STATION CALL LETTERS                  
+         OC    DBACTSTA,DBACTSTA   TEST ACTUAL STATION SET                      
+         BNZ   *+10                                                             
+         MVC   DBACTSTA,DBSELSTA                                                
+         LA    RE,DBSELSTA(R1)                                                  
+         LA    R1,DBACTSTA(R1)                                                  
+         CLI   DBSELMED,C'R'       DON'T DO FOR RADIO                           
+         BE    GTINV060                                                         
+         CLI   0(RE),C'L'          LOW POWER STATION                            
+         BE    GTINV060                                                         
+         CLI   0(RE),C'H'          NETWORK NHTI STATION                         
+         BE    GTINV060                                                         
+         CLI   0(RE),C'T'          TEST P+S1/S2 REQUEST                         
+         BNL   *+8                                                              
+         MVI   0(R1),C'T'           NO, SET PARENT ONLY                         
+*                                                                               
+GTINV060 DS    0H                                                               
+         MVC   SAVEBOOK,DBACTBK                                                 
+*                                                                               
+         DS    0H                  GET EFFECTIVE DATE                           
+         XC    BEFFDATE,BEFFDATE                                                
+         OC    DBSELDAT,DBSELDAT   EFFECTIVE DATE PASSED IN DBSELDAT            
+         BZ    GTINV070             NO DATE PASSED                              
+         GOTO1 CDATCON,DMCB,(2,DBSELDAT),(3,BEFFDATE),0                         
+*                                                                               
+GTINV070 DS    0H                                                               
+         B     GTINV100                                                         
+         EJECT                                                                  
+GTINV100 DS    0H                                                               
+                                                                                
+         DS    0H                  INITIALIZE KEY VALUES                        
+         XC    TMPIKVAL(TMPIKVLQ),TMPIKVAL                                      
+         MVC   TMPISTD,BEFFDATE     SET EFF START DATE                          
+         MVC   TMPIRSR,DBXIKRSR     SET RATING SOURCE                           
+         MVC   TMPIDSR,DBXIKDSR     SET RATING SOURCE                           
+         MVC   TMPIQLF,DBXIKQLF     SET QUALIFIER                               
+         MVC   TMPIBTP,DBXIKBTP     SET BOOKTYPE                                
+         MVC   TMPIBK,SAVEBOOK      SET BOOK                                    
+                                                                                
+*                                                                               
+** READ DIRECTORY FOR INVENTORY RECORDS **                                      
+*                                                                               
+GTINV120 DS    0H                  BUILD KEY OF INVENTORY RECORD                
+         XC    DBXILDIR,DBXILDIR                                                
+         LA    R2,DBXIKEY                                                       
+         USING RINVKEY,R2                                                       
+         MVI   RINVKTYP,RINVKTYQ    RECORD TYPE                                 
+         MVC   RINVKREP,DBSELAGY    REP CODE                                    
+         MVC   RINVKSTA,DBACTSTA    STATION                                     
+         MVC   RINVKINV,DBSELINV    INVENTORY NUMBER                            
+         MVC   RINVKSTD,TMPISTD     EFF START DATE                              
+                                                                                
+         MVC   INVDIRSV,DBXILDIR   SAVE DIRECTORY INFO                          
+         GOTO1 CDATAMGR,DMCB,DMRDHI,DBDIRNAM,INVKEYSV,DBXIKEY                   
+         BAS   RE,GTIIOTRC                                                      
+         CLI   DMCB+8,0                                                         
+         BNE   GINOTFND            ERROR==>NOT FOUND                            
+                                                                                
+*                                                                               
+** SEE IF RECORD FITS REQUEST **                                                
+*                                                                               
+SIK      USING RINVRECD,INVKEYSV                                                
+SIKR     LA    RE,IKYINVL          LONG KEY                                     
+         OC    DBSELINV,DBSELINV   IF INV NUMBER GIVEN                          
+         BNZ   *+8                                                              
+         LA    RE,RINVKINV-RINVKEY   ELSE SHORT KEY                             
+         BCTR  RE,0                                                             
+         EX    RE,*+8                                                           
+         B     *+10                                                             
+         CLC   RINVKEY(0),SIK.RINVKEY                                           
+         BNE   GIEOF                                                            
+*                                                                               
+         OC    DBSEL1WK,DBSEL1WK   FILTER ON START DATE ONLY                    
+         BZ    GTINV121                                                         
+         CLC   RINVKSTD,BEFFDATE                                                
+         BL    GTINV200                                                         
+         B     GTINV122                                                         
+*                                                                               
+GTINV121 OC    DBSELDAT,DBSELDAT                                                
+         BZ    *+14                                                             
+         CLC   RINVKSTD,BEFFDATE   DBSELDAT<==>BEFFDATE                         
+         BNE   GIEOF                                                            
+*                                                                               
+GTINV122 DS    0H                  CHECK IF KEY SOURCE PERTINENT TO US          
+*                                                                               
+         B     GTIV124X            BY-PASS                                      
+*                                                                               
+*****    CLI   RINVKSRC,0          KSRC=0 = INV HEADER RECD                     
+*****    BE    GTIV124X            IT'S GOOD                                    
+*                                                                               
+         OC    RINVKRTP,RINVKRTP   INV HEADER RECD                              
+         BZ    GTIV124X            IT'S GOOD                                    
+*                                                                               
+         LA    R0,KSRCTBLQ         CHECK REST OF SOURCE'S IN MAIN TABLE         
+         L     RF,AKSRCTAB                                                      
+*                                                                               
+GTINV124 DS    0H                                                               
+*                                                                               
+*****    CLC   RINVKSRC,2(RF)                                                   
+*****    BE    GTIV124X                                                         
+*****    LA    RF,L'KSRCTBL(RF)                                                 
+*****    BCT   R0,GTINV124                                                      
+*                                                                               
+*****    CLI   RINVKRSR,C'N'       NO EFFICIENT WAY TO GET                      
+*****    BNE   GTINV125            TO NIELSEN SECTION                           
+*                                                                               
+*****    MVC   BYTE,3(RF)                                                       
+*****    NI    BYTE,X'FF'-X'40'    REMOVE 'OLD' NSI BIT                         
+*                                                                               
+         CLC   RINVKQLF,3(RF)      MATCHING ON BKVAL BITS                       
+         BNE   GTINV125                                                         
+*                                                                               
+         CLC   RINVKBTP,4(RF)      AND BOOK TYPE                                
+         BE    GTIV124X                                                         
+*                                                                               
+GTINV125 LA    RF,L'KSRCTBL(RF)                                                 
+         BCT   R0,GTINV124                                                      
+*                                                                               
+         B     GTINV200             "BAD" KEY SOURCE, GET NXT DIR ITEM          
+*                                                                               
+GTIV124X EQU   *                                                                
+*                                                                               
+         DS    0H                                                               
+*****    CLI   RINVKSRC,0                                                       
+*****    BNE   SIKRX                                                            
+*                                                                               
+         OC    RINVKRTP,RINVKRTP   SKIP IF NOT INV HEADER                       
+         BNZ   SIKRX                                                            
+                                                                                
+         GOTO1 CDATAMGR,DMCB,GETREC,DBFILNAM,DBXILINK,DBAREC,DMWORK             
+         BAS   RE,GTIIOTRC                                                      
+         CLI   DMCB+8,0                                                         
+         BNE   GINOTFND            ERROR==>NOT FOUND                            
+*                                                                               
+         L     R2,DBAREC                                                        
+         USING RINVRECD,R2                                                      
+         LA    RE,RINVPEL                                                       
+RINVP    USING RINVPEL,RE                                                       
+         SR    RF,RF                                                            
+         XC    DBXIPROG,DBXIPROG                                                
+         XC    DBXIDAY(DBXIPROG-DBXIDAY),DBXIDAY                                
+         CLI   RINVKLEN,0                                                       
+         BNE   *+16                                                             
+         MVC   DBXIDAY(5),RINVP.RINVPDAY                                        
+         MVC   DBXIPROG(20),RINVP.RINVPROG                                      
+*                                                                               
+         MVC   DBXIEFFD,RINVP.RINVPEFF                                          
+         MVC   DBXIDPT,RINVP.RINVDP                                             
+         MVC   DBXIFILT,RINVP.RINVPFLT                                          
+         MVC   DBXIAVDY,RINVP.RINVPADY                                          
+         MVC   DBXIAVTM,RINVP.RINVPATM                                          
+         MVC   DBXITMCH,RINVP.RINVTCHG   FOR TIME CHANGE MARKETS                
+         DROP  RINVP                                                            
+                                                                                
+         LA    RE,RINVPEL                                                       
+SIKR2    DS    0H                                                               
+         CLI   0(RE),0                                                          
+         BE    GTINV150                                                         
+         CLI   0(RE),3                                                          
+         BNE   SIKR3                                                            
+RIPG     USING RIPGELEM,RE                                                      
+         IC    RF,1(RE)                                                         
+         SH    RF,=H'3'                                                         
+         EX    RF,*+8                                                           
+         B     GTINV150                                                         
+         MVC   DBXIPROG(0),RIPG.RIPGNAME   PROGRAM NAME FROM INV HEADER         
+         DROP  RIPG                                                             
+                                                                                
+SIKR3    DS    0H                                                               
+         CLI   0(RE),2                                                          
+         BNE   SIKR4                                                            
+RIDT     USING RIDTELEM,RE                                                      
+         CLI   DBXIDAY,0                                                        
+         BNE   SIKR4                                                            
+         MVC   DBXIDAY(5),RIDT.RIDTDAY     DAYS & TIMES FROM INV HEADER         
+         DROP  RIDT                                                             
+                                                                                
+SIKR4    DS    0H                  BUMP TO NEXT ELEMENT                         
+         ICM   RF,1,1(RE)                                                       
+         BZ    GTINV150                                                         
+         AR    RE,RF                                                            
+         B     SIKR2                                                            
+*                                                                               
+SIKRX    EQU   *                                                                
+         PRINT OFF                                                              
+*&&DO                                                                           
+*        CLC   RINVKQTR,REQLOSQH    IF (REC'S QHR) < (REQ'S LOWST QHR),         
+*        BL    GIHOREND              SOMETHING'S AMISS                          
+*        CLC   RINVKQTR,REQHIEQH    IF (REC'S QHR) > (REQ'S HIGST QHR),         
+*        BH    GIEOF                 WE'RE DONE READING INV RECDS               
+*                                                                               
+*        DS    0H                  INVENTORY NUMBER: DAY CODE & QHRS            
+*        CLC   RINVKDAY,REQLODYC                                                
+*        BL    GTINV140                                                         
+*        CLC   RINVKDAY,REQHIDYC                                                
+*        BH    GTINV141                                                         
+*                                                                               
+*        DS    0H                  LOCATE DBDQTAB ENTRY                         
+*        LA    R3,MYDQTAB          MYDQTAB HAS THE REP DAY CODES                
+*        USING DBDQD,R3                                                         
+*TINV132 CLI   0(R3),X'FF'          IF END OF TABLE REACHED                     
+*        BE    GTINV142              RINVKQTR/RINVKDAY COMBO NOT GOOD           
+*        CLC   RINVKDAY,DBDQKDAY    MATCH ON DAY CODE FIRST,                    
+*        BNE   GTIV132B                                                         
+*        CLC   RINVKQTR,DBDQSQH     THEN MAKE SURE QUARTER HOUR                 
+*        BL    GTIV132B                                                         
+*        CLC   RINVKQTR,DBDQEQH      IS WITHIN REQUESTED RANGE                  
+*        BNH   GTIV132D                                                         
+*TIV132B LA    R3,DBDQLEN(R3)                                                   
+*        B     GTINV132                                                         
+*TIV132D ST    R3,ADQNTRY           HOLD ONTO A(GOOD DBDQTAB ENTRY)             
+*&&                                                                             
+         PRINT ON                                                               
+                                                                                
+*                                                                               
+*** MATCH AGAINST REQUESTED DAY & TIMES ***                                     
+*                                                                               
+GTINV150 DS    0H                                                               
+         DS    0H                                                               
+         CLI   DBSELDAY,0          ANY DAY OK                                   
+         BE    TIMF                                                             
+         CLC   DBSELDAY(1),DBXIDAY FILTER DAYS                                  
+         BE    TIMF                                                             
+         ZIC   RE,DBSELDAY                                                      
+         EX    RE,*+8                                                           
+         B     *+8                                                              
+         TM    DBXIDAY,X'00'                                                    
+         BZ    GTINV200                                                         
+*                                                                               
+TIMF     DS    0H                                                               
+         OC    DBSELTIM,DBSELTIM   FILTER TIMES                                 
+         BZ    TIMFX                                                            
+                                                                                
+         SR    RE,RE                                                            
+         SR    RF,RF                                                            
+         ICM   RE,3,DBSELTIM       RE = REQUEST START TIME                      
+         ICM   RF,3,DBXIETIM       RF = END TIME IN INV HDR                     
+         CH    RF,=H'600'          IF END TIME IN INV HDR IS 6A,                
+         BNE   *+8                                                              
+         LA    RF,559               CHANGE END TIME TO 559A FOR COMPARE         
+         CH    RE,=H'600'                                                       
+         BNL   *+8                                                              
+         AH    RE,=H'2400'                                                      
+         CH    RF,=H'600'                                                       
+         BNL   *+8                                                              
+         AH    RF,=H'2400'                                                      
+         CR    RE,RF                RQST START TIME VS ACTUAL END               
+         BNL   GTINV200              (NON INCLUSIVE ON END)                     
+                                                                                
+         ICM   RE,3,DBSELTIM+2     RE = REQUESTED END TIME                      
+         ICM   RF,3,DBXISTIM       RF = START TIME IN INV HDR                   
+         CH    RE,=H'600'                                                       
+         BNL   *+8                                                              
+         AH    RE,=H'2400'                                                      
+         CH    RF,=H'600'                                                       
+         BNL   *+8                                                              
+         AH    RF,=H'2400'                                                      
+         CR    RE,RF                RQST END TIME VS ACTUAL START               
+         BNH   GTINV200              LOW: CAN'T PASS TO CALLER                  
+*                                                                               
+TIMFX    EQU   *                                                                
+                                                                                
+*                                                                               
+*** INVENTORY KEY SOURCE ***                                                    
+*                                                                               
+GTINV136 DS    0H                  INVENTORY SOURCE                             
+         CLI   DBSTYPE,0           ANY STATION TYPE                             
+         BE    GTINV137            ACCEPT ANY                                   
+*                                                                               
+         CLI   DBSTYPE,X'FF'       IF NEW INVENTORY RECORD                      
+         BNE   *+14                                                             
+         OC    DBXIKRSR(4),DBXIKRSR    ACCEPT IF NO FILTER                      
+         BZ    GTINV137                                                         
+*                                                                               
+         CLC   RINVKRTP,DBXIKRSR    (REC'S SRC) VS. (REQ'S SRC)                 
+         BNE   GTINV200                                                         
+*                                                                               
+GTINV137 DS    0H                                                               
+******   CLI   RINVKSRC,0          DO NOT BOTHER PASSING INV HEADER             
+******   BNE   GTINV138                                                         
+*                                                                               
+         OC    RINVKRTP,RINVKRTP   DO NOT BOTHER PASSING INV HEADER             
+         BNZ   GTINV138                                                         
+*                                                                               
+         CLI   DBSTYPE,0              IF CALLER ASKED FOR SPECIFIC              
+         BE    GTINV138                  KEY SOURCE                             
+*                                                                               
+         CLI   DBSTYPE,X'FF'          IE FOR NEW INV REC                        
+         BNE   GTINV200                                                         
+*                                                                               
+         OC    DBXIKRSR(4),DBXIKRSR      ASKED FOR SPECIFIC SOURCE              
+         BNZ   GTINV200                                                         
+*                                                                               
+*** INVENTORY TRACK ***                                                         
+*                                                                               
+GTINV138 DS    0H                  BOOK                                         
+         OC    SAVEBOOK,SAVEBOOK   ANY BOOK                                     
+         BZ    GTINV160            ACCEPT ANY                                   
+         CLC   RINVKBK,SAVEBOOK     (REC'S BOOK) VS. (REQ'S BOOK)               
+         BNE   GTINV200                                                         
+                                                                                
+         B     GTINV160            RECORD PASSED--PASS IT TO CALLER!            
+         DROP  SIK                                                              
+         PRINT OFF                                                              
+*&&DO                                                                           
+*                                                                               
+** ROUTINES TO ADJUST KEY VALUES TO READ NEXT INVENTORY RECORD **               
+*                                                                               
+*TINV140 DS    0H                  RINVKDAY < REQLODYC                          
+*        MVC   TMPIKDY,REQLODYC     CATCH UP TO REQ'S LOWEST DAY CODE           
+*        LA    RF,1                                                             
+*        B     GTINV150                                                         
+*                                                                               
+*TINV141 DS    0H                  RINVKDAY >= REQHIDYC                         
+*        ZIC   R1,RINVKQTR                                                      
+*        CLM   R1,1,REQHIEQH                                                    
+*        BNL   GIEOF                                                            
+*        LA    R1,1(R1)                                                         
+*        STC   R1,TMPIQTR           BUMP TO READ NEXT QUARTER HOUR              
+*        SR    RF,RF                                                            
+*        B     GTINV150                                                         
+*                                                                               
+*TINV142 DS    0H                  RINVKQTR/RINVKDAY COMBO NOT GOOD             
+*        ZIC   R1,RINVKDAY                                                      
+*        CLM   R1,1,REQHIDYC                                                    
+*        BNL   GTINV141                                                         
+*        LA    R1,1(R1)                                                         
+*        STC   R1,TMPIKDY           BUMP TO READ NEXT VALID DAY CODE            
+*        LA    RF,1                                                             
+*        B     GTINV150                                                         
+*                                                                               
+*TINV144 DS    0H                  RINVKSTD > BEFFDATE or BTODAY                
+*        CLI   RINVKLEN,C'9'                                                    
+*        BNL   GTINV142                                                         
+*        ZIC   R1,RINVKLEN                                                      
+*        LA    R1,1(R1)                                                         
+*        STC   R1,TMPIPLN           BUMP TO NEXT PROGRAM LENGTH                 
+*        LA    RF,2                                                             
+*        B     GTINV150                                                         
+*                                                                               
+*TINV145 DS    0H                  RINVKSTD < BEFFDATE                          
+*        MVC   TMPISTD,BEFFDATE     CATCH UP TO EFFECTIVE START DATE            
+*        LA    RF,3                                                             
+*        B     GTINV150                                                         
+*                                                                               
+*TINV146 DS    0H                  RINVKSRC < DBSTYPE                           
+*        MVC   TMPISRC,DBSTYPE      CATCH UP TO INVENTORY SOURCE                
+*        LA    RF,4                                                             
+*        B     GTINV150                                                         
+*                                                                               
+*TINV147 DS    0H                  RINVKSRC > DBSTYPE                           
+*        OC    BEFFDATE,BEFFDATE    BUMP TO NEXT EFFECTIVE DATE                 
+*        BNZ   GTINV144                                                         
+*        CLC   RINVKSTD,BTODAY                                                  
+*        BNL   GTINV144                                                         
+*        GOTO1 CDATCON,DMCB,(3,RINVKSTD),(0,WORK),0                             
+*        GOTO1 CADDAY,DMCB,WORK,WORK+6,1                                        
+*        GOTO1 CDATCON,DMCB,(0,WORK+6),(3,TMPISTD),0                            
+*        LA    RF,3                                                             
+*        B     GTINV150                                                         
+*                                                                               
+*TINV148 DS    0H                  CATCH UP TO BOOK                             
+*        LA    RF,5                                                             
+*        B     GTINV150                                                         
+*                                                                               
+                                                                                
+* Setting temporary key values.  RF has a prior set value.                      
+*  If RF > 0, set temp values from current key.                                 
+*  If RF = 0, leave temp values alone.                                          
+*  If RF < 0, reset temp values.                                                
+*&&                                                                             
+         PRINT ON                                                               
+                                                                                
+                                                                                
+         PRINT OFF                                                              
+*&&DO                                                                           
+*                                                                               
+                                                                                
+         DS    0H                  QUARTER HOUR                                 
+         LTR   RF,RF                TEST VALUE IN RF                            
+         BNP   *+10                                                             
+         MVC   TMPIQTR,RINVKQTR      >0 ==> SET FROM KEY                        
+         BCTR  RF,0                                                             
+                                                                                
+         DS    0H                  DAY CODE                                     
+         LTR   RF,RF                TEST VALUE IN RF                            
+         BNP   *+10                                                             
+         MVC   TMPIKDY,RINVKDAY      >0 ==> SET FROM KEY                        
+         BNM   *+10                                                             
+         MVC   TMPIKDY,REQLODYC      <0 ==> RESET VALUE                         
+         BCTR  RF,0                                                             
+                                                                                
+         DS    0H                  PROGRAM LENGTH                               
+         LTR   RF,RF                TEST VALUE IN RF                            
+         BNP   *+10                                                             
+         MVC   TMPIPLN,RINVKLEN      >0 ==> SET FROM KEY                        
+         BNM   *+8                                                              
+         MVI   TMPIPLN,C'0'          <0 ==> RESET VALUE                         
+         BCTR  RF,0                                                             
+                                                                                
+         DS    0H                  EFFECTIVE START DATE                         
+         LTR   RF,RF                TEST VALUE IN RF                            
+         BNP   *+10                                                             
+         MVC   TMPISTD,RINVKSTD      >0 ==> SET FROM KEY                        
+         BNM   *+10                                                             
+         MVC   TMPISTD,BEFFDATE      <0 ==> RESET VALUE                         
+         BCTR  RF,0                                                             
+                                                                                
+         DS    0H                  INVENTORY SOURCE                             
+         LTR   RF,RF                TEST VALUE IN RF                            
+         BNP   GTINV155                                                         
+         MVC   TMPIRSR,RINVKRSR      >0 ==> SET FROM KEY                        
+         MVC   TMPIDSR,RINVKDSR      >0 ==> SET FROM KEY                        
+         MVC   TMPIQLF,RINVKQLF      >0 ==> SET FROM KEY                        
+         MVC   TMPIBTP,RINVKBTP      >0 ==> SET FROM KEY                        
+GTINV155 DS    0H                                                               
+         BNM   GTINV158                                                         
+         MVC   TMPIRSR,DBXIKRSR      <0 ==> RESET VALUE                         
+         MVC   TMPIDSR,DBXIKDSR      <0 ==> RESET VALUE                         
+         MVC   TMPIQLF,DBXIKQLF      <0 ==> RESET VALUE                         
+         MVC   TMPIBTP,DBXIKBTP      <0 ==> RESET VALUE                         
+                                                                                
+GTINV158 DS    0H                  BOOK                                         
+         MVC   TMPIBK,SAVEBOOK                                                  
+                                                                                
+         B     GTINV120                                                         
+                                                                                
+         DROP  R2,R3                                                            
+*&&                                                                             
+         PRINT ON                                                               
+         EJECT                                                                  
+*                                                                               
+** RECORD OKAY, GET IT FROM FILE **                                             
+*                                                                               
+GTINV160 DS    0H                  RECORD OKAY, GO GET IT                       
+         L     R2,DBAREC                                                        
+         USING RINVRECD,R2                                                      
+*                                                                               
+         CLC   RINVKEY,DBXIKEY     IF WE ALREADY HAVE THE RECORD,               
+         BE    GTINV163             DON'T GET IT AGAIN                          
+*                                                                               
+         DS    0H                                                               
+         GOTO1 CDATAMGR,DMCB,GETREC,DBFILNAM,DBXILINK,DBAREC,DMWORK             
+         BAS   RE,GTIIOTRC                                                      
+         CLI   DMCB+8,0                                                         
+         BNE   GINOTFND            ERROR==>NOT FOUND                            
+*                                                                               
+GTINV163 DS    0H                                                               
+         MVI   DBRECTYP,DBRECINV   MOVE IN RECORD TYPE                          
+         LA    RF,RINVPEL                                                       
+         ST    RF,DBAQUART         SET A(1ST ELEMENT) IN DBAQUART               
+                                                                                
+         DS    0H                  SET DBFACTOR & DBDIVSOR                      
+         MVC   MTIMES,DBXISTIM                                                  
+         CLC   MTIMES+2(2),=C'CC'                                               
+         BNE   *+10                                                             
+         MVC   MTIMES+2(2),=H'0200'                                             
+         BAS   RE,GETNUMQH          GET # OF QUARTER HOURS                      
+                                                                                
+         SR    R0,R0                GET # OF DAYS                               
+         ZICM  RF,DBXIDAY,(8)                                                   
+         SLL   RF,1                 HIGH-ORDER-BIT NOT USED IN DAYCODE          
+GTINV164 LTR   RF,RF                                                            
+         BZ    GTINV165                                                         
+         SR    RE,RE                                                            
+         SLDL  RE,1                                                             
+         AR    R0,RE                                                            
+         B     GTINV164                                                         
+GTINV165 EQU   *                                                                
+                                                                                
+         MH    R0,DEMNUMQH          TOTAL DURATION = (# QH) * (# DAYS)          
+         STCM  R0,3,DBFACTOR        DBFACTOR                                    
+         ZICM  R1,DBDIVSOR,(3)                                                  
+         AR    R1,R0                                                            
+         STCM  R1,3,DBDIVSOR        DBDIVSOR                                    
+         BAS   RE,GETFOOT                                                       
+                                                                                
+         MVI   DBMODE,DBMNEXT      SET MODE TO RETURN HERE,                     
+         BAS   RE,GETX              AND GO PASS RECORD TO CALLER'S HOOK         
+         DROP  R2                                                               
+*                                                                               
+         B     GTINV200            GO GET MORE RECORDS                          
+         EJECT                                                                  
+*                                                                               
+** READ NEXT DIRECTORY ITEM **                                                  
+*                                                                               
+GTINV200 DS    0H                                                               
+         LA    R2,DBXIKEY                                                       
+         USING RINVREC,R2                                                       
+*                                                                               
+         CLI   DBBEST,C'H'         INVENTORY HEADERS ONLY REQUESTED?            
+         BNE   GTINV210             NOPE                                        
+                                                                                
+         DS    0H                   YES, BUMP DATE UP BY ONE                    
+         MVC   TMPISTD,RINVKSTD                                                 
+         GOTO1 CDATCON,DMCB,(3,TMPISTD),(0,WORK)                                
+         GOTO1 CADDAY,(R1),WORK,WORK+6,1                                        
+         GOTO1 CDATCON,(R1),(0,WORK+6),(3,TMPISTD)                              
+         B     GTINV120                                                         
+*                                                                               
+GTINV210 DS    0H                                                               
+         MVC   INVDIRSV,DBXILDIR   SAVE DIRECTORY INFO                          
+         GOTO1 CDATAMGR,DMCB,DMRDSEQ,DBDIRNAM,INVKEYSV,DBXIKEY                  
+         BAS   RE,GTIIOTRC                                                      
+         CLI   DMCB+8,0                                                         
+         BNE   GINOTFND            ERROR==>NOT FOUND                            
+         B     SIKR                                                             
+         DROP  R2                                                               
+         EJECT                                                                  
+GINOTFND DS    0H                                                               
+         MVI   DBERROR,NOTFOUND                                                 
+         B     GETX                                                             
+*                                                                               
+GIINVMKT DS    0H                                                               
+         MVI   DBERROR,INVMRKT                                                  
+         B     GETX                                                             
+*                                                                               
+GIHOREND DS    0H                                                               
+         MVI   DBERROR,HORREND                                                  
+         B     GETX                                                             
+*                                                                               
+GIEOF    DS    0H                                                               
+         MVI   DBERROR,EOF                                                      
+         B     GETX                                                             
+                                                                                
+                                                                                
+GETX     DS    0H                                                               
+         CLI   DBERROR,0           TEST IF ERROR SET                            
+         BE    *+14                                                             
+         XC    DBAQUART,DBAQUART   YES - CLEAR QTR HOUR ADDRESS                 
+         MVI   DBMODE,DBMFRST      AND RESET SEQUENTIAL MODE                    
+         MVC   DBLSTFNC,DBFUNCT    EQUATE LAST FUNCTION TO THIS                 
+         OC    AUSERRTN,AUSERRTN   TEST IF USER HOOK SUPPLIED                   
+         BZ    GETXX               NO - RETURN TO CALLER                        
+         CLI   DBERROR,0           TEST IF ERROR SET                            
+         BNE   GETXX               YES - RETURN TO CALLER                       
+         CLI   DBMODE,DBMNEXT      TEST IF SEQUENTIAL MODE                      
+         BE    *+8                                                              
+         LA    RE,GETXX            NO - SET RETURN TO EXIT                      
+*                                  SAVE REGS & GO TO USER HOOK                  
+         NTR1                                                                   
+         L     RF,AUSERRTN                                                      
+         L     RE,ROOTRD                                                        
+         LR    R0,RE               R0=A(CALLER'S RD)                            
+         LM    R1,RC,24(RE)        R1-RC=CALLERS REGISTERS                      
+         BASR  RE,RF               GO TO USER HOOK                              
+         NOPR  R0                                                               
+*                                                                               
+GETXX    XIT1  ,                   EXIT TO CALLER OR DEMAND                     
+         EJECT                                                                  
+*                                                                               
+* EXTRACT FOOTNOTE FROM X'01' ELEMENT AND PUT IT INTO DBXIFOOT                  
+*                                                                               
+GETFOOT  DS    0H                                                               
+         XC    DBXIFOOT,DBXIFOOT                                                
+         SR    R1,R1                                                            
+         L     RF,DBAQUART         1ST ELEM IN INV RECD                         
+GETFT05  CLI   0(RF),0                                                          
+         BE    GETFOOTX                                                         
+         IC    R1,1(RF)                                                         
+         CLI   0(RF),X'01'                                                      
+         BE    *+10                                                             
+         AR    RF,R1                                                            
+         B     GETFT05                                                          
+*                                                                               
+         AR    RF,R1               PER BRIAN - FTNOTE IS LAST 16 CHARS          
+         SH    RF,=H'16'                       OF ELEMENT                       
+         MVC   DBXIFOOT(16),0(RF)                                               
+*                                                                               
+*        SH    R1,=H'7'            -1 FOR EX -6 FOR DISP TO TEXT                
+*        CH    R1,=Y(L'DBXIFOOT)                                                
+*        BL    *+14                                                             
+*        MVC   DBXIFOOT,6(RF)      ONLY MOVE L'DBXIFOOT                         
+*        B     GETFOOTX                                                         
+*        EXMVC R1,DBXIFOOT,6(RF)                                                
+*                                                                               
+GETFOOTX BR    RE                                                               
+                                                                                
+*                                                                               
+* EXTRACT STATION CALL LETTERS FROM DBLOCK INTO DUB                             
+*                                                                               
+* ON EXIT R1=L'STATION CALL LETTERS (EXCLUDING TYPE)                            
+*                                                                               
+GETCALL  DS    0H                                                               
+         MVI   DUB,C' '                                                         
+         MVC   DUB+1(4),DUB                                                     
+         MVC   DUB(4),DBSELSTA                                                  
+         LA    R1,4                                                             
+         CLI   DBSELMED,C'R'                                                    
+         BNER  RE                                                               
+         MVC   DUB(5),DBSELSTA     RADIO HAS 5 CHAR CALL LETTERS                
+         LA    R1,5                                                             
+         BR    RE                                                               
+         TITLE 'REP INVENTORY FILE READER (INITADTB)'                           
+***********************************************************************         
+*=================== INITIALIZE ADDRESSES OF TABLES ==================*         
+                                                                                
+         DS    0H                                                               
+INITADTB NTR1                                                                   
+         LH    R1,=Y(ADDRTAB-GETINV)                                            
+         LA    R1,GETINV(R1)                                                    
+         LA    R0,ADDRTABQ                                                      
+                                                                                
+IAT10    DS    0H                                                               
+         SR    RE,RE                                                            
+         ICM   RE,3,0(R1)                                                       
+         LA    RE,GETINV(RE)       RE=A(TABLE)                                  
+         SR    RF,RF                                                            
+         ICM   RF,3,2(R1)                                                       
+         LA    RF,GINVWRKD(RF)     RF=A(TO STORE A(TABLE) )                     
+         ST    RE,0(RF)                                                         
+         LA    R1,L'ADDRTAB(R1)                                                 
+         BCT   R0,IAT10                                                         
+*                                                                               
+         B     GETXX                                                            
+***********************************************************************         
+         TITLE 'REP INVENTORY FILE READER (GETMYDQ)'                            
+***********************************************************************         
+*=========================== GET MY DBDQTAB ==========================*         
+                                                                                
+* Builds my own copy of DBDQTAB in MYDQTAB.  MYDQTAB will contain the           
+*  the day codes in REP--everything else remains the same.  REQLODYC,           
+*  REQLOSQH, and REQHIEQH will be set as well.                                  
+                                                                                
+         DS    0H                                                               
+GETMYDQ  NTR1                                                                   
+         MVI   REQLODYC,X'FF'      INITIALIZE VALUES                            
+         MVI   REQLOSQH,X'FF'                                                   
+         MVI   REQHIEQH,0                                                       
+         MVC   MYDQTAB,DBDQTAB                                                  
+*                                                                               
+         DS    0H                  PROCESS MYDQTAB                              
+         LA    R3,MYDQTAB                                                       
+DBDQ     USING DBDQD,R3                                                         
+GMD12    CLI   0(R3),X'FF'         CHECK FOR EOTABLE                            
+         BE    GMDX                 IF REACHED, EXIT NOW                        
+                                                                                
+         DS    0H                  TRANSLATE DAY CODES                          
+         MVC   DEMDYCDE,DBDQ.DBDQKDAY                                           
+         BAS   RE,GTDAYCDE                                                      
+         MVC   DBDQ.DBDQKDAY,REPDYCDE                                           
+                                                                                
+         DS    0H                  LOOK FOR LOWEST  DAY   CODE                  
+         CLC   REQLODYC,DBDQ.DBDQKDAY                                           
+         BNH   *+10                                                             
+         MVC   REQLODYC,DBDQ.DBDQKDAY                                           
+                                                                                
+         DS    0H                  LOOK FOR HIGHEST DAY   CODE                  
+         CLC   REQHIDYC,DBDQ.DBDQKDAY                                           
+         BNL   *+10                                                             
+         MVC   REQHIDYC,DBDQ.DBDQKDAY                                           
+                                                                                
+         DS    0H                  LOOK FOR LOWEST  START QTR HOUR              
+         CLC   REQLOSQH,DBDQ.DBDQSQH                                            
+         BNH   *+10                                                             
+         MVC   REQLOSQH,DBDQ.DBDQSQH                                            
+                                                                                
+         DS    0H                  LOOK FOR HIGHEST END  QTR HOUR               
+         CLC   REQHIEQH,DBDQ.DBDQEQH                                            
+         BNL   *+10                                                             
+         MVC   REQHIEQH,DBDQ.DBDQEQH                                            
+                                                                                
+         LA    R3,DBDQLEN(R3)                                                   
+         B     GMD12                                                            
+         DROP  DBDQ                                                             
+*                                                                               
+GMDX     DS    0H                                                               
+         B     GETXX                                                            
+***********************************************************************         
+         TITLE 'REP INVENTORY FILE READER (GTDAYCDE)'                           
+***********************************************************************         
+*============================ GET DAY CODE ===========================*         
+                                                                                
+* Translates a DEMO day code into a REP day code.                               
+* At entry,                                                                     
+*   DEMDYCDE = the DEMO day code                                                
+* At exit,                                                                      
+*   REPDYCDE = the REP  day code                                                
+                                                                                
+         DS    0H                                                               
+GTDAYCDE NTR1                                                                   
+         MVI   REPDYCDE,0                                                       
+         L     R1,ADAYCDTB                                                      
+*                                                                               
+GDC10    DS    0H                                                               
+         CLI   0(R1),X'FF'         IF NO MATCH,                                 
+         BE    GDC20                PASS BACK DAY CODE OF "OTHERS"              
+         CLC   0(1,R1),DEMDYCDE    IF MATCH FOUND,                              
+         BE    GDC20                PASS BACK THE RESPECTIVE DAY CODE           
+         LA    R1,L'DAYCDTAB(R1)                                                
+         B     GDC10                                                            
+*                                                                               
+GDC20    DS    0H                                                               
+         MVC   REPDYCDE,1(R1)                                                   
+*                                                                               
+         B     GETXX                                                            
+***********************************************************************         
+         TITLE 'REP INVENTORY FILE READER (GETNUMQH)'                           
+***********************************************************************         
+*==================== GET NUMBER OF QUARTER HOURS ====================*         
+                                                                                
+* Calculates the number of quarter hours given a start and end time.            
+* At entry,                                                                     
+*   MTIMES   = military start & end times.                                      
+* At exit,                                                                      
+*   DEMNUMQH = the corresponding # of QHs.                                      
+                                                                                
+         DS    0H                                                               
+GETNUMQH NTR1                                                                   
+*&&DO                                                                           
+         SR    R4,R4               R4 = COUNTS THE # OF QUARTER HOURS           
+*                                                                               
+*&&                                                                             
+         ICM   R2,15,MTIMES                                                     
+         SRDL  R2,16               R2 = START TIME                              
+         SRL   R3,16               R3 = END   TIME                              
+                                                                                
+*                                                                               
+         DS    0H                  ADJUST START TIME                            
+         CH    R2,=Y(0600)                                                      
+         BNL   *+8                                                              
+         AH    R2,=Y(2400)                                                      
+*                                                                               
+         DS    0H                  ADJUST END   TIME                            
+         CH    R3,=Y(0600)                                                      
+         BNL   *+8                                                              
+         AH    R3,=Y(2400)                                                      
+*                                                                               
+         DS    0H                  START TIME  VS  END TIME                     
+         CR    R2,R3                                                            
+         BH    GNQ017H                                                          
+         BE    GNQ017E                                                          
+         B     GNQ017L                                                          
+GNQ017H  LR    R3,R2                START > END: EQUATE END TO START            
+         B     GNQ017X                                                          
+GNQ017E  AH    R3,=Y(2400)          START = END: ADD 24HRS TO END               
+         B     GNQ017X                                                          
+GNQ017L  DS    0H                   START < END: NOTHING TO DO                  
+         B     GNQ017X                                                          
+GNQ017X  EQU   *                                                                
+                                                                                
+*                                                                               
+         DS    0H                                                               
+         LR    R1,R2               START TIME                                   
+         BAS   RE,GNQTOMIN          GET INTO # OF MINUTES                       
+         LR    R2,R1                R2 = START TIME IN MINUTES                  
+                                                                                
+         LR    R1,R3               END TIME                                     
+         BAS   RE,GNQTOMIN          GET INTO # OF MINUTES                       
+                                                                                
+         SR    R1,R2               R1 = DURATION IN MINUTES                     
+                                                                                
+*                                                                               
+         DS    0H                                                               
+         SR    R0,R0                                                            
+         SLDA  R0,1                                                             
+         D     R0,=F'15'                                                        
+         LTR   R1,R1                                                            
+         BM    *+8                                                              
+         AH    R1,=H'1'                                                         
+         SRA   R1,1                R1 = # OF QUARTER HOURS                      
+         LTR   R1,R1               IF LESS THAN 8 MINUTES                       
+         BNZ   *+8                                                              
+         LA    R1,1(R1)            FORCE TO 1 QHR SO RECD IS RTND               
+         STH   R1,DEMNUMQH          AND SET IT IN RETURN FIELD                  
+         PRINT OFF                                                              
+*&&DO                                                                           
+         DS    0H                  ADJUST START TIME                            
+         CH    R2,=Y(0600)                                                      
+         BNL   *+8                                                              
+         AH    R2,=Y(0600)                                                      
+*                                                                               
+GNQ020   DS    0H                  ADJUST END TIME                              
+         CR    R2,R3                                                            
+         BNH   *+12                                                             
+         AH    R3,=Y(2400)                                                      
+         B     GNQ020                                                           
+                                                                                
+*                                                                               
+GNQ030   DS    0H                  LOOP THROUGH AND COUNT QUARTER HOURS         
+         CR    R2,R3                                                            
+         BNL   GNQ039                                                           
+                                                                                
+         LA    R4,1(R4)             INCREMENT # OF QUARTER HOURS                
+         AH    R2,=Y(0015)          INCREMENT TIME BY 15 MINUTES                
+                                                                                
+         SR    RE,RE                                                            
+         LR    RF,R2                                                            
+         D     RE,=F'100'           RE=MINUTES, RF=MILITARY HOUR                
+         CH    RE,=Y(0060)          IF MINUTE >= 60,                            
+         BL    GNQ035                                                           
+         LA    RF,1(RF)              ADD ONE TO THE HOUR                        
+         SH    RE,=Y(0060)           AND ADJUST THE MINUTES                     
+         MH    RF,=Y(0100)                                                      
+         AR    RF,RE                                                            
+         LR    R2,RF                                                            
+                                                                                
+GNQ035   DS    0H                                                               
+         B     GNQ030                                                           
+                                                                                
+GNQ039   EQU   *                                                                
+                                                                                
+*                                                                               
+         DS    0H                                                               
+         STH   R4,DEMNUMQH                                                      
+*&&                                                                             
+         PRINT ON                                                               
+         B     GETXX                                                            
+                                                                                
+                                                                                
+* Little helper routine to translate a military time to # of minutes            
+* At entry,                                                                     
+*   R1 = military time                                                          
+* At exit,                                                                      
+*   R1 = military time in minutes                                               
+                                                                                
+GNQTOMIN DS    0H                                                               
+         SR    R0,R0                                                            
+         D     R0,=F'100'          R0 = MINUTES, R1 = HOURS                     
+         MH    R1,=H'60'                                                        
+         AR    R1,R0                                                            
+         BR    RE                                                               
+***********************************************************************         
+         TITLE 'REP INVENTORY FILE READER (I/O TRACE)'                          
+***********************************************************************         
+*============================= I/O TRACE =============================*         
+                                                                                
+* Since we are doing our own I/O in this module, it's best if we have           
+*  our own control to pass to the caller's I/O trace routine.                   
+* At entry,                                                                     
+*  R1-->param block used in DATAMGR call.                                       
+                                                                                
+         DS    0H                                                               
+GTIIOTRC NTR1                                                                   
+         OC    ATRCRTN,ATRCRTN     ANY TRACE ROUTINE?                           
+         BZ    GITX                 NOPE                                        
+                                                                                
+         L     RF,ATRCRTN                                                       
+         L     RE,ROOTRD                                                        
+         LR    R0,RE                                                            
+         LM    R2,RC,28(RE)                                                     
+         BASR  RE,RF                                                            
+*                                                                               
+GITX     DS    0H                                                               
+         XIT1                                                                   
+***********************************************************************         
+         TITLE 'REP INVENTORY FILE READER (LTORG && CONSTANTS)'                 
+***********************************************************************         
+*========================= LTORG & CONSTANTS =========================*         
+                                                                                
+DMREAD   DC    C'DMREAD '                                                       
+DMRDHI   DC    C'DMRDHI '                                                       
+DMRDSEQ  DC    C'DMRSEQ '                                                       
+GETREC   DC    C'GETREC '                                                       
+SYSFLES  DC    C'SYSFLES'                                                       
+                                                                                
+                                                                                
+         LTORG                                                                  
+***********************************************************************         
+                                                                                
+                                                                                
+         DROP  R6,R7,R8,R9,RA,RB,RC                                             
+         TITLE 'REP INVENTORY FILE READER (EQUATES)'                            
+***********************************************************************         
+*========================= DEGETINV's EQUATES ========================*         
+                                                                                
+IKYINVL  EQU   RINVKINV-RINVREC+L'RINVKINV                                      
+***********************************************************************         
+         TITLE 'REP INVENTORY FILE READER (TABLES)'                             
+***********************************************************************         
+*=============================== TABLES ==============================*         
+                                                                                
+ADDRTAB  DS    0XL(2+2)                                                         
+         DC    AL2(DAYCDTAB-GETINV),AL2(ADAYCDTB-GINVWRKD)                      
+         DC    AL2(NUMQHTAB-GETINV),AL2(ANUMQHTB-GINVWRKD)                      
+         DC    AL2(KSRCTBL-GETINV),AL2(AKSRCTAB-GINVWRKD)                       
+ADDRTABQ EQU   (*-ADDRTAB)/(L'ADDRTAB)                                          
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+DAYCDTAB DS    0XL2                TABLE OF DEM & REP DAY CODES                 
+         DC    X'00',C'0'           M-F                                         
+         DC    X'10',C'1'           MON                                         
+         DC    X'20',C'2'           TUE                                         
+         DC    X'30',C'3'           WED                                         
+         DC    X'40',C'4'           THU                                         
+         DC    X'50',C'5'           FRI                                         
+         DC    X'60',C'6'           SAT                                         
+         DC    X'70',C'7'           SUN                                         
+         DC    X'80',C'8'           M-S                                         
+         DC    X'FF',C'9'           OTHERS                                      
+                                                                                
+                                                                                
+NUMQHTAB DS    0XL(1+1)            TABLE OF NUMBER OF QUARTER-HOURS             
+         DC    C'0',AL1(02)                                                     
+         DC    C'1',AL1(04)                                                     
+         DC    C'2',AL1(06)                                                     
+         DC    C'3',AL1(08)                                                     
+         DC    C'4',AL1(10)                                                     
+         DC    C'5',AL1(12)                                                     
+         DC    C'6',AL1(16)                                                     
+         DC    C'7',AL1(24)                                                     
+         DC    C'8',AL1(32)                                                     
+         DC    C'9',AL1(36)                                                     
+         DC    X'00'                                                            
+                                                                                
+*KSRCTAB  DS    0XL1                TABLE OF PERTINENT KEY SOURCES              
+*         DC     XL1'00'             INVENTORY HEADER                           
+*         DC     CL1'A'              ARB/MFX PROGRAM                            
+*         DC     CL1'B'              ARB/MFX PROJECTED                          
+*         DC     CL1'C'              ARB/MFX TIME PERIOD                        
+*         DC     CL1'D'              ARB/MFX SPECIAL SURVEY                     
+*         DC     CL1'E'              ARB/MFX ESTIMATED                          
+*         DC     CL1'N'              NSI PROGRAM                                
+*         DC     CL1'O'              NSI PROJECTED                              
+*         DC     CL1'P'              NSI TIME PERIOD                            
+*         DC     CL1'Q'              NSI SPECIAL SURVEY                         
+*         DC     CL1'R'              NSI ESTIMATED                              
+*         DC     CL1'T'              SRC PROGRAM                                
+*         DC     CL1'U'              SRC PROJECTED                              
+*         DC     CL1'X'              SRC ESTIMATED                              
+*KSRCTABQ EQU   (*-KSRCTAB)/L'KSRCTAB                                           
+                                                                                
+       ++INCLUDE RESVCTABN                                                      
+                                                                                
+***********************************************************************         
+         TITLE 'REP INVENTORY FILE READER (LOCAL W/S)'                          
+***********************************************************************         
+*======================= LOCAL WORKING STORAGE =======================*         
+                                                                                
+GINVWRKD DSECT                                                                  
+DMWORK   DS    12D                                                              
+MYDMCB   DS    6F                                                               
+*                                                                               
+         DS    0A                 ************* ADDRESSES *************         
+ADAYCDTB DS    A                   A(DEM & REP DAYCODES TABLE)                  
+ANUMQHTB DS    A                   A(# OF QUARTER-HOURS TABLE)                  
+AKSRCTAB DS    A                   A(KEY SOURCES TABLE)                         
+*                                                                               
+INVDIRSV DS    0XL(L'DBXILDIR)     SAVED DIR INFO OF INVENTORY RECORD           
+INVKEYSV DS    XL(L'DBXIKEY)        SAVED KEY                                   
+INVCTLSV DS    XL(L'DBXICNTL)       SAVED CONTROL                               
+INVLNKSV DS    XL(L'DBXILINK)       SAVED LINK                                  
+*                                                                               
+DEMNUMQH DS    H                   NUMBER OF QUARTER HOURS                      
+DEMDYCDE DS    XL1                                                              
+REPDYCDE DS    CL1                                                              
+REPPGMLN DS    CL1                                                              
+REQLODYC DS    XL1                  REQUEST'S LOWEST  DAY   CODE                
+REQHIDYC DS    XL1                  REQUEST'S HIGHEST DAY   CODE                
+REQLOSQH DS    XL(L'DBDQSQH)        REQUEST'S LOWEST  START QTR HOUR            
+REQHIEQH DS    XL(L'DBDQEQH)        REQUEST'S HIGHEST END   QTR HOUR            
+*                                                                               
+TMPIKVAL DS    0C                  TEMP STORAGE FOR INVTORY KEY VALUES          
+TMPIQTR  DS    XL(L'RINVKQTR)       QUARTER HOUR                                
+TMPIKDY  DS    XL(L'RINVKDAY)       DAY CODE                                    
+TMPIPLN  DS    XL(L'RINVKLEN)       PROGRAM LENGTH                              
+TMPISTD  DS    XL(L'RINVKSTD)       EFFECTIVE START DATE                        
+TMPIRSR  DS    XL(L'RINVKRSR)                                                   
+TMPIDSR  DS    XL(L'RINVKDSR)                                                   
+TMPIQLF  DS    XL(L'RINVKQLF)                                                   
+TMPIBTP  DS    XL(L'RINVKBTP)                                                   
+TMPIBK   DS    XL(L'RINVKBK)        BOOK                                        
+TMPIKVLQ EQU   *-TMPIKVAL                                                       
+*                                                                               
+BTODAY   DS    XL3                 BINARY TODAY'S DATE                          
+BEFFDATE DS    XL3                 BINARY EFFECTIVE DATE                        
+*                                                                               
+MTIMES   DS    0XL4                                                             
+MSTIME   DS     XL2                 MILITARY START TIME                         
+METIME   DS     XL2                 MILITARY END   TIME                         
+*                                                                               
+MYDQTAB  DS    XL(L'DBDQTAB)       MY OWN COPY OF DBDQTAB                       
+*                                                                               
+GINVWRKL EQU   *-GINVWRKD                                                       
+         DS    0CL((200*8-GINVWRKL)+1)                                          
+***********************************************************************         
+         TITLE 'REP INVENTORY FILE READER (DEGETD)'                             
+***********************************************************************         
+*=============================== DEGETD ==============================*         
+       ++INCLUDE DEGETD                                                         
+***********************************************************************         
+         TITLE 'REP INVENTORY FILE READER (DBEXTRAD)'                           
+***********************************************************************         
+*============================= DEDBEXTRAD ============================*         
+       ++INCLUDE DEDBEXTRAD                                                     
+***********************************************************************         
+         TITLE 'REP INVENTORY FILE READER (REGENINV)'                           
+***********************************************************************         
+*======================= INVENTORY RECORD DSECT ======================*         
+                                                                                
+RINVRECD DSECT                                                                  
+       ++INCLUDE REGENINVA                                                      
+***********************************************************************         
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'062DEGETINV  09/14/11'                                      
+         END                                                                    

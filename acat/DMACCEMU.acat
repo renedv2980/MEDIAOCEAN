@@ -1,0 +1,940 @@
+*          DATA SET DMACCEMU   AT LEVEL 013 AS OF 05/16/13                      
+*CATALP DMACCEMU                                                                
+DMACCEMU TITLE '- OLD TO NEW ACCOUNT FILE EMULATOR'                             
+***********************************************************************         
+* THIS MODULE TRANSLATES DATA MANAGER COMMANDS TO OLD ACCOUNT FILE    *         
+* TO COMMANDS FOR NEW FILES.                                          *         
+*                                                                     *         
+* NTRY - R2=A(CALLER'S DMCB)                                          *         
+***********************************************************************         
+* rdes 011 CHANGE NI OF ACTRSTAT TO NOT CLEAR ACTSDRFT                          
+* AHYD 010 CHANGE CODE SO ACCT/OFF/CONTRA RECORDS BEHAVE AS ACCT/CONTRA         
+* AHYD 007 MERGED US AND UK VERSION. CHANGED WRITE AND UPDATE FOR SOX           
+* NSHE 007 PROMOTE ARCHIVED RECORDS TO ACCMST IF WRITING RECORD BACK            
+* NSHE 007 PEELED TRANSACTIONS - CHANGE WHERE PEELED DATE IS HELD               
+* NSHE 007 PEELED TRANSACTIONS - REMOVE OLD FIELD REFERENCE FOR UK              
+* NSHE ??? 070102 OR THE STATUS BYTE OF THE DIR WITH DAREC                      
+* NSHE ??? 280403 FIX BUG WITH NEW P&L SUMMARY RECORDS                          
+         SPACE 1                                                                
+DMACCEMU CSECT                                                                  
+         PRINT NOGEN                                                            
+         NMOD1 WORKX-WORKD,**DMAC**,RA                                          
+         USING WORKD,RC            RC=A(LOCAL W/S)                              
+         XC    WORKD(IO-WORKD),WORKD                                            
+         USING DMCBD,R2            R2=A(CALLER'S DMCB)                          
+         MVI   DMERRS,0                                                         
+*                                                                               
+         L     R3,DMACMD           R3=A(ORIGINAL COMMAND)                       
+         LA    R1,CMDTAB                                                        
+         LA    RE,CMDTABL                                                       
+         LA    RF,CMDTABX                                                       
+         USING CMDTABD,R1                                                       
+         CLC   CMDWORD,0(R3)       LOCATE DMGR COMMAND IN CMDTAB                
+         BE    *+10                                                             
+         BXLE  R1,RE,*-10                                                       
+         DC    H'0'                                                             
+         MVC   CMDI,CMDINDS        SAVE COMMAND INDICATORS                      
+         SR    RF,RF                                                            
+         ICM   RF,3,CMDDISP                                                     
+         LA    RF,DMACCEMU(RF)     RF=A(EMULATOR ROUTINE)                       
+         BR    RF                                                               
+*                                                                               
+DMERROR  OC    DMERRS,DMCB+8       SET DATAMGR ERROR                            
+*                                                                               
+DMEXIT   CLI   DMERRS,0            SET CC FOR CALLER                            
+         XIT1  ,                                                                
+         EJECT                                                                  
+***********************************************************************         
+* EMULATE READ HIGH OF ACCOUNT FILE                                   *         
+***********************************************************************         
+         SPACE 1                                                                
+RDHI     BAS   RE,FIXKEY                                                        
+         GOTO1 GETDIR,DMCB,(DMINDS,DMRDHI),ACCDIR,ISKEY,IS                      
+         BNE   DMERROR             DISK ERROR/E-O-F                             
+         CLI   ISKEY,PLAKTYPQ      TEST P&L RECORD READ                         
+         BNE   *+12                                                             
+         MVI   DMCB+8,X'90'        YES - RETURN ERROR                           
+         B     DMERROR                                                          
+         BAS   RE,GETREC           GET ACCMST/ACCARC RECORD                     
+         BAS   RE,NEWOLD           CONVERT NEW RECORD TO OLD FORMAT             
+RDHIX    B     DMEXIT                                                           
+         SPACE 2                                                                
+***********************************************************************         
+* EMULATE READ SEQUENTIAL OF ACCOUNT FILE                             *         
+***********************************************************************         
+         SPACE 1                                                                
+RSEQ     GOTO1 GETDIR,DMCB,(DMINDS,DMRSEQ),ACCDIR,DMAKEY,IS                     
+         BNE   DMERROR             DISK ERROR/E-O-F                             
+         CLI   ISKEY,PLAKTYPQ      TEST P&L RECORD READ                         
+         BNE   *+12                                                             
+         MVI   DMCB+8,X'90'        YES - RETURN ERROR                           
+         B     DMERROR                                                          
+         BAS   RE,GETREC           GET ACCMST/ACCARC RECORD                     
+         BAS   RE,NEWOLD           CONVERT NEW RECORD TO OLD FORMAT             
+RSEQX    B     DMEXIT                                                           
+         SPACE 2                                                                
+***********************************************************************         
+* EMULATE READ SPECIFIC OF ACCOUNT FILE                               *         
+***********************************************************************         
+         SPACE 1                                                                
+READ     BAS   RE,FIXKEY                                                        
+         GOTO1 GETDIR,DMCB,(DMINDS,DMREAD),ACCDIR,ISKEY,IS                      
+         BE    *+16                DISK ERROR/E-O-F                             
+         TM    8(R1),X'10'         TEST RECORD NOT FOUND                        
+         BZ    DMERROR                                                          
+         OI    DMERRS,X'10'        TURN ON NOT FOUND IN CALLER'S DMCB           
+         CLI   ISKEY,PLAKTYPQ      TEST P&L RECORD READ                         
+         BE    READX                                                            
+         BAS   RE,GETREC           GET ACCMST/ACCARC RECORD                     
+         BAS   RE,NEWOLD           CONVERT NEW RECORD TO OLD FORMAT             
+READX    B     DMEXIT                                                           
+         EJECT                                                                  
+***********************************************************************         
+* EMULATE ADD OF ACCOUNT FILE                                         *         
+***********************************************************************         
+         SPACE 1                                                                
+ADDR     BAS   RE,OLDNEW           CONVERT OLD RECORD TO NEW FORMAT             
+         MVI   BYTE,0              SPECIAL PUT/WRITE                            
+         TM    DMINDS,DMISPC+DMISOX                                             
+         BNO   *+8                                                              
+         MVI   BYTE,DMISPC+DMISOX                                               
+         GOTO1 DMGR,DMCB,(BYTE,DMADDR),ACCMST,ISDA,IO,DMWK                      
+         BNE   DMERROR             EXIT ON ERROR                                
+ADDRX    B     DMEXIT                                                           
+         SPACE 2                                                                
+***********************************************************************         
+* EMULATE WRITE OF ACCOUNT FILE                                       *         
+***********************************************************************         
+         SPACE 1                                                                
+WRTR     GOTO1 GETDIR,DMCB,(X'88',DMREAD),ACCDIR,DMAREC,IS                      
+         BNE   DMERROR                                                          
+         MVI   DMERRS,0            RESET ERROR RETURN BYTE                      
+         MVC   SAVEINDS,DMINDS                                                  
+         MVI   DMINDS,X'88'        SET READ FOR UPDATE & DELETES                
+         BAS   RE,GETREC           GET PREVIOUS COPY OF RECORD                  
+         MVC   DMINDS,SAVEINDS                                                  
+         MVC   SAVESTAT,IO+(ACCRSTA-ACCRECD)                                    
+         BAS   RE,OLDNEW           CONVERT OLD RECORD TO NEW FORMAT             
+         MVC   ISSTAT,IO+(ACCRSTA-ACCRECD)                                      
+*&&UK                                                                           
+         TM    ISSTAT,ISSARC       TEST RECORD IS ON ARCHIVE                    
+         BZ    WRTR02                                                           
+         GOTO1 VPROMOTE,DMCB,IO,0                                               
+         B     WRTRX                                                            
+*&&                                                                             
+WRTR02   MVI   BYTE,0              SPECIAL PUT/WRITE                            
+         TM    DMINDS,DMISPC+DMISOX                                             
+         BNO   *+8                                                              
+         MVI   BYTE,DMISPC+DMISOX                                               
+         GOTO1 DMGR,DMCB,(BYTE,DMPUTR),ACCMST,ISDA,IO,DMWK                      
+         BNE   DMERROR             EXIT ON ERROR                                
+         CLC   ISSTAT,SAVESTAT                                                  
+         BE    WRTRX                                                            
+         GOTO1 (RF),(R1),(BYTE,DMWRTD),ACCDIR,IS,IS                             
+         BNE   DMERROR                                                          
+WRTRX    B     DMEXIT                                                           
+         EJECT                                                                  
+***********************************************************************         
+* CONVERT OLD ACCOUNT RECORD TO NEW FORMAT                            *         
+***********************************************************************         
+         SPACE 1                                                                
+OLDN     BAS   RE,OLDNEW           CONVERT OLD TO NEW RECORD FORMAT             
+         L     R0,DMAREC                                                        
+         SR    R1,R1                                                            
+         ICM   R1,3,IO+(ACCRLEN-ACCRECD)                                        
+         LA    RE,IO                                                            
+         LR    RF,R1                                                            
+         MVCL  R0,RE               RETURN RECORD IN CALLER'S BUFFER             
+OLDNX    B     DMEXIT                                                           
+         SPACE 2                                                                
+***********************************************************************         
+* CONVERT NEW ACCOUNT RECORD TO OLD FORMAT                            *         
+***********************************************************************         
+         SPACE 1                                                                
+NEWO     L     RE,DMAREC           COPY NEW RECORD TO WORK AREA                 
+         SR    RF,RF                                                            
+         ICM   RF,3,ACLENGTH-ACKEYD(RE)                                         
+         LA    R0,IO                                                            
+         LR    R1,RF                                                            
+         MVCL  R0,RE                                                            
+         L     RE,DMAKEY                                                        
+         MVC   ISKEY,0(RE)         SAVE ORIGINAL KEY                            
+         BAS   RE,NEWOLD           CONVERT NEW TO OLD RECORD FORMAT             
+NEWOX    B     DMEXIT                                                           
+         SPACE 2                                                                
+***********************************************************************         
+* CONVERT KEY IF READING A CONTRA-HEADER RECORD                       *         
+***********************************************************************         
+         SPACE 1                                                                
+FIXKEY   L     RF,DMAKEY           RF=A(USER'S KEY)                             
+         MVC   ISKEY,0(RF)                                                      
+         LA    RF,ISKEY                                                         
+         USING CHDRECD,RF                                                       
+         CLI   CHDKCPY,X'40'                                                    
+         BNHR  RE                                                               
+         CLC   CHDKACT,SPACES                                                   
+         BNHR  RE                                                               
+         CLC   CHDKCULC,SPACES                                                  
+         BNHR  RE                                                               
+         CLC   CHDKSPCS,SPACES                                                  
+         BNER  RE                                                               
+         CLC   CHDKNULL,SPACES                                                  
+         BNER  RE                                                               
+         XC    CHDKNULL,CHDKNULL                                                
+         BR    RE                                                               
+         DROP  RF                                                               
+         EJECT                                                                  
+***********************************************************************         
+* ISSUE I/O TO DIRECTORY (NOTE R1 POINTS TO PARAMETER LIST)           *         
+***********************************************************************         
+         SPACE 1                                                                
+GETDIR   LR    R0,RE                                                            
+         L     RF,DMGR                                                          
+         BASR  RE,RF                                                            
+         LR    RE,R0                                                            
+         BER   RE                  EXIT IF I/O OK WITH CC EQUAL                 
+         TM    8(R1),X'02'         TEST DIRECTORY RECORD IS DELETED             
+         BZ    *+12                                                             
+         OI    DMERRS,X'02'        YES - SET DELETED IN RETURN DMCB             
+         CR    RE,RE                                                            
+         BR    RE                  AND RETURN WITH CC EQUAL                     
+         CLI   8(R1),0                                                          
+         BR    RE                  ELSE RETURN CC NOT EQUAL                     
+         SPACE 2                                                                
+***********************************************************************         
+* ISSUE GETREC TO ACCMST OR ACCARC FOR RECORD                         *         
+***********************************************************************         
+         SPACE 1                                                                
+GETREC   LR    R0,RE                                                            
+         LA    RF,ACCMST                                                        
+         TM    ISSTAT,ISSARC       TEST RECORD IS ON ARCHIVE                    
+         BZ    *+8                                                              
+         LA    RF,ACCARC                                                        
+         GOTO1 DMGR,DMCB,(DMINDS,DMGETR),(RF),ISDA,IO,DMWK                      
+         TM    8(R1),X'FD'                                                      
+         BZ    GETREC2                                                          
+         TM    CMDI,CMDIWRT        TEST IF A WRITE COMMAND                      
+         BZ    *+6                                                              
+         DC    H'0'                                                             
+         L     R1,DMAREC           RETURN KEY TO CALLER                         
+         MVC   0(L'ISKEY,R1),ISKEY                                              
+         XC    L'ISKEY(16,R1),L'ISKEY(R1)                                       
+         B     DMERROR                                                          
+*                                                                               
+GETREC2  SR    RF,RF                                                            
+         ICM   RF,3,IO+(ACCRLEN-ACCRECD) GET RECORD LENGTH                      
+         LA    RF,IO(RF)                 POINT TO EOR                           
+         XC    0(2,RF),0(RF)             CLEAR EOR                              
+*                                                                               
+GETRECX  LR    RE,R0                                                            
+         BR    RE                                                               
+         EJECT                                                                  
+***********************************************************************         
+* CONVERT AN ACCMST OR ACCARC RECORD INTO ACCOUNT FORMAT              *         
+*                                                                     *         
+* NTRY - IO CONTAINS NEW RECORD                                       *         
+*        DMAREC ADDRESSES CALLER'S I/O AREA                           *         
+***********************************************************************         
+         SPACE 1                                                                
+         USING ACCRECD,R3          R3=A(NEW INPUT RECORD)                       
+         USING ACKEYD,R4           R4=A(OLD OUTPUT RECORD)                      
+NEWOLD   ST    RE,SAVERE                                                        
+         LA    R3,IO                                                            
+         L     R4,DMAREC                                                        
+         MVC   ACSTATUS,ACCRSTA                                                 
+*&&UK*&& OC    ACSTATUS,ISSTAT     OR THE DIR INTO DAREC STATUS BYTE            
+         XC    ACDTUSED,ACDTUSED                                                
+         XC    ACDTPEEL,ACDTPEEL                                                
+         MVC   ACKEYACC(L'ACCKEY),ACCKEY                                        
+*                                                                               
+         CLI   ACCKEY,GLBKTYPQ     Special GL bucket record?                    
+         JE    NEWOLD2             Yes, so no prior header record               
+         CLI   ACCRFST,BUKELQ      Is first element a bucket?                   
+         BE    NEWOLD20            Yes, so get CACELQ to add                    
+                                                                                
+NEWOLD2  SR    R1,R1                                                            
+         ICM   R1,3,ACCRLEN        R1=NEW FILE RECORD LENGTH                    
+         SH    R1,NEWSYS                                                        
+         CH    R1,OLDMAX           TEST DATA LENGTH TOO BIG                     
+         BNH   *+6                                                              
+         DC    H'0'                                                             
+         STH   R1,SAVELEN                                                       
+         LA    R0,ACRECORD                                                      
+         LA    RE,ACCRFST                                                       
+         LR    RF,R1                                                            
+         MVCL  R0,RE               MOVE DATA TO OLD RECORD                      
+         LR    R1,R0               R1=A(EOR)                                    
+         XC    0(2,R1),0(R1)       MAKE SURE EOR IS ZEROED                      
+         LH    R1,SAVELEN                                                       
+         AH    R1,OLDSYS                                                        
+         STCM  R1,3,ACLENGTH       SET OLD RECORD LENGTH                        
+         CLI   ACKEYACC,GLBKTYPQ   Specail GL bucket record?                    
+         BE    NEWOLDX1            Yes, don't finagle this record               
+         CLI   ACRECORD,CACELQ     TEST IF A CONTRA-HEADER RECORD               
+         BE    NEWOLD6                                                          
+         CLI   ACRECORD,TRNELQ     TEST IF A TRANSACTION RECORD                 
+         BNE   NEWOLDX1                                                         
+                                                                                
+         LA    R1,ACRECORD         LOCATE TRANSACTION STATUS ELEMENT            
+         SR    R0,R0                                                            
+         USING TRSELD,R1                                                        
+NEWOLD4  CLI   TRSEL,0             TEST END OF RECORD                           
+         BE    NEWOLDX1                                                         
+         CLI   TRSEL,TRSELQ                                                     
+         BE    *+14                                                             
+         IC    R0,TRSLN                                                         
+         AR    R1,R0                                                            
+         B     NEWOLD4                                                          
+         CLI   TRSLN,TRSLNQ        TEST OLD STATUS ELEMENT                      
+         BL    NEWOLDX1                                                         
+         MVC   ACDTUSED,TRSUDAT    SET USED & PEELED DATES                      
+*&&US*&& MVC   ACDTPEEL,TRSPDAT                                                 
+*&&US*&& B     NEWOLDX1            FINISHED                                     
+*&&UK                                                                           
+         USING TRNRECD,R5                                                       
+         LA    R5,IS                                                            
+         XC    IS(L'ISKEY+L'ISSTAT),IS                                          
+         MVC   TRNKEY,ACCRECD                                                   
+         GOTO1 GETDIR,DMCB,(X'08',DMREAD),ACCDIR,TRNKEY,TRNKEY                  
+         BNE   DMERROR                                                          
+         TM    TRNKSTA2,TRNSPEEL   IS IT MARKED AS PEELED                       
+         BZ    NEWOLDX1            NO NOTHING ELSE TO DO                        
+         MVC   ACDTPEEL,TRNKSPDT   YES ASSUME PEELED DATE HELD HERE             
+*&&                                                                             
+NEWOLDX1 L     RE,SAVERE                                                        
+         BR    RE                                                               
+         EJECT                                                                  
+***********************************************************************         
+* CONSTRUCT A CONTRA-HEADER RECORD FROM A NEW CONTRA-HEADER OR        *         
+* CONTRA-HEADER POINTER (ACCOUNT) AND NEW CONTRA-BUCKET RECORD        *         
+*                                                                     *         
+* NTRY - IO CONTAINS AN ACCOUNT RECORD (READ VIA CONTRA-POINTER) OR   *         
+*        A CONTRA-HEADER RECORD                                       *         
+***********************************************************************         
+         SPACE 1                                                                
+NEWOLD6  L     RE,SAVERE           RESET RETURN ADDRESS                         
+         NTR1  LABEL=NO                                                         
+         LA    R1,ACCRFST          LOCATE ACCOUNT NAME EL. (R3=INPUT)           
+         CLI   0(R1),CACELQ        TEST CONTRA-HEADER (NOT POINTER)             
+         BNE   NEWOLD8             NOT CONTRA HEADER                            
+         CLC   PRODUL,ACKEYACC+1   IF SJ                                        
+         BE    NEWOLD7             CONVERT                                      
+         CLC   PCTLUL,ACKEYACC+1   IF 1J                                        
+         BE    NEWOLD7             CONVERT                                      
+         CLC   ACKEYWRK,SPACES     ANY OFFICE                                   
+         BNH   NEWOLD7             MUST BE ONE CHARACTER OFFICE                 
+*&&US                                                                           
+OLD      USING CHDRECD,R4          UK does not support Act/Off/Contra           
+         OC    OLD.CHDKNULL,OLD.CHDKNULL   Is it Act/Off/Contra?                
+         BZ    NEWOLD7             Yes, merge with bucket record                
+         DROP  OLD                                                              
+*&&                                                                             
+         MVC   ACKEYREF(L'ACKEYREF+L'ACKEYSBR),SPACES                           
+         B     NEWOLDX4            MADE TO LOOK LIKE BUCKET RECORD              
+*                                                                               
+NEWOLD7  LA    R5,ACRECORD         POINT R5 TO END OF OLD RECORD                
+         SR    RF,RF                                                            
+         IC    RF,1(R5)                                                         
+         AR    R5,RF                                                            
+         CLI   0(R5),0                                                          
+         BNE   *-10                                                             
+         B     NEWOLD12            Found end                                    
+*                                                                               
+         USING NAMELD,R1                                                        
+NEWOLD8  MVC   ACKEYACC(L'ACCKEY),IS                                            
+         SR    RF,RF                                                            
+NEWOLD10 CLI   NAMEL,0             TEST END OF RECORD                           
+         BNE   *+6                                                              
+         DC    H'0'                INVALID ACCOUT RECORD                        
+         CLI   NAMEL,NAMELQ                                                     
+         BE    *+14                                                             
+         IC    RF,NAMLN                                                         
+         AR    R1,RF                                                            
+         B     NEWOLD10                                                         
+                                                                                
+         LA    R5,ACRECORD                                                      
+         USING CACELD,R5           BUILD CONTRA-ACCOUNT HEADER ELEMENT          
+         MVI   CACEL,CACELQ                                                     
+         MVC   CACCNT,ACKEYCON                                                  
+         LLGC  RF,NAMLN                                                         
+         SHI   RF,(NAMLN1Q+1)                                                   
+         BM    NEWOLD11                                                         
+         MVC   CACNAME(0),NAMEREC                                               
+         EX    RF,*-6                                                           
+                                                                                
+NEWOLD11 LA    RF,CACLN1Q+1(RF)                                                 
+         STC   RF,CACLN                                                         
+         AR    R5,RF               R5=A(FIRST BUCKET ELEMENT)                   
+         MVI   0(R5),0                                                          
+         LA    RF,1(R5)                                                         
+         SR    RF,R4                                                            
+         STCM  RF,3,ACLENGTH       SET RECORD LENGTH (JUST IN CASE)             
+*                                                                               
+NEWOLD12 MVC   ISSAVE,ISKEY                                                     
+         GOTO1 GETDIR,DMCB,(DMINDS,DMRSEQ),ACCDIR,DMAKEY,IS                     
+         BNE   NEWOLDX2                                                         
+         CLC   ACKEYACC(ACKEYREF-ACKEYACC),IS                                   
+         BNE   NEWOLDX2            Must be same account/off/contra              
+         CLC   IS+(CACKSPAC-CACRECD)(L'CACKSPAC),SPACES                         
+         BNE   NEWOLDX2            Not a bucket record                          
+         MVC   ACKEYACC(L'ACCKEY),IS                                            
+         BAS   RE,GETREC           Get bucket record                            
+*                                                                               
+         SR    R1,R1               MOVE BUCKET ELEMENTS TO RECORD               
+         ICM   R1,3,ACCRLEN                                                     
+         SH    R1,NEWSYS                                                        
+         LR    R0,R5                                                            
+         AR    R5,R1               (R5=NEW END OF RECORD ADDRESS)               
+         LA    RE,ACCRFST                                                       
+         LR    RF,R1                                                            
+         MVCL  R0,RE                                                            
+         SR    R5,R4                                                            
+         STCM  R5,3,ACLENGTH       SET LENGTH OF CONSTRUCTED RECORD             
+         B     NEWOLDX4                                                         
+*                                                                               
+NEWOLDX2 GOTO1 GETDIR,DMCB,(DMINDS,DMREAD),ACCDIR,ISSAVE,IS                     
+*                                                                               
+NEWOLDX4 XIT1  ,                                                                
+         EJECT                                                                  
+***********************************************************************         
+* CONSTRUCT A CONTRA-HEADER RECORD FROM A BUCKET RECORD AND A NEW     *         
+* CONTRA-HEADER POINTER                                               *         
+*                                                                     *         
+* NTRY - IO CONTAINS AN ACCOUNT RECORD (READ VIA CONTRA-POINTER) OR   *         
+*        A CONTRA-HEADER RECORD                                       *         
+***********************************************************************         
+         SPACE 1                                                                
+NEWOLD20 L     RE,SAVERE           RESET RETURN ADDRESS                         
+         NTR1  LABEL=NO                                                         
+         LA    R6,IS                                                            
+         USING CHDRECD,R6                                                       
+         MVC   CHDKEY,ACCKEY                                                    
+         MVI   CHDKBTYP,C' '                                                    
+         XC    CHDKNULL,CHDKNULL                                                
+         LA    R0,ACRECORD                                                      
+         GOTO1 DMGR,DMCB,(DMINDS,DMREAD),ACCDIR,CHDRECD,CHDRECD                 
+         BNE   NEWOLD22                                                         
+         GOTO1 (RF),(R1),(DMINDS,DMGETR),ACCMST,ISDA,IO2,DMWK                   
+         BNE   NEWOLD22                                                         
+                                                                                
+         USING CACELD,R5                                                        
+         LA    R5,IO2+(CHDRFST-CHDRECD)                                         
+         CLI   CACEL,CACELQ                                                     
+         BNE   NEWOLD22                                                         
+         LLGC  R1,CACLN                                                         
+         AR    R0,R1               UPDATE BUCKET ELEMENT POINTER                
+         BCTR  R1,0                                                             
+         MVC   ACRECORD(0),CACEL                                                
+         EX    R1,*-6                                                           
+*                                                                               
+NEWOLD22 SR    R1,R1               MOVE BUCKET ELEMENTS TO RECORD               
+         ICM   R1,3,ACCRLEN                                                     
+         SH    R1,NEWSYS           R1=TOTAL LENGTH OF BUCKET ELEMENTS           
+         LR    R5,R0                                                            
+         AR    R5,R1               R5=A(NEW END OF RECORD)                      
+         LA    RE,ACCRFST                                                       
+         LR    RF,R1                                                            
+         MVCL  R0,RE                                                            
+         SR    R5,R4                                                            
+         STCM  R5,3,ACLENGTH       SET LENGTH OF CONSTRUCTED RECORD             
+*                                                                               
+         GOTO1 GETDIR,DMCB,(DMINDS,DMREAD),ACCDIR,ACCKEY,IS                     
+*                                                                               
+NEWOLDX6 XIT1  ,                                                                
+         DROP  R1,R3,R4,R5,R6                                                   
+         EJECT                                                                  
+***********************************************************************         
+* CONVERT AN ACCOUNT RECORD INTO ACCMST FORMAT (FOR ADD OR WRITE)     *         
+*                                                                     *         
+* NTRY - DMAREC ADDRESSES ACCOUNT RECORD                              *         
+*        IO CONTAINS CONVERTED RECORD                                 *         
+***********************************************************************         
+         SPACE 1                                                                
+OLDNEW   ST    RE,SAVERE                                                        
+         LA    R3,IO                                                            
+         USING ACCRECD,R3          R3=A(NEW OUTPUT RECORD)                      
+         L     R4,DMAREC                                                        
+         USING ACKEYD,R4           R4=A(OLD INPUT RECORD)                       
+         MVC   ACCKEY,ACKEYACC                                                  
+         XC    ACCRSTA(L'ACCRSTA+L'ACCRLNK),ACCRSTA                             
+         MVC   ACCRSTA(L'ACSTATUS),ACSTATUS                                     
+         SR    R1,R1                                                            
+         ICM   R1,3,ACLENGTH       R1=OLD FILE RECORD LENGTH                    
+         SH    R1,OLDSYS                                                        
+         CH    R1,NEWMAX           TEST DATA LENGTH TOO BIG                     
+         BNH   *+6                                                              
+         DC    H'0'                                                             
+         STH   R1,SAVELEN                                                       
+         LA    R0,ACCRFST                                                       
+         LA    RE,ACRECORD                                                      
+         LR    RF,R1                                                            
+         MVCL  R0,RE               MOVE DATA TO NEW RECORD                      
+         LH    R1,SAVELEN                                                       
+         AH    R1,NEWSYS                                                        
+         STCM  R1,3,ACCRLEN        SET NEW RECORD LENGTH                        
+*                                                                               
+         USING TRNRECD,R3                                                       
+         CLI   ORDKTYP-ORDRECD(R3),ORDKTYPQ  TEST FOR ORDER RECORD              
+         BE    OLDORD                                                           
+*&&UK                                                                           
+         CLI   POPKTYP-POPRECD(R3),POPKTYPQ  TEST FOR PROD OPTION REC           
+         BE    OLDOPT                                                           
+         CLI   EVEKTYP-EVERECD(R3),EVEKTYPQ  TEST FOR ESTIMATE VERSION          
+         BNE   *+12                                                             
+         CLI   EVEKSUB-EVERECD(R3),EVEKSUBQ                                     
+         BE    OLDEVE                                                           
+*&&                                                                             
+         CLI   TRNKCPY,X'40'       TEST ACCOUNT HEIRARCHY RECORD                
+         BNH   OLDNEWX                                                          
+         CLI   TRNKCPY,X'FF'                                                    
+         BNL   OLDNEWX                                                          
+         CLI   TRNRFST,TRNELQ      TEST TRANSACTION RECORD                      
+         BE    OLDTRN                                                           
+         CLI   TRNRFST,CACELQ      TEST HISTORY RECORD                          
+         BE    OLDCAC                                                           
+         CLI   TRNKACT,C' '        TEST COMPANY/UNIT/LEDGER RECORD              
+         BE    OLDNEWX                                                          
+         CLI   TRNKDATE,C' '       TEST ACCOUNT RECORD                          
+         BNE   OLDNEWX                                                          
+         CLC   TRNKDATE(TRNKSTA-TRNKDATE-1),TRNKDATE+1                          
+         BNE   OLDNEWX                                                          
+*                                                                               
+         USING ACTRECD,R3          R3=A(ACCOUNT RECORD)                         
+OLDACC   NI    ACTRSTAT,ACTSDELT+ACTSDRFT                                       
+         LA    R1,ACTRFST                                                       
+         SR    R0,R0                                                            
+OLDACC1  CLI   0(R1),0             TEST E-O-R                                   
+         BE    OLDNEWX                                                          
+*                                                                               
+         USING RSTELD,R1                                                        
+         CLI   RSTEL,RSTELQ        TEST STATUS ELEMENT                          
+         BNE   OLDACC3                                                          
+         TM    RSTSTAT,RSTSACIC                                                 
+         BZ    *+8                                                              
+         OI    ACTRSTAT,ACTSCLOS   SET ACCOUNT CLOSED                           
+         TM    RSTSTAT,RSTSACIL                                                 
+         BZ    *+8                                                              
+         OI    ACTRSTAT,ACTSLOCK   SET ACCOUNT LOCKED                           
+         MVC   ACTRSAF1,RSTFILT1   SET ACCOUNT FILTERS                          
+         MVC   ACTRSAF2,RSTFILT2                                                
+         MVC   ACTRSAF3,RSTFILT3                                                
+         MVC   ACTRSAF4,RSTFILT4                                                
+         CLI   RSTLN,RSTLN1Q       TEST OLD STATUS ELEMENT                      
+         BE    OLDACCN                                                          
+         TM    RSTSTAT3,RSTSLAPL                                                
+         BZ    *+8                                                              
+         OI    ACTRSTA,ACTSLAPL    SET ACCOUNT IS PROFIT AND LOSS               
+         TM    RSTSTAT3,RSTSLABS                                                
+         BZ    *+8                                                              
+         OI    ACTRSTA,ACTSLABS    SET ACCOUNT IS BALANCE SHEET                 
+         MVC   ACTRSAF5,RSTFILT5                                                
+         B     OLDACCN                                                          
+*                                                                               
+         USING ABLELD,R1                                                        
+OLDACC3  CLI   ABLEL,ABLELQ        TEST ACCOUNT BALANCE ELEMENT                 
+         BNE   OLDACC4                                                          
+         OI    ACTRSTA,ACTSABLP                                                 
+         B     OLDACCN                                                          
+*                                                                               
+OLDACC4  DS    0H                                                               
+*                                                                               
+OLDACCN  IC    R0,1(R1)            BUMP TO NEXT ACCOUNT ELEMENT                 
+         AR    R1,R0                                                            
+         B     OLDACC1                                                          
+*                                                                               
+         USING TRNRECD,R3          R3=A(TRANSACTION RECORD)                     
+OLDTRN   NI    TRNRSTAT,255-(TRNSREVS)                                          
+         XC    ADUEEL,ADUEEL                                                    
+         OC    ACDTUSED,ACDTUSED                                                
+         BZ    *+8                                                              
+         OI    TRNRSTA2,TRNSUSED   SET TRANSACTION USE STATUS                   
+         OC    ACDTPEEL,ACDTPEEL                                                
+         BZ    *+8                                                              
+         OI    TRNRSTA2,TRNSPEEL   SET TRANSACTION PEEL STATUS                  
+*                                                                               
+         LA    R1,TRNRFST                                                       
+         SR    R0,R0                                                            
+OLDTRN1  CLI   0(R1),0             TEST EOR                                     
+         BNE   OLDTRN1B                                                         
+*&&UK                                                                           
+         TM    TRNRSTA2,TRNSUSED   TEST USED TRANSACTION                        
+         BNZ   OLDTRN1A                                                         
+         ICM   R1,15,ADUEEL        TEST DUE DATE ELEMENT PRESENT                
+         BZ    OLDTRN1A                                                         
+         OC    ACDTPEEL,ACDTPEEL   IS IT PEELED                                 
+         BNZ   *+10                YES - DON'T OVERWRITE PEEL DATE IN           
+         MVC   TRNRSUSE,DUEDATE-DUEELD(R1)      NEW RECORD                      
+*&&                                                                             
+OLDTRN1A OC    TRNRSMOS,TRNRSMOS   TEST MOS RESOLVED                            
+         BNZ   OLDNEWX             YES - EXIT                                   
+         B     OLDTRN06            ELSE ESTABLISH MOA FROM TRNEL                
+*                                                                               
+         USING TRNELD,R1                                                        
+OLDTRN1B CLI   TRNEL,TRNELQ        TEST TRANSACTION ELEMENT                     
+         BNE   OLDTRN1C                                                         
+         ST    R1,ATRNEL           SAVE A(TRANSACTION ELEMENT)                  
+         MVC   TRNRSTYP,TRNTYPE    SET TRANSACTION TYPE                         
+         MVC   TRNRSANL,TRNANAL    SET OLD OFFICE CODE                          
+         TM    TRNSTAT,TRNSREV                                                  
+         BZ    *+8                                                              
+         OI    TRNRSTAT,TRNSREVS   SET REVERSAL BIT IN STATUS                   
+         B     OLDTRNN                                                          
+*                                                                               
+         USING TRXELD,R1                                                        
+OLDTRN1C CLI   TRXEL,TRXELQ        TEST EXTRA STATUS ELEMENT                    
+         BNE   OLDTRN2                                                          
+         MVC   WORK(1),TRXSTA2                                                  
+         NI    WORK,B'00000111'                                                 
+         OC    TRNRSTA2,WORK                                                    
+         TM    TRXSTA2,TRXSEXCL                                                 
+         BZ    *+8                                                              
+         OI    TRNRSTA2,TRNSEXCL                                                
+         B     OLDTRNN                                                          
+*                                                                               
+         USING TRSELD,R1                                                        
+OLDTRN2  CLI   TRSEL,TRSELQ        TEST TRANSACTION STATUS ELEMENT              
+         BNE   OLDTRN04                                                         
+         TM    TRSSTAT,TRSSGLUP                                                 
+         BZ    *+8                                                              
+         OI    TRNRSTA2,TRNSGLUP   SET TRANSACTION GLU STATUS                   
+                                                                                
+         CLI   TRSLN,TRSLNQ        TEST OLD STATUS ELEMENT                      
+         BL    OLDTRN06                                                         
+         MVC   TRNRSMOS,TRSPMOS    SET TRANSACTION MOS                          
+         MVC   TRSUDAT,ACDTUSED    SET DATE USED                                
+*&&US*&& MVC   TRSPDAT,ACDTPEEL    SET DATE PEELED                              
+*&&UK                                                                           
+         OC    ACDTPEEL,ACDTPEEL   IF EUROPE SET PEEL DATE IN STATUS            
+         BZ    OLDTRN2A            AREA                                         
+         MVC   TRNRSUSE,ACDTPEEL                                                
+         B     OLDTRN2B                                                         
+*&&                                                                             
+OLDTRN2A OC    TRSUMOS,TRSUMOS     TEST USED TRANSACTION                        
+         BZ    *+10                                                             
+         MVC   TRNRSUSE,TRSUMOS    SET USED/USER MOS                            
+                                                                                
+OLDTRN2B OC    TRSUDAT,TRSUDAT                                                  
+         BZ    *+8                                                              
+         OI    TRNRSTA2,TRNSUSED   SET TRANSACTION USE STATUS                   
+*&&US                                                                           
+         OC    TRSPDAT,TRSPDAT                                                  
+         BZ    *+8                                                              
+         OI    TRNRSTA2,TRNSPEEL   SET TRANSACTION PEEL STATUS                  
+*&&                                                                             
+         B     OLDTRNN                                                          
+*                                                                               
+         USING DUEELD,R1                                                        
+OLDTRN04 CLI   DUEEL,DUEELQ                                                     
+         BNE   *+8                                                              
+         ST    R1,ADUEEL                                                        
+*                                                                               
+         USING PTAELD,R1                                                        
+         CLI   PTAEL,PTAELQ                                                     
+         BNE   OLDTRNN                                                          
+         CLC   PRODUL,TRNKUNT                                                   
+         BNE   OLDTRNN                                                          
+         TM    PTASTAT1,PTASPEND                                                
+         BZ    OLDTRNN                                                          
+         MVC   BYTE,PTATYPE                                                     
+         NI    BYTE,X'FF'-(PTATREVS)                                            
+         CLI   BYTE,PTATRAL                                                     
+         BNE   *+8                                                              
+         OI    TRNRSTA2,TRNSBILP                                                
+         CLI   BYTE,PTATWOF                                                     
+         BNE   *+8                                                              
+         OI    TRNRSTA2,TRNSWOFP                                                
+         CLI   BYTE,PTATTRFT                                                    
+         BNE   *+8                                                              
+         OI    TRNRSTA2,TRNSXFRP                                                
+         B     OLDTRNN                                                          
+*                                                                               
+OLDTRN06 L     RE,ATRNEL           SET MOS FROM TRANSACTION ELEMENT             
+         USING TRNELD,RE                                                        
+         SR    RF,RF                                                            
+         IC    RF,TRNDATE          GET THE DECADE                               
+         SRL   RF,4                DIVIDED BY 16                                
+         MHI   RF,10               X 10                                         
+         CVD   RF,DUB                                                           
+         ZAP   WORK(2),DUB+6(2)    SAVE DECADE (2000 = 100)                     
+         IC    RF,TRNDATE          GET THE YEAR                                 
+         N     RF,=X'0000000F'                                                  
+         CVD   RF,DUB                                                           
+         ZAP   WORK+2(1),DUB+7(1)  SAVE TRANSACTION YEAR                        
+*                                                                               
+         PACK  WORK+3(1),TRNMOS(1) SAVE MOS YEAR                                
+*                                                                               
+         ZAP   WORK+6(2),WORK(2)    DECADE                                      
+         AP    WORK+6(2),WORK+2(1)  TRANSACTION YEAR                            
+         ZAP   WORK+4(2),WORK(2)    DECADE                                      
+         AP    WORK+4(2),WORK+3(1)  MOS  YEAR                                   
+*                                                                               
+         SP    WORK+6(2),WORK+4(2)                                              
+*&&US*&& CP    WORK+6(2),=P'5'                                                  
+*&&UK*&& CP    WORK+6(2),=P'2'                                                  
+         BNH   *+10                                                             
+         AP    WORK(2),=P'10'       NEXT DECADE                                 
+*&&US*&& CP    WORK+6(2),=P'-5'                                                 
+*&&UK*&& CP    WORK+6(2),=P'-8'                                                 
+         BNL   *+10                                                             
+         SP    WORK(2),=P'10'      PREVIOUS DECADE                              
+*                                                                               
+         ZAP   DUB,WORK(2)                                                      
+         CVB   RF,DUB              MOS DECADE                                   
+         SR    RE,RE                                                            
+         D     RE,=F'10'           DIVIDE BY 10                                 
+         SLL   RF,4                X 16                                         
+         L     RE,ATRNEL                                                        
+         IC    RE,TRNMOS           MOS YEAR                                     
+         N     RE,=X'0000000F'                                                  
+         AR    RF,RE                                                            
+         STC   RF,WORK+8           STORE MOS DECADE/YEAR                        
+         L     RE,ATRNEL                                                        
+         IC    RF,TRNMOS+1         MOS MONTH                                    
+         N     RF,=X'0000000F'                                                  
+         TM    TRNMOS+1,X'F0'                                                   
+         BO    *+8                                                              
+         LA    RF,15(RF)                                                        
+         STC   RF,WORK+9                                                        
+         MVC   TRNRSMOS,WORK+8                                                  
+         LTR   R1,R1               TEST END OF RECORD REACHED                   
+         BZ    OLDNEWX                                                          
+         B     OLDTRNN                                                          
+         DROP  RE                                                               
+*                                                                               
+OLDTRN10 DS    0H                                                               
+*                                                                               
+OLDTRNN  CLI   0(R1),0             TEST END OF RECORD                           
+         BE    OLDNEWX                                                          
+         IC    R0,1(R1)            BUMP TO NEXT TRANSACTION ELEMENT             
+         AR    R1,R0                                                            
+         B     OLDTRN1                                                          
+*                                                                               
+         USING CACRECD,R3                                                       
+OLDCAC   LA    R1,CACRFST                                                       
+         SR    R0,R0                                                            
+OLDCAC1  CLI   0(R1),0                                                          
+         BE    OLDNEWX                                                          
+*                                                                               
+         USING BUKELD,R1                                                        
+         CLI   BUKEL,BUKELQ        TEST BUCKET ELEMENT                          
+         BNE   OLDCAC2                                                          
+         OC    CACRLMOS,CACRLMOS                                                
+         BNZ   *+10                                                             
+         MVC   CACRLMOS,BUKYEAR                                                 
+         CLC   CACRLMOS,BUKYEAR                                                 
+         BL    *+10                                                             
+         MVC   CACRLMOS,BUKYEAR                                                 
+         CLC   CACRHMOS,BUKYEAR                                                 
+         BH    *+10                                                             
+         MVC   CACRHMOS,BUKYEAR                                                 
+         B     OLDCACN                                                          
+*                                                                               
+         USING PBKELD,R1                                                        
+OLDCAC2  CLI   PBKEL,PBKELQ        TEST PRIOR PERIOD BUCKET ELEMENT             
+         BNE   OLDCAC3                                                          
+         OC    CACRLMOS,CACRLMOS                                                
+         BNZ   *+10                                                             
+         MVC   CACRLMOS,PBKLOW                                                  
+         CLC   CACRLMOS,PBKLOW                                                  
+         BL    *+10                                                             
+         MVC   CACRLMOS,PBKLOW                                                  
+         CLC   CACRHMOS,PBKHI                                                   
+         BH    *+10                                                             
+         MVC   CACRHMOS,PBKHI                                                   
+         B     OLDCACN                                                          
+*                                                                               
+OLDCAC3  DS    0H                                                               
+*                                                                               
+OLDCACN  IC    R0,1(R1)                                                         
+         AR    R1,R0                                                            
+         B     OLDCAC1                                                          
+*                                                                               
+         USING ORDRECD,R3          R3=A(ORDER RECORD)                           
+OLDORD   LA    R1,ORDRFST                                                       
+         XR    R0,R0                                                            
+         USING FFTELD,R1                                                        
+OLDORD1  CLI   FFTEL,0             TEST E-O-R                                   
+         BE    OLDNEWX                                                          
+         CLI   FFTEL,FFTELQ                                                     
+         BE    OLDORD3                                                          
+         CLI   FFTEL,ORDELQ                                                     
+         BE    OLDORD5                                                          
+OLDORD2  IC    R0,FFTLN                                                         
+         AR    R1,R0                                                            
+         B     OLDORD1                                                          
+OLDORD3  CLI   FFTTYPE,FFTTEXTY    FFTELD WITH EXPENDITURE TYPE                 
+         BNE   OLDORD4                                                          
+         MVC   ORDREXTY,FFTDATA    - COPY EXP. TYPE INTO STATUS AREA            
+         B     OLDORD2                                                          
+*                                                                               
+OLDORD4  CLI   FFTTYPE,FFTTOFFC    FFTELD WITH OFFICE CODE                      
+         BNE   OLDORD2                                                          
+         MVC   ORDROFF,FFTDATA     - COPY OFFICE INTO STATUS AREA               
+         B     OLDORD2                                                          
+*                                                                               
+         USING ORDELD,R1                                                        
+OLDORD5  CLI   ORDLN,ORDLN3Q       DO WE HAVE A 2ND STATUS BYTE                 
+         BL    OLDORD2             NO - SKIP MVC                                
+         MVC   ORDRSTA2,ORDSTAT2   - COPY 2ND ORDER STATUS                      
+         NI    ORDRSTA2,X'FF'-ORDGDRCV   Remove GOODS REC if set                
+         B     OLDORD2                                                          
+         DROP  R1                                                               
+*                                                                               
+*&&UK                                                                           
+         USING POPRECD,R3                                                       
+OLDOPT   CLI   POPKSUB,POPKSUBQ    CHECK PRODUCTION OPTION RECORD TYPE          
+         BNE   OLDNEWX                                                          
+         MVI   POPRSGRP,0          SET NO OPTION GROUPS PRESENT                 
+         LA    R1,POPRFST                                                       
+         SR    R0,R0                                                            
+         USING OPDELD,R1                                                        
+OLDOPT02 CLI   OPDEL,0             FIND OPTION DATA ELEMENTS                    
+         BE    OLDNEWX                                                          
+         CLI   OPDEL,OPDELQ                                                     
+         BE    OLDOPT06                                                         
+OLDOPT04 IC    R0,OPDLN                                                         
+         AR    R1,R0                                                            
+         B     OLDOPT02                                                         
+*                                                                               
+OLDOPT06 OC    POPRSGRP,OPDGRP     SET THIS ELEMENTS GROUP PRESENT              
+         CLI   OPDNUM,X'65'        COMMISSION RATE OPTION ?                     
+         BNE   *+14                                                             
+         MVC   POPRSCOM,OPDDATA    COPY RATE TO STATUS AREA                     
+         B     OLDOPT04                                                         
+         CLI   OPDNUM,X'7E'        TAX CODE OPTION ?                            
+         BNE   OLDOPT04                                                         
+         MVC   POPRSTAX,OPDDATA    COPY TAX CODE TO STATUS AREA                 
+         B     OLDOPT04                                                         
+                                                                                
+         USING EVERECD,R3          ESTIMATE VERSION RECORDS                     
+OLDEVE   LA    R1,EVERFST                                                       
+         USING FFTELD,R1                                                        
+         SR    R0,R0                                                            
+OLDEVE02 CLI   FFTEL,0                                                          
+         BE    OLDNEWX                                                          
+         CLI   FFTEL,FFTELQ                                                     
+         BNE   *+12                                                             
+         CLI   FFTTYPE,FFTTACUR                                                 
+         BE    *+14                                                             
+         IC    R0,FFTLN                                                         
+         AR    R1,R0                                                            
+         B     OLDEVE02                                                         
+         MVC   EVERCUR,FFTDATA                                                  
+         B     OLDNEWX                                                          
+         DROP  R1                                                               
+*&&                                                                             
+OLDNEWX  L     RE,SAVERE           RETURN TO CALLER                             
+         BR    RE                                                               
+         DROP  R3,R4                                                            
+         EJECT                                                                  
+         LTORG                                                                  
+         SPACE 1                                                                
+*&&UK                                                                           
+VPROMOTE DC    V(PRPMOTE)                                                       
+*&&                                                                             
+DMGR     DC    V(DATAMGR)                                                       
+         SPACE 1                                                                
+NEWMAX   DC    Y(2000-(ACCRFST-ACCRECD))                                        
+OLDMAX   DC    Y(2000-(ACRECORD-ACKEYD))                                        
+NEWSYS   DC    Y(ACCRFST-ACCRECD)                                               
+OLDSYS   DC    Y(ACRECORD-ACKEYD)                                               
+         SPACE 1                                                                
+PRODUL   DC    C'SJ'                                                            
+PCTLUL   DC    C'1J'                                                            
+         SPACE 1                                                                
+DMRDHI   DC    C'DMRDHI '                                                       
+DMRSEQ   DC    C'DMRSEQ '                                                       
+DMREAD   DC    C'DMREAD '                                                       
+DMADDD   DC    C'DMADD  '                                                       
+DMADDR   DC    C'ADDREC '                                                       
+DMWRTD   DC    C'DMWRT  '                                                       
+DMADDF   DC    C'ADFREC '                                                       
+DMPUTR   DC    C'PUTREC '                                                       
+DMGETR   DC    C'GETREC '                                                       
+         SPACE 1                                                                
+ACCDIR   DC    C'ACCDIR '          ACCOUNT DIRECTORY                            
+ACCMST   DC    C'ACCMST '          ACCOUNT FILE                                 
+ACCARC   DC    C'ACCARC '          ACCOUNT ARCHIVE                              
+         SPACE 1                                                                
+SPACES   DC    CL64' '                                                          
+         SPACE 1                                                                
+EFFS     DC    X'FFFFFFFFFFFFFFFF'                                              
+         SPACE 1                                                                
+CMDTAB   DS    0XL8                                                             
+         DC    C'OLDN',AL2(OLDN-DMACCEMU),AL1(0,0)                              
+         DC    C'NEWO',AL2(NEWO-DMACCEMU),AL1(0,0)                              
+         DC    C'DMRD',AL2(RDHI-DMACCEMU),AL1(0,0)                              
+         DC    C'DMRS',AL2(RSEQ-DMACCEMU),AL1(0,0)                              
+         DC    C'DMRE',AL2(READ-DMACCEMU),AL1(0,0)                              
+         DC    C'DMAD',AL2(ADDR-DMACCEMU),AL1(CMDIWRT,0)                        
+         DC    C'DMWR',AL2(WRTR-DMACCEMU),AL1(CMDIWRT,0)                        
+CMDTABX  EQU   *-1                                                              
+         EJECT                                                                  
+WORKD    DSECT                     ** WORKING STORAGE **                        
+DUB      DS    D                                                                
+DMCB     DS    6F                                                               
+WORK     DS    XL16                                                             
+ATRNEL   DS    A                   A(TRANSACTION ELEMENT)                       
+ADUEEL   DS    A                   A(DUE DATE ELEMENT)                          
+SAVERE   DS    A                   SAVE REGISTER AREA                           
+SAVELEN  DS    H                   SAVE LENGTH AREA                             
+BYTE     DS    XL1                                                              
+CMDI     DS    0XL2                COMMAND INDICATORS (FROM CMDTAB)             
+CMDI1    DS    X                                                                
+CMDI2    DS    X                                                                
+IS       DS    0X                  LAYOUT OF NEW I/S RECORD                     
+ISKEY    DS    XL42                KEY                                          
+ISSTAT   DS    XL8                 STATUS AREA                                  
+ISSARC   EQU   X'04'               RECORD IS ON ARCHIVE FILE                    
+         ORG   ISSTAT+L'ISSTAT                                                  
+ISDA     DS    XL4                 RECORD DISK ADDRESS                          
+ISL      EQU   *-IS                LENGTH OF DIRECTORY RECORD                   
+ISSAVE   DS    XL(L'ISKEY)         SAVED KEY                                    
+SAVESTAT DS    XL(L'ISSTAT)        SAVED DIRECTORY STATUS                       
+SAVEINDS DS    XL1                 SAVED DMINDS                                 
+DMWK     DS    XL64                GETREC/PUTREC/ADDREC AREA                    
+IO       DS    2000X               NEW RECORD READ/BUILD AREA                   
+IO2      DS    2000X               CONTRA HEADER READ AREA                      
+WORKX    EQU   *                                                                
+         SPACE 1                                                                
+DMCBD    DSECT                     ** DATAMGR PARAMETER LIST **                 
+DMINDS   DS    0XL1                ACTION QUALIFIER                             
+DMIRFU   EQU   X'80'               READ-FOR-UPDATE                              
+DMISPC   EQU   X'20'               SPECIAL ACTION                               
+DMIDEL   EQU   X'08'               PASS BACK DELETED RECORDS                    
+DMISOX   EQU   X'04'               SPECIAL SOX PUT/WRITE     - DMISPC           
+DMISEC   EQU   X'02'               READ REAL SECURITY RECORD - DMISPC           
+DMACMD   DS    A                   A(ORIGINAL DMGR COMMAND)                     
+DMAFIL   DS    A                   A(ORIGINAL DMGR FILE)                        
+DMERRS   DS    0XL1                ERROR RETURN                                 
+DMEEOF   EQU   X'80'               END-OF-FILE                                  
+DMEDSK   EQU   X'40'               DISK ERROR                                   
+DMEDUP   EQU   X'20'               DUPLICATE KEY ON I/S ADD                     
+DMERNF   EQU   X'10'               RECORD NOT FOUND                             
+DMEDEL   EQU   X'02'               RECORD IS DELETED                            
+DMAKEY   DS    A                   A(KEY)                                       
+DMAREC   DS    A                   A(RECORD)                                    
+DMCBL    EQU   *-DMCBD                                                          
+         SPACE 1                                                                
+CMDTABD  DSECT                     ** COMMAND TRANSLATE TABLE **                
+CMDWORD  DS    CL4                 DATAMGR COMMAND                              
+CMDDISP  DS    AL2                 DISPLACEMENT TO EMULATOR ROUTINE             
+CMDINDS  DS    0XL2                COMMAND INDICATORS                           
+CMDIND1  DS    X                                                                
+CMDIWRT  EQU   X'80'               WRITE COMMAND                                
+CMDIND2  DS    X                                                                
+CMDTABL  EQU   *-CMDTABD                                                        
+         EJECT                                                                  
+* ACGENFILE                                                                     
+         PRINT OFF                                                              
+       ++INCLUDE ACGENFILE                                                      
+         PRINT ON                                                               
+         SPACE 1                                                                
+* ACGENBOTH                                                                     
+         PRINT OFF                                                              
+       ++INCLUDE ACGENBOTH                                                      
+         PRINT ON                                                               
+         SPACE 1                                                                
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'013DMACCEMU  05/16/13'                                      
+         END                                                                    

@@ -1,0 +1,1274 @@
+DMLDMOD - Generalized file load/dump module                                     
+-------------------------------------------                                     
+DMLDMOD is the source book of the generalized file load/dump module.            
+It is used to dump DDS system files to tape and to load them back to            
+disk. It can also copy a dump tape to another tape so that offline              
+changes can be made to file records. During these processes records can         
+be checked for errors and warning emails sent. Records are counted and          
+and there is an option to output SMF records that can be used for file          
+balancing.                                                                      
+                                                                                
+By "tape" we mean a sequential file. A tape is the usual medium although        
+a sequential disk file can also be used as output from a dump. A "dump          
+tape" is the sequential output of a copy from disk. A "dump tape" is            
+also called a "load tape" when it is the input to a copy back to disk.          
+                                                                                
+The basic file structure is a fixed length index sequential (I/S) file          
+with the ability to have from 1 to 4 direct access (D/A) files. In the          
+case where there is an I/S file pointing to a D/A file the I/S file is          
+called a directory and we will use the naming convention XXXDIR. Note           
+that there is support for a single fixed length I/S file with no                
+associated D/A files.                                                           
+                                                                                
+The most common structure is an I/S directory file pointing to a single         
+variable length record D/A file. In this case the D/A file will be              
+called XXXFIL. The XXXDIR has the 4-byte disk address (dskadr) of the           
+XXXFIL record in its last 4 bytes.                                              
+                                                                                
+Certain DDS systems have more than one D/A file. In this case the I/S           
+file will also contain the file number as well as the disk address. The         
+D/A files will be named XXXFIL1, XXXFIL2, XXXFIL3 and XXXFIL4. There are        
+cases where there are two D/A files, and an alternate naming convention         
+exists where the D/A files are called the "A" and the "B" files. In this        
+case XXXFIL1 and XXXFILA are the same as are XXXFIL2 and XXXFILB.               
+                                                                                
+DMLDMOD can also be used to copy single variable length index sequential        
+files. The most common of these is CTFILE in the control system.                
+                                                                                
+File structure                                                                  
+--------------                                                                  
+An I/S file must start with a fixed length key. If it is a directory to         
+a D/A file the key must be followed by a fixed number of control bytes          
+and the control bytes must be followed by a 4-byte disk address. The            
+number of control byes varies from system to system. By convention the          
+the first bit (X'80') of the first control byte is used to flag deleted         
+records. If the I/S file points to multiple D/A files then a one or two         
+bit field in a fixed location within the control byte area must contain         
+the relative file number 0-1 or 0-3.                                            
+                                                                                
+The D/A file must also start with the same fixed length key as the I/S          
+file. The key is followed by a two byte field containing the record             
+length. The length is followed by the control bytes. The control bytes          
+are followed by a 4-byte linkage field used by the data manager code            
+to point to a new version of an extended record. After this fixed area          
+of the D/A record the record contains variable length elements with             
+the record being terminated by an element with an element code of zero.         
+The last zero element may or may not be counted in the overall record           
+length.                                                                         
+                                                                                
+The element structure is a one byte element code, a one byte element            
+length, which includes the code and length, followed by a data string.          
+The minimum length of an element is 2, which means no data, and the             
+maximum length is 255. It is convetional, but not required, that the            
+elements are stored in a D/A file record in element code sequence order         
+which optimizes the search for a given element. Duplicate element               
+codes are also permitted.                                                       
+                                                                                
+Record definition                                                               
+-----------------                                                               
+Each load/dump program must contain an XXLDDEFN module (where XX is the         
+system) that defines the key length, number of control bytes, and other         
+important file defining data. See DMLDDEFN for full definition.                 
+                                                                                
+I/S rec: <KEY...........><control><dskadr>                                      
+                                                                                
+D/A rec: <KEY...........><len><control><lnkadr><First El>...<Last El>0          
+                                                                                
+Active and Passive pointers                                                     
+---------------------------                                                     
+When a D/A record is loaded to disk its disk address is saved and a             
+primary key record is created for the I/S directory file. This has the          
+same key as the D/A file, the same control bytes as the D/A file and the        
+new dskadr. The I/S record with the same key as the D/A record is called        
+the active pointer. Some D/A records have extra keys that contain data          
+extracted from the D/A record to make new keys. These are called passive        
+pointers. Their keys must be unique. They are usually identified by             
+having a different record type in the key from active pointers.                 
+                                                                                
+A dump of a D/A file to disk is achieved by reading sequentially all the        
+I/S file records and using the dskadr to locate and read the D/A file.          
+A subroutine V(LDTPTR) must be included that tests if the I/S record is         
+a passive pointer. If it is a passive it is ignored, as the primary key         
+I/S record will cause the D/A record to be read and written to tape.            
+                                                                                
+A load of a D/A file to disk will create one active I/S file record for         
+each D/A record read from tape. A system dependent subroutine V(LDCPTR)         
+must be present. Its function is to inspect the D/A record and create           
+the required passive pointers, if any, for that record type. These extra        
+I/S records are then fixed with the new dskadr, and will be loaded              
+after being sorted, along with their primary key record.                        
+                                                                                
+Indirect pointers                                                               
+-----------------                                                               
+Some systems have I/S file records that contain a key but do not point          
+to a D/A file record. These are called indirect pointers. The control           
+and disk address fields are used to hold data. They are self contained          
+I/S file records that are created from D/A file records but do not point        
+to a D/A record. The V(LDDEFN) has a flag LDDQIPTR that is set to say           
+the I/S file has indirect pointers. The fields LDDIPDSP, LDDIPLEN, and          
+LDDPIARG define the displacement, length, and value that are used to            
+see if an I/S file record is an indirect pointer. Indirect pointers are         
+dumped as well as D/A file records when a D/A file is dumped to tape.           
+                                                                                
+Input and Output tape files                                                     
+---------------------------                                                     
+When dumping a disk file to tape using MODE=COPY,INPUT=DISK,OUTPUT=TAPE         
+the output file has a DDNAME of TAPEOUT. This file is defined with              
+RECFM=VB,LRECL=8200,BLKSIZE=27648.                                              
+                                                                                
+If an extra copy of TAPEOUT is required input a COPY=Y parameter and a          
+DD card for TAPECPY.                                                            
+                                                                                
+When loading a tape file to disk using MODE=COPY,INPUT=TAPE,OUTPUT=DISK         
+the input file has a DDNAME of TAPEIN.                                          
+                                                                                
+During the load process records on TAPEIN may be deleted or changed by          
+a special external routine. If it required that an output recovery file         
+of these changes is produced then input a RECOVER=Y parameter, and a DD         
+card for RCVTAPE. This file is defined with the same attributes as the          
+file TAPEOUT.                                                                   
+                                                                                
+During the load process a new directory file is created and is normally         
+loaded to XXXDIR after it is sorted into key sequence. To cause the             
+XXXDIR file to be written to tape rather than to disk then input a              
+DIR=TAPE parameter and a DD card for TAPEDIR. This file is defined with         
+the same attributes as the file TAPEOUT.                                        
+                                                                                
+Dynamic allocation of TAPEOUT output tape                                       
+-----------------------------------------                                       
+If the DD card for TAPEOUT has a DSN parameter DSN=DDSDDN then the DSN          
+will be dynamically allocated with the following format. XXX is the             
+3-chr system name, DDD is the dataspace name,  YY is the 1 or 2-chr             
+system letter or number, FILNAM is the file name, and ABCD is the dump          
+mode. The dump mode can be 1 through 4 chrs long and defines which file         
+records are on the tape. See definition of MODE= parm for full details.         
+                                                                                
+XXXTAPE.DDD.XXXYY.FILNAM,COPYABCD(+1)                                           
+                                                                                
+For example the production ACC1 system ACCMST tape with MODE=COPYA              
+                                                                                
+ACCTAPE.PRD.ACC1.ACCMST.COPYA(+1)                                               
+                                                                                
+SMF records                                                                     
+-----------                                                                     
+The load/dump program builds SMF records and processes them as defined          
+by the SMF=X parm. These records match the SMF records output by the            
+recovery dump program DMRCVDMP. They contain record counts for each             
+record added, and any money amounts created by the specific system              
+dependent modules. There are options to also print SMF records on               
+SYSPRINT (see input parameter definitions below). A later section gives         
+a detailed description of the SMF file balancing records.                       
+                                                                                
+Warning and error messages                                                      
+--------------------------                                                      
+The file load/dump program is coded to always try to complete the dump          
+or load of the disk file. Certain conditions are treated as warnings            
+and more severe conditions as errors. Warnings and errors are printed           
+on SYSPRINT and the condition code is set. If email is activated then           
+messages are also sent via SMTP to the recipient list.                          
+                                                                                
+Activity data                                                                   
+-------------                                                                   
+Activity data can be kept at the end of a record after the logical              
+length. It is 6-bytes long and is not included in the length. When a            
+record is added or updated the activity data is updated. Its value is           
+the time in seconds since 01/01/2000. If an activity field is present           
+at the logical end of a record a flag X'01' is set in the last byte of          
+the 4-byte linkage area. For a load/dump copy activity is deemed to be          
+active if the LDDQACTI flag is set on in LDDFLAG1 byte in the v(LDDEFN)         
+module defining the system file attributes.                                     
+                                                                                
+Multiple systems                                                                
+----------------                                                                
+Most DDS systems have multiple copies. There are several spot systems           
+named SPT1, SPT2 etc. If the number of systems is more that nine we             
+start to use SPTA, SPTB etc. If the number of systems is more than 36 or        
+we have a reason for using 2-chrs to name the system, then we support           
+2-chr suffices to name a system.                                                
+                                                                                
+In all cases where there are multiple systems the load/dump system uses         
+the first system file set (e.g. SPT1) as the definition of that system.         
+The MODE= parms ISFILE= and DAFILE= can be used to rename the DDNAMEs of        
+the first file set to reference another file set. For example the parms         
+ISFILE=SPTDIR2,DAFILE=SPTFIL2 will cause these files to be opened using         
+the DCB definitions of SPTDIR1 and SPTFIL1.                                     
+                                                                                
+MODE=COPY,INPUT=DISK,ISFILE=SPTDIR2,DAFILE=SPTFIL2,.....                        
+                                                                                
+Another way of referencing another system file set is to use standard           
+z/OS JCL DD cards to name the actual files. Great care must be exercised        
+to ensure a compatible set of file DSNs are named. For example the two          
+DD statements below can be used to reference the SPT2 system.                   
+                                                                                
+//SPTDIR1 DD DSN=SPT.SPTDIR2,DISP=SHR                                           
+//SPTFIL1 DD DSN=SPT.SPTFIL2,DISP=SHR                                           
+                                                                                
+In order to help ensure that the files named are compatible a new SYS=          
+parm is available. This is a stand alone single card that must appear           
+before the first MODE= card, and the MODE= card parms must use an * to          
+name the files. Note that this method actually uses the DCBs of the             
+named system and not a modified copy of the first file set. To reference        
+the SPT2 files SPTDIR2 and SPTFIL2 we can use the following.                    
+                                                                                
+SYS=SPT2                                                                        
+MODE=COPY,INPUT=DISK,ISFILE=*,DAFILE=*,......                                   
+                                                                                
+Load/Dump Modes                                                                 
+---------------                                                                 
+The file stucture of one I/S directory file pointing to zero through            
+four associated D/A files means there are several combinations of files         
+that can be involved in a copy process.                                         
+                                                                                
+In all cases just the directory can be dumped and reloaded by using             
+MODE=COPYD. To reorganize an I/S directory it can be dumped with the            
+parms MODE=COPYD,INPUT=DISK and loaded with MODE=COPYD,INPUT=TAPE.              
+                                                                                
+In the case where a D/A file has been dumped to tape and we are doing           
+a file tape to tape copy (probably with an external) we use the mode            
+parms MODE=COPYF,INPUT=TAPE,OUTPUT=TAPE.                                        
+                                                                                
+The most common situation is one I/S directory file pointing to one             
+D/A data file. To dump we use MODE=COPY,INPUT=DISK which means copy             
+the D/A file records to tape using the I/S file to locate the D/A file          
+records via their disk addresses in the directory. If we are doing a            
+load to disk we use MODE=COPY,INPUT=TAPE to mean copy the D/A file              
+records from tape to disk and build an I/S directory file that points           
+to them via their new disk addresses.                                           
+                                                                                
+Another format is where we have two D/A files. The "A" file typically           
+contains current records and the "B" file contains old records. In this         
+case the "B" file is static and the regular dump/load used to perform           
+housekeeping need only involve the directory and the "A" file. To do            
+this we use MODE=COPYA,INPUT=DISK to copy all the "A" file data records         
+plus the "B" file directory records to tape. The load is done with the          
+same mode using MODE=COPYA,INPUT=TAPE. This loads the "A" records back          
+to the "A" file, creates new directory records for the "A" file, copies         
+the existing directory records for the "B" file, sorts them into key            
+sequence, and loads a new I/S directory file for both the D/A files.            
+To process both the "A" and "B" files use MODE=COPYC (C=combined) on            
+the dump and load. This will cause the "A" file D/A records and the "B"         
+file D/A records to be copied to and from disk.                                 
+                                                                                
+Where we have more than two D/A files we use 1,2,3 and 4 in the mode to         
+indentify which D/A file records are to be involved. MODE=COPY1 means           
+just the "1" file records. MODE=13 means the "1" and the "3" file               
+records, and MODE=1234 means all file records. Note that we can use this        
+syntax for when we have two files. "A" becomes "1" on the mode parm,            
+"B" becomes "2", and the combined "C" becomes "12" on the mode parm. In         
+all cases where we are dumping a subset of the D/A files we also dump           
+the I/S directory records of the D/A files not being dumped so we can           
+rebuild the directory if we load a subset of the D/A files.                     
+                                                                                
+The dump mode is written to the file header record on the dump tape. If         
+the tape is used for a subsequent load, the mode on the MODE= parm is           
+checked to see if it is compatible with the MODE= parm used to dump the         
+tape. It is clearly invalid to dump with MODE=COPY1 and try to load with        
+MODE=COPY2 as the "2" file D/A records are not on the tape, and the             
+result of the load would be an empty "2" file.                                  
+                                                                                
+Required input parameter cards                                                  
+------------------------------                                                  
+The SYSIN to load/dump has a set of single parameter cards that must            
+be input as the first set of parameter cards. Following these there             
+must be a MODE= parameter card and all the MODE= dependent parameters.          
+These can all be on separate cards or input as a string on one or more          
+cards. There can be more than one MODE= set of cards per EXEC, but              
+normally there is only one MODE= card.                                          
+                                                                                
+There must be a DSPACE=card input before the first MODE=card. There             
+must be at least one MODE=card plus an INPUT=DISK or INPUT=TAPE parm.           
+The MODE=card tells us what files are involved, and the INPUT=card              
+that tells us if this is a load or a dump, or a tape to tape copy.              
+                                                                                
+DSPACE=X                                                                        
+MODE=COPY..,INPUT=DISK/TAPE,....                                                
+                                                                                
+Definition of first single card parameters                                      
+------------------------------------------                                      
+Below are the definitions of all available single input card parameters         
+that must be the first cards input and preceed the first MODE= card.            
+They are listed in alphabetical order. Only DSPACE=X is required.               
+                                                                                
+COPYTIME=DD/MM/YY-HH:MM:SS                                                      
+--------------------------                                                      
+The date and time that a file is dumped is set in a header record on            
+TAPEOUT. To change this value from the date and time now this card must         
+be input. The date format is MM/DD/YY for USA.                                  
+                                                                                
+DATE=XX... - Default is today's date                                            
+------------------------------------                                            
+To set the date to a value other than todays date extracted from z/OS.          
+                                                                                
+DDSIO=XX...                                                                     
+-----------                                                                     
+To change the default DATAMGR module from DDSIO. This card must be              
+input typically as the first parameter card, and before any card that           
+may cause an I/O such as the SYS= card.                                         
+                                                                                
+DSPACE=X                                                                        
+--------                                                                        
+To define the environment. The DSPACE character is not validated. This          
+is a required parameter, and is typically the first or second card.             
+                                                                                
+EID=XX..,XX..,XX..                                                              
+------------------                                                              
+List of email addresses separated by commas. This is used IF EMAIL=Y            
+is specified in the MODE= parameters. This can also be input as a               
+single card in the MODE= list of parameters.                                    
+                                                                                
+SYS=XXXY or SYSTEM=XXXYY                                                        
+------------------------                                                        
+This allows the system that is to be processed to be named rather than          
+defining the files on the MODE=card. The system is a 3-chr system name          
+followed by a 1 or 2-chr system letter/number. For example SYS=ACC1 and         
+SYSTEM=ACC1 are both valid. There are some 2-chr system names e.g.              
+SYS=ACCIT or SYSTEM=ACCIT are both valid. Using this card upfront               
+implies there is only one system involved in this load/dump EXEC which          
+which is usually the normal situation. When a SYS= parm is used to name         
+a system the actual sytem is located and the DCBs of that system are            
+used for the files. For example SYS=ACC2 will locate the directory file         
+with DDNAME ACCDIR2, and the attributes of the ACC2 will be used.               
+                                                                                
+Definition of all MODE= parameters                                              
+----------------------------------                                              
+Below are the definitions of all available MODE= parameters. They are           
+listed in alphabetical order. They all have a default if omitted. They          
+can be strung together on one or more cards or input as separate cards          
+after the first MODE=card.                                                      
+                                                                                
+ACTIVITY=YES/REMOVE/INIT/FREEZE                                                 
+-------------------------------                                                 
+This parm controls the activity data at the end of a logical record when        
+a file is loaded to disk. The activity option is defined as active if a         
+flag is on in the V(LDDEFN) module. If this flag is on then the default         
+value is ACTIVITY=YES. If the flag is off in V(LDDEFN) it can be set on         
+for this load copy action by setting ACTIVITY=YES. If the flag is on in         
+V(LDDEFN) it can't be turned off i.e. there is no ACTIVITY=No setting           
+                                                                                
+ACTIVITY=REMOVE will remove all activity data on a load to disk.                
+                                                                                
+ACTIVITY=INIT will add date/time now to all records on a load to disk.          
+                                                                                
+ACTIVITY=FREEZE defines what activity data gets added on a load to disk.        
+If the input record has activity data already it is copied to the output        
+record loaded to disk. If the input record has no activity the date/time        
+now is used.                                                                    
+                                                                                
+AGEHOURS=N... - Default AGEHOURS=5                                              
+----------------------------------                                              
+When loading to disk the date/time of the input TAPEIN is held in the           
+header record. This allows the age of the tape in hours to be worked            
+out. To prevent an old tape from being loaded an error will occur if            
+the input tape is older than 5 hours. If it is known that the tape is           
+older than the default value the age in hours can be set by this parm.          
+The maximum value is 12 days expressed in hours i.e. 2016.                      
+                                                                                
+BALCHECK=N/Y/MONTHLY - Default BALCHECK=N                                       
+-----------------------------------------                                       
+Controls the calling of a system dependent routine V(LDBALCK) that is           
+linked into a system load/dump program. It is used to extract money             
+values from records so that a balance check of the record data can be           
+performed during a file dump or load. BALCHECK=Y turns on this option.          
+BALCHECK=MONTHLY is the same as YES but turns on a flag which is passed         
+to V(BALCHECK) if there are special monthy balancing actions.                   
+                                                                                
+BALCXT=XX......                                                                 
+---------------                                                                 
+Name of load module to load in to become the balance checking module            
+V(LDBALCK).                                                                     
+                                                                                
+BLKSIZE=NN..                                                                    
+------------                                                                    
+Changes the BLKSIZE=value in the output tape files TAPEOUT and TAPECPY.         
+The output tape files are defined with the standard BLKSIZE=27648.              
+                                                                                
+COPY=N/Y - Default COPY=N                                                       
+---------------------------                                                     
+To request an extra copy of the output tape TAPEOUT input COPY=Y and            
+provide a DD card for TAPECPY.                                                  
+                                                                                
+COUNT=N/Y - Default COUNT=N                                                     
+---------------------------                                                     
+If the routine V(LDCOUNT) is present in the link of a system load/dump          
+program then COUNT=Y will cause this routine to be called passing each          
+directory record that is copied. It is designed to count directory              
+records by record type and to print the results at the end of the copy          
+action.                                                                         
+                                                                                
+CPTRXT=XX......                                                                 
+---------------                                                                 
+Name of load module to load in to become the create passive pointers            
+module V(LDCPTRS).                                                              
+                                                                                
+DABIG=N/Y/BIG/GRAND/DTF                                                         
+-----------------------                                                         
+This parm sets the disk address format flags in the D/A file DTF. There         
+are four styles of disk address supported. DABIG=DTF leaves the dskadr          
+format set at the value defined in the D/A file DTF. It is normally             
+used to convert the dskadr format on a load. It is also used on multiple        
+file sets when the first file set has a different dskadr format from the        
+file set being copied.                                                          
+                                                                                
+DABIG=NO    Sets D/A dskadr to 16-bit track format                              
+DABIG=16BIT Sets D/A dskadr to 16-bit track format (16 or 16-BIT valid)         
+DABIG=YES   Sets D/A dskadr to 18-bit track format                              
+DABIG=18BIT Sets D/A dskadr to 18-bit track format (18 or 18-BIT valid)         
+DABIG=BIG   Sets D/A dskadr to 20-bit track format                              
+DABIG=20BIT Sets D/A dskadr to 20-bit track format (20 or 20-BIT valid)         
+DABIG=GRAND Sets D/A dskadr to 22-bit track format                              
+DABIG=22BIT Sets D/A dskadr to 22-bit track format (22 or 22-BIT valid)         
+                                                                                
+DABLKSZ=NN..                                                                    
+------------                                                                    
+This parm sets the block size in the D/A file. It is normally used on           
+a load to override the definition in the DTF. It can be used with               
+WRITE=NO to see what effect a change in block size would have on the            
+size of the D/A file. Note that if the file is defined as a 22-BIT file         
+this must have a minimum value of 13683 to ensure that there are at             
+least three blocks per track.                                                   
+                                                                                
+DACMPRS=N/Y/BOTH/LEFT/RIGHT                                                     
+---------------------------                                                     
+This parm sets the key compression flag in the D/A file. It is normally         
+used on a load to override the definition in the DTF. It can be used            
+with WRITE=NO to see what effect turning on/off key compression would           
+have on the size of an D/A file.                                                
+                                                                                
+DAFILE=XX......                                                                 
+---------------                                                                 
+This changes the DD name at DTF+22(8) of the first D/A file of the base         
+system to a new value. For example DAFILE=ACCMST8 in ACLD will change           
+the DD name of ACCMST1 to ACCMST8.                                              
+                                                                                
+DBFILE=XX......                                                                 
+---------------                                                                 
+This changes the DD name at DTF+22(8) of the second D/A file of the base        
+system to a new value. For example DBFILE=ACCARC8 in ACLD will change           
+the DD name of ACCARC1 to ACCARC8. This is only valid for systems with          
+at least two D/A files.                                                         
+                                                                                
+D1FILE=XX......                                                                 
+---------------                                                                 
+This changes the DD name at DTF+22(8) of the first D/A file of the base         
+system to a new value. For example D1FILE=ACCMST8 in ACLD will change           
+the DD name of ACCMST1 to ACCMST8. This is the same as DAFILE=.                 
+                                                                                
+D2FILE=XX......                                                                 
+---------------                                                                 
+This changes the DD name at DTF+22(8) of the second D/A file of the base        
+system to a new value. For example D2FILE=ACCARC8 in ACLD will change           
+the DD name of ACCARC1 to ACCARC8. This is the same as DBFILE= and is           
+only valid for systems with at least two D/A files.                             
+                                                                                
+D3FILE=XX......                                                                 
+---------------                                                                 
+This changes the DD name at DTF+22(8) of the third D/A file of the base         
+system to a new value. This is only valid for systems with at least             
+three D/A files.                                                                
+                                                                                
+D4FILE=XX......                                                                 
+---------------                                                                 
+This changes the DD name at DTF+22(8) of the fourth D/A file of the base        
+system to a new value. This is only valid for systems with at least             
+four D/A files.                                                                 
+                                                                                
+DAKEYLEN=N.                                                                     
+----------                                                                      
+This parm overrides the value in the DTF of the D/A file. The max value         
+is 64.                                                                          
+                                                                                
+DCNTXT=XX......                                                                 
+---------------                                                                 
+Name of load module to load in to become the directory record counting          
+module V(LDCOUNT).                                                              
+                                                                                
+DEFNXT=XX......                                                                 
+---------------                                                                 
+Name of load module to load in to become the file definition module             
+V(LDDEFN).                                                                      
+                                                                                
+DFSMSG=N/Y - Default DFSMSG=N                                                   
+-----------------------------                                                   
+Used to produce DFSMSG SYSOUT data set that shows all the information           
+about the various sort options and features from DFS sort.                      
+                                                                                
+DIR=YES/TAPE/SORT                                                               
+-----------------                                                               
+This parm is only valid when doing a load. Normally the I/S directory           
+is created, sorted and loaded to disk. This parm will cause the I/S             
+directory to be written to an output tape TAPEDIR. YES and TAPE mean            
+the same i.e. write the direcory records to tape as they are created            
+in the load process. DIR=SORT means sort the directory records before           
+writing them to TAPEDIR.                                                        
+                                                                                
+DISP=SHR/OLD                                                                    
+-------------                                                                   
+Controls the disposition of the disk files at open time. If this parm           
+is omitted it defaults to DISP=SHR for an INPUT=DISK copy (dump) and to         
+DISP=OLD for an OUTPUT=DISK copy (load).                                        
+                                                                                
+DUMP=N/Y/OS - Default DUMP=N                                                    
+----------------------------                                                    
+Controls the type of abend dump if the load/dump action fails. The              
+default is to produce a short DDS style dump of critical areas. Setting         
+DUMP=Y or DUMP=OS will cause a full z/OS dump.                                  
+                                                                                
+ECHO=N/Y - Default ECHO=N                                                       
+----------------------------                                                    
+Used to print operator input, or REPLY= data, on SYSPRINT. Format is:           
+>>AUTO OP>> REPLY=XX......                                                      
+                                                                                
+EID=XX..,XX..,XX..                                                              
+------------------                                                              
+List of email addresses separated by commas. This is used IF EMAIL=Y            
+is specified in the MODE= parameters. This must be on a single card             
+with no other MODE= parms. It can also be input as a single card before         
+the first MODE= card.                                                           
+                                                                                
+EMAIL=N/Y - Default EMAIL=N                                                     
+---------------------------                                                     
+To activate sending of emails set EMAIL=Y. Also required is a list of           
+addresses specified by EID=card. Emails are sent when certain error             
+conditions are encountered where expert knowledge may be required to            
+investigate the warning or error message.                                       
+                                                                                
+END=XXXX....                                                                    
+------------                                                                    
+This parm allows an end key to be input. This causes a dump to end when         
+a key greater or equal to that specified is encountered. The format of          
+the key is that defined by the V(DECODE) routine which allows a string          
+of hex and alpha characters. This is the same format as allowed by the          
+K,XXXX..... input key field in PFM.                                             
+                                                                                
+EXTERNAL=XX......                                                               
+-----------------                                                               
+This parm is the same as LOAD= and is used to name a module in LOADLIB          
+that is loaded in and is used to inspect and modify file records during         
+the copy process. See the section on externals for full details.                
+                                                                                
+EXTIHDR=Y/N                                                                     
+-----------                                                                     
+DMLDDEFN defines by a flag LDDQXHDR if file header records are to be            
+passed to the external routine. This parm can be used to set or override        
+this flag. Setting EXTIHDR=Y will turn on the LDDQXHDR flag which will          
+cause header records to be passed to the external, and EXTIHDR=N will           
+turn it off.                                                                    
+                                                                                
+EXTISPTR=Y/N                                                                    
+------------                                                                    
+DMLDDEFN defines by a flag LDDQXIPT if I/S file indirect pointers are           
+passed to the external routine. This parm can be used to set or override        
+this flag. Setting EXTISPTR=Y will turn on the LDDQXIPT flag which will         
+cause indirect pointers to be passed to the external, and EXTISPTR=N            
+will turn it off. The parameter list to the external routine will have          
+a special flag set if it is passed an indirect pointer.                         
+                                                                                
+EXTITRL=Y/N                                                                     
+-----------                                                                     
+DMLDDEFN defines by a flag LDDQXTRL if file trailer records are to be           
+passed to the external routine. This parm can be used to set or override        
+this flag. Setting EXTITRL=Y will turn on the LDDQXTRL flag which will          
+cause trailer records to be passed to the external, and EXTITRL=N will          
+turn it off.                                                                    
+                                                                                
+EXTSORT=N/Y                                                                     
+-----------                                                                     
+If EXTSORT=Y is specified then DMLDMOD will assume that the external            
+routine will create the sort cards and initialize the sort. If this parm        
+is ommitted, or EXTSORT=N is specified, DMLDMOD will build the sort             
+cards from known values in DMLDDEFN and initialize the sort.                    
+                                                                                
+FILSZ=NN...                                                                     
+-----------                                                                     
+This parm sets the estimate of the number of records in the sort. The           
+maximum value of this integer is 999999999. It generates a parameter on         
+the SORT card FILSZ=ENN... which is the estimated number of records.            
+                                                                                
+FLASH=X - Default FLASH=N                                                       
+-------------------------                                                       
+To cause the use of a flash copy version of the disk files use FLASH=X          
+to cause the dynamic allocation of a FLX version of the files. Setting          
+FLASH=Y is the same as setting FLASH=S which is the default flash HLQ.          
+If two sets of flash copies are used for pre and post production, then          
+then FLASH=1 and FLASH=2 are the conventions.                                   
+                                                                                
+GLOBAL=X....                                                                    
+------------                                                                    
+Only valid for disk input when there is a single system defined by a            
+SYS=XXXX parm. GLOBAL=Y is valid for any system and will cause the              
+system to be treated as global. GLOBAL=N,DATE is required to turn off           
+global system status where DATE is a valid date expression which will           
+be validated and must match todays date. This convention ensures that           
+a special run turning off the global attribute of a system is only              
+valid for that day. Leaving the card in and running on a different              
+date will cause an error.                                                       
+                                                                                
+INPUT=DISK/TAPE                                                                 
+---------------                                                                 
+This is a required parm for the MODE= set of parameters.                        
+                                                                                
+ISBIG=N/Y/BIG/DTF                                                               
+-----------------                                                               
+This parm sets the disk address format flags in the I/S file DTF. There         
+are two styles of disk address supported. ISBIG=DTF leaves the dskadr           
+format set at the value defined in the I/S file DTF. It is normally             
+used to convert the dskadr format on a load. It is also used on multiple        
+file sets when the first file set has a different dskadr format from the        
+file set being copied.                                                          
+                                                                                
+ISBIG=NO    Sets I/S dskadr to 16-bit track format                              
+ISBIG=16BIT Sets I/S dskadr to 16-bit track format (16 or 16-BIT valid)         
+ISBIG=YES   Sets I/S dskadr to 20-bit track format                              
+ISBIG=BIG   Sets I/S dskadr to 20-bit track format                              
+ISBIG=20BIT Sets I/S dskadr to 20-bit track format (20 or 20-BIT valid)         
+                                                                                
+ISBLKIX=N/Y/DTF                                                                 
+---------------                                                                 
+This parm sets the flag in the I/S file which controls how to split a           
+block when it fills. The default is to use the value defined in the DTF         
+of the first file set. This can also be defined by setting ISBLKIX=DTF.         
+ISBLKIX=Y sets the flag to say that when a block overflows to create an         
+index for the blocks that overflow from the original block.                     
+ISBLKIX=N turns off this flag so that no index is build so that overflow        
+blocks are chained together. If ISBLKIX=N there is no index and this            
+means that overflow records are found by following the chain.                   
+                                                                                
+ISBLKSZ=NN..                                                                    
+------------                                                                    
+This parm sets the block size in the I/S file. It is normally used on           
+a load to override the definition in the DTF. It can be used with               
+WRITE=NO to see what effect a change in block size would have on the            
+size of an I/S file.                                                            
+                                                                                
+ISCMPRS=N/Y                                                                     
+-----------                                                                     
+This parm sets the key compression flag in the I/S file. It is normally         
+used on a load to override the definition in the DTF. It can be used            
+with WRITE=NO to see what effect turning on/off key compression would           
+have on the size of an I/S file.                                                
+                                                                                
+ISFILE=XX......                                                                 
+---------------                                                                 
+This changes the DD name at DTF+22(8) of the I/S fileof the base system         
+to a new value. For example ISFILE=SPTDIR2 in SPLD will change the              
+DD name of SPTDIR1 to SPTDIR2.                                                  
+                                                                                
+ISPDOV=N/Y/DTF                                                                  
+--------------                                                                  
+This parm sets the flag in the I/S file which controls the location of          
+the overflow area. The default is to use the value defined in the DTF           
+of the first file set. This can also be defined by setting ISPDOV=DTF.          
+ISPDOV=Y sets the flag to say the the overflow area is at the end of the        
+prime data area. ISPDOV=N turns off the flag and that means that the            
+overflow area is in the first file extent after the index.                      
+                                                                                
+IXPDOV=N/Y/DTF                                                                  
+--------------                                                                  
+This parm is exactly the same as ISPDOV. See ISPDOV for full details.           
+                                                                                
+LENREC=N/Y - Default LENREC=N                                                   
+-----------------------------                                                   
+If LENREC=Y is input each record on TAPEOUT will have an extra 4-bytes          
+added at the front of each logical record. The first 2-bytes will have          
+the total length of the record including the extra length field. This           
+can be used if the TAPEOUT is to be referenced in an open systems               
+environment.                                                                    
+                                                                                
+LOAD=XX......                                                                   
+-------------                                                                   
+This parm is the same as EXTERNAL= which loads in an external module to         
+modify file records during a copy. See EXTERNAL for full details.               
+                                                                                
+LOGO=Y/N - Default LOGO=Y                                                       
+-------------------------                                                       
+If the system load/dump program includes a logo printing routine V(LOGO)        
+this parm controls if the routine is active. LOGO=N patches V(LOGO) to          
+exit without doing anything.                                                    
+                                                                                
+MAXBADA=NN.. - Default MAXBADA=1                                                
+--------------------------------                                                
+A counter is kept of the number of bad disk address that are found.             
+There is a maximum threshold value that can be defined in the DMLDDEFN          
+field LDDBADA. If this field is not set, it is set to 1. This parm can          
+set or override this value. If the value is reached a warning message is        
+displayed at that time (see below). The total value is printed at the           
+end of the run, and console and/or email warning messages are displayed         
+if the maximum value is exceeded                                                
+                                                                                
+**WARNING** DA DISK BAD ADR  MAX=NNNNN                                          
+                                                                                
+MAXBADR=NN.. - Default MAXBADR=50                                               
+---------------------------------                                               
+A counter is kept of the number of bad disk records that are found.             
+There is a maximum threshold value that can be defined in the DMLDDEFN          
+field LDDBADR. If this field is not set, it is set to 50. This parm can         
+set or override this value. If the value is reached a warning message is        
+displayed at that time (see below). The total value is printed at the           
+end of the run, and console and/or email warning messages are displayed         
+if the maximum value is exceeded                                                
+                                                                                
+**WARNING** DA DISK BAD REC  MAX=NNNNN                                          
+                                                                                
+MAXDUPK=NN.. - Default MAXDUPK=50                                               
+---------------------------------                                               
+A counter is kept of the number of duplicate I/S keys that are found.           
+There is a maximum threshold value that can be defined in the DMLDDEFN          
+field LDDDUPK. If this field is not set, it is set to 50. This parm can         
+set or override this value. If the value is reached a warning message is        
+displayed at that time (see below). The total value is printed at the           
+end of the run, and console and/or email warning messages are displayed         
+if the maximum value is exceeded                                                
+                                                                                
+**WARNING** IS DISK DUP KEY  MAX=NNNNN                                          
+                                                                                
+MAXKEYN=NN.. - Default MAXKEYN=50                                               
+---------------------------------                                               
+A counter is kept of the number of times the key in the D/A file record         
+does not match the key in the I/S file record i.e. keys not equal.              
+There is a maximum threshold value that can be defined in the DMLDDEFN          
+field LDDKEYN. If this field is not set, it is set to 50. This parm can         
+set or override this value. If the value is reached a warning message is        
+displayed at that time (see below). The total value is printed at the           
+end of the run, and console and/or email warning messages are displayed         
+if the maximum value is exceeded                                                
+                                                                                
+**WARNING ** DA DISK KEY NEQ  MAX=NNNNN                                         
+                                                                                
+MAXPERR=NN.. - Default MAXPERR=2000                                             
+-----------------------------------                                             
+Every time a specific error is encounted the record is printer in detail        
+on SYSPRINT and a counter is kept of the total records printed. This            
+parm sets a maximum number of errors to print. Its default value is set         
+to 2000. This parm is designed to stop too much printed output when many        
+records are found to be invalid.                                                
+                                                                                
+MAXSEQE=NN.. - Default MAXSEQE=1                                                
+--------------------------------                                                
+A counter is kept of the number of times the key in the I/S file record         
+is not higher that the previous key i.e. key sequence error.                    
+There is a maximum threshold value that can be defined in the DMLDDEFN          
+field LDDSEQE. If this field is not set, it is set to 1. This parm can          
+set or override this value. If the value is reached a warning message is        
+displayed at that time (see below). The total value is printed at the           
+end of the run, and console and/or email warning messages are displayed         
+if the maximum value is exceeded                                                
+                                                                                
+**WARNING** IS DISK SEQ ERR  MAX=NNNNN                                          
+                                                                                
+MAXRECS=NN..                                                                    
+------------                                                                    
+Set MAXRECS to an integer to limit the number of records read on input.         
+This is only useful for testing and should never be used in production.         
+                                                                                
+MAXTERR=NN..                                                                    
+------------                                                                    
+Every time a specific error is encounted the total number of errors is          
+accumulated. If any of the invididual error thresholds is reached               
+warning console and/or email messages are sent. It is possible that no          
+individual error threshold has been reached. This parm allows a warning         
+to be sent if the total number of errors exceeds this value and no              
+individual error has been sent. There is no default value. It has to be         
+input if required for a copy action.                                            
+                                                                                
+MODE=COPY.... - Required parameter                                              
+----------------------------------                                              
+The MODE= parm defines which files are involved in this copy process.           
+With an I/S file and up to four D/A files there are several valid               
+permutations that can be defined. A representative sample is shown              
+below. Where we use an example like COPY23 it is understood that the            
+2 and the 3 could also be a 1 or a 4. The files must be named in the            
+correct sequence e.g. COPY32 is invalid.                                        
+                                                                                
+There also exists the use of "REPORT" rather than "COPY" which does not         
+have an output file. It is used to test and print records rather that           
+copy them. Only one example is shown.                                           
+                                                                                
+MODE=REPORT   Read the D/A file via the I/S file and print errors               
+                                                                                
+MODE=COPY     Copy the D/A file via the I/S file                                
+MODE=COPYD    Copy the I/S file only                                            
+MODE=COPYF    Copy the D/A file from the D/A file (tape in and out)             
+                                                                                
+MODE=COPYA    Copy the A D/A file via the I/S file         2 D/A files          
+MODE=COPYB    Copy the B D/A file via the I/S file         2 D/A files          
+MODE=COPYC    Copy the A and B D/A files via the I/S file  2 D/A files          
+                                                                                
+MODE=COPY1    Copy the 1 D/A file via the I/S file                              
+MODE=COPY3    Copy the 3 D/A file via the I/S file                              
+MODE=COPY23   Copy the 2 and 3 D/A files via the I/S file                       
+MODE=COPY123  Copy the 1 and 2 and 3 D/A files via the I/S file                 
+MODE=COPY1234 Copy the 1 and 2 and 3 and 4 D/A files via the I/S file           
+                                                                                
+OUTPUT=DISK/TAPE - default is opposite of INPUT=...                             
+---------------------------------------------------                             
+This is an optional parameter whos default value is the opposite of the         
+required INPUT=DISK/TAPE parameter. It can be used for clarity. It is           
+only needed when a tape to tape copy is required, when the two params           
+INPUT=TAPE,OUTPUT=TAPE must be specified.                                       
+                                                                                
+PARAM=XXXX....                                                                  
+--------------                                                                  
+This parm will move 60 bytes XXXX.... exactly as input to the external          
+PARMCARD that can be referenced by any of the included system dependent         
+routines. V(PARMCARD) is defined as an 80 byte field space filled field         
+                                                                                
+PEEL=NN..                                                                       
+---------                                                                       
+This parm requires a number of days to be input as a positive integer.          
+The value is subtracted from todays date to create a PEELDATE. This date        
+is passed in the parameter list to the external routine, V(LDCOUNT), and        
+to V(LDURGE). If not input PEELDATE is set to binary zeros. It is used          
+to set a date for transactions to be removed in the accounting system.          
+                                                                                
+PRGEXT=XX......                                                                 
+---------------                                                                 
+Name of load module to load in to become the load purge record module           
+V(LDPURGE).                                                                     
+                                                                                
+PRGISPTR=Y/N                                                                    
+------------                                                                    
+DMLDDEFN defines by a flag LDDQPIPT if I/S file indirect pointers are           
+passed to the load purge routine. This parm can be used to set or               
+override this flag. Setting PRGISPTR=Y will turn on the LDDQPIPT flag           
+which will cause indirect pointers to be passed to the load purge test.         
+Setting PRGISPTR=N will turn the flag off. The parameter list to                
+V(LDPURGE) will have a flag set if it is passed an indirect pointer.            
+                                                                                
+RECCHECK=N/Y/DELETE/PRINT - Default RECCHECK=N                                  
+----------------------------------------------                                  
+Controls the validity checking of D/A file records. D/A file records            
+have a well defined format that is validated by this option. The default        
+is RECCHECK=N which does not do any validation. All other options cause         
+records to be validated. RECCHECK=PRINT can be used in conjuction with          
+other testing type parms to print records. RECCHECK=Y causes records to         
+be validated. Invalid records are counted and printed. Invalid records          
+are repaired so that they fit the specifications of minimum and maximum         
+record lengths. RECCHECK=DELETE will delete invalid records from a dump         
+tape or will not load them to disk.                                             
+                                                                                
+RECOVER=N/Y/TRAILERS/CHANGES - Default RECOVER=N                                
+------------------------------------------------                                
+Controls if and what type of recovery records are written to RCVTAPE.           
+RECOVER=N causes no recovery, all other values will cause recovery              
+records to we written. RECOVERY=Y cause copies,changes and adds to be           
+written, and RECOVERY=CHANGES only writes out changed records along             
+with added records. RECOVERY=TRAILERS cause copy/changes/adds to all            
+be written with a recovery trailer.                                             
+                                                                                
+RECTXT=XX......                                                                 
+---------------                                                                 
+Name of load module to load in to become the file record type module            
+V(LDRECTY).                                                                     
+                                                                                
+REPLY=XX......                                                                  
+--------------                                                                  
+Used for testing. This parm allows the input of an operator response            
+to any of the operator console messages. Maximum of 8-chrs allowed.             
+                                                                                
+SEQCHECK=Y/N - Default SEQCHECK=Y                                               
+---------------------------------                                               
+When dumping an I/S file SEQCHECK=Y checks that each key is higher than         
+the previous key. Only if an I/S file was damaged would duplicate or out        
+of sequence records be encountered. When loading an I/S file to disk            
+this option is not referenced as records must be in sequence and this is        
+always checked.                                                                 
+                                                                                
+SETLXT=XX......                                                                 
+---------------                                                                 
+Name of load module to load in to become the record length set/adjust           
+module V(LDSETLEN).                                                             
+                                                                                
+SIZE=N/Y - Default SIZE=N                                                       
+-------------------------                                                       
+Setting SIZE=Y causes record lengths to be collated and printed at the          
+end of a copy process. Records are counted in increasing increments as          
+the records get larger. The last total line shows the lengths of the            
+smallest and largest records found in the load or the dump. An example          
+of a SIZE=Y printout can be found in one of the sample load/dump outputs        
+at the end of this document.                                                    
+                                                                                
+SIZEXT=XX......                                                                 
+---------------                                                                 
+Name of load module to load in to become the record size counting module        
+V(LDSIZE).                                                                      
+                                                                                
+SMF=X - Default SMF=N                                                           
+---------------------                                                           
+The load/dump program can build SMF records that contain details of             
+record counts and money totals. Options as follows:                             
+                                                                                
+SMF=N Do not output SMF records.                                                
+SMF=Y Output SMF records to z/OS log.                                           
+SMF=P Output SMF records to z/OS log and print them on SYSPRINT.                
+SMF=T Do not output SMF records but print them on SYSPRINT.                     
+                                                                                
+SORTXT=XX......                                                                 
+---------------                                                                 
+Name of load module to load in to become the directory special sort             
+module V(LDSORT).                                                               
+                                                                                
+STACHECK=N/Y - Default STACHECK=N                                               
+---------------------------------                                               
+Controls the printing, during a dump, of those I/S records whose status         
+bytes do not match the status bytes in the D/A record. If the status            
+bytes do not match, and the keys match, a counter is incremented. The           
+counter is printed at the end of the dump as "IS DISK STATUS". To print         
+the I/S records that do not match set STACHECK=Y.                               
+                                                                                
+START=XXX...                                                                    
+------------                                                                    
+This parm allows a start key to be input. This causes a dump to start at        
+the first key key greater or equal to that specified. The format of the         
+key is that defined by the V(DECODE) routine which allows a string of           
+hex and alpha characters. This is the same format as allowed by the             
+K,XXXX..... input key field in PFM.                                             
+                                                                                
+TPTRXT=XX......                                                                 
+---------------                                                                 
+Name of load module to load in to become the test passive pointer module        
+V(LDTPTR).                                                                      
+                                                                                
+TRACK=Y/N - Default TRACK=Y                                                     
+---------------------------                                                     
+When dumping from disk full track reads are done to speed up the dump.          
+To inhibit full track read then set TRACK=N.                                    
+                                                                                
+UPSI=XXXX....                                                                   
+-------------                                                                   
+This parm allows up to 8 binary values to be input. The string must only        
+have 0's and 1's. This string can also be input with the z/OS EXEC card         
+parm PARM=. By convention the last UPSI bit, the X'01' bit, set by              
+UPSI=00000001, means do not load deleted records when loading to disk.          
+                                                                                
+VERIFY=N/Y/IGNORE - Default VERIFY=N                                            
+------------------------------------                                            
+This parm controls the validity of a loaded external. VERIFY=N causes no        
+checking of the external. If the external has the text string *VERIFY*          
+at the front of the module, then the date is checked against the start          
+and end date after the verify text string. If the date is outside this          
+range an error message will be displayed. If VERIFY=IGNORE the program          
+is allowed to continue. If VERIFY=Y it will abend with S208.                    
+                                                                                
+WAGE=ABEND/Y/N/IGNORE - Default WAGE=ABEND                                      
+------------------------------------------                                      
+When loading a file the load/dump program inspects the date and time            
+that the TAPEIN file was created. If the age of the tape in hours is            
+more that the value defined by AGEHOURS, it build the warning message           
+                                                                                
+**WARNING** DATE=DD/MM/YY TIME=HHMMSS OLD TAPEIN                                
+                                                                                
+WAGE=N skips over the warning message completely. WAGE=IGNORE causes            
+the message to be printed on SYSPRINT and then the load will proceed.           
+WAGE=ABEND will cause the load to abend with a S220 abend and produce           
+both a SYSPRINT and console message. If WAGE=Y the warning will be              
+both printed and output to the console with a reply requested.                  
+If the operator replies ERASE or IGNORE the load will proceed. If the           
+operator replies EOJ or CANCEL then the load will terminate with a S220         
+abend.                                                                          
+                                                                                
+WARN=Y/N/IGNORE/ABEND - Default WARN=Y                                          
+--------------------------------------                                          
+This is an old parameter that has been replaced by a set a warnings. It         
+is now the same as the WDELETE parm that controls the action to be taken        
+when loading a file to disk. See WDELETE for options. It is invalid to          
+have both WARN= and WDELETE= parms in the same MODE= set of parms.              
+                                                                                
+WDELETE=Y/N/IGNORE/ABEND - Default WDELETE=Y                                    
+--------------------------------------------                                    
+When loading a file with a valid TAPEIN file the load/dump program              
+builds a warning message that the file on disk is about to be deleted.          
+                                                                                
+**WARNING** DISK=XXXXXXXX IS ABOUT TO BE DELETED                                
+                                                                                
+WDELETE=N skips over the warning message completely. WDELETE=IGNORE             
+causes the message to be printed on SYSPRINT and then the load will             
+proceed. WDELETE=ABEND will cause the load to abend with a S211 abend           
+and produce both a SYSPRINT and console message. If WDELETE=Y the               
+warning will be printed and output to the console with a reply needed.          
+If the operator replies ERASE or IGNORE the load will proceed. If the           
+operator replies EOJ or CANCEL then the load will terminate with a S211         
+abend.                                                                          
+                                                                                
+WMODE=ABEND/Y/N/IGNORE - Default WMODE=ABEND                                    
+--------------------------------------------                                    
+When loading a file the load/dump program inspects the header rocord            
+on TAPEIN to see if the mode of the dump is compatible with the mode            
+of the load. For example if the dump was done with MODE=COPYA it is             
+invalid to try to load with MODE=COPYB because the B file records are           
+not on TAPEIN. The warning message below is build where llll is the             
+load mode from the MODE=parm and dddd is the dump mode on TAPEIN.               
+                                                                                
+**WARNING** LOAD=COPYllll NOT COMPATL DUMP=COPYdddd                             
+                                                                                
+WMODE=N skips over the warning message completely. WMODE=IGNORE causes          
+the message to be printed on SYSPRINT and then the load will proceed.           
+WMODE=ABEND will cause the load to abend with a S219 abend and                  
+produce both a SYSPRINT and console message. If WMODE=Y the warning             
+will be printed and output to the console with a reply requested.               
+If the operator replies ERASE or IGNORE the load will proceed. If the           
+operator replies EOJ or CANCEL then the load will terminate with a S219         
+abend.                                                                          
+                                                                                
+WNAME=ABEND/Y/N/IGNORE - Default WNAME=ABEND                                    
+--------------------------------------------                                    
+When loading a file the load/dump program inspects the header rocord            
+on TAPEIN to see if the name of the file on the dump tape is the same           
+as the name of the file in the load. For example if the file name on the        
+dump tape is SPTFIL1 and the load parms specify SPTFIL2 then this could         
+be an invalid load. The warning message below is build where llllllll is        
+the name of the file being loaded and dddddddd is the name of the file          
+on TAPEIN.                                                                      
+                                                                                
+**WARNING** TAPE=dddddddd NOT SAME DISK=llllllll                                
+                                                                                
+WNAME=N skips over the warning message completely. WNAME=IGNORE causes          
+the message to be printed on SYSPRINT and then the load will proceed.           
+WNAME=ABEND will cause the load to abend with a S218 abend and                  
+produce both a SYSPRINT and console message. If WNAME=Y the warning             
+will be printed and output to the console with a reply requested.               
+If the operator replies ERASE or IGNORE the load will proceed. If the           
+operator replies EOJ or CANCEL then the load will terminate with a S218         
+abend.                                                                          
+                                                                                
+WORKF=N - Default WORKF=1 - No longer used                                      
+------------------------------------------                                      
+This parm sets the number of work files on the internal sort card. It           
+must be an integer between 1 and 9. The SORT card no longert requires           
+a WORKF= parameter. This parameter has no action.                               
+                                                                                
+WRITE=Y/N - Default WRITE=Y                                                     
+---------------------------                                                     
+To test a full load action without actually loading any records to disk         
+set WRITE=N. This sets the external V(LDWRITE) which is referenced by           
+V(DALDDS) and V(ISLDDS) load modules. Use of this parm also inhibits            
+the checking at file open time to see is it is OK to load a file.               
+                                                                                
+SMF File balancing record                                                       
+-------------------------                                                       
+The definition of the file balancing record is in the book DDSMFFBAL.           
+A sample of this is included in this section. Below is the print out            
+of an SMF record output with SMF=T for the control system. This print           
+out has the full record in hex with important text fields shown to the          
+left on the line where they occur.                                              
+                                                                                
+Every SMF record has a standard IBM 24-byte header. These fields are            
+defined by the data names begining with SMFI below. The IBM header is           
+followed by a standard DDS 40-byte header whose fields are defined              
+by the data names begining with SMFD below. Following the DDS header            
+is the record type specific data. The fields for the file balancing             
+record are defined by the data names starting with SMBF.                        
+                                                                                
+This example only shows record count type SMF records. There are an             
+equivalent set of records where the counts are replaced by money. The           
+money file balancing SMF records are only output by the specific                
+load/dumps if system specific code extracts and returns money values.           
+                                                                                
+This is the record produced by the GELD dump example below.                     
+                                                                                
+SMF CNTS TST     00B60000DEF80071F97B0111354FE2E8F140404040400001               
+RCRIDGEN J08940  0020002000400076D9C3D9C9C4C7C5D5C4E4D4D740404040               
+DUMPFILE         4040404040404040D1D6C2F0F8F9F4F0C4E4D4D7C6C9D3C5               
+GENFIL           C7C5D5C6C9D3404000000000C1C30000000A00000000000D               
+CON   F          00000000C3D6D5404040C64040404040C3D6D54BC7C5D5C6               
+CON.GENFIL       C9D3404000AEAF00000000000000000000002986598C0000               
+                 00002986605C000000002986598C000000000000000C0000               
+                 00000000000C000000000000000C                                   
+                                                                                
+SMFIHDR  DS    0XL24               IBM RECORD HEADER WITH SUBTYPES              
+SMFILEN  DS    XL2                 LENGTH INCLUDING THIS FIELD                  
+SMFISEG  DS    XL2                 SEGMENT DESCRIPTOR (SET TO ZERO)             
+SMFIFLG  DS    XL1                 FLAGS 80=SUBSYSTEM,40=SUBTYPE FORMAT         
+SMFIRTY  DS    AL1                 RECORD TYPE                                  
+SMFITME  DS    XL4                 TIME IN 1/100 SEC                            
+SMFIDTE  DS    PL4                 DATE P'0CYYMMMF'                             
+SMFISID  DS    CL4                 SYSTEM ID                                    
+SMFISSI  DS    CL4                 SUBSYSTEM ID                                 
+SMFISTY  DS    XL2                 SUBTYPE                                      
+                                                                                
+SMFDHDRO DS    XL2    0020        <OFFSET TO DDS HEADER                         
+SMFDHDRL DS    XL2    0020        <LENGTH OF DDS HEADER                         
+SMFDATAO DS    XL2    0040        <OFFSET TO DDS DATA 1 AREA                    
+SMFDATAL DS    XL2    0076        <LENGTH OF DDS DATA 1 AREA                    
+                                                                                
+SMFDHDR  DS    0CL32               DDS HEADER                                   
+SMFDJOB  DS    CL8    RCRIDGEN     JOB NAME                                     
+SMFDSTEP DS    CL16   DUMP         STEP/PROC NAME                               
+SMFDJES  DS    CL8    JOB08490     JES NAME                                     
+                                                                                
+SMFBREC  DS    0CL116              FILE BALANCING RECORD                        
+SMFBSRCE DS    CL4    DUMP        <SOURCE NAME                                  
+SMFBUSER DS    CL4    FILE        <SOURCE USER DATA                             
+SMFBTXT  DS    CL8    GENFIL      <SOURCE TEXT AREA                             
+SMFBDATE DS    PL4                 SOURCE DATE JULIAN P'0CDDDYYF'               
+SMFBDSPC DS    CL1    A           <DSPACE                                       
+SMFBTYPE DS    CL1    C           <TYPE C=COUNTS,M=MONEY                        
+SMFBVER  DS    XL1                 VERSION                                      
+         DS    XL1                 N/D                                          
+SMFBSENX DS    XL1                 RESERVED FOR SE NUMBER EXTENSION             
+SMFBSENO DS    XL1    0A          <SE NUMBER                                    
+SMFBUID  DS    XL2                 USER ID NUMBER                               
+SMFBAGY  DS    XL1                 AGY/CPY CODE BINARY                          
+SMFBAGYA DS    CL2                 AGY/CPY CODE ALPHA                           
+SMFBMODE DS    XL1    0D           MODE FLAGS FROM DMLDMOD                      
+         DS    CL4                 N/D                                          
+SMFBTXT1 DS    CL12   CON   F     <TEXT FIELD 1                                 
+SMFBTXT2 DS    CL12   CON.GENFIL  <TEXT FIELD 2                                 
+SMFBFNOS DS    6XL1   00AEAF000000<FILE NUMBERS - TAPE/DIR/1/2/3/4              
+SMFBWARN DS    XL4                 NUMBER OF WARNINGS - ZERO ALL OK             
+*                                                                               
+SMFBCNT1 DS    PL8    02986598    <COUNTER FOR TAPE                             
+SMFBCNT2 DS    PL8    02986605    <COUNTER FOR DIRECTORY                        
+SMFBCNT3 DS    PL8    02986598    <COUNTER FOR FILE 1                           
+SMFBCNT4 DS    PL8                 COUNTER FOR FILE 2                           
+SMFBCNT5 DS    PL8                 COUNTER FOR FILE 3                           
+SMFBCNT6 DS    PL8                 COUNTER FOR FILE 4                           
+                                                                                
+Sample output from GELD                                                         
+-----------------------                                                         
+Below is the output from the control system load/dump program GELD used         
+to dump GENFIL. Only a few of the options have been input. We have asked        
+for records to be checked and emails sent if errors or warnings above           
+the threshold levels are encountered. Also requested is that the record         
+lengths be tabulated and printed. The dump checks that the status bytes         
+in the I/S record are the same as in the D/A file record. In this case          
+there were two differences reported on the "IS DISK STATUS" line. To            
+print the keys of these records use STACHECK=Y parameter.                       
+                                                                                
+DSPACE=A                                                                        
+EID=RCRIDDLO                                                                    
+                                                                                
+DATE 12/12/12      TIME 12.12     CON - LOAD/DUMP FOR GENDIR/GENFIL             
+                                  ---------------------------------             
+PARAMETER CARDS                                                                 
+---------------                                                                 
+MODE=COPY,INPUT=DISK,SIZE=YES,RECCHECK=YES,EMAIL=YES                            
+ISFILE=GENDIR,DAFILE=GENFIL                                                     
+                                                                                
+ACTION MESSAGES                                                                 
+---------------                                                                 
+OPN R/O GENFIL   FN=GENFIL   DSN=CON.GENFIL         SYS=CON   SENUM=0A          
+OPN R/O GENDIR   FN=GENDIR   DSN=CON.GENDIR                   DSPACE=A          
+OPN OUT TAPEOUT              DSN=RCRI.TAPEOUT                                   
+                                                                                
+DA FILE GENFIL   DUMPED VIA  IS FILE GENDIR                                     
+                                                                                
+I/O COUNTS CON                                                                  
+---------------                                                                 
+IS DISK READS    002986605                                                      
+IS DISK SKIPS    000000007                                                      
+IS DISK STATUS   000000002                                                      
+DA DISK READS    002986598                                                      
+DA TAPE WRITES   002986598                                                      
+                                                                                
+REC LEN GENFIL   COUNT                                                          
+---------------  ---------                                                      
+0001 TO 0064     000326989                                                      
+0065 TO 0128     002462312                                                      
+0129 TO 0256     000093424                                                      
+0257 TO 0512     000082636                                                      
+0513 TO 0768     000015600                                                      
+0769 TO 1024     000001880                                                      
+1025 TO 1536     000001320                                                      
+1537 TO 2048     000002437                                                      
+2049 TO 4096     000000000                                                      
+4097 TO 6144     000000000                                                      
+---------------  ---------                                                      
+0042 TO 2000     002986598                                                      
+---------------  ---------                                                      
+                                                                                
+REC LEN AGY/CPY  COUNT      KILOBYTES                                           
+---------------  ---------  ---------                                           
+00               002986598  000286147                                           
+                                                                                
+Sample output showing error messages                                            
+------------------------------------                                            
+An example output from a file dump is given below. The I/S file has ten         
+byte records (key=5 bytes, control=1 byte, dskadr=4 bytes). All record          
+displays are in hexadecimal. A D/A file record is printed with its key,         
+control data (length=2 bytes, control=1 byte, link address=4), and              
+individual elements (id=1 byte, length=1 byte, data=n bytes). If an             
+element is longer than 52 bytes the first 50 bytes are printed after the        
+id and length, and the remaining data is printed 50 bytes per line.             
+                                                                                
+The first error below shows a duplicate key on the I/S file. The first          
+50 bytes of the I/S record is printed in hex. This comprises the key,           
+control bytes, and the disk address.                                            
+                                                                                
+The second error below shows a key not equal i.e. the key in the I/S            
+file is not equal the key in the D/A file record to which it points. The        
+first line shows the I/S file record. The second line shows the D/A file        
+key. The third line shows the D/A file length, control, and link. The           
+forth and following lines show the D/A file elements.                           
+                                                                                
+The third error below shows a bad D/A file record, where the sum of the         
+element lengths is greater than the record length, which is shown in the        
+first four hex chrs of the CTL= line.                                           
+                                                                                
+The fourth error below shows an I/S file record whose disk address field        
+has an invalid format. the disk address format is TTTTBBRR or TTTTTBRR          
+where TTTT is the track number, BB is the block number and RR is the            
+rec ord number.                                                                 
+                                                                                
+The fifth error below shows an I/S file record whose disk address field         
+has an invalid value i.e. it points to a record in the D/A file that            
+does not exist. A 'not found' error on the D/A file is not considered           
+to be fatal.                                                                    
+                                                                                
+The sixth error below shows an I/S file record which points to a D/A            
+record with an invalid link field. The D/A file link field is non-zero          
+if the D/A record has been extended, and points to the current record.          
+A link disk address that gives a 'not found' error causes this error.           
+                                                                                
+All warning messages sent to the console are printed on SYSPRINT and            
+are flagged with text CONSOLE OUTPUT. In this example one of the error          
+counters has exceeded the maximum value and this causes an email to be          
+sent if requested in the parameter cards. Any emails sent are also              
+printed on SYSPRINT and are flagged with text EMAIL.                            
+                                                                                
+PARAMETER CARDS                                                                 
+---------------                                                                 
+MODE=COPY,INPUT=DISK,CHECK=YES,EMAIL=Y,..                                       
+                                                                                
+ACTION MESSAGES                                                                 
+---------------                                                                 
+OPN R/O XXXFIL1  FN=XXXFIL1  DSN=XXX.XXXFIL1        SYS=XXX1  SENUM=XX          
+OPN R/O XXXDIR1  FN=XXXDIR1  DSN=XXX.XXXDIR1                  DSPACE=X          
+OPN OUT TAPEOUT              DSN=XXX.TAPEOUT                                    
+                                                                                
+WARNING DUP KEY  IS =C1C2C3C4C50000020202                                       
+                                                                                
+WARNING KEY NEQ  IS =C1C2C3C4C60000020406                                       
+                 DA =C1C2C3C4C7                                                 
+                 CTL=00240000000000                                             
+                 0303C1                                                         
+                 0404C1C2                                                       
+                 0505C1C2C3                                                     
+                 060CC1C2C3C4C5C6C7C8C9D1                                       
+                                                                                
+WARNING BAD REC  DA =C1C2C3C4C8                                                 
+                 CTL=00100000000000                                             
+                 0208C1C2C3C4C5C6                                               
+                 0309D1D2D3D4D5D6D7                                             
+                                                                                
+WARNING ADR FMT  IS =C1C2C3C4D10000000000                                       
+                                                                                
+WARNING ADR VAL  IS =C1C2C3C4D2000004FF01                                       
+                                                                                
+WARNING ADR LNK  IS =C1C2C3C4D20000050101                                       
+                                                                                
+DA FILE XXXFIL1  DUMPED VIA IS FILE XXXDIR1                                     
+                                                                                
+I/O COUNTS XXX1                                                                 
+---------------                                                                 
+IS DISK READS    000100000                                                      
+IS DISK DELETES  000040000                                                      
+DA DISK READS    000059997                                                      
+DA TAPE WRITES   000059996                                                      
+IS DISK DUP KEY  000000001                   <== CONSOLE OUTPUT:  **WARNING**   
+DA DISK BAD ADR  000000003                   <== CONSOLE OUTPUT:  **WARNING**   
+DA DISK KEY NEQ  000000001                   <== CONSOLE OUTPUT:  **WARNING**   
+DA DISK BAD REC  000000001                   <== CONSOLE OUTPUT:  **WARNING**   
+                                                                                
+EMAIL SENT TO:   RCRIDDLO                                                       
+EMAIL SUBJECT:   JOB=RCRIDXXX.DUMPXXX  DUMP SYS=X/XXX1/XXXDIR1/XXXFIL1          
+EMAIL MESSAGE:   **WARNING** DA DISK BAD ADR  000000003                         

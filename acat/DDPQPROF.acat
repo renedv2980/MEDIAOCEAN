@@ -1,0 +1,1045 @@
+*          DATA SET DDPQPROF   AT LEVEL 018 AS OF 11/25/19                      
+*CATALP PQPROF                                                                  
+         TITLE 'PQPROF - EXTRACT PRINTER QUEUE PROFILE DATA'                    
+**********************************************************************          
+* PQPROF - EXTRACT PRINT QUEUE SPECIFIC REPORT PROFILE DATA          *          
+* PARAMETERS:                                                        *          
+*                                                                    *          
+* P1                                                                            
+* XL1 PASS   X'80'=SOON REQUEST                                      *          
+*     PASS   X'40'=P4 AND P5, USE CALLER PROFILES' ADDRESSES         *          
+*     RETURN X'08'=PQ OUTPUT                                         *          
+*     RETURN X'04'=PRINT AT DDS                                      *          
+*     RETURN X'02'=OVERRIDE BY NPDATE                                *          
+*     RETURN X'01'=NPDATE IS ACTIVE                                  *          
+* AL3 ADR PROFILE KEY DATA - SPPUU - S=SYSTEM, P=PROGRAM, U=USERID#  *          
+*                                                                    *          
+* P2                                                                            
+* AL1 INDICATOR BYTE.                                                *          
+*     VALUE=0 - RETURN DATA IN LOCAL OR CALLING PROGRAM REMOTEC      *          
+*     VALUE=1 - RETURN DATA IN CALLING PROGRAM PQPLD                 *          
+*     VALUE=2 - RETURN DATA IN CALLING PROGRAM REPBLK                *          
+*     VALUE=3 - RETURN DATA IN PQPROFD BLOCK                         *          
+* AL3 ADR RETURN DATA AREA WHICH CAN TAKE VALUES:                    *          
+*     AL3(0) - RETURN ADDRESS OF CL80 REMOTEC AREA IN LOCAL AREA     *          
+*     AL3(REMOTEC) - CL80  REMOTEC AREA IN CALLING PROGRAM           *          
+*     AL3(PQPLD)   - CL133 PQPLD   AREA IN CALLING PROGRAM           *          
+*     AL3(REPBLK)  - CL256 REPBLK  AREA IN CALLING PROGRAM           *          
+*     AL3(PQPROFBK)- CL80  PQPROFBLK                                 *          
+* NOTE: FOR VALUE 0-2  ONLY NULL DATA AREA WILL BE FILLED BY PQPROF  *          
+*                                                                    *          
+* P3                                                                            
+* AL1 RETURN CODE                                                    *          
+*     VALUES:  0 - OK, ELSE IO ERROR CODE                            *          
+* AL3 ADR COMFACS                                                    *          
+*                                                                    *          
+* P4                                                                            
+* AL3 ADR PROFILE PROGRAM          A(PROGRAM ID LEVEL PROFILE)       *          
+*                                                                               
+* P5                                                                            
+* XL1 RETURN X'80'=ORIGIN ID LEVEL PROFILE FOUND                     *          
+* AL3 ADR PROFILE ORIGIN           A(ORIGIN ID LEVEL PROFILE)        *          
+**********************************************************************          
+         PRINT NOGEN                                                            
+PQPROF   CSECT                                                                  
+         NMOD1 WORKX-WORKD,*PQPROF*,CLEAR=YES,RR=RA                             
+         USING WORKD,RC                                                         
+         ST    R1,APARM                                                         
+         ST    RA,RELO                                                          
+         MVI   OFFLINE,C'N'                                                     
+         ICM   RF,15,=V(SSB)       SEE IF SSB LINKED                            
+         BZ    PQOFFL                                                           
+         ICM   RE,3,0(RF)          IS IT A DUMMY SSB                            
+         BZ    PQOFFL                                                           
+         B     INIT                                                             
+*                                                                               
+PQOFFL   MVI   OFFLINE,C'Y'        FLAG OFFLINE                                 
+         B     INIT                                                             
+                                                                                
+**********************************************************************          
+* INITIALISE WORK AREAS AND READ PROFILE RECORDS                     *          
+**********************************************************************          
+INIT     MVC   PARM,0(R1)          COPY PARMS                                   
+         MVI   RETCODE,0           CLEAR RETCODE                                
+*                                                                               
+         LA    R9,PQPBLOCK                                                      
+         USING PQPROFD,R9                                                       
+         ICM   RF,7,APROFKEY                                                    
+         LA    RF,0(RF)                                                         
+         MVC   PQPSYS,0(RF)        GET PROFILE KEY VALUES                       
+*&&US                                                                           
+         CLI   PQPSYS,C'N'         WE DON'T HAVE ANY NET PROFILES!              
+         BNE   *+8                 WE NEVER HAD ANY NET PROFILES!               
+         MVI   PQPSYS,C'S'         WE NEVER WILL HAVE ANY NET PROFILES!         
+*&&                                                                             
+         MVC   PQPPROG,1(RF)                                                    
+         MVC   PQPUSER,3(RF)                                                    
+*                                                                               
+         ICM   RF,7,ACOMFACS                                                    
+         LA    RF,0(RF)                                                         
+         USING COMFACSD,RF         ADDRESS COMFACS                              
+         MVC   VDATAMGR,CDATAMGR                                                
+         MVC   VDATCON,CDATCON                                                  
+         MVC   VGETDAY,CGETDAY                                                  
+         DROP  RF                                                               
+*                                                                               
+         GOTO1 VDATCON,DMCB,(5,0),(0,DUB)                                       
+         GOTO1 (RF),(R1),,(1,TODAY)                                             
+         GOTO1 VGETDAY,(R1),DUB,DAYOFWK                                         
+         MVC   PQPD@DDS,NPDPWOS    SET DEFAULT NO PRINT@DDS DATE                
+*                                                                               
+         LA    RF,PROGPRO          INITIALISE WORK STORE BUFFERS                
+         ST    RF,APROGPRO                                                      
+         LA    RF,ORIGPRO-PROGPRO(RF)                                           
+         ST    RF,AORIGPRO                                                      
+         LA    RF,OUTPREC-ORIGPRO(RF)                                           
+         ST    RF,AOUTPREC                                                      
+         BRAS  RE,READPROF         READ PROFILE RECORDS                         
+         BE    PROCESS                                                          
+         XC    PARM(12),PARM       IO ERROR                                     
+         MVC   RETCODE,IOERR                                                    
+         B     EXIT                                                             
+*                                                                               
+EXIT     CLI   PQPOTCLS,C'Q'       TEST/SET FLAG FOR OUTPUT TO PQ               
+         BNE   *+12                                                             
+         OI    P@FLAG,P@FPQ                                                     
+         B     EXIT2                                                            
+         CLI   PQPOTTYP,C'B'       TEST IF BOTH                                 
+         BNE   EXIT1                                                            
+         CLC   TODAY,PQPD@DDS                                                   
+         BNL   EXIT1                                                            
+         OI    P@FLAG,P@FPQ+P@FDDS SET OUTPUT TO PQ AND PRINTER                 
+         B     EXIT2                                                            
+EXIT1    CLC   TODAY,PQPD@DDS      TEST/SET NPDATE IS ACTIVE                    
+         BL    EXIT2                                                            
+         OI    P@FLAG,P@FNPDA                                                   
+         CLI   PQP@DDS,C'N'        TEST/SET PRINT@DDS OVERRIDE                  
+         BNE   *+8                                                              
+         OI    P@FLAG,P@FPQ+P@FNPDO                                             
+         CLI   PQP@DDS,C'Y'                                                     
+         BNE   *+8                                                              
+         OI    P@FLAG,P@FDDS+P@FNPDO                                            
+         CLI   PQP@DDS,C'B'                                                     
+         BNE   *+8                                                              
+         OI    P@FLAG,P@FPQ+P@FDDS+P@FNPDO                                      
+EXIT2    OC    PARM(1),P@FLAG      SET RETURN FLAGS                             
+*                                                                               
+EXITX    L     R1,APARM            EXIT WITH UPDATED PARAMETER LIST             
+         MVC   0(L'PARM,R1),PARM                                                
+         XMOD1 1                                                                
+         EJECT                                                                  
+**********************************************************************          
+* PROCESS VALID PROFILE RECORDS                                      *          
+**********************************************************************          
+         SPACE 1                                                                
+PROCESS  EQU   *                                                                
+         L     R4,APROGPRO         GET OUTPUT TYPE VALUE                        
+         BRAS  RE,GETOUTYP         FROM AGENCY PROFILE                          
+         CLI   OVERFLAG,C'N'       AND ORIGIN PROFILE IF PRESENT                
+         BE    PROC010                                                          
+         L     R4,AORIGPRO                                                      
+         BRAS  RE,GETOUTYP                                                      
+*                                                                               
+PROC010  OC    PQPOTYPC,PQPOTYPC                                                
+         BZ    PROC020                                                          
+         BRAS  RE,READOUT          READ OUTPUT TYPE RECORD IF FOUND             
+         BE    PROC020                                                          
+         TM    IOERR,X'40'                                                      
+         BNO   PROC020                                                          
+         XC    PARM(12),PARM                                                    
+         MVC   RETCODE,IOERR                                                    
+         B     EXIT                                                             
+*                                                                               
+PROC020  L     R4,APROGPRO         GET PQ FORM CODE                             
+         BRAS  RE,GETPQFRM                                                      
+         CLI   OVERFLAG,C'N'                                                    
+         BE    PROC030                                                          
+         L     R4,AORIGPRO                                                      
+         BRAS  RE,GETPQFRM                                                      
+*                                                                               
+PROC030  L     R4,APROGPRO         GET PQ SHORT DESCRIPTION                     
+         BRAS  RE,GETPQDSC                                                      
+         CLI   OVERFLAG,C'N'                                                    
+         BE    PROC040                                                          
+         L     R4,AORIGPRO                                                      
+         BRAS  RE,GETPQDSC                                                      
+*                                                                               
+PROC040  L     R4,APROGPRO         GET PQ RETAIN CLASS                          
+         BRAS  RE,GETPQRET                                                      
+         CLI   OVERFLAG,C'N'                                                    
+         BE    PROC050                                                          
+         L     R4,AORIGPRO                                                      
+         BRAS  RE,GETPQRET                                                      
+*                                                                               
+PROC050  L     R4,APROGPRO         GET PQ SQL TRANSFORM CODE                    
+         BRAS  RE,GETPQSQL                                                      
+         CLI   OVERFLAG,C'N'                                                    
+         BE    PROC060                                                          
+         L     R4,AORIGPRO                                                      
+         BRAS  RE,GETPQSQL                                                      
+*                                                                               
+PROC060  L     R4,APROGPRO         GET PQ REPORT TYPE                           
+         BRAS  RE,GETPQRTY                                                      
+         CLI   OVERFLAG,C'N'                                                    
+         BE    PROC070                                                          
+         L     R4,AORIGPRO                                                      
+         BRAS  RE,GETPQRTY                                                      
+*                                                                               
+PROC070  L     R4,APROGPRO         GET PQ ARCHIVE REPORT CLASS                  
+         BRAS  RE,GETPQARC                                                      
+         CLI   OVERFLAG,C'N'                                                    
+         BE    PROC075                                                          
+         L     R4,AORIGPRO                                                      
+         BRAS  RE,GETPQARC                                                      
+*                                                                               
+PROC075  L     R4,APROGPRO         GET PQ ARCHIVE STATUS                        
+         BRAS  RE,GETPQARS                                                      
+         CLI   OVERFLAG,C'N'                                                    
+         BE    PROC080                                                          
+         L     R4,AORIGPRO                                                      
+         BRAS  RE,GETPQARS                                                      
+*                                                                               
+PROC080  L     R4,APROGPRO         GET PQ ARCHIVE DOCUMENT TYPE                 
+         BRAS  RE,GETPQADT                                                      
+         CLI   OVERFLAG,C'N'                                                    
+         BE    PROC090                                                          
+         L     R4,AORIGPRO                                                      
+         BRAS  RE,GETPQADT                                                      
+*                                                                               
+PROC090  L     R4,APROGPRO         GET DATE@DDS FOR PRINT@DDS                   
+         BRAS  RE,GETPDDS                                                       
+         CLI   OVERFLAG,C'N'                                                    
+         BE    PROC100                                                          
+         L     R4,AORIGPRO                                                      
+         BRAS  RE,GETPDDS                                                       
+*                                                                               
+PROC100  L     R4,APROGPRO         GET PRINT@DDS OVERRIDE                       
+         BRAS  RE,GETPADS                                                       
+         CLI   OVERFLAG,C'N'                                                    
+         BE    PROC105                                                          
+         L     R4,AORIGPRO                                                      
+         BRAS  RE,GETPADS                                                       
+*                                                                               
+PROC105  CLI   PQPOTCLS,C'Q'       IGNORE IF ALREADY DIRECT                     
+         BE    PROC200                                                          
+*                                                                               
+PROC110  CLC   TODAY,PQPD@DDS      ONLY APPLIES IF NO PRINTING DATE             
+         BL    PROC200                                                          
+         CLI   PQP@DDS,0           SET DEFAULTS                                 
+         BNE   *+10                                                             
+         MVC   PQP@DDS,NPDPDD                                                   
+         CLI   PQP@BST,0                                                        
+         BNE   *+10                                                             
+         MVC   PQP@BST,NPDPQB                                                   
+         CLC   PQPOUTY,SPACES      TEST IF NEW OUTPUT TYPE                      
+         BNH   PROC200                                                          
+         CLC   PQPOUTY,=CL10'BOTH'                                              
+         BNE   *+8                                                              
+         MVI   PQP@DDS,C'B'                                                     
+         CLC   PQPOUTY,=CL10'DOWN'                                              
+         BNE   *+8                                                              
+         OI    PQPRPTTY,REMOTDLQ   DOWNLOAD REPORTING                           
+         CLC   PQPOUTY,=CL10'DIRDL'                                             
+         BNE   *+8                                                              
+         OI    PQPRPTTY,REMOTDLQ   DOWNLOAD REPORTING                           
+         MVC   PQPOTYPC,SPACES                                                  
+         MVC   PQPOTYPC(L'PQPOUTY),PQPOUTY                                      
+         BRAS  RE,READOUT          READ OVERRIDE OUTPUT TYPE                    
+         BE    PROC200                                                          
+         TM    IOERR,X'40'                                                      
+         BNO   PROC200                                                          
+         XC    PARM(12),PARM                                                    
+         MVC   RETCODE,IOERR                                                    
+         B     EXIT                                                             
+*                                                                               
+PROC200  CLI   PQPARST1,0          ARCHIVE STATUS IS NOT DEFINED                
+         BNE   PROC210                                                          
+         CLI   PQPARCCO,C'A'                                                    
+         BL    PROC300                                                          
+         MVI   PQPARST1,DEFASTAO   DEFAULT ARCHIVE STATUS OVERNIGHT             
+         TM    CALLER,X'80'        TEST IF CALLED BY SPOON                      
+         BO    *+12                                                             
+         CLI   OFFLINE,C'Y'                                                     
+         BE    PROC220                                                          
+         MVI   PQPARST1,DEFASTAS   DEFAULT ARCHIVE STATUS SOON                  
+         B     PROC220                                                          
+*                                                                               
+PROC210  CLI   PQPARCCO,C'A'       ARCHIVE STATUS IS DEFINED                    
+         BNL   PROC220                                                          
+         MVI   PQPARCCO,DEFACLS    DEFAULT ARCHIVE CLASS                        
+PROC220  CLI   PQPARST1,C'A'       ARCHIVE?                                     
+         BNE   *+12                                                             
+         MVI   PQPARST1,X'40'      TYPE#1 IS ARCHIVABLE                         
+         B     PROC300                                                          
+                                                                                
+         CLI   PQPARST1,C'E'       ELIGIBLE?                                    
+         BNE   *+12                                                             
+         MVI   PQPARST1,X'80'      TYPE#1 IS ELIGIBLE FOR ARCHIVING             
+         B     PROC300                                                          
+                                                                                
+         CLI   PQPARST1,C'N'       TYPE#1 NO ARCHIVING DEFINED                  
+         BE    PROC222                                                          
+         MVI   PQPARST1,0          CLEAR ARCHIVE DATA IF UNKNOWN                
+         MVI   PQPARCCO,0                                                       
+         B     PROC300                                                          
+                                                                                
+PROC222  MVI   PQPARST1,0          CLEAR ARCHIVE DATA IF UNKNOWN                
+         MVI   PQPARCCO,0                                                       
+*                                                                               
+PROC300  CLC   PQPSQLCO,SPACES                                                  
+         BNH   PROC320                                                          
+         OI    PQPRPTTY,REMOTSQQ   SQL TYPE REPORT                              
+*                                                                               
+PROC320  EQU   *                                                                
+         EJECT                                                                  
+**********************************************************************          
+* RETURN PQ PROFILE DATA IN APPRORIATE AREA                          *          
+**********************************************************************          
+         SPACE 1                                                                
+         USING REMOTED,RF                                                       
+RETURN   EQU   *                                                                
+         OC    PQDATADR,PQDATADR                                                
+         BNZ   RETN010                                                          
+         XC    REMOTEC,REMOTEC     RETURN IN LOCAL REMOTEC                      
+         LA    RF,REMOTEC                                                       
+         STCM  RF,7,PQDATADR                                                    
+         MVC   REMOTSUB,PQPFRMCO                                                
+         MVC   REMOTFNO,PQPOPOWC                                                
+         MVC   REMOTDSC,PQPDESC                                                 
+         MVC   REMOTSQL,PQPSQLCO                                                
+         MVC   REMOTRTY,PQPRTYCO                                                
+         MVC   REMOTTYP,PQPRPTTY                                                
+         MVC   REMOTCPY,PQPOTCPY                                                
+         MVC   REMOTRET,PQPRETCL                                                
+         TM    REMOTTYP,REMOTSQQ+REMOTDLQ                                       
+         BNZ   EXIT                DON'T ARCHIVE SQL OR DOWNLOAD                
+         MVC   REMOTARC,PQPARCCO                                                
+         MVC   REMOTTY1,PQPARST1                                                
+         MVC   REMOTADT,PQPADTCO                                                
+         B     EXIT                EXIT TO CALLER                               
+         DROP  RF                                                               
+*                                                                               
+         USING REMOTED,RF                                                       
+RETN010  CLI   PQDATCOD,0                                                       
+         BNE   RETN020                                                          
+         ICM   RF,7,PQDATADR       RETURN IN CALLING PROGRAM REMOTEC            
+         LA    RF,0(RF)                                                         
+         OC    REMOTSUB,REMOTSUB                                                
+         BNZ   *+10                                                             
+         MVC   REMOTSUB,PQPFRMCO                                                
+         OC    REMOTFNO,REMOTFNO                                                
+         BNZ   *+10                                                             
+         MVC   REMOTFNO,PQPOPOWC                                                
+         OC    REMOTDSC,REMOTDSC                                                
+         BNZ   *+10                                                             
+         MVC   REMOTDSC,PQPDESC                                                 
+         OC    REMOTSQL,REMOTSQL                                                
+         BNZ   *+10                                                             
+         MVC   REMOTSQL,PQPSQLCO                                                
+         OC    REMOTRTY,REMOTRTY                                                
+         BNZ   *+10                                                             
+         MVC   REMOTRTY,PQPRTYCO                                                
+         CLI   REMOTTYP,0                                                       
+         BNE   *+10                                                             
+         OC    REMOTTYP,PQPRPTTY                                                
+         TM    REMOTTYP,REMOTSQQ+REMOTDLQ                                       
+         BNZ   RETN014             DON'T ARCHIVE SQL OR DOWNLOAD                
+         OC    REMOTARC,REMOTARC                                                
+         BNZ   *+10                                                             
+         MVC   REMOTARC,PQPARCCO                                                
+         CLI   REMOTTY1,0                                                       
+         BNE   *+10                                                             
+         OC    REMOTTY1,PQPARST1                                                
+*                                                                               
+RETN014  OC    REMOTADT,REMOTADT                                                
+         BNZ   *+10                                                             
+         MVC   REMOTADT,PQPADTCO                                                
+         OC    REMOTCPY,REMOTCPY                                                
+         BNZ   *+10                                                             
+         MVC   REMOTCPY,PQPOTCPY                                                
+         OC    REMOTRET,REMOTRET                                                
+         BNZ   *+10                                                             
+         MVC   REMOTRET,PQPRETCL                                                
+         DROP  RF                                                               
+         B     EXIT                EXIT TO CALLER                               
+*                                                                               
+         USING PQPLD,RF                                                         
+RETN020  CLI   PQDATCOD,1                                                       
+         BNE   RETN030                                                          
+         ICM   RF,7,PQDATADR       RETURN IN CALLING PROGRAM PQPLD              
+         LA    RF,0(RF)                                                         
+         OC    QLPRGSUB,QLPRGSUB                                                
+         BNZ   *+10                                                             
+         MVC   QLPRGSUB,PQPFRMCO                                                
+         OC    QLFORMS,QLFORMS                                                  
+         BNZ   *+10                                                             
+         MVC   QLFORMS,PQPOPOWC                                                 
+         OC    QLDESC,QLDESC                                                    
+         BNZ   *+10                                                             
+         MVC   QLDESC,PQPDESC                                                   
+         OC    QLCOPIES,QLCOPIES                                                
+         BNZ   *+10                                                             
+         MVC   QLCOPIES,PQPOTCPY                                                
+*                                                                               
+         OC    QLRETNL,QLRETNL                                                  
+         BNZ   RETN022                                                          
+         OC    QLRETND,QLRETND                                                  
+         BNZ   RETN022                                                          
+*                                                                               
+         LA    R1,PQRETTAB         GET RETAIN CLASS                             
+         MVC   QLRETNL,0(R1)       START WITH DEFAULT                           
+         MVC   QLRETND,2(R1)                                                    
+RETCLAS1 LA    R1,L'PQRETTAB(R1)                                                
+         CLC   0(2,R1),=F'0'       END OF TABLE                                 
+         BE    RETN022                                                          
+         CLC   PQPRETCL,4(R1)      MATCH ON CLASS                               
+         BNE   RETCLAS1                                                         
+         MVC   QLRETNL,0(R1)       COPY VALUES FOR CLASS                        
+         MVC   QLRETND,2(R1)                                                    
+*                                                                               
+RETN022  OC    QLREPTY,QLREPTY     REPORT TYPE                                  
+         BNZ   *+10                                                             
+         MVC   QLREPTY,PQPRTYCO                                                 
+         CLI   QLTYPE,0                                                         
+         BNE   *+10                                                             
+         MVC   QLTYPE,PQPRPTTY                                                  
+         TM    QLTYPE,QLTYDL+QLTYSQL                                            
+         BNZ   EXIT                DON'T ARCHIVE SQL OR DOWNLOAD                
+*                                                                               
+         OC    QLARC,QLARC         ARCHIVE CLASS                                
+         BNZ   *+10                                                             
+         MVC   QLARC,PQPARCCO                                                   
+         CLI   QLTYP1,0            ARCHIVE STATUS                               
+         BNE   *+10                                                             
+         MVC   QLTYP1,PQPARST1                                                  
+*                                                                               
+RETN026  TM    QLFLAG1,QLFLMORE                                                 
+         BZ    EXIT                                                             
+         OC    QLADT,QLADT         ARCHIVE DOCUMENT TYPE                        
+         BNZ   *+10                                                             
+         MVC   QLADT,PQPADTCO                                                   
+         B     EXIT                                                             
+         DROP  RF                                                               
+*                                                                               
+         USING REPBLK,RF                                                        
+RETN030  CLI   PQDATCOD,2                                                       
+         JNE   RETN040                                                          
+*                                                                               
+         ICM   RF,7,PQDATADR       RETURN IN CALLING PROGRAM REPBLK             
+         LA    RF,0(RF)                                                         
+         OC    REPMAKER+3(2),REPMAKER+3                                         
+         BNZ   *+10                                                             
+         MVC   REPMAKER+3(2),PQPFRMCO                                           
+         OC    REPFORM,REPFORM                                                  
+         BNZ   *+10                                                             
+         MVC   REPFORM,PQPOPOWC                                                 
+         OC    REPDESC,REPDESC                                                  
+         BNZ   *+10                                                             
+         MVC   REPDESC,PQPDESC                                                  
+         OC    REPSQL,REPSQL                                                    
+         BNZ   *+10                                                             
+         MVC   REPSQL,PQPSQLCO                                                  
+         TM    PQPRPTTY,REMOTSQQ+REMOTDLQ                                       
+         BNZ   RETN031             DON'T ARCHIVE IF SQL OR DOWN                 
+         OC    REPRTY,REPRTY                                                    
+         BNZ   *+10                                                             
+         MVC   REPRTY,PQPRTYCO                                                  
+         OC    REPARC,REPARC                                                    
+         BNZ   *+10                                                             
+         MVC   REPARC,PQPARCCO                                                  
+         CLI   REPTYP1,0                                                        
+         BNE   *+10                                                             
+         OC    REPTYP1,PQPARST1                                                 
+         OC    REPADT,REPADT                                                    
+         BNZ   *+10                                                             
+         MVC   REPADT,PQPADTCO                                                  
+*                                                                               
+RETN031  OC    REPCOPY,REPCOPY                                                  
+         BNZ   *+10                                                             
+         MVC   REPCOPY,PQPOTCPY                                                 
+*                                                                               
+         OC    REPRLH,REPRLH                                                    
+         BNZ   RETN032                                                          
+         OC    REPRLH,REPRLH                                                    
+         BNZ   RETN032                                                          
+*                                                                               
+         LA    R1,PQRETTAB         GET RETAIN CLASS                             
+         MVC   REPRLH,0(R1)        START WITH DEFAULT                           
+         MVC   REPRDH,2(R1)                                                     
+RETCLAS2 LA    R1,L'PQRETTAB(R1)                                                
+         CLC   0(2,R1),=F'0'       END OF TABLE                                 
+         BE    RETN032                                                          
+         CLC   PQPRETCL,4(R1)      MATCH ON CLASS                               
+         BNE   RETCLAS2                                                         
+         MVC   REPRLH,0(R1)        COPY VALUES FOR CLASS                        
+         MVC   REPRDH,2(R1)                                                     
+*                                                                               
+RETN032  B     EXIT                EXIT TO CALLER                               
+*                                                                               
+RETN040  CLI   PQDATCOD,3                                                       
+         JNE   *+2                                                              
+         XR    RF,RF                                                            
+         ICM   RF,7,PQDATADR       RETURN IN CALLING PROGRAM PQPROFBK           
+         MVC   0(80,RF),PQPBLOCK                                                
+         J     EXIT                EXIT TO CALLER                               
+         DROP  RF                                                               
+         EJECT                                                                  
+**********************************************************************          
+* READ PROFILE RECORD FROM CONTROL FILE                              *          
+**********************************************************************          
+         SPACE 1                                                                
+READPROF EQU   *                                                                
+         NTR1                                                                   
+         MVI   OVERFLAG,C'N'       INITIALISE ORIGIN PROF. FOUND FLAG           
+         L     R4,APROGPRO                                                      
+         USING CTPREC,R4                                                        
+         XC    CTPKEY,CTPKEY       READ AGENCY LEVEL PROFILE RECORD             
+         MVI   CTPKTYP,CTPKTYPQ                                                 
+         MVC   CTPKSYS,PQPSYS                                                   
+         MVC   CTPKPROG,PQPPROG                                                 
+         MVC   IOKEY,CTPKEY                                                     
+         GOTO1 VDATAMGR,DMCB,(0,DMREAD),CTFILE,CTPKEY,CTPKEY                    
+         MVC   CTPKEY,IOKEY                                                     
+         CLI   8(R1),0                                                          
+         BE    RPRO010                                                          
+         MVC   IOERR,8(R1)         EXIT IF ERROR OR NOT FOUND                   
+         B     RPRONO                                                           
+*                                                                               
+RPRO010  EQU   *                                                                
+         OC    PQPUSER,PQPUSER     IF ORIGIN ID# PASSED                         
+         BZ    RPROOK                                                           
+         L     R4,AORIGPRO           READ ORIGIN LEVEL PROFILE RECORD           
+         MVC   CTPKEY,IOKEY                                                     
+         MVC   CTPKORIG,PQPUSER                                                 
+         MVC   IOKEY,CTPKEY                                                     
+         GOTO1 VDATAMGR,DMCB,(0,DMREAD),CTFILE,CTPKEY,CTPKEY                    
+         MVC   CTPKEY,IOKEY                                                     
+         CLI   8(R1),0                                                          
+         BNE   RPRO020                                                          
+         MVI   OVERFLAG,C'Y'       FLAG IF ORIGIN PROFILE FOUND                 
+         B     RPROOK                                                           
+*                                                                               
+RPRO020  TM    8(R1),X'04'                                                      
+         BNO   RPROOK                                                           
+         MVC   IOERR,8(R1)                                                      
+         B     RPRONO                                                           
+*                                                                               
+RPRONO   B     NO                                                               
+RPROOK   B     YES                                                              
+         DROP  R4                                                               
+         EJECT                                                                  
+**********************************************************************          
+* READ OUTPUT RECORD FROM CONTROL FILE                               *          
+**********************************************************************          
+         SPACE 1                                                                
+READOUT  EQU   *                                                                
+         NTR1                                                                   
+         L     R4,AOUTPREC                                                      
+         USING CTOREC,R4                                                        
+         XC    CTOKEY,CTOKEY                                                    
+         MVI   CTOKTYP,CTOKTYPQ                                                 
+         MVC   CTOKID,PQPOTYPC                                                  
+         MVC   IOKEY,CTOKEY                                                     
+         GOTO1 VDATAMGR,DMCB,(0,DMREAD),CTFILE,CTOKEY,CTOKEY                    
+         MVC   CTOKEY,IOKEY                                                     
+         CLI   8(R1),0                                                          
+         BE    ROUT010                                                          
+         MVC   IOERR,8(R1)                                                      
+         B     ROUTNO                                                           
+         DROP  R4                                                               
+*                                                                               
+ROUT010  EQU   *                                                                
+         MVI   ELCODE,CTOUTELQ     GET OUTPUT TYPE DETAILS                      
+         BRAS  RE,GETEL                                                         
+         BNE   ROUTNO                                                           
+         USING CTOUTD,R4                                                        
+         MVC   PQPOPOWC,CTOUTPOW                                                
+         MVC   PQPOTCPY,CTOUTCPY                                                
+         MVC   PQPOTCLS,CTOUTCLS                                                
+         MVC   PQPOTTYP,CTOUTTYP                                                
+         CLI   CTOUTLEN,32         SHORT ELEMENT                                
+         JE    ROUTOK                                                           
+         MVC   PQPOTFMN,CTOUTFMN                                                
+         MVC   PQPOTFMD,CTOUTFMD                                                
+         MVC   PQPOTPGN,CTOUTPGN                                                
+         MVC   PQPOTPGD,CTOUTPGD                                                
+         B     ROUTOK                                                           
+         DROP  R4                                                               
+*                                                                               
+ROUTNO   B     NO                                                               
+ROUTOK   B     YES                                                              
+         EJECT                                                                  
+**********************************************************************          
+* GET OUTPUT TYPE                                                    *          
+* PROFILE CAN CONTAIN SEVERAL TYPES OF EACH ELEMENT                  *          
+* APPLY SELECTION RULE AS FOR EDREQSORT                              *          
+**********************************************************************          
+         SPACE 1                                                                
+GETOUTYP EQU   *                                                                
+         NTR1                                                                   
+         MVI   SACRED,C'N'                                                      
+         MVI   ELCODE,CTOCOELQ                                                  
+         BRAS  RE,GETEL                                                         
+         B     GOUT020                                                          
+*                                                                               
+GOUT010  BRAS  RE,NEXTEL                                                        
+*                                                                               
+GOUT020  BNE   GOUTNO                                                           
+         USING CTOCOD,R4                                                        
+         BRAS  RE,APPLY            APPLY PROFILE TYPE SELECTION RULE            
+         BNE   GOUT010                                                          
+         MVC   PQPOTYPC,CTOCODE    SAVE OUTPUT TYPE CODE                        
+         CLI   SACRED,C'Y'                                                      
+         BE    GOUTOK                                                           
+         B     GOUT010                                                          
+*                                                                               
+GOUTNO   B     NO                                                               
+GOUTOK   B     YES                                                              
+         DROP  R4                                                               
+         EJECT                                                                  
+**********************************************************************          
+* GET PQ FORM CODE                                                   *          
+**********************************************************************          
+         SPACE 1                                                                
+GETPQFRM EQU   *                                                                
+         NTR1                                                                   
+         MVI   SACRED,C'N'                                                      
+         MVI   ELCODE,CTFRMELQ                                                  
+         BRAS  RE,GETEL                                                         
+         B     GPQF020                                                          
+*                                                                               
+GPQF010  BRAS  RE,NEXTEL                                                        
+*                                                                               
+GPQF020  BNE   GPQFNO                                                           
+         USING CTFRMD,R4                                                        
+         BRAS  RE,APPLY            APPLY PROFILE TYPE SELECTION RULE            
+         BNE   GPQF010                                                          
+         MVC   PQPFRMCO,CTFRMCOD   SAVE PQ FORM CODE                            
+         CLI   SACRED,C'Y'                                                      
+         BE    GPQFOK                                                           
+         B     GPQF010                                                          
+*                                                                               
+GPQFNO   B     NO                                                               
+GPQFOK   B     YES                                                              
+         DROP  R4                                                               
+         EJECT                                                                  
+**********************************************************************          
+* GET PQ SHORT DESCRIPTION                                           *          
+**********************************************************************          
+         SPACE 1                                                                
+GETPQDSC EQU   *                                                                
+         NTR1                                                                   
+         MVI   SACRED,C'N'                                                      
+         MVI   ELCODE,CTSDSELQ                                                  
+         BRAS  RE,GETEL                                                         
+         B     GPQD020                                                          
+*                                                                               
+GPQD010  BRAS  RE,NEXTEL                                                        
+*                                                                               
+GPQD020  BNE   GPQDNO                                                           
+         USING CTSDSD,R4                                                        
+         BRAS  RE,APPLY            APPLY PROFILE TYPE SELECTION RULE            
+         BNE   GPQD010                                                          
+         MVC   PQPDESC,CTSDSTXT    SAVE PQ SHORT DESCRIPTION                    
+         CLI   SACRED,C'Y'                                                      
+         BE    GPQDOK                                                           
+         B     GPQD010                                                          
+*                                                                               
+GPQDNO   B     NO                                                               
+GPQDOK   B     YES                                                              
+         DROP  R4                                                               
+         EJECT                                                                  
+**********************************************************************          
+* GET PQ RETAIN CLASS                                                *          
+**********************************************************************          
+         SPACE 1                                                                
+GETPQRET EQU   *                                                                
+         NTR1                                                                   
+         MVI   SACRED,C'N'                                                      
+*                                                                               
+         MVI   PQPRETCL,C'S'       DEFAULT TO (S) SOON                          
+         TM    CALLER,X'80'        TEST IF CALLED BY SPOON                      
+         BO    GPQR005                                                          
+         CLI   OFFLINE,C'Y'                                                     
+         BNE   *+8                                                              
+         MVI   PQPRETCL,C'O'       DEFAULT TO (O) OVERNIGHT                     
+*                                                                               
+GPQR005  MVI   ELCODE,CTPQCELQ                                                  
+         BRAS  RE,GETEL                                                         
+         B     GPQR020                                                          
+*                                                                               
+GPQR010  BRAS  RE,NEXTEL                                                        
+*                                                                               
+GPQR020  BNE   GPQRNO                                                           
+         USING CTPQCD,R4                                                        
+         BRAS  RE,APPLY            APPLY PROFILE TYPE SELECTION RULE            
+         BNE   GPQR010                                                          
+         MVC   PQPRETCL,CTPQCLAS   SAVE PQ RETAIN CLASS                         
+*                                                                               
+         TM    CALLER,X'80'        TEST IF CALLED BY SPOON                      
+         BO    *+12                                                             
+         CLI   OFFLINE,C'Y'        IS THIS OVERNIGHT                            
+         BE    GPQR025                                                          
+         CLI   CTPQCLEN,7          TEST FOR OLD STYLE 1 CLASS ONLY              
+         BE    GPQR025                                                          
+         CLI   CTPQCLA2,0          TEST IF NO SOON CLASS DEFINED                
+         BE    GPQR025                                                          
+         MVC   PQPRETCL,CTPQCLA2   SAVE SOON RETAIN CLASS                       
+*                                                                               
+GPQR025  CLI   SACRED,C'Y'                                                      
+         BE    GPQROK                                                           
+         B     GPQR010                                                          
+*                                                                               
+GPQRNO   EQU   *                                                                
+*                                                                               
+GPQROK   B     YES                                                              
+         DROP  R4                                                               
+         EJECT                                                                  
+**********************************************************************          
+* GET PQ SQL TRANSFORM CODE                                          *          
+**********************************************************************          
+         SPACE 1                                                                
+GETPQSQL EQU   *                                                                
+         NTR1                                                                   
+         MVI   SACRED,C'N'                                                      
+         MVI   ELCODE,CTSQLELQ                                                  
+         BRAS  RE,GETEL                                                         
+         B     GSQL020                                                          
+*                                                                               
+GSQL010  BRAS  RE,NEXTEL                                                        
+*                                                                               
+GSQL020  BNE   GSQLNO                                                           
+         USING CTSQLD,R4                                                        
+         BRAS  RE,APPLY            APPLY PROFILE TYPE SELECTION RULE            
+         BNE   GSQL010                                                          
+         MVC   PQPSQLCO,CTSQLCOD   SAVE PQ SQL TRANSFORM CODE                   
+         CLI   SACRED,C'Y'                                                      
+         BE    GSQLOK                                                           
+         B     GSQL010                                                          
+*                                                                               
+GSQLNO   B     NO                                                               
+GSQLOK   B     YES                                                              
+         DROP  R4                                                               
+         EJECT                                                                  
+**********************************************************************          
+* GET PQ REPORT TYPE                                                 *          
+**********************************************************************          
+         SPACE 1                                                                
+GETPQRTY EQU   *                                                                
+         NTR1                                                                   
+         MVI   SACRED,C'N'                                                      
+         MVI   ELCODE,CTARTELQ                                                  
+         BRAS  RE,GETEL                                                         
+         B     GRTY020                                                          
+*                                                                               
+GRTY010  BRAS  RE,NEXTEL                                                        
+*                                                                               
+GRTY020  BNE   GRTYNO                                                           
+         USING CTARTD,R4                                                        
+         BRAS  RE,APPLY            APPLY PROFILE TYPE SELECTION RULE            
+         BNE   GRTY010                                                          
+         MVC   PQPRTYCO,CTARTCOD   SAVE PQ ARCHIVE REPORT TYPE                  
+         CLI   SACRED,C'Y'                                                      
+         BE    GRTYOK                                                           
+         B     GRTY010                                                          
+*                                                                               
+GRTYNO   B     NO                                                               
+GRTYOK   B     YES                                                              
+         DROP  R4                                                               
+         EJECT                                                                  
+**********************************************************************          
+* GET PQ ARCHIVE REPORT CLASS                                        *          
+**********************************************************************          
+         SPACE 1                                                                
+GETPQARC EQU   *                                                                
+         NTR1                                                                   
+         MVI   SACRED,C'N'                                                      
+         MVI   ELCODE,CTARCELQ                                                  
+         BRAS  RE,GETEL                                                         
+         B     GARC020                                                          
+*                                                                               
+GARC010  BRAS  RE,NEXTEL                                                        
+*                                                                               
+GARC020  BNE   GARCNO                                                           
+         USING CTARCD,R4                                                        
+         BRAS  RE,APPLY            APPLY PROFILE TYPE SELECTION RULE            
+         BNE   GARC010                                                          
+         MVC   PQPARCCO,CTARCCOD   SAVE PQ ARCHIVE REPORT TYPE                  
+         CLI   SACRED,C'Y'                                                      
+         BE    GARCOK                                                           
+         B     GARC010                                                          
+*                                                                               
+GARCNO   B     NO                                                               
+GARCOK   B     YES                                                              
+         DROP  R4                                                               
+         EJECT                                                                  
+**********************************************************************          
+* GET PQ ARCHIVE REPORT STATUS                                       *          
+**********************************************************************          
+         SPACE 1                                                                
+GETPQARS EQU   *                                                                
+         NTR1                                                                   
+         MVI   SACRED,C'N'                                                      
+         MVI   ELCODE,CTARSELQ                                                  
+         BRAS  RE,GETEL                                                         
+         B     GARS020                                                          
+*                                                                               
+GARS010  BRAS  RE,NEXTEL                                                        
+*                                                                               
+GARS020  BNE   GARSNO                                                           
+         USING CTARSD,R4                                                        
+         BRAS  RE,APPLY            APPLY PROFILE TYPE SELECTION RULE            
+         BNE   GARS010                                                          
+         MVC   PQPARST1,CTARSTAO   USE OVERNIGHT VALUE                          
+         TM    CALLER,X'80'        TEST IF CALLED BY SPOON                      
+         BO    *+12                                                             
+         CLI   OFFLINE,C'Y'                                                     
+         BE    GARS030                                                          
+         MVC   PQPARST1,CTARSTAS   USE SOON VALUE                               
+GARS030  CLI   SACRED,C'Y'                                                      
+         BE    GARSOK                                                           
+         B     GARS010                                                          
+*                                                                               
+GARSNO   B     NO                                                               
+GARSOK   B     YES                                                              
+         DROP  R4                                                               
+         EJECT                                                                  
+**********************************************************************          
+* GET PQ ARCHIVE DOCUMENT TYPE                                       *          
+**********************************************************************          
+         SPACE 1                                                                
+GETPQADT EQU   *                                                                
+         NTR1                                                                   
+         MVI   SACRED,C'N'                                                      
+         MVI   ELCODE,CTADTELQ                                                  
+         BRAS  RE,GETEL                                                         
+         B     GADT020                                                          
+*                                                                               
+GADT010  BRAS  RE,NEXTEL                                                        
+*                                                                               
+GADT020  BNE   GADTNO                                                           
+         USING CTADTD,R4                                                        
+         BRAS  RE,APPLY            APPLY PROFILE TYPE SELECTION RULE            
+         BNE   GADT010                                                          
+         MVC   PQPADTCO,CTADTCOD   SAVE PQ ARCHIVE DOCUMENT TYPE                
+         CLI   SACRED,C'Y'                                                      
+         BE    GADTOK                                                           
+         B     GADT010                                                          
+*                                                                               
+GADTNO   B     NO                                                               
+GADTOK   B     YES                                                              
+         DROP  R4                                                               
+         EJECT                                                                  
+**********************************************************************          
+* GET DATE@DDS VALUE AND SAVE IN PQPD@DDS                            *          
+**********************************************************************          
+         SPACE 1                                                                
+GETPDDS  EQU   *                                                                
+         NTR1                                                                   
+         MVI   SACRED,C'N'                                                      
+         MVI   ELCODE,CTPDDELQ                                                  
+         BRAS  RE,GETEL                                                         
+         B     GPDD020                                                          
+*                                                                               
+GPDD010  BRAS  RE,NEXTEL                                                        
+*                                                                               
+GPDD020  BNE   GPDDNO                                                           
+         USING CTPDDD,R4                                                        
+         BRAS  RE,APPLY            APPLY PROFILE TYPE SELECTION RULE            
+         BNE   GPDD010                                                          
+*&&UK*&& B     *+10                                                             
+*&&US*&& B     *+4                                                              
+         MVC   PQPD@DDS,CTPDDATE   SAVE DATE@DDS VALUE                          
+GPDD030  CLI   SACRED,C'Y'                                                      
+         BE    GPDDOK                                                           
+         B     GPDD010                                                          
+*                                                                               
+GPDDNO   B     NO                                                               
+GPDDOK   B     YES                                                              
+         DROP  R4                                                               
+         EJECT                                                                  
+**********************************************************************          
+* GET PRINT@DDS VALUE AND SAVE IN PQP@DDS                            *          
+**********************************************************************          
+         SPACE 1                                                                
+GETPADS  EQU   *                                                                
+         NTR1                                                                   
+         MVI   SACRED,C'N'                                                      
+         MVI   ELCODE,CTPADELQ                                                  
+         BRAS  RE,GETEL                                                         
+         B     GPAD020                                                          
+*                                                                               
+GPAD010  BRAS  RE,NEXTEL                                                        
+*                                                                               
+GPAD020  BNE   GPADNO                                                           
+         USING CTPADD,R4                                                        
+         BRAS  RE,APPLY            APPLY PROFILE TYPE SELECTION RULE            
+         BNE   GPAD010                                                          
+         MVC   PQP@DDS,CTPADFLG    SAVE PRINT@DDS FLAG                          
+         MVC   PQP@BST,CTPADPQB    SAVE PQBURTS FLAG                            
+         CLI   CTPADLEN,14                                                      
+         BL    GPAD030                                                          
+         CLC   CTPADOUT,SPACES     TEST IF NEW OUTPUT TYPE DEFINED              
+         BNH   GPAD030                                                          
+         MVC   PQPOUTY,CTPADOUT    SAVE IT                                      
+         MVI   PQP@DDS,C'Y'                                                     
+GPAD030  CLI   SACRED,C'Y'                                                      
+         BE    GPADOK                                                           
+         B     GPAD010                                                          
+*                                                                               
+GPADNO   B     NO                                                               
+GPADOK   B     YES                                                              
+         DROP  R4                                                               
+         EJECT                                                                  
+**********************************************************************          
+* ROUTINE TO SEE IF THIS PROFILE APPLIES                             *          
+* (CODE COPIED FROM EDREQSORT)                                       *          
+**********************************************************************          
+         SPACE 1                                                                
+APPLY    EQU   *                                                                
+         NTR1                                                                   
+         USING CTDCOD,R4                                                        
+APPLY2   CLI   CTDCOTYP,C'S'       SACRED                                       
+         BNE   APPLY4                                                           
+         MVI   SACRED,C'Y'                                                      
+         B     APPLYES                                                          
+*                                                                               
+APPLY4   CLI   CTDCOTYP,C'P'       PERMANENT                                    
+         BE    APPLYES                                                          
+         CLI   CTDCOTYP,C'T'       TEMPORARY                                    
+         BNE   APPLY6                                                           
+         CLC   TODAY,CTDCODTA      SEE IF ITS EXPIRED                           
+         BH    APPLYNO                                                          
+         B     APPLYES                                                          
+*                                                                               
+APPLY6   CLC   CTDCODTA,DAYOFWK    DAY OF WEEK PROFILE - CHECK MATCH            
+         BE    APPLYES                                                          
+*                                                                               
+APPLYNO  B     NO                                                               
+APPLYES  B     YES                                                              
+         DROP  R4                                                               
+         EJECT                                                                  
+*                                                                               
+         GETEL (R4),CTOFFSET,ELCODE                                             
+*                                                                               
+YES      SR    RC,RC                                                            
+NO       LTR   RC,RC                                                            
+         XIT1                                                                   
+*                                                                               
+DEFASTAO EQU   C'A'                DEFAULT ARCHIVE STATUS=A OVERNIGHT           
+DEFASTAS EQU   C'E'                DEFAULT ARCHIVE STATUS=E SOON                
+DEFACLS  EQU   C'A'                DEFAULT ARCHIVE CLASS=A                      
+*                                                                               
+FIRST    DC    C' '                                                             
+SPACES   DC    128C' '                                                          
+DMREAD   DC    C'DMREAD '                                                       
+CTFILE   DC    C'CTFILE '                                                       
+*&&UK                                                                           
+NPDATE   DC    CL8'29/09/07'       NO PRINTING DATE FOR UK                      
+NPDPWOS  DC    XL3'A70929'                                                      
+NPDPDD   DC    C'N'                DEFAULT VALUE FOR PRINT@DDS                  
+NPDPQB   DC    C'N'                DEFAULT VALUE FOR PQ BURST                   
+*&&                                                                             
+*&&US                                                                           
+NPDATE   DC    CL8'12/31/27'       NO PRINTING DATE FOR US                      
+NPDPWOS  DC    XL3'C71231'                                                      
+NPDPDD   DC    C'N'                DEFAULT VALUE FOR PRINT@DDS                  
+NPDPQB   DC    C'N'                DEFAULT VALUE FOR PQ BURST                   
+*&&                                                                             
+         DS    0H                                                               
+CTOFFSET DC    YL2(CTPDATA-CTPKEY)                                              
+*                                                                               
+       ++INCLUDE DMPRTQC                                                        
+*                                                                               
+         EJECT                                                                  
+         LTORG                                                                  
+         EJECT                                                                  
+WORKD    DSECT                                                                  
+*                                                                               
+DMCB     DS    6F                                                               
+DATAMGR  DS    V                                                                
+RELO     DS    A                                                                
+DUB      DS    D                                                                
+APARM    DS    A                   A(PARAMETER LIST)                            
+*                                                                               
+PARM     DS    0XL20               PARAMETER LIST                               
+P1       DS    0XL4                                                             
+CALLER   DS    XL1                 CALLER SPOON=X'80'                           
+APROFKEY DS    AL3                 A(PROFILE KEY)                               
+*                                                                               
+P2       DS    0XL4                                                             
+PQDATCOD DS    XL1                 PQ PROFILE DATA AREA FORMAT CODE             
+PQDATADR DS    AL3                 PQ PROFILE DATA AREA ADDRESS                 
+*                                                                               
+P3       DS    0XL4                                                             
+RETCODE  DS    XL1                 ROUTINE RETURN CODE                          
+ACOMFACS DS    AL3                 A(COMFACS)                                   
+*                                  ITMF-15111 - GHOA                            
+P4       DS    0XL4                                                             
+PRGPRF   DS    XL1                 N/A                                          
+APRGPROF DS    AL3                 A(ADDRESS PROGRAM LEVEL PROFILE)             
+*                                                                               
+P5       DS    0XL4                                                             
+ORGPRF   DS    XL1                 N/A                                          
+AORGPROF DS    AL3                 A(ADDRESS ORIGIN ID LEVEL PROFILE)           
+*                                                                               
+PQPBLOCK DS    XL80                PQ PROF BLOCK                                
+REMOTEC  DS    CL80                LOCAL REMOTEC AREA                           
+*                                                                               
+OFFLINE  DS    C                   OFFLINE INDICATOR                            
+*                                                                               
+VDATAMGR DS    V                   COMFACS ADDRESSES                            
+VDATCON  DS    V                                                                
+VGETDAY  DS    V                                                                
+*                                                                               
+OVERFLAG DS    CL1                 FLAG ORIGIN OVERIDE PROFILE READ             
+ELCODE   DS    XL1                 PROFILE ELEMENT CODE SAVE                    
+SACRED   DS    CL1                 PROFILE SACRED TYPE FLAG                     
+TODAY    DS    PL3                 TODAYS DATE                                  
+DAYOFWK  DS    XL3                 DAY OF WEEK CODE                             
+*                                                                               
+APROGPRO DS    A                   ADDRESS OF RECORD BUFFERS                    
+AORIGPRO DS    A                                                                
+AOUTPREC DS    A                                                                
+*                                                                               
+P@FLAG   DS    XL1                 PRINT@DDS FLAG                               
+P@FPQ    EQU   X'08'               PRINT TO PQ                                  
+P@FDDS   EQU   X'04'               PRINT AT DDS                                 
+P@FNPDO  EQU   X'02'               OVERRIDE BY NPDATE                           
+P@FNPDA  EQU   X'01'               NPDATE IS ACTIVE                             
+*                                                                               
+IOERR    DS    XL1                 IO ERROR BYTE                                
+IOKEY    DS    XL(L'CTPKEY)        CONTROL FILE KEY                             
+PROGPRO  DS    1000C               PROGRAM LEVEL PROFILE RECORD BUFFER          
+ORIGPRO  DS    1000C               ORIGIN ID LEVEL PROFILE RECORD               
+OUTPREC  DS    1000C               OUTPUT TYPE RECORD BUFFER                    
+*                                                                               
+WORKX    EQU   *                                                                
+         EJECT                                                                  
+         PRINT OFF                                                              
+       ++INCLUDE DDPQPROFD                                                      
+         PRINT ON                                                               
+*                                                                               
+         PRINT OFF                                                              
+       ++INCLUDE DDREMOTED                                                      
+         PRINT ON                                                               
+*                                                                               
+         PRINT OFF                                                              
+       ++INCLUDE DMPRTQL                                                        
+         PRINT ON                                                               
+*                                                                               
+         PRINT OFF                                                              
+       ++INCLUDE FAREPBLK                                                       
+         PRINT ON                                                               
+*                                                                               
+         PRINT OFF                                                              
+       ++INCLUDE DDCOMFACS                                                      
+         PRINT ON                                                               
+*                                                                               
+         PRINT OFF                                                              
+       ++INCLUDE CTGENFILE                                                      
+         PRINT ON                                                               
+         SPACE 2                                                                
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'018DDPQPROF  11/25/19'                                      
+         END                                                                    

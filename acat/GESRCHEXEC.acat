@@ -1,0 +1,2364 @@
+*          DATA SET GESRCHEXEC AT LEVEL 010 AS OF 01/20/16                      
+*CATALP SRCHEXEC                                                                
+         TITLE 'SEARCH SYSTEM EXECUTIVE'                                        
+***********************************************************************         
+* AHYD 008 24DEC10 FIRST CRACK AT STORAGE PROTECTION                            
+* PWES 005 19JAN96 SUPPORT SDSRIINQ - KEEP INCLUDED WORDS/PART WORDS            
+*                  (SOLVES 'DRINK DR*' RETURNING ALL WORDS BEGINING DR)         
+* CMOL 004 14SEP95 CHANGE MVI TO OI FOR SBCALLER                                
+* PWES 003 29AUG95 BUG IN FINDING LONGEST PARTIAL WORD (CODE WAS NOT            
+*                  TESTING CORRECT BYTE).THIS SOLVES THE VERY ANNOYING          
+*                  'OU* P*' TOO MANY MATCHING NAMES ERROR.                      
+* CMOL 02 22/05/95 - RELEVEL BOOK. INTRODUCE LIMACC CALLS                       
+***********************************************************************         
+SRCHEXEC RSECT                                                                  
+         PRINT NOGEN                                                            
+         NMOD1 SRCHWRKL,**SRCH**,RA,RR=RE,CLEAR=YES                             
+*                                                                               
+         USING SRCHWORK,RC         RC=TEMP WORK AREA                            
+         ST    RE,RELO                                                          
+         ST    R1,APARMS                                                        
+         L     R9,0(,R1)                                                        
+         USING SEARCHD,R9          R9=ADDRESS OF SEARCH CONTROL BLOCK           
+         USING SDSYSD,R8           R8=SYSTEM DIRECTORY ENTRY                    
+         USING SDSRCHD,R7          R7=SEARCH DIRECTORY ENTRY                    
+*                                                                               
+         MVI   SBRETURN,0          CLEAR RETURN/ERROR FIELD                     
+*                                                                               
+         CLI   SBLANG,7            CHECK LANGUAGE VALID                         
+         BNH   *+8                                                              
+         MVI   SBLANG,0                                                         
+         CLI   SBIDLANG,7                                                       
+         BNH   *+8                                                              
+         MVI   SBIDLANG,0                                                       
+         MVC   IDLANG,SBIDLANG     COPY ID LANGUAGE SO WE CAN FUDGE IT          
+         LA    RE,RETURN                                                        
+         ST    RE,VPROTOFF         DEFAULT WHEN NOT RESOLVED                    
+         ST    RE,VPROTON          RETURN FROM CALL                             
+*                                                                               
+WHOCALLS ICM   RE,15,VLDMOD        IS DMLDMOD LINKED,                           
+         BNZ   WHOLDM              YES, SKIP                                    
+         ICM   RE,15,VLSSB         IF NO SSB LINKED, ONLINE                     
+*&&UK*&& BZ    WHOONL              ON-LINE                                      
+*&&US                                                                           
+         BNZ   WHOCALL1            ON-LINE                                      
+         L     RF,SBCOMFAC                                                      
+         L     RF,CDATAMGR-COMFACSD(,RF)                                        
+         GOTO1 (RF),DMCB,=C'SSBAD'        GET A(SSB)                            
+         L     RE,4(R1)                                                         
+*&&                                                                             
+WHOCALL1 CLC   0(2,RE),NULLS       IF SSB HAS NON-ZERO MASTER TERM              
+         BNZ   WHOONL              ONLINE                                       
+                                                                                
+WHOOFF   OI    SBCALLER,SBCALOFQ   SET OFFLINE                                  
+         OC    SBCOMFAC,SBCOMFAC   TEST COMFACS ALREADY SET                     
+         BNZ   INIT                                                             
+         LA    RE,VLDATAMG                                                      
+         ST    RE,SBCOMFAC         FAKE UP A COMFACS DATAMGR FOR SEARCH         
+         B     INIT                                                             
+                                                                                
+WHOONL   OI    SBCALLER,SBCALONQ   SET ONLINE                                   
+         L     RF,SBCOMFAC                                                      
+         MVC   VPROTOFF,CPROTOFF-COMFACSD(RF)                                   
+         MVC   VPROTON,CPROTON-COMFACSD(RF)                                     
+         CLI   SBSVCREQ,0          IS IT SERVICE REQUEST ?                      
+         BE    INIT                NO                                           
+         OI    SBCALLER,SBCALSRQ   SET ONLINE SERVICE REQUEST                   
+         B     INIT                                                             
+                                                                                
+WHOLDM   OI    SBCALLER,SBCALLDQ   SET DMLDMOD                                  
+         B     INIT                                                             
+                                                                                
+RETURN   BR    RE                                                               
+         EJECT                                                                  
+******************                                                              
+* INITIALIZATION *                                                              
+******************                                                              
+INIT     L     R8,VLSYSDIR         GET ADDRESS SYSTEM DIRECTORY                 
+         A     R8,RELO                                                          
+         CLC   0(4,R8),NULLS       TEST IF SYSTEM DIR INITIALISED               
+         BE    INISY               YES, GO FIND SYSTEM                          
+*---------------------------------------------------------------------          
+* INITIALIZE SYSTEM DIRECTORY - FIRST TIME FOR SESSION, OR $LOADED              
+*---------------------------------------------------------------------          
+INISYI   TM    SBCALLER,SBCALONQ   TEST ONLINE                                  
+         BZ    INISYI20            IF NOT, NO NEED TO ENQUE INIT                
+         L     RF,SBCOMFAC                                                      
+         L     RF,CDATAMGR-COMFACSD(,RF)                                        
+         GOTO1 (RF),DMCB,DMTIME,C'SSET' SUSPEND TIMER TILL INIT DONE            
+*                                                                               
+INISYI20 GOTO1 VPROTOFF                                                         
+         L     R2,0(,R8)           GET A(*) AT START OF SYSDIR                  
+         MVC   0(4,R8),XFFS        SET INIT IN PROGRESS                         
+         SR    R2,R8               OBTAIN RELOCATION FACTOR                     
+         LA    R8,4(,R8)           SKIP HEADER                                  
+*                                                                               
+INISYI30 OC    SDSYSLN,SDSYSLN     CHECK END OF TABLE                           
+         BZ    INISYI90            YES, SKIP                                    
+*                                                                               
+         TM    SBCALLER,SBCALOFQ   TEST OFFLINE                                 
+         BO    *+12                YES, DIR ALWAYS LINKED                       
+         CLI   SDSYDRTN,0          TEST SEARCH DIR IS SEPERATE PHASE            
+         BNE   INISYI80            YES, DON'T RELOCATE ADDRESS                  
+         XR    R7,R7                                                            
+         ICM   R7,7,SDSYDRTA       TEST SEARCH DIRECTORY PRESENT                
+         BZ    INISYI80            NO, SKIP                                     
+         SR    R7,R2               RELOCATE LINKED DIRECTORY ADDRESS            
+         CLC   =X'4700',0(R7)      TRAP STRANGE INIT BUG BY TESTING IF          
+         BE    *+6                 RESULTING ADDRESS POINTS TO A VALID          
+         DC    H'0'                MODULE (IE ONE STARTING WITH NOP)            
+         STCM  R7,7,SDSYDRTA                                                    
+*                                                                               
+INISYI80 XR    R0,R0                                                            
+         ICM   R0,3,SDSYSLN        GET DISPLACEMENT TO NEXT SYSTEM NTRY         
+         AR    R8,R0                                                            
+         B     INISYI30            LOOP TILL END                                
+*                                                                               
+INISYI90 L     R8,VLSYSDIR         RESET ADDRESS SYSTEM DIRECTORY               
+         A     R8,RELO                                                          
+         XC    0(4,R8),0(R8)       SET INITIALIZED                              
+         TM    SBCALLER,SBCALONQ   TEST ONLINE                                  
+         BZ    INISY00             IF NOT, NO NEED TO DEQUE INIT                
+         L     RF,SBCOMFAC                                                      
+         L     RF,CDATAMGR-COMFACSD(,RF)                                        
+         GOTO1 (RF),DMCB,DMTIME,C'RSET' RESTART TIMER                           
+         GOTO1 VPROTON             FINISHED SO TURN IT BACK ON                  
+         B     INISY00                                                          
+         EJECT                                                                  
+***********************************************************************         
+* FIND REQUIRED SYSTEM DIRECTORY ENTRY                                          
+***********************************************************************         
+INISY    ICM   R1,15,SBASYS        HAVE WE GOT SYSTEM IN CONTROL BLOCK          
+         BZ    INISY00             NO, GO FIND IT                               
+         LR    R8,R1               YES, SET SYSTEM ENTRY ADDRESS                
+         L     R7,SBASRCH          SYSTEM AND SEARCH ENTRIES NOW SET            
+         B     ACT                 GO SEE WHAT ACTION IS REQUIRED               
+*                                                                               
+INISY00  XR    R7,R7               INDICATE NO SEARCH ENTRY YET                 
+*                                                                               
+INISYOV  DS    0H                  ENTRY TO LOOK UP OVERRIDE SYSTEM             
+*                                                                               
+         MVI   SBERRFLD,1          POSSIBLE ID FIELD ERROR                      
+*                                                                               
+         NC    SBSYSTEM,SBSYSTEM   IS IT DISPLACEMENT FORMAT                    
+         BNZ   INISY10             NO                                           
+         AH    R8,SBDSYS                                                        
+         B     INISY80                                                          
+*                                                                               
+INISY10  LA    R8,4(,R8)           SKIP HEADER                                  
+*                                                                               
+         XR    R0,R0                                                            
+         CLC   SBSYSTEM,SPACES     IS THERE A SYSTEM SPECIFIED                  
+         BE    INISY20             NO, ASSUME SBOVSYS REQUIRED                  
+         NC    SBSYSTEM(L'SBSYSTEM-1),SBSYSTEM TEST OVSYS GIVEN                 
+         BZ    INISY30             YES, GO FIND IT                              
+         B     INISY50                                                          
+*                                                                               
+INISY20  ICM   R0,3,SDSYSLN        GET DISPLACEMENT TO NEXT ENTRY               
+         BZ    INISY40             SYSTEM NOT FOUND IF ZERO                     
+         CLC   SDOVSYS,SBOVSYS                                                  
+         BE    INISY80             SYSTEM FOUND                                 
+         AR    R8,R0                                                            
+         B     INISY20             LOOP TILL FOUND OR END                       
+*                                                                               
+INISY30  ICM   R0,3,SDSYSLN        GET DISPLACEMENT TO NEXT ENTRY               
+         BZ    INISY40             SYSTEM NOT FOUND IF ZERO                     
+         CLC   SDOVSYS,SBSYSTEM+L'SBSYSTEM-1                                    
+         BE    INISY80             SYSTEM FOUND                                 
+         AR    R8,R0                                                            
+         B     INISY20             LOOP TILL FOUND OR END                       
+*                                                                               
+INISY40  GOTO1 GETWORD,DCSYS                                                    
+         MVC   SBOPTTXT(8),0(RF)                                                
+         MVI   GTLTXT-GTBLOCK+SBTXTBLK,8                                        
+         MVI   GTINDX-GTBLOCK+SBTXTBLK,1                                        
+         LA    RE,SBOPTTXT                                                      
+         STCM  RE,B'0111',GTATXT-GTBLOCK+SBTXTBLK                               
+         B     EMIF                                                             
+*                                                                               
+INISY50  LA    R1,SBSYSTEM+L'SBSYSTEM-1 GET LENGTH OF SYSTEM CODE (-1)          
+INISY60  CLI   0(R1),C' '                                                       
+         BNE   INISY65                                                          
+         BCT   R1,INISY60                                                       
+INISY65  LA    R0,SBSYSTEM                                                      
+         SR    R1,R0                                                            
+*                                                                               
+         XR    R0,R0               SEARCH TABLE BY SYSTEM NAME                  
+         XR    RF,RF                                                            
+         IC    RF,IDLANG           IN SPECIFIED LANGUAGE                        
+         AR    RF,RF                                                            
+INISY70  ICM   R0,3,SDSYSLN        GET DISPLACEMENT TO NEXT ENTRY               
+         BZ    ESYS                SYSTEM NOT FOUND IF ZERO                     
+         LH    RE,SDSYSCD          POINT TO SYSTEM CODE INDEX                   
+         AR    RE,R8                                                            
+         LH    R2,0(RE,RF)         GET DISP FROM INDEX                          
+         AR    R2,RE               R2=A(CODE)                                   
+         EX    R1,INISY75                                                       
+         BE    INISY80             FOUND IF MATCHES TO LENGTH GIVEN             
+         AR    R8,R0                                                            
+         B     INISY70             LOOP TILL FOUND OR END                       
+INISY75  CLC   SBSYSTEM(0),0(R2)   *EXECUTED*                                   
+*                                                                               
+INISY80  ST    R8,SBASYS           SAVE SYSTEM DIRECTORY ENTRY ADDRESS          
+         XR    RF,RF                                                            
+         IC    RF,SBLANG                                                        
+         AR    RF,RF                                                            
+         LH    RE,SDSYSCD          POINT TO SYSTEM CODE INDEX                   
+         AR    RE,R8                                                            
+         LH    R2,0(RE,RF)         GET DISP FROM INDEX                          
+         AR    R2,RE               R2=A(CODE)                                   
+         MVC   SBSYSTEM,0(R2)      COPY FULL NAME FOR LANG=SBLANG               
+         LR    RE,R8                                                            
+         L     RF,VLSYSDIR                                                      
+         A     RF,RELO                                                          
+         SR    RE,RF                                                            
+         STCM  RE,B'0011',SBDSYS   SAVE SYSTEM DISPLACEMENT                     
+         LTR   R7,R7               HAVE WE GOT A SEARCH ENTRY                   
+         BNZ   INISE90             YES, WE JUST SET UP SYSTEM OVERRIDE          
+         EJECT                                                                  
+***********************************************************************         
+* LOOK UP REQUIRED SEARCH DIRECTORY ENTRY                                       
+***********************************************************************         
+         TM    SBCALLER,SBCALOFQ   TEST OFFLINE                                 
+         BO    INISE05             YES, DIR ALWAYS LINKED                       
+         CLI   SDSYDRTN,0          TEST SEARCH DIR IS SEPERATE PHASE            
+         BE    INISE05             NO, GET RELOCATED ADDRESS                    
+         XC    DMCB(8),DMCB        GET ADDRESS OF CORERES PHASE                 
+         MVI   DMCB+4,C'R'         CALLOV MAINT CALL                            
+         MVC   DMCB+5(2),=X'000A'  T00ANN                                       
+         MVC   DMCB+7(1),SDSYDRTN  PHASEID                                      
+         L     RF,SBCOMFAC                                                      
+         L     RF,CCALLOV-COMFACSD(,RF)                                         
+         GOTO1 (RF),DMCB                                                        
+         CLC   SDSYDRTA,1(R1)      TEST ADDRESS SAME AS SAVED                   
+         BE    INISE05             YES, SKIP                                    
+         GOTO1 VPROTOFF                                                         
+         MVC   SDSYDRTA,1(R1)      SAVE NEW ADDRESS (RELOADED?)                 
+         GOTO1 VPROTON                                                          
+*                                                                               
+INISE05  XR    R7,R7                                                            
+         ICM   R7,7,SDSYDRTA       GET SYSTEMS SEARCH DIRECTORY ADDRESS         
+         BZ    ESRC                IF NONE, NO SEARCH SUPPORTED                 
+         AH    R7,2(,R7)           ADD DISPLACEMENT TO TABLE                    
+         LR    R5,R7               SAVE ITS ADDRESS                             
+*                                                                               
+         NC    SBSEARCH,SBSEARCH   IS IT DISPLACEMENT FORMAT                    
+         BNZ   INISE10             NO                                           
+         AH    R7,SBDSRCH                                                       
+         LA    R4,INISE90                                                       
+         B     INISE80                                                          
+*                                                                               
+INISE10  CLC   SBSEARCH,SPACES     IS THERE A SEARCH SPECIFIED                  
+         BNE   INISE50             YES                                          
+         CLI   SBSTYLO,SBSTPASQ    IS IT SPECIAL PASSIVE OUTPUT STYLE           
+         BNE   INISE20             NO, SKIP                                     
+         XR    R7,R7               YES, SEARCH IS OPTIONAL, ZERO ADDR           
+         B     INISE99             AND SKIP SEARCH SET UP                       
+*                                                                               
+INISE20  CLI   SBSTYLI,SBSTVALQ    IS IT VALIDATE KEY STRING                    
+         BNE   INISE40             NO, SEARCH MUST BE PROVIDED                  
+*                                                                               
+INISE28  L     R1,APARMS           YES, MAY BE IN EXTENDED HEADER ID            
+         L     R1,4(,R1)           GET ADDRESS OF INPUT KEY FIELD               
+         TM    1(R1),X'02'         TEST EXTENDED HEADER                         
+         BZ    INISE40             NO, CAN'T HAVE SEARCH NUMBER IN IT           
+         ZIC   RE,0(,R1)           LENGTH OF FIELD                              
+         SH    RE,=H'8'            SUBTRACT LENGTH OF HEADER EXTENSION          
+         AR    R1,RE               A(HEADER EXTENSION)                          
+         CLI   0(R1),0             IS THERE A SEARCH ID NUMBER                  
+         BE    INISE40             NO                                           
+         MVC   SBSEARCH(1),0(R1)   COPY ID NUMBER                               
+*                                                                               
+         LA    R4,INISE35                                                       
+         XR    R0,R0               SEE IF ITS IN TABLE                          
+INISE30  ICM   R0,3,SDSRCHLN       GET DISPLACEMENT TO NEXT ENTRY               
+         BZ    INISE40             SEARCH NOT FOUND IF ZERO                     
+         CLC   SDSRIDNO,SBSEARCH   MATCH SEARCH ID NUMBER                       
+         BE    INISE80             FOUND IT                                     
+INISE35  AR    R7,R0                                                            
+         B     INISE30             LOOP TILL FOUND OR END                       
+*                                                                               
+INISE40  GOTO1 GETWORD,DCSEA                                                    
+         MVC   SBOPTTXT(8),0(RF)                                                
+         MVI   GTLTXT-GTBLOCK+SBTXTBLK,6                                        
+         MVI   GTINDX-GTBLOCK+SBTXTBLK,2                                        
+         LA    RE,SBOPTTXT                                                      
+         STCM  RE,B'0111',GTATXT-GTBLOCK+SBTXTBLK                               
+         B     EMIF                                                             
+*                                                                               
+INISE50  LA    R1,SBSEARCH+L'SBSEARCH-1 GET LENGTH OF SEARCH CODE (-1)          
+INISE60  CLI   0(R1),C' '                                                       
+         BNE   INISE65                                                          
+         BCT   R1,INISE60                                                       
+INISE65  LA    R0,SBSEARCH                                                      
+         SR    R1,R0                                                            
+*                                                                               
+         LA    R4,INISE75                                                       
+         XR    R0,R0               SEE IF ITS IN TABLE                          
+         XR    RF,RF                                                            
+         IC    RF,IDLANG           IN SPECIFIED LANGUAGE                        
+         AR    RF,RF                                                            
+INISE70  ICM   R0,3,SDSRCHLN       GET DISPLACEMENT TO NEXT ENTRY               
+         BZ    ESRC                SEARCH NOT FOUND IF ZERO                     
+         LA    R2,SDSRCHCD         POINT TO SEARCH CODE                         
+         CLI   SDSRCHCD,0          TEST CODE OR INDEX USED                      
+         BNE   INISE71             CODE USED                                    
+         XR    RE,RE                                                            
+         ICM   RE,3,SDSRCHCX       POINT TO SEARCH CODE INDEX                   
+         AR    RE,R7                                                            
+         LH    R2,0(RE,RF)         GET DISP FROM INDEX                          
+         AR    R2,RE               R2=A(CODE)                                   
+INISE71  EX    R1,INISE79                                                       
+         BE    INISE80             FOUND IF MATCHES TO LENGTH GIVEN             
+INISE75  AR    R7,R0                                                            
+         B     INISE70             LOOP TILL FOUND OR END                       
+INISE79  CLC   SBSEARCH(0),0(R2)   *EXECUTED*                                   
+*                                                                               
+* CHECK CORRECT COUNTRY                                                         
+*                                                                               
+INISE80  CLI   SDSRCTRY,0          ANY REQUIRED COUNTRY                         
+         BE    INISE85             NO                                           
+         TM    SDSRCTRY,X'80'      IS IT 'ALL BUT'                              
+         BO    INISE82             YES, SKIP                                    
+         CLC   SDSRCTRY,SBCTRY     IS THIS THE COUNTRY                          
+         BNER  R4                  NO, LOOK AT NEXT ENTRY                       
+         B     INISE85                                                          
+INISE82  MVC   BYTE,SDSRCTRY                                                    
+         NI    BYTE,X'7F'          SET OFF 'ALL BUT'                            
+         CLC   BYTE,SBCTRY         IS THIS THE COUNTRY                          
+         BER   R4                  YES, LOOK AT NEXT ENTRY                      
+*                                                                               
+* CHECK REQUIRED SYSTEM, OR SET UP OVERRIDE SYSTEM, IF ANY                      
+*                                                                               
+INISE85  CLC   SDSROSYS,SPACES     ANY REQUIRED SYSTEM, OR OVERRIDE?            
+         BE    INISE90             NO                                           
+         TM    SDSRIND2,SDSRISFQ   IS IT A REQUIRED CODE                        
+         BO    INISE88             YES, GO SEE IF USED                          
+         MVC   SBSYSTEM,SDSROSYS   COPY OVERRIDE SYSTEM                         
+         MVI   IDLANG,0            FORCE TO ENGLISH FOR LOOKUP                  
+         L     R8,VLSYSDIR         RESET ADDRESS SYSTEM DIRECTORY               
+         A     R8,RELO                                                          
+         B     INISYOV             GO FIND OVERRIDE SYSTEM ENTRY                
+*                                                                               
+INISE88  LH    RE,SDSYSCD          POINT TO SYSTEM CODE INDEX                   
+         AR    RE,R8                                                            
+         LH    RF,0(,RE)           GET ENGLISH DISP FROM INDEX                  
+         AR    RF,RE               RF=A(ENGLISH SYSTEM CODE)                    
+         CLC   SDSRFSYS,0(RF)      WAS REQUIRED SYSTEM CODE USED ?              
+         BNER  R4                  NO, LOOK AT NEXT ENTRY                       
+*                                                                               
+* COMPLETE SEARCH SET UP                                                        
+*                                                                               
+INISE90  ST    R7,SBASRCH          SAVE SEARCH DIRECTORY ENTRY ADDRESS          
+         LA    R2,SDSRCHCD         POINT TO SEARCH CODE                         
+         CLI   SDSRCHCD,0          TEST CODE OR INDEX USED                      
+         BNE   INISE91             CODE USED                                    
+         XR    RF,RF                                                            
+         IC    RF,SBLANG                                                        
+         AR    RF,RF                                                            
+         XR    RE,RE                                                            
+         ICM   RE,3,SDSRCHCX       POINT TO SEARCH CODE INDEX                   
+         AR    RE,R7                                                            
+         LH    R2,0(RE,RF)         GET DISP FROM INDEX                          
+         AR    R2,RE               R2=A(CODE)                                   
+INISE91  MVC   SBSEARCH,0(R2)      COPY FULL NAME FOR LANG=SBLANG               
+         LR    RE,R7                                                            
+         SR    RE,R5                                                            
+         STCM  RE,B'0011',SBDSRCH  SAVE SEARCH DIRECTORY ENTRY DISP             
+*                                                                               
+INISE99  MVC   SBIDLANG,SBLANG     ID IS NOW IN NATIVE LINGO                    
+*                                                                               
+* INITIALIZE REST OF SEARCH CONTROL BLOCK                                       
+*                                                                               
+INISB    L     R1,VLPARSER         SET ADDRESS OF PARSER ROUTINE                
+         A     R1,RELO                                                          
+         ST    R1,SBPARSER                                                      
+         EJECT                                                                  
+*****************************                                                   
+* SWITCH TO REQUIRED SYSTEM *                                                   
+*****************************                                                   
+*                                                                               
+* IF OFFLINE, ASSUME ALREADY SET TO REQUIRED SYSTEM, AND ONLY STYLE             
+* ALLOWED IS PASSIVE LIST BUILDER.                                              
+*                                                                               
+INISW    TM    SBCALLER,SBCALONQ   ARE WE RUNNING ONLINE                        
+         BO    INISWONL            YES, GO DO SWITCH                            
+         CLI   SBSTYLO,SBSTPASQ    ONLY SPECIAL PASSIVE OUTPUT STYLE            
+         BNE   ESTO                IS ALLOWED OFFLINE                           
+         B     INIMAX              AND ASSUME SWITCHED ALREADY                  
+*                                                                               
+* IF CALLED ONLINE BY AN APPLICATION PROGRAM, NOT A SERVICE REQUEST             
+* TEST IF CONNECTED ALREADY TO REQUIRED SYSTEM, IF NOT, DO LOGICAL              
+* SWITCH USING 3 CHAR SYSTEM CODE                                               
+*                                                                               
+INISWONL TM    SBCALLER,SBCALSRQ   WERE WE CALLED BY A SERVICE REQUEST          
+         BO    INISWSR             YES, SPECIAL SWITCH MECHANICS NEEDED         
+         CLC   SBOVSYS,SDOVSYS     ARE WE ALREADY IN THE RIGHT SYSTEM           
+         BE    INISWX              YES, NO NEED TO SWITCH                       
+         LA    R2,SDSYSCOD         GET SYSTEM SWITCH CODE                       
+         B     INISWGO             GO DO SWITCH                                 
+*                                                                               
+* IF CALLED BY SERVICE REQUEST, SBASYSL POINTS TO LIST OF SWITCHABLE            
+* SYSTEMS IN SAME FORMAT AS TCB SWITCH TABLE, AND BUILT BY CALLER FROM          
+* CHECKPOINT INFO IN TWA0. (MUST BE CONNECTED TO SOMETHING). SEARCH             
+* LOOKS UP REQUIRED OVSYS IN TABLE AND USES PHYSICAL SWITCH TO                  
+* CORRESPONDING SE.                                                             
+*                                                                               
+INISWSR  CLI   SBSTYLO,SBSTPASQ    IS IT SPECIAL PASSIVE OUTPUT STYLE           
+         BE    ESTO                YES, NOT ALLOWED IN SERVICE REQUEST          
+         L     R3,SBASYSL          POINT TO SWITCH TABLE BUILT BY               
+         XR    R0,R0               CALLING SERVICE REQUEST                      
+         ICM   R0,1,0(R3)          NUMBER OF ENTRIES                            
+         LA    R3,1(,R3)           FIRST ENTRY                                  
+         USING TCBSWTAB,R3         R3=A(SWITCH TABLE ENTRY)                     
+INISWSR1 CLC   SDOVSYS,TCBSWSOV    LOOK FOR ENTRY FOR REQUIRED SYSTEM           
+         BE    INISWSR2            FOUND                                        
+         LA    R3,TCBSWLEN(,R3)                                                 
+         BCT   R0,INISWSR1                                                      
+         B     EAUT                NOT IN TABLE, SO NOT AUTHORISED              
+INISWSR2 ICM   R2,B'1000',TCBSWSYS SET UP SWITCH SE FROM TABLE                  
+         ICM   R2,B'0111',XFFS                                                  
+*                                                                               
+* CALL SWITCH. R2 CONTAINS REQUIRED SYSTEM.                                     
+* SBAPPFAC CONTAINS A(AREA) WHERE SYSTEMS FACILITIES LIST IS RETURNED           
+*                                                                               
+INISWGO  L     RF,SBCOMFAC         SWITCH TO REQUIRED SYSTEM                    
+         L     RF,CSWITCH-COMFACSD(,RF)                                         
+         GOTO1 (RF),DMCB,(R2),SBAPPFAC                                          
+         CLI   DMCB+4,1            RC=0 IF SWITCH OK                            
+         BE    EAUT                RC=1 INVALID/UNAUTH SYSTEM                   
+         BH    ENOP                RC=2 SYSTEM NOT OPERATIONAL                  
+         CLI   SBSVCREQ,0          WERE WE CALLED BY A SERVICE REQUEST          
+         BNE   INISWSR5            YES, SKIP                                    
+*                                                                               
+* NOT SERVICE REQUEST, COPY RETURNED AGYB AND LIMIT ACCESS                      
+*                                                                               
+         MVC   SBAGYB,DMCB         COPY NEW AGENCY BINARY CODE                  
+         L     RE,SBATWA                                                        
+         MVC   SBACCS,TWAACCS-TWAD(RE) COPY NEW LIMIT ACCESS                    
+         B     INISWX                                                           
+*                                                                               
+* SERVICE REQUEST, COPY AGYB AND LIMIT ACCESS FROM SWITCH TABLE ENTRY           
+*                                                                               
+INISWSR5 MVC   SBAGYB,TCBSWAGB     FOR SERVICE REQUEST, COPY VALUES             
+         MVC   SBACCS,TCBSWACS     FROM SWITCH TABLE                            
+         DROP  R3                                                               
+*                                                                               
+INISWX   CLI   SBSTYLI,SBSTVALQ                                                 
+         BNE   INIMAX                                                           
+         TM    SDSRIND2,SDSRILAQ   LIMACC CALL REQUIRED?                        
+         BNO   INIMAX              NO, SO BYPASS INITIALISATION                 
+         L     R6,APARMS                                                        
+         L     R6,8(R6)            THIRD PARAM SHOULD BE A(LIMACC BLK)          
+         USING LIMACCD,R6                                                       
+         TM    LAINDS,LAIINIT      BLOCK ALREADY INITIALISED?                   
+         BO    INISWX2             YES                                          
+         LR    RE,R6               POINT TO BLOCK TO CLEAR                      
+         LA    RF,LABLKLNQ                                                      
+         SR    R1,R1                                                            
+         MVCL  RE,R0               CLEAR BLOCK                                  
+*        XC    0(LABLKLNQ,R6),0(R6)                                             
+         MVC   LASYS,SDOVSYS                                                    
+         MVC   LAAGYSEC,SBAGY                                                   
+         MVC   LALIMACC,SBACCS                                                  
+         DROP  R6                                                               
+         L     RF,SBCOMFAC                                                      
+         L     RF,CLIMACC-COMFACSD(,RF)                                         
+         GOTO1 (RF),DMCB,(C'I',(R6)),SBCOMFAC                                   
+         BE    *+6                                                              
+         DC    H'0'                SERIOUS ERROR                                
+*                                                                               
+INISWX2  STCM  R6,15,SBACCS        SET A(LIMACC BLOCK) IN SBACCS                
+         OI    SBCALLER,SBCALLAQ   INDICATE THAT SBACCS=A(LIMACC BLOCK)         
+         EJECT                                                                  
+*********************************************************                       
+* NOW FIND HIGHEST SEQUENCE NUMBER FOR THIS SEARCH TYPE *                       
+*********************************************************                       
+INIMAX   XC    SBMAXSEQ,SBMAXSEQ                                                
+         TM    SBCALLER,SBCALLDQ   ARE WE RUNNING UNDER DMLDMOD                 
+         BO    ACT                 YES, LEAVE THIS BIT OUT                      
+         LTR   R7,R7               DO WE HAVE A SEARCH SET UP                   
+         BZ    ACT                 NO, CAN'T DO THIS BIT                        
+         BAS   RE,ASYSKSET         GET SYSTEM KEY                               
+         BNE   EXIT                EXIT IF ERROR                                
+         BAS   RE,ASRCKSET         GET SEARCH KEY                               
+         BNE   EXIT                EXIT IF ERROR                                
+         BAS   RE,GETDIRN          GET DIRECTORY NAME                           
+         LH    R1,SDSRDT12         TYPE 1/2 MOD OFFSET IN KEY                   
+         LA    R1,KEY(R1)                                                       
+         OC    0(1,R1),SDSRVT2     SET TYPE 2 (SEQ/WORD PAIR)                   
+         LH    R1,SDSYDLEN         GET DIRECTORY RECORD LENGTH                  
+         BAS   RE,GETWRK           GET STORAGE FOR IT                           
+         LR    R6,R0                                                            
+*                                  READ FIRST TYPE 2 FOR THIS SEQNO             
+         GOTO1 DMGCALL,DMCB,DMRDHI,DIRNAME,KEY,(R6)                             
+         CLI   DMCB+8,0                                                         
+         BNE   EIIO                DON'T ALLOW ANY ERROR                        
+         LH    R1,SDSRDWRD         WORD/SEQ PAIR OFFSET IN KEY                  
+         BCTR  R1,0                LESS 1 FOR CLC                               
+         EX    R1,*+8              COMPARE KEY WITH RECORD READ                 
+         B     *+10                                                             
+         CLC   KEY(0),0(R6)                                                     
+         BNE   INIMAXX             IF NO TYPE 2'S, MAXSEQ=0                     
+         LH    R1,SDSRDWRD         WORD/SEQ PAIR OFFSET IN KEY                  
+         AR    R1,R6                                                            
+         ICM   RE,B'1111',XFFS     FILL RE WITH FFS                             
+         ICM   RE,B'0011',0(R1)    GET 2 BYTE SEQUENCE NUMBER                   
+         CLC   SDSRLSEQ,=Y(3)                                                   
+         BNE   *+8                 SKIP IF NOT THREE BYTES                      
+         ICM   RE,B'0111',0(R1)    GET 3 BYTE SEQUENCE NUMBER                   
+         LCR   RE,RE               SEQ IS ALWAYS COMPLEMENT IN PASSIVE          
+         ST    RE,SBMAXSEQ         SET MAXIMUM SEQUENCE NUMBER                  
+INIMAXX  BAS   RE,PUTWRK           FREE IO AREA                                 
+         EJECT                                                                  
+*********************************************                                   
+* DETERMINE REQUIRED ACTION AND CHECK VALID *                                   
+*********************************************                                   
+*                                                                               
+* LOOK UP INPUT STYLE IN STYLE TABLE                                            
+*                                                                               
+ACT      MVI   SBERRFLD,0          RESET ID FIELD ERROR                         
+*                                                                               
+* SEE IF PASSIVE OUTPUT CALL                                                    
+*                                                                               
+ACT10    CLI   SBSTYLO,SBSTPASQ    IS IT PASSIVE OUTPUT STYLE                   
+         BNE   ACT20               NO                                           
+         CLI   SBSTYLI,SBSTREQ     IF SO, INPUT STYLE MAY BE RECORD             
+         BE    ACT15               BUT THAT'S OBSOLETE                          
+         TM    SBSTYLI,255-(SBSTREQ+SBPSOVSQ) OR MAY BE FLAG BITS               
+         BNZ   ESTC                MUST NOT HAVE ANY UNDEFINED BIT ON           
+ACT15    L     R5,SBAIN            A(RECORD)                                    
+         L     R6,SBAOUT           A(PASSIVE OUTPUT AREA)                       
+         B     RECPASS                                                          
+*                                                                               
+* LOOK UP INPUT STYLE IN STYLE TABLE                                            
+*                                                                               
+ACT20    MVC   BYTE,SBSTYLI        COPY I/P STYLE                               
+         NI    BYTE,255-SBSTPRVQ   AND SET OFF PREV FLAG                        
+         LA    R2,ACTABLE          TABLE OF VALID INPUT/OUTPUT STYLES           
+ACT25    CLC   0(1,R2),ACTABLEX    INPUT STYLE TERMINATOR                       
+         BE    ESTI                INVALID INPUT STYLE                          
+         CLC   BYTE,0(R2)                                                       
+         BE    ACT30               FOUND INPUT STYLE                            
+         LA    R2,1(,R2)                                                        
+         B     ACT25               KEEP LOOKING                                 
+*                                                                               
+* MAKE SURE PREV FLAG IS IN CONTEXT                                             
+*                                                                               
+ACT30    TM    SBSTYLI,SBSTPRVQ    IF PREV FLAG ON                              
+         BZ    ACT40                                                            
+         TM    SBSTYLI,SBSTLSTQ    INPUT MUST BE A LIST                         
+         BZ    ESTI                                                             
+         TM    SBSTYLI,SBSTBTLQ    BUT NOT A BIT LIST                           
+         BO    ESTI                                                             
+         TM    SBSTYLO,SBSTLSTQ    AND OUTPUT MUST NOT BE A LIST                
+         BO    ESTC                                                             
+*                                                                               
+* SEE IF VALIDATE ONLY CALL                                                     
+*                                                                               
+ACT40    CLI   SBSTYLO,0           IS OUTPUT STYLE ZERO                         
+         BNE   ACT50               NO                                           
+         CLI   SBSTYLI,SBSTVALQ    IS INPUT STYLE VALIDATE                      
+         BE    ACT90               YES, ITS A VALIDATE ONLY CALL                
+         BNE   ESTO                ELSE INVALID OUTPUT STYLE                    
+*                                                                               
+* LOOK UP OUTPUT STYLE IN STYLE TABLE                                           
+*                                                                               
+ACT50    MVC   BYTE,SBSTYLO        COPY O/P STYLE                               
+         NI    BYTE,255-SBSTDFLQ   AND SET OFF FILTER FLAG                      
+         LA    R3,ACTABLO          FIRST VALID OUTPUT STYLE                     
+ACT55    CLC   ACTABLOX,0(R3)      OUTPUT STYLE TERMINATOR                      
+         BE    ESTO                INVALID OUTPUT STYLE                         
+         CLC   BYTE,0(R3)                                                       
+         BE    ACT60               FOUND OUTPUT STYLE                           
+         LA    R3,1(,R3)                                                        
+         B     ACT55               KEEP LOOKING                                 
+*                                                                               
+* CHECK ANY OTHER ANOMALIES BETWEEN INPUT AND OUTPUT.                           
+*                                                                               
+ACT60    CR    R3,R2               IS OUTPUT DERIVEABLE FROM INPUT              
+         BNH   ESTC                NO                                           
+         TM    SBSTYLI,SBSTDAQ     IS INPUT STYLE DALIST/DA/RECORD              
+         BZ    ACT90               NO                                           
+         TM    SBSTYLO,SBSTSEQ     IF SO, OUTPUT STYLE MUST NOT BE SEQ          
+         BO    ESTC                                                             
+*                                                                               
+* GO TO START OF CODE FOR GIVEN INPUT STYLE.                                    
+*                                                                               
+ACT90    MVI   DIRFLAG,SRCHLSDQ    ENABLE DIRECTORY SECURITY CHECK              
+         TM    SBSTYLO,SBSTDFLQ    DIRECTORY FILTERING REQUIRED ?               
+         BZ    *+8                 NO                                           
+         OI    DIRFLAG,SRCHLFDQ    ENABLE DIRECTORY FILTERING                   
+*                                                                               
+         CLI   SBSTYLI,SBSTVALQ    INPUT IS KEY STRING                          
+         BE    VALSTYLE                                                         
+NEXTONE  L     R5,SBAIN            R5 IS ADDRESS OF INPUT                       
+         CLI   SBSTYLI,SBSTSRCQ    INPUT IS SEARCH                              
+         BE    SRCSTYLE                                                         
+         CLI   SBSTYLI,SBSTBTLQ    INPUT IS BIT LIST                            
+         BE    BITSTYLE                                                         
+         TM    SBSTYLI,SBSTSELQ    INPUT IS SEQUENCE CODE LIST                  
+         BO    SELSTYLE                                                         
+         TM    SBSTYLI,SBSTDALQ    INPUT IS DISK ADDRESS LIST                   
+         BO    DALSTYLE                                                         
+         CLI   SBSTYLI,SBSTSEQ     INPUT IS SEQUENCE CODE                       
+         BE    SEQSTYLE                                                         
+         CLI   SBSTYLI,SBSTDAQ     INPUT IS DISK ADDRESS                        
+         BE    DASTYLE                                                          
+         CLI   SBSTYLI,SBSTREQ     INPUT IS RECORD                              
+         BE    RECSTYLE                                                         
+         DC    H'0'                SHOULD NEVER GET HERE                        
+         EJECT                                                                  
+****************************                                                    
+* PROCESS USERS KEY STRING *                                                    
+****************************                                                    
+VALSTYLE XC    SBNAMES,SBNAMES     CLEAR PARSED NAME SAVE AREA                  
+         XC    SBASAVE,SBASAVE           APPLICATION SAVE AREA                  
+*                                                                               
+         MVI   SBERRFLD,1          POSSIBLE ID FIELD ERROR                      
+         BAS   RE,ASYSKSET         GET SYSTEM KEY                               
+         BNE   EXIT                EXIT IF ERROR                                
+*                                                                               
+         BAS   RE,ASRCKSET         GET SEARCH KEY                               
+         BNE   EXIT                EXIT IF ERROR                                
+*                                                                               
+         BAS   RE,ASRCISEC         INIT SECURITY CHECKING                       
+         BNE   EXIT                EXIT IF ERROR                                
+*                                                                               
+         NC    SBEXHEAD(2),SBEXHEAD TEST HEADER REQUIRED                        
+         BNZ   VAL00               SKIP IF ALREADY THERE OR NOT WANTED          
+         MVI   SBMODE,0            GET EXTRACT HEADER IN SBEXHEAD SO            
+         BAS   RE,ASRCEXTR         WEVE GOT A TITLE IF FILTER ERROR             
+         BNE   EXIT                ERROR EXIT                                   
+         XC    SBEXHEAD(2),SBEXHEAD HEADER STILL REQUIRED AFTER INIT            
+*                                                                               
+VAL00    MVI   SBERRFLD,2          POSSIBLE KEY FIELD ERROR                     
+         L     R1,APARMS                                                        
+         L     R1,4(,R1)           GET ADDRESS OF TWA FILTER FIELD              
+         BAS   RE,ASRCIFLT         INIT FILTERS                                 
+         BNE   EXIT                EXIT IF ERROR                                
+*                                                                               
+         NC    SBEXHEAD(2),SBEXHEAD TEST HEADER REQUIRED                        
+         BNZ   VAL10               SKIP IF ALREADY THERE OR NOT WANTED          
+         MVI   SBMODE,0            GET EXTRACT HEADER IN SBEXHEAD AGAIN         
+         BAS   RE,ASRCEXTR         IN CASE TITLE CHANGED VIA FILTERING          
+         BNE   EXIT                ERROR EXIT                                   
+*                                                                               
+VAL10    CLI   SBNNAMES,SBMNAMEQ   MAKE SURE WEVE NOT GOT TOO MANY              
+         BH    ETNF                TOO MANY NAME FIELDS                         
+         CLI   SBNNAMES,0                                                       
+         BNE   VALX                SKIP IF NAMES FOUND                          
+         TM    SDSRIND1,SDSRINRQ                                                
+         BO    EMNF                ERROR IF NAME REQUIRED                       
+*                                                                               
+VALX     MVI   SBERRFLD,0          DOES USER WANT SEARCH STARTED                
+         TM    SBSTYLO,X'FF'-SBSTDFLQ                                           
+         BZ    GUDEXIT             NO, EXIT                                     
+*                                                                               
+         TM    SBSTYLO,SBSTDFLQ    DID DIRECTORY FILTERING GET SET              
+         BZ    *+8                 NO                                           
+         OI    DIRFLAG,SRCHLFDQ    ENABLE DIRECTORY FILTERING                   
+         L     R5,SBAIN            PICK UP BITLIST ADDRESS                      
+         B     SRCSTYLE            GO START SEARCH                              
+         EJECT                                                                  
+************************                                                        
+* PERFORM SEARCH       *                                                        
+*        R5=A(BITLIST) *                                                        
+************************                                                        
+         USING SRCHLSTD,R5                                                      
+SRCSTYLE CLI   SBNNAMES,SBMNAMEQ   MAKE SURE WEVE NOT GOT TOO MANY              
+         BH    ETNF                NAME FIELDS                                  
+         L     R2,SBMAXSEQ         GET HIGHEST SEQUENCE NUMBER USED             
+         LA    R2,7(,R2)           ROUND UP AND GET NUMBER OF BYTES             
+         SRL   R2,3                REQUIRED WITH 1 BIT PER ENTRY                
+         LR    R3,R2                                                            
+         SLL   R3,3                R3=NUMBER OF ENTRIES ALLOCATED               
+         LA    R2,SRCHLLNQ(,R2)    R2=SIZE OF LIST REQUIRED                     
+         SR    RF,RF                                                            
+         ICM   RF,3,SRCHLLEN                                                    
+         CR    R2,RF               IS GIVEN AREA BIG ENOUGH ?                   
+         BH    ELTS                NO, LIST TOO SMALL                           
+*                                                                               
+* INITIALIZE BITLIST TO NULLS (NOTHING SELECTED YET)                            
+*                                                                               
+         LR    R0,R5                                                            
+         LR    R1,R2                                                            
+         XR    RF,RF               CLEAR TO NULLS                               
+         MVCL  R0,RE                                                            
+         STH   R2,SRCHLLEN         INSERT LENGTH                                
+         MVC   SRCHLTYP,=AL2(SRCHLTBQ) SET TYPE IS BITLIST                      
+         STCM  R3,B'0111',SRCHLNAL SET NUMBER OF ENTRIES ALLOCATED              
+*                                                                               
+         LTR   R3,R3               R3 WILL BE ZERO IF NO DATA IN                
+         BZ    SRCX                LIST (SBMAXSEQ=0)                            
+*                                                                               
+* GRAB EXTRA STORAGE FOR SEARCH, INIT SRCB FOR DATA MANAGER, CALL               
+* SYSTEM AND SEARCH KEYSET ROUTINES (WHICH MAY SET DIRECTORY FILTERING          
+* REQUESTED - SBSTDFLQ)                                                         
+*                                                                               
+         LA    R1,SRCHSXTL-SRCHWRKL EXTEND STORAGE FOR SEARCH.                  
+         BAS   RE,GETWRK                                                        
+*                                                                               
+         GOTO1 ,SRCB,,DIRNAME,KEY,PASSIO PRIME SEARCH DMCB                      
+*                                                                               
+         BAS   RE,ASYSKSET         GET SYSTEM KEY                               
+         BNE   EXIT                EXIT IF ERROR                                
+         BAS   RE,ASRCKSET         GET SEARCH KEY                               
+         BNE   EXIT                EXIT IF ERROR                                
+         BAS   RE,GETDIRN          GET DIRECTORY NAME                           
+*                                                                               
+SRC080   BAS   RE,ASRCPRBL         CALL 'PRESET BITLIST' HOOK                   
+         BNE   EXIT                EXIT IF ERROR                                
+         OC    SRCHLNAC,SRCHLNAC   TEST ANY BITS PRESET ACTIVE                  
+         BZ    SRC090              NO, NORMAL SEARCH                            
+         TM    SRCHLNAC,X'80'      TEST ALL BITS SET INACTIVE                   
+         BZ    SRC085              NO, GO SET UP SECOND PASS                    
+         XC    SRCHLNAC,SRCHLNAC   YES, RESET TO NO BITS ACTIVE                 
+         B     SRCX                EXIT WITH EMPTY LIST                         
+SRC085   CLI   SBNNAMES,0          TEST IF NAME(S) TO SEARCH FOR                
+         BNE   SRC405              YES, GO DO NAME FILTERS                      
+         TM    DIRFLAG,SRCHLFDQ    IF DIR FILTERING NOT REQUESTED, EXIT         
+         BZ    SRCX2               AND LEAVE SUCURITY CHECK TILL LATER          
+         B     SRC115              GO DO DIR FILTERS                            
+*                                                                               
+SRC090   CLI   SBNNAMES,0          IF NAME(S) TO SEARCH FOR                     
+         BNE   SRC200              GO AND DO IT                                 
+         EJECT                                                                  
+***********************************************************************         
+*        IF SEARCH IS FOR ALL ITEMS, (NO NAME FILTER) ALL BITS IN     *         
+*        BITLIST MUST BE SET ON TO SHOW ALL ITEMS SELECTED. SET BITS  *         
+*        IN LAST BYTE TO EXACTLY REFLECT MAX ITEMS IN LIST, AND IF    *         
+*        DIRECTORY FILTERING WAS REQUESTED, AND LIST IS NOT TOO       *         
+*        LARGE, DO IT USING SEQ/WORD POINTERS.                        *         
+***********************************************************************         
+SRC100   LA    R0,SRCHLLNQ(,R5)                                                 
+         LR    R1,R2                                                            
+         SH    R1,=Y(SRCHLLNQ)                                                  
+         XR    RF,RF               CLEAR WHOLE LIST TO XFFS                     
+         ICM   RF,B'1000',XFFS                                                  
+         MVCL  R0,RE                                                            
+*                                                                               
+         S     R3,SBMAXSEQ         R3=ROUNDING DIFF (BITS NOT RQD)              
+         BZ    SRC105              SKIP IF NONE                                 
+         AR    R2,R5               POINT TO END OF LIST                         
+         BCTR  R2,0                R2=LAST BYTE OF LIST                         
+         IC    R1,0(,R2)           R1=CONTENTS OF LAST BYTE IN LIST             
+         SLL   R1,0(R3)            CLEAR UNUSED BITS (ITEMS > MAXSEQ)           
+         STC   R1,0(,R2)           RESTORE IN LAST BYTE                         
+SRC105   MVC   SRCHLNAC,SBMAXSEQ+1 SET HIT COUNT TO MAXIMUM                     
+*                                                                               
+* SET UP FOR DIRECTORY FILTERING USING SEQ/WORD PASSIVES                        
+*                                                                               
+SRC110   TM    DIRFLAG,SRCHLFDQ    IF DIR FILTERING NOT REQUESTED, EXIT         
+         BZ    SRCX2               AND LEAVE SUCURITY CHECK TILL LATER          
+*                                                                               
+         CLC   SBMAXSEQ,=A(4000)   IF TOO MANY ITEMS IN LIST                    
+         BNH   SRC115                                                           
+         TM    SDSRIND1,SDSNMAXQ                                                
+         BNO   EMNF                NAME FILTER ALWAYS REQUIRED                  
+*                                                                               
+SRC115   LH    R1,SDSRDT12         TYPE 1/2 MOD OFFSET IN KEY                   
+         LA    R1,KEY(R1)                                                       
+         OC    0(1,R1),SDSRVT2     SET TYPE 2 (SEQ/WORD PAIR)                   
+*                                                                               
+         ICM   R4,15,SBMAXSEQ      R4=FIRST SEQUENCE NUMBER TO HANDLE           
+         BZ    SRCX                SKIP IF NONE IN LIST                         
+*                                                                               
+* TEST IF BIT SET ON (IF LIST WAS PRESET BY CALLER)                             
+*                                                                               
+SRC120   LR    RE,R4               COPY SEQUENCE NUMBER TO DROP                 
+         BCTR  RE,0                SET RELATIVE TO ZERO                         
+         SRDL  RE,3                DIV BY 8, SHIFT OUT REMAINDER                
+         LA    RE,SRCHLLST(RE)     POINT TO BYTE POSITION                       
+         SRL   RF,32-3             ALIGN REMAINDER (BIT NO.) IN RF              
+         LA    R2,X'80'            GET MASK FOR 1ST BIT IN BYTE                 
+         SRL   R2,0(RF)            SHIFT TO BIT POSITION IN RF                  
+         EX    R2,SRC1TM           TEST BIT ON IN BITLIST                       
+         BZ    SRC190              NO, SKIP                                     
+*                                                                               
+* FIND TYPE 2 POINTER FOR THIS SEQUENCE AND FILTER IT                           
+*                                                                               
+         LH    R1,SDSRDWRD         OFFSET TO WORD/SEQ PAIR                      
+         LA    R1,KEY(R1)                                                       
+         LCR   RE,R4               SEQ IS ALWAYS COMPLEMENT IN PASSIVE          
+         CLC   SDSRLSEQ,=Y(3)                                                   
+         BE    SRC125              SKIP IF 3 BYTE CODES                         
+         STCM  RE,B'0011',0(R1)    STORE 2 BYTE SEQ                             
+         B     SRC130                                                           
+SRC125   STCM  RE,B'0111',0(R1)    STORE 3 BYTE SEQ                             
+*                                                                               
+SRC130   GOTO1 DMGCALL,SRCB,DMRDHI READ FIRST TYPE 2 FOR THIS SEQ               
+         CLI   SRCB+8,0                                                         
+         BNE   EIIO                DON'T ALLOW ANY ERROR                        
+*                                                                               
+         LH    R1,SDSRLSEQ         LENGTH OF SEQ FIELD                          
+         AH    R1,SDSRDWRD         WORD/SEQ PAIR OFFSET IN KEY                  
+         BCTR  R1,0                LESS 1 FOR CLC                               
+         EX    R1,SRC1CLC          COMPARE KEY WITH RECORD READ                 
+         BNE   SRC180              DELETE FROM LIST IF NOT FOUND                
+*                                                                               
+         LA    R1,PASSIO                                                        
+         BAS   RE,ASRCDSEC         CALL DIRECTORY SECURITY CHECKER              
+         BNE   SRC180              FAILED, DROP FROM LIST                       
+         LA    R1,PASSIO                                                        
+         BAS   RE,ASRCDFLT         CALL DIRECTORY FILTER                        
+         BE    SRC190              PASSED, TRY NEXT                             
+*                                                                               
+* DELETE BIT FROM BITLIST, R4=SEQUENCE NUMBER TO DELETE                         
+*                                                                               
+SRC180   LR    RE,R4               COPY SEQUENCE NUMBER TO DROP                 
+         BCTR  RE,0                SET RELATIVE TO ZERO                         
+         SRDL  RE,3                DIV BY 8, SHIFT OUT REMAINDER                
+         LA    RE,SRCHLLST(RE)     POINT TO BYTE POSITION                       
+         SRL   RF,32-3             ALIGN REMAINDER (BIT NO.) IN RF              
+         LA    R2,X'80'            GET MASK FOR 1ST BIT IN BYTE                 
+         SRL   R2,0(RF)            SHIFT TO BIT POSITION IN RF                  
+         EX    R2,SRC1XI           SET OFF BIT JUST FAILED IN BITLIST           
+         XR    R3,R3                                                            
+         ICM   R3,B'0111',SRCHLNAC DECREMENT ACTIVE ENTRIES                     
+         SH    R3,=Y(1)                                                         
+         BNM   *+6                                                              
+         DC    H'0'                DIE IF DECREMENTED PAST ZERO                 
+         STCM  R3,B'0111',SRCHLNAC                                              
+*                                                                               
+SRC190   BCT   R4,SRC120           DECREMENT SEQ, CHECK ALL POSSIBLE            
+         OI    DIRFLAG,2           SET TYPE 2'S PROCESSED                       
+         B     SRCX                UNTIL NONE LEFT                              
+*                                                                               
+SRC1XI   XI    0(RE),0             * EXECUTED *                                 
+SRC1TM   TM    0(RE),0             * EXECUTED *                                 
+SRC1CLC  CLC   KEY(0),PASSIO       * EXECUTED *                                 
+         EJECT                                                                  
+***********************************************************************         
+*        BUILD A TABLE FROM THE PARSED NAME BLOCKS IN SBNAMES.        *         
+*        THE TABLE CONTAINS THE LONGEST SPECIFIC WORD (OR THE LONGEST *         
+*        NON SPECIFIC WORD IF NONE SPECIFIC) FROM EACH NAME STRING    *         
+*        WITH 'INCLUSIONS' IGNORED. I.E WORDS INCLUDED IN NON SPECIFIC*         
+*        WORDS AS IN MAR* WHICH INCLUDES MARCH AND MARATHON           *         
+***********************************************************************         
+SRC200   ZIC   R2,SBNNAMES         R2=NUMBER OF NAME BLOCKS                     
+         LA    R3,SBPNAMES         R3=FIRST PARSED NAME BLOCK                   
+*                                                                               
+         XC    LONGWORD(SBMNAMEQ*L'LONGWORD),LONGWORD                           
+*                                                                               
+         MVI   MULTWORD,C'N'       INITIALLY SET NO MULTIPLE WORDS              
+*                                                                               
+SRC210   CLI   0(R3),SBNAMELQ      IS THIS A VALID NAME ELEMENT                 
+         BNE   EINF                NO, INVALID NAME FIELD                       
+         XR    R4,R4                                                            
+         IC    R4,1(,R3)           GET LENGTH OF NAME ENTRY                     
+         AR    R4,R3               R4=NEXT NAME ENTRY                           
+         LA    RE,SBNAMES+L'SBNAMES                                             
+         CR    R4,RE               INTEGRITY CHECK                              
+         BNL   EINF                                                             
+*                                                                               
+         LA    RE,2(,R3)           RE=FIRST WORD ENTRY IN NEW NAME EL           
+         XR    R1,R1                                                            
+         B     SRC223              SET RF=FIRST WORD IN NAME EL                 
+*                                                                               
+SRC220   TM    1(RF),SBNWFPMQ      IS LONGEST SO FAR A PARTIAL WORD             
+         BO    SRC221              YES, SKIP                                    
+         TM    1(RE),SBNWFPMQ      NO, IS WORD A PARTIAL WORD                   
+         BO    SRC224                  YES, NEXT                                
+         B     SRC222                  NO, SEE IF THIS LONGER                   
+SRC221   TM    1(RE),SBNWFPMQ      YES, IS WORD A PARTIAL WORD                  
+         BZ    SRC223                   NO, USE IT INSTEAD                      
+SRC222   CLC   0(1,RE),0(RF)       IS WORD LONGER THAN LONGEST SO FAR           
+         BNH   SRC224              NO, NEXT                                     
+SRC223   LR    RF,RE               ELSE SAVE NEW LONGEST WORD                   
+*                                                                               
+SRC224   IC    R1,0(,RE)           GET WORD LENGTH                              
+         CH    R1,SDSRLWRD         IS IT LONGER THAN SEARCH NTRY ALLOWS         
+         BH    EINF                YES, INVALID NAME FIELD                      
+         LA    RE,2(R1,RE)         NEXT WORD                                    
+         CR    RE,R4               IS IT END OF NAME ELEMENT                    
+         BH    EINF                INVALID IF PASSED END                        
+         BE    SRC225              OK IF EXACTLY AT END                         
+         TM    1(RE),SBNWFOWQ      MORE THAN ONE WORD SO ONLY WORD              
+         BO    EINF                FLAG IS INVALID                              
+         TM    3(R3),SBNWFOWQ      CHECK FIRST WORD TOO                         
+         BO    EINF                                                             
+         MVI   MULTWORD,C'Y'       INDICATE NAMES WITH MULTIPLE WORDS           
+         B     SRC220              DO NEXT WORD                                 
+*                                                                               
+SRC225   MVC   WORK(L'LONGWORD),0(RF) COPY LONGEST WORD TO WORK AREA            
+         LA    RF,LONGWORD         RF=TABLE OF LONGEST WORDS                    
+         XR    R1,R1                                                            
+*                                                                               
+SRC230   CLI   0(RF),0             IS THIS END OF LIST                          
+         BE    SRC280              YES, ADD WORD TO END                         
+         IC    R1,WORK             R1=LENGTH NEW WORD                           
+         CLC   WORK(1),0(RF)                                                    
+         BNH   *+8                 SET R1 TO SHORTER OF THE TWO LENGTHS         
+         IC    R1,0(RF)            R1=LENGTH CURRENT LONGWORD ENTRY             
+         BCTR  R1,0                                                             
+         EX    R1,*+8                                                           
+         B     *+10                                                             
+         CLC   WORK+2(0),2(RF)     COMPARE NEW WORD WITH THIS ENTRY             
+         BL    SRC280              NEW IS LOW, GO INSERT IT                     
+         BH    SRC240              NEW IS HIGH, GET NEXT ENTRY                  
+*                                                                               
+         CLC   WORK(1),0(RF)       IS NEW ENTRY SHORTER                         
+         BL    SRC250              YES, SKIP                                    
+         TM    1(RF),SBNWFPMQ      IS OLD ENTRY A PARTIAL ENTRY                 
+         BO    SRC290              YES, IGNORE NEW ONE INCLUDED IN OLD          
+*                                                                               
+SRC240   LA    RF,L'LONGWORD(,RF)  NEXT LONGWORD ENTRY                          
+         B     SRC230              GO COMPARE WITH IT                           
+*                                                                               
+SRC250   TM    WORK+1,SBNWFPMQ     IS NEW ENTRY A PARTIAL ENTRY                 
+         BZ    SRC280              NO, GO INSERT IT IN TABLE                    
+         LA    R1,LONGWORD+((SBMNAMEQ-1)*L'LONGWORD)-1                          
+         SR    R1,RF               OLD ENTRY IS INCLUDED IN NEW ONE             
+         EX    R1,SRC255           SO SHUFFLE ENTRIES DOWN TO DELETE            
+         LA    R1,1(R1,RF)                                                      
+         XC    0(L'LONGWORD,R1),0(R1) AND CLEAR LAST ENTRY                      
+         B     SRC230              AND GO COMPARE WITH NEXT ENTRY               
+SRC255   MVC   0(0,RF),L'LONGWORD(RF) * EXECUTED *                              
+*                                                                               
+SRC280   XC    0(L'LONGWORD,RF),WORK INSERT NEW ENTRY BY SWAPPING WITH          
+         XC    WORK(L'LONGWORD),0(RF) CURRENT ENTRY, AND REPEATING              
+         XC    0(L'LONGWORD,RF),WORK TO END OF LIST                             
+         CLI   WORK,0                                                           
+         BE    SRC290              END OF LIST SWAPPED                          
+         LA    RF,L'LONGWORD(,RF)                                               
+         B     SRC280                                                           
+*                                                                               
+SRC290   LR    R3,R4               POINT TO NEXT NAME                           
+         BCT   R2,SRC210           DO NEXT NAME IF NOT END                      
+         EJECT                                                                  
+***********************************************************************         
+*        SEARCH PART 1.                                               *         
+*        USE LIST OF LONGEST WORDS TO SEARCH TYPE 2 POINTERS. SET ON  *         
+*        BITS IN BITLIST CORRESPONDING TO THE SEQUENCE NUMBERS OF THE *         
+*        PASSIVES WHICH MATCH ANY OF THE WORDS IN THE LIST.           *         
+***********************************************************************         
+SRC300   LH    R1,SDSRDT12         TYPE 1/2 MOD OFFSET IN KEY                   
+         LA    R1,KEY(R1)                                                       
+         OC    0(1,R1),SDSRVT1     SET TYPE 1 (WORD/SEQ PAIR)                   
+*                                                                               
+         LA    R2,SBMNAMEQ         R2=MAX NUMBER OF LONGEST WORDS               
+         LA    R3,LONGWORD         R3=FIRST LONGWORD ENTRY                      
+*                                                                               
+SRC310   CLI   0(R3),0                                                          
+         BE    SRC400              END OF WORDS                                 
+         LH    RE,SDSRLWRD         LENGTH OF WORD                               
+         BCTR  RE,0                                                             
+         LH    R1,SDSRDWRD         WORD/SEQ PAIR OFFSET IN KEY                  
+         LA    R1,KEY(R1)                                                       
+         EX    RE,*+8                                                           
+         B     *+10                                                             
+         MVC   0(0,R1),SPACES      CLEAR WORD IN KEY                            
+         IC    RE,0(R3)            LENGTH OF TARGET WORD                        
+         BCTR  RE,0                                                             
+         EX    RE,*+8                                                           
+         B     *+10                                                             
+         MVC   0(0,R1),2(R3)       MOVE TARGET WORD TO KEY                      
+*                                                                               
+         LA    R0,DMRDHI                                                        
+         B     SRC321                                                           
+*                                                                               
+SRC320   LA    R0,DMRSEQ                                                        
+SRC321   GOTO1 DMGCALL,SRCB,(R0)   READ FIRST/NEXT TYPE 1 FOR THIS WORD         
+         CLI   SRCB+8,0                                                         
+         BNE   EIIO                DON'T ALLOW ANY ERROR                        
+*                                                                               
+         LH    R1,SDSRLWRD         LENGTH OF WORD FIELD                         
+         TM    1(R3),X'80'         IS IT PARTIAL MATCH                          
+         BZ    *+8                 NO, FULL MATCH                               
+         IC    R1,0(R3)            LENGTH OF INPUT WORD IF PARTIAL              
+         AH    R1,SDSRDWRD         WORD/SEQ PAIR OFFSET IN KEY                  
+         BCTR  R1,0                LESS 1 FOR CLC                               
+         EX    R1,SRC3CLC          COMPARE KEY WITH RECORD READ                 
+         BE    SRC330              SKIP IF HIT                                  
+*                                                                               
+         LA    R3,L'LONGWORD(,R3)  ELSE TRY NEXT WORD                           
+         BCT   R2,SRC310                                                        
+         B     SRC400              NO MORE WORDS                                
+*                                                                               
+SRC330   LA    R1,PASSIO                                                        
+         BAS   RE,ASRCDSEC         CALL DIRECTORY SECURITY CHECKER              
+         BNE   SRC320              FAILED, GET NEXT                             
+         LA    R1,PASSIO                                                        
+         BAS   RE,ASRCDFLT         CALL DIRECTORY FILTER                        
+         BNE   SRC320              FAILED, GET NEXT                             
+*                                                                               
+SRC340   LH    R1,SDSRDWRD         WORD/SEQ PAIR OFFSET IN KEY                  
+         AH    R1,SDSRLWRD         ADD LENGTH OF WORD                           
+         TM    SDSRIND1,SDSRISEQ   IS WORD SEQUENCE RELEVENT                    
+         BZ    *+8                 NO, SKIP                                     
+         LA    RE,1(,RE)           YES, DUMMY BYTE ADDED (SEE TYPE 2)           
+         LA    R1,PASSIO(R1)       POINT TO SEQUENCE NUMBER IN DIRREC           
+         XR    RE,RE                                                            
+         BCTR  RE,0                                                             
+         ICM   RE,B'0011',0(R1)    GET 2 BYTE SEQUENCE NO                       
+         CLC   SDSRLSEQ,=Y(3)                                                   
+         BNE   *+8                 SKIP IF NOT 3 BYTE SEQNOS                    
+         ICM   RE,B'0111',0(R1)    GET 3 BYTE SEQUENCE NO                       
+         LCR   RE,RE               SEQ IS ALWAYS COMPLEMENT IN PASSIVE          
+*                                                                               
+SRC350   CLM   RE,B'0111',SRCHLNAL IS SEQUENCE IN RANGE OF BIT LIST             
+         BH    ELTS                NO, LIST IS TOO SMALL                        
+         BCTR  RE,0                GET SEQNUM ZERO BASED                        
+         LR    RF,RE                                                            
+         SRL   RE,3                SEQNUM/8 GIVES BYTE INDEX                    
+         LA    R1,SRCHLLST(RE)     R1=ADDRESS OF REQUIRED BYTE                  
+         SLL   RE,3                                                             
+         SR    RF,RE               RF=BIT INDEX IN BYTE                         
+         LA    RE,X'80'                                                         
+         SRL   RE,0(RF)            RE=BIT MASK FOR REQUIRED BIT                 
+         EX    RE,SRC3TM           TEST BIT ALREADY ON                          
+         BNZ   SRC320              NEXT PASSIVE IF SO                           
+         EX    RE,SRC3OI           SET BIT ON                                   
+         ICM   RE,B'0111',SRCHLNAC COUNT ACTIVE ENTRIES                         
+         LA    RE,1(,RE)                                                        
+         STCM  RE,B'0111',SRCHLNAC                                              
+         B     SRC320              NEXT PASSIVE                                 
+*                                                                               
+SRC3CLC  CLC   KEY(0),PASSIO       * EXECUTED *                                 
+SRC3TM   TM    0(R1),0             * EXECUTED *                                 
+SRC3OI   OI    0(R1),0             * EXECUTED *                                 
+         EJECT                                                                  
+***********************************************************************         
+*        SEARCH PART 2.                                               *         
+*        IF ANY NAME HAS MORE THAN ONE WORD, SECOND PASS IS NEEDED.   *         
+*        THIS SEARCHES BITLIST FOR HITS, AND IF FOUND, USES TYPE 2    *         
+*        (SEQ/NAME) PASSIVES TO TEST IF ENTITY INDICATED PASSES ON    *         
+*        ALL WORDS IN ANY OF THE NAMES GIVEN.                         *         
+***********************************************************************         
+SRC400   OI    DIRFLAG,1           SET TYPE 1'S PROCESSED                       
+         CLI   MULTWORD,C'Y'       FOUND ANY NAMES WITH MULTIPLE WORDS          
+         BNE   SRCX                NO, SKIP SECOND PASS                         
+         NC    SRCHLNAC,SRCHLNAC   TEST ANY HITS IN FIRST PASS                  
+         BZ    SRCX                SKIP SECOND PASS IF NOT                      
+*                                                                               
+SRC405   LH    R1,SDSRDT12         TYPE 1/2 MOD OFFSET IN KEY                   
+         LA    R1,KEY(R1)                                                       
+         MVC   BYTE,SDSRVT1                                                     
+         XI    BYTE,X'FF'                                                       
+         NC    0(1,R1),BYTE        UNSET TYPE 1 (WORD/SEQ PAIR)                 
+         OC    0(1,R1),SDSRVT2     SET TYPE 2 (SEQ/WORD PAIR)                   
+*                                                                               
+         LH    R1,SDSRDWRD         WORD/SEQ PAIR OFFSET IN KEY                  
+         LA    R1,KEY(R1)                                                       
+         XC    0(10,R1),0(R1)      CLEAR WORD IN KEY FROM FIRST PASS            
+*                                                                               
+         LA    RE,SRCHLLST         RE=FIRST/NEXT BYTE IN BITLIST                
+         SR    RF,RF                                                            
+         ICM   RF,3,SRCHLLEN       RF=LENGTH OF LIST                            
+         SH    RF,=Y(SRCHLLNQ)     LESS HEADER GIVES N'BYTES                    
+*                                                                               
+* SEARCH BITLIST FOR NEXT NONZERO BYTE.                                         
+*                                                                               
+SRC410   LR    R0,RE               R0/R1, 2ND OP SAME AS 1ST BUT LEN=0          
+         XR    R1,R1               CLCL SCANS 1ST OP FOR NONZERO BYTE           
+         CLCL  RE,R0               LOOK FOR NEXT NON ZERO BYTE                  
+         BE    SRCX                END OF LIST, NONE FOUND                      
+         LR    R0,RE               CALCULATE INDEX OF NONZERO BYTE              
+         SR    R0,R5                                                            
+         SH    R0,=Y(SRCHLLNQ)     R0=BYTE INDEX                                
+         SLL   R0,3                R0=1ST BIT INDEX (=BYTE INDEX*8)             
+         MVC   BYTE,0(RE)          COPY THE BYTE                                
+*                                                                               
+* SEARCH NONZERO BYTE FOR NEXT NONZERO BIT, CONVERT TO SEQUENCE NUMBER          
+*                                                                               
+SRC420   XR    R2,R2               CLEAR R2 FOR TRT                             
+         TRT   BYTE,TRTBIT         R2=NUMBER OF FIRST BIT (STILL) SET           
+         LR    R1,R2               COPY TO R1 FOR SAVE                          
+         STM   RE,R1,SAVESRCH      SAVE REGISTERS                               
+         LCR   RE,R0               SEQ IS ALWAYS COMPLEMENT IN PASSIVE          
+         SR    RE,R1               ADD (SUBTRACT) 1ST BIT INDEX                 
+*                                                                               
+         LH    R1,SDSRDWRD         OFFSET TO WORD/SEQ PAIR                      
+         LA    R1,KEY(R1)                                                       
+         CLC   SDSRLSEQ,=Y(3)                                                   
+         BE    SRC425              SKIP IF 3 BYTE CODES                         
+         STCM  RE,B'0011',0(R1)    STORE 2 BYTE SEQ                             
+         B     SRC426                                                           
+SRC425   STCM  RE,B'0111',0(R1)    STORE 3 BYTE SEQ                             
+*                                                                               
+* BUILD TABLE OF WORDS FOR THIS SEQNUM USING ITS TYPE 2 PASSIVES.               
+*                                                                               
+SRC426   MVC   WORD,SPACES         CLEAR WORDS                                  
+         MVC   WORD+L'WORD((SBNAWXTQ-1)*L'WORD+1),WORD                          
+*                                                                               
+         LA    R6,WORD                                                          
+         LA    R0,DMRDHI                                                        
+         B     SRC431                                                           
+*                                                                               
+SRC430   LA    R0,DMRSEQ                                                        
+SRC431   GOTO1 DMGCALL,SRCB,(R0)   READ FIRST/NEXT TYPE 2 FOR THIS SEQ          
+         CLI   SRCB+8,0                                                         
+         BNE   EIIO                DON'T ALLOW ANY ERROR                        
+*                                                                               
+         LH    R1,SDSRLSEQ         LENGTH OF SEQ FIELD                          
+         AH    R1,SDSRDWRD         WORD/SEQ PAIR OFFSET IN KEY                  
+         BCTR  R1,0                LESS 1 FOR CLC                               
+         EX    R1,SRC4CLC1         COMPARE KEY WITH RECORD READ                 
+         BNE   SRC440              SKIP IF NO (MORE) HITS                       
+*                                                                               
+         TM    DIRFLAG,1           TEST DONE A TYPE 1 PASS                      
+         BO    SRC432              YES, DIRECTORY CHECKS DONE ALREADY           
+         LA    R1,PASSIO                                                        
+         BAS   RE,ASRCDSEC         CALL DIRECTORY SECURITY CHECKER              
+         BNE   SRC490              FAILED, DROP FROM LIST, CC NEQ               
+         LA    R1,PASSIO                                                        
+         BAS   RE,ASRCDFLT         CALL DIRECTORY FILTER                        
+         BNE   SRC490              FAILED, DROP FROM LIST, CC NEQ               
+*                                                                               
+SRC432   LA    R0,WORD+SBNAWXTQ*L'WORD END OF WORDLIST SLOTS                    
+         CR    R6,R0                                                            
+         BNL   SRC440              TOO MANY TYPE 2'S, IGNORE REST               
+         LH    RE,SDSRLSEQ         LENGTH OF SEQ FIELD                          
+         AH    RE,SDSRDWRD         WORD/SEQ PAIR OFFSET IN KEY                  
+         LA    RE,PASSIO(RE)       RE=WORD IN DIRREC                            
+         TM    SDSRIND1,SDSRISEQ   IS WORD SEQUENCE RELEVENT                    
+         BZ    *+8                 NO, SKIP                                     
+         LA    RE,1(,RE)           YES, WORD PRECEDED BY SEQUENCE               
+         LH    R1,SDSRLWRD         LENGTH OF WORD FIELD                         
+         BCTR  R1,0                LESS 1 FOR MVC                               
+         EX    R1,SRC4MVC1         MOVE WORD INTO TABLE SLOT                    
+         LA    R6,L'WORD(,R6)      NEXT WORDLIST SLOT                           
+         B     SRC430              GET NEXT WORD                                
+*                                                                               
+* COMPARE NAME STRINGS WITH WORD TABLE LOOKING FOR FIRST MATCH                  
+* IF INCLUDED WORDS HAVE BEEN KEPT (SDSRIINQ) AND THE FIRST MATCH               
+* INCLUDES SUBSEQUENT WORD(S) (SBNWFINQ) WE ALSO CHECK THE INCLUDED             
+* WORDS AND CHECK OFF THE LONGEST MATCH.                                        
+*                                                                               
+SRC440   CLI   WORD,C' '+1         WERE ANY WORDS FOUND                         
+         BL    SRC490              NO, END THIS ITEM WITH CC NEQ                
+*                                                                               
+         LA    R2,SBPNAMES         R2=FIRST NAME BLOCK                          
+         ZIC   R0,SBNNAMES         R0=NUMBER OF NAMES                           
+         XR    R4,R4                                                            
+         MVI   FLAGSSET,C'N'       NO FLAGS TO UNSET                            
+*                                                                               
+SRC450   LA    R3,2(,R2)           R3=FIRST WORD IN NAME BLOCK                  
+         IC    R4,1(,R2)                                                        
+         AR    R2,R4               R2=NEXT NAME BLOCK                           
+         LA    R6,WORD-L'WORD      R6=ITEMS WORD TABLE ENTRY                    
+*                                                                               
+SRC460   MVC   WORK(L'WORD),SPACES                                              
+         IC    R4,0(,R3)           R4=LENGTH OF WORD                            
+         BCTR  R4,0                                                             
+         EX    R4,SRC4MVC2         MOVE WORD TO WORK AREA                       
+         TM    1(R3),SBNWFPMQ      IS NAMEWORD A PARTIAL MATCH                  
+         BO    SRC470              YES, COMPARE ONLY TO LENGTH GIVEN            
+         LA    R4,L'WORD-1         ELSE COMPARE FULL WORD LENGTH                
+*                                                                               
+SRC470   LA    R6,L'WORD(,R6)      NEXT WORD IN ITEMS LIST                      
+         CLI   0(R6),C' '          IS IT END OF WORDS                           
+         BNE   SRC480              NO, GO AND COMPARE WITH NAME WORD            
+*                                                                               
+SRC475   BCT   R0,SRC450           NAME FAILED, TRY NEXT NAME IF MORE           
+         CLI   FLAGSSET,C'Y'       ANY SBNWFMTQ FLAGS TO UNSET                  
+         BNE   SRC477              NO                                           
+SRC476   IC    R4,0(,R3)           POINT TO NEXT NAME WORD                      
+         LA    R3,2(R3,R4)                                                      
+         CR    R3,R2                                                            
+         BNL   SRC477              ALL FLAGS UNSET                              
+         NI    1(R3),255-SBNWFMTQ  YES, UNSET FLAG                              
+         B     SRC476              DO NEXT                                      
+SRC477   LTR   RB,RB               IF ALL NAMES FAILED, SET CC NEQ              
+         B     SRC490              AND EXIT                                     
+*                                                                               
+SRC480   EX    R4,SRC4CLC2         COMPARE WORD FROM NAME WITH TABLE            
+         BE    SRC482              EQUAL, TRY NEXT WORD FROM NAME               
+         BH    SRC470              HIGH,  TRY NEXT WORD IN ITEM'S TABLE         
+         TM    SDSRIND1,SDSRISEQ   LOW,   IS WORD SEQUENCE RELEVENT             
+         BZ    SRC475              NO, NOT IN TABLE, NEXT NAME                  
+         B     SRC470              YES, TABLE NOT ALPHA SEQUENCE                
+*                                  NAME WORD MATCHED                            
+SRC482   TM    1(R3),SBNWFINQ      DOES IT INCLUDE SUBSEQUENT WORD(S)           
+         BZ    SRC485              NO                                           
+         LR    RF,R3               YES, HOLD POSITION OF CURRENT MATCH          
+         LR    RE,RF               RE= POSITION OF NEXT (LONGER) MATCH          
+         SR    R1,R1               (NEED TO PRESERVE R4)                        
+SRC483   IC    R1,0(,R3)           SEE IF ALSO MATCHES ANOTHER ENTRY            
+         LA    R3,2(R3,R1)         POINT TO NEXT ONE                            
+         CR    R3,R2               INTEGRITY CHECK FOR END OF NAME              
+         BNL   SRC484              TRIED ALL SUBSEQUENT NAME WORDS              
+         CLC   0(1,R6),2(R3)       CHECK FIRST CHARACTER STILL MATCHES          
+         BNE   SRC484              TRIED ALL RELEVENT NAME WORDS                
+         MVC   WORK(L'WORD),SPACES                                              
+         IC    R1,0(,R3)           R4=LENGTH OF WORD                            
+         BCTR  R1,0                                                             
+         EX    R1,SRC4MVC2         MOVE NAME WORD TO WORK AREA                  
+         TM    1(R3),SBNWFPMQ      IS NAMEWORD A PARTIAL MATCH                  
+         BO    *+8                 YES, COMPARE ONLY TO LENGTH GIVEN            
+         LA    R1,L'WORD-1         ELSE COMPARE FULL WORD LENGTH                
+         EX    R1,SRC4CLC2         COMPARE WORD FROM NAME WITH TABLE            
+         BNE   SRC484              NO MATCH, USE PREVIOUS MATCH                 
+         LR    RE,R3               SAVE POSITION OF NEW MATCH                   
+         TM    1(R3),SBNWFPMQ      STOP IF GET SPECIFIC NAME MATCH              
+         BO    SRC483              ELSE TRY AGAIN                               
+SRC484   LR    R3,RE               POSITION OF LONGEST/SPECIFIC MATCH           
+         CR    R3,RF               WAS IT THE ORIGINAL MATCH                    
+         BH    *+10                NO                                           
+         LR    R3,RF               YES, POINT BACK TO ORIGINAL                  
+         B     SRC485              CONTINUE PROCESSING ITEM                     
+         OI    1(R3),SBNWFMTQ      REMEMBER THIS ENTRY MATCHED                  
+         MVI   FLAGSSET,C'Y'       AND FLAGS NEED UNSETTING                     
+         B     SRC470              TRY NEXT ITEM WORD WITH ORIG. MATCH          
+*                                                                               
+SRC485   IC    R4,0(,R3)           NAME WORD MATCHED, GET ACTUAL LENGTH         
+         LA    R3,2(R3,R4)         POINT TO NEXT ONE                            
+         CR    R3,R2               HAVE WE DONE LAST WORD IN NAME               
+         BNL   SRC486              YES                                          
+         TM    1(R3),SBNWFMTQ      HAVE WE ALREADY MATCHED NEW WORD             
+         BZ    SRC460              NO, GO ROUND AGAIN                           
+         NI    1(R3),255-SBNWFMTQ  YES, UNSET FLAG                              
+         B     SRC485              POINT TO NEXT NAME WORD                      
+SRC486   BE    SRC490              YES, NAME PASSED, (CC EQUAL)                 
+         DC    H'0'                GONE WRONG IF PASSED END OF NAME             
+*                                                                               
+* END OF NAME STRING SEARCH. CC EQUAL IF ANY NAME MATCHED WORD TABLE            
+* DONT CHANGE CONDITION CODE BEFORE MARKED 'BE' INSTRUCTION      ******         
+*                                                                               
+SRC490   LM    RE,R1,SAVESRCH      RELOAD BITLIST REGISTERS                     
+         LA    R2,X'100'           GET MASK FOR 1ST BIT IN BYTE -1              
+         SRL   R2,0(R1)            SHIFT TO BIT JUST DONE                       
+         BE    SRC495              SKIP IF CC EQ (PASSED)        ******         
+         EX    R2,SRC4XI1          SET OFF BIT JUST FAILED IN BITLIST           
+         XR    R3,R3                                                            
+         ICM   R3,B'0111',SRCHLNAC DECREMENT ACTIVE ENTRIES                     
+         SH    R3,=Y(1)                                                         
+         BNM   *+6                                                              
+         DC    H'0'                DIE IF DECREMENTED PAST ZERO                 
+         STCM  R3,B'0111',SRCHLNAC                                              
+SRC495   EX    R2,SRC4XI2          SET OFF BIT JUST DONE IN BYTE                
+         BNZ   SRC420              FIND NEXT BIT IF MORE                        
+         LA    RE,1(,RE)           NEXT BYTE IN BITTABLE                        
+         BCT   RF,SRC410           FIND NEXT BYTE                               
+         OI    DIRFLAG,2           SET TYPE 2'S PROCESSED                       
+         B     SRCX                UNLESS NONE LEFT                             
+*                                                                               
+SRC4XI1  XI    0(RE),0             * EXECUTED *                                 
+SRC4XI2  XI    BYTE,0              * EXECUTED *                                 
+SRC4MVC1 MVC   0(0,R6),0(RE)       * EXECUTED *                                 
+SRC4MVC2 MVC   WORK(0),2(R3)       * EXECUTED *                                 
+SRC4CLC1 CLC   KEY(0),PASSIO       * EXECUTED *                                 
+SRC4CLC2 CLC   WORK(0),0(R6)       * EXECUTED *                                 
+         EJECT                                                                  
+***********************************************************************         
+*        END OF SEARCH                                                *         
+***********************************************************************         
+SRCX     OC    SRCHLFLG,DIRFLAG    SET DIRECTORY WORK DONE ON LIST              
+         NI    SRCHLFLG,255-(1+2)  CLEAR DIRECTORY TYPE FLAGS                   
+*                                                                               
+SRCX2    NI    DIRFLAG,255-(1+2)   CLEAR DIRECTORY TYPE FLAGS                   
+         BAS   RE,PUTWRK           FREE TEMP STORAGE (IF USED)                  
+         CLI   SBSTYLO,SBSTBTLQ    DOES USER JUST WANT BIT LIST                 
+         BE    GUDEXIT             YES, EXIT                                    
+         B     BITSTYLE                                                         
+         DROP  R5                                                               
+         EJECT                                                                  
+**************************************************************                  
+* INPUT IS BITLIST                                           *                  
+*        R5=A(BITLIST)                                       *                  
+*        GET NEXT SEQUENCE NUMBER FROM BITLIST INTO SBSEQNCE *                  
+*        OR GO TO BITTOSEQ TO CREATE SEQLIST FROM BITLIST    *                  
+**************************************************************                  
+         USING SRCHLSTD,R5                                                      
+BITSTYLE CLC   SRCHLTYP,=AL2(SRCHLTBQ) IS IT A BIT LIST ?                       
+         BNE   EILS                NO, INVALID LIST                             
+*                                                                               
+         TM    SRCHLFLG,SRCHLFDQ   DIRECTORY FILTERING ALREADY DONE             
+         BO    *+8                 NO, DO IT NOW IF REQUIRED                    
+         NI    DIRFLAG,255-SRCHLFDQ DISABLE DIRECTORY FILTERING                 
+         TM    SRCHLFLG,SRCHLSDQ   DIRECTORY SECURITY CHECKED                   
+         BZ    *+8                 NO, DO IT NOW IF REQUIRED                    
+         NI    DIRFLAG,255-SRCHLSDQ DISABLE SECURITY CHECK                      
+*                                                                               
+         TM    SBSTYLO,SBSTLSTQ    DA/SEQ LIST OUTPUT                           
+         BO    BITTOSEQ            YES, GO BUILD SEQLIST FROM BITLIST           
+*                                                                               
+         XC    SBSEQNCE,SBSEQNCE                                                
+         XC    SBDA,SBDA                                                        
+         XR    R3,R3                                                            
+         ICM   R3,B'0111',SRCHLNXT GET INDEX TO NEXT ENTRY (0 BASED)            
+         CLM   R3,B'0111',SRCHLNAL CHECK WITH NUMBER OF ALLOCATED NTRYS         
+         BE    BIT90               END OF LIST                                  
+         BH    EPEL                ALREADY PAST END OF LIST IF HIGH             
+*                                                                               
+         LR    R2,R3                                                            
+         SRL   R3,3                R3=BYTE INDEX (=BIT INDEX/8)                 
+         LR    R1,R3                                                            
+         SLL   R1,3                BYTE INDEX*8 GIVES 1ST BIT INDEX             
+         SR    R2,R1               R2=NEXT BIT INDEX WITHIN BYTE                
+*                                                                               
+         LA    RE,SRCHLLST(R3)     RE=ADDRESS OF INDEXED BYTE                   
+         LA    R1,X'FF'            GET MASK TO TEST REMAINING BITS              
+         SRL   R1,0(R2)                                                         
+         EX    R1,BITTM            TEST ANY MORE BITS SET                       
+         BZ    BIT10               NONE, FIND NEXT NONZERO BYTE                 
+         MVC   BYTE,0(RE)          COPY THE BYTE                                
+         LA    RE,BYTE             POINT RE AT IT                               
+         EX    R1,BITNI            SET OFF ANY PRECEDING BITS                   
+         B     BIT20               FIND WHICH IS NOW FIRST ONE                  
+*                                                                               
+BIT10    LR    R2,RE               SAVE THIS BYTE ADDRESS                       
+         LA    RE,1(,RE)           NEXT BYTE                                    
+         SR    RF,RF                                                            
+         ICM   RF,3,SRCHLLEN       GET LENGTH OF LIST                           
+         AR    RF,R5               GET ADDRESS OF END THEREOF                   
+         SR    RF,RE               LENGTH LEFT                                  
+         LR    R0,RE               SET UP FOR CLCL                              
+         XR    R1,R1               ZERO LENGTH MEANS SCAN FOR NONZERO           
+         CLCL  RE,R0               LOOK FOR NEXT NON ZERO BYTE                  
+         BE    BIT90               NONE FOUND                                   
+         SR    R3,R2               RESET BYTE INDEX TO NEW BYTE BY              
+         AR    R3,RE               NEW IX = OLD IX - OLD ADD + NEW ADD          
+*                                                                               
+BIT20    XR    R2,R2               TRT USES R2 (AND R1)                         
+         TRT   0(1,RE),TRTBIT      GET INDEX OF FIRST SET BIT INTO R2           
+         SLL   R3,3                R3=1ST BIT INDEX B(=BYTE INDEX*8)            
+         LA    R1,0(R3,R2)         + BIT NUMBER W/IN BYTE,                      
+         ST    R1,SBSEQNCE         GIVING SEQUENCE NUMBER                       
+         MVC   SRCHLNXT,SBSEQNCE+1 COPY AS NEXT INDEX (ZERO BASED)              
+         TM    SBSTYLO,SBSTDAQ     DO WE WANT DA FROM SEQ                       
+         BZ    GUDEXIT             NO, ALL DONE                                 
+         B     SEQSTYLE            GO GET DA                                    
+*                                                                               
+BIT90    MVC   SRCHLNXT,XFFS       SET HIGH SO CAN'T GO PAST END                
+         B     EEOL                END OF LIST                                  
+*                                                                               
+BITTM    TM    0(RE),0             * EXECUTED *                                 
+BITNI    NI    0(RE),0             * EXECUTED *                                 
+         DROP  R5                                                               
+         EJECT                                                                  
+**********************************************                                  
+* CONVERT BIT LIST INTO SEQUENCE LIST        *                                  
+*        R5=A(BITLIST), SBAOUT=A(SEQLIST) OR *                                  
+*                       SEQLIST IN WORK AREA *                                  
+**********************************************                                  
+*                                                                               
+*        INITIALIZE SEQUENCE LIST (MAY HAVE TO FIND CORE FOR IT TOO)            
+*                                                                               
+         USING SRCHLSTD,R5                                                      
+BITTOSEQ XR    R2,R2                                                            
+         ICM   R2,B'0111',SRCHLNAC GET REQUIRED SIZE OF SEQLIST                 
+         LR    R1,R2                                                            
+         C     R2,=A(SRCHLSMQ)     DO NOT PUT MORE THAN ALLOWED MAXIMUM         
+         BH    ELTS                ENTRIES IN A SEQLIST                         
+         AR    R2,R2               MUST BE BIG ENOUGH FOR ALL ACTIVE            
+         CLC   SDSRLSEQ,=Y(3)      BITLIST ENTRIES                              
+         BNE   *+6                                                              
+         AR    R2,R1                                                            
+         LA    R2,SRCHLLNQ(,R2)    R2=MAX LENGTH OF SEQLIST REQUIRED            
+         DROP  R5                                                               
+         USING SRCHLSTD,R6                                                      
+*                                                                               
+         TM    SBSTYLO,SBSTSEQ     IF SEQ LIST OUTPUT NOT REQUIRED              
+         BZ    BTS10               GO GRAB TEMPORARY SEQLIST                    
+         L     R6,SBAOUT           ELSE USE OUTPUT AREA GIVEN                   
+         CH    R2,SRCHLLEN         IS GIVEN AREA LONG ENOUGH                    
+         BH    ELTS                NO, LIST TOO SMALL                           
+         B     BTS20                                                            
+*                                                                               
+BTS10    LR    R1,R2               GRAB STORAGE TO REQUIRED LENGTH              
+         BAS   RE,GETWRK                                                        
+         LR    R6,R0               POINT TO AREA AQUIRED                        
+*                                                                               
+BTS20    XC    SRCHLSTD(SRCHLLNQ),SRCHLSTD  CLEAR HEADER                        
+         STH   R2,SRCHLLEN         PUT MAX LENGTH IN HEADER                     
+         MVC   SRCHLTYP,=AL2(SRCHLTSQ) SET TYPE IS SEQLIST                      
+         MVC   SRCHLNTL,SDSRLSEQ   SET ENTRY LENGTH                             
+         MVC   SRCHLNAL,SRCHLNAC-SRCHLSTD(R5) ALLOCATED ENTRIES                 
+         MVC   SRCHLNAC,SRCHLNAC-SRCHLSTD(R5) ACTIVE ENTRIES                    
+         MVC   SRCHLFLG,SRCHLFLG-SRCHLSTD(R5) COPY FILTERING USED               
+         NI    SRCHLFLG,SRCHLSDQ+SRCHLFDQ SET OFF RUBBISH                       
+         LA    R4,SRCHLLNQ         R4=LENGTH USED IN SEQLIST                    
+         DROP  R6                                                               
+*                                                                               
+         USING SRCHLSTD,R5                                                      
+         LA    RE,SRCHLLST         RE=FIRST/NEXT BYTE IN BITLIST                
+         SR    RF,RF                                                            
+         ICM   RF,3,SRCHLLEN                                                    
+         SH    RF,=Y(SRCHLLNQ)     LESS HEADER GIVES N'BYTES                    
+         XR    R2,R2               CLEAR R2 FOR TRT                             
+*                                                                               
+*        SEARCH THROUGH BITLIST. FOR EVERY BIT ON, TRANSLATE TO                 
+*        SEQUENCE NUMBER AND ADD TO SEQUENCE LIST.                              
+*                                                                               
+BTS30    LR    R0,RE               R0/R1, 2ND OP SAME AS 1ST BUT LEN=0          
+         XR    R1,R1               CLCL SCANS 1ST OP FOR NONZERO BYTE           
+         CLCL  RE,R0               LOOK FOR NEXT NON ZERO BYTE                  
+         BE    BTS90               END OF LIST, NONE FOUND                      
+         LR    R3,RE               CALCULATE INDEX OF NONZERO BYTE              
+         SR    R3,R5                                                            
+         SH    R3,=Y(SRCHLLNQ)     R3=BYTE INDEX                                
+         SLL   R3,3                R3=1ST BIT INDEX (=BYTE INDEX*8)             
+         MVC   BYTE,0(RE)          COPY THE BYTE                                
+*                                                                               
+BTS40    SR    R1,R1                                                            
+         ICM   R1,3,SRCHLLEN-SRCHLSTD(R6)                                       
+         CR    R4,R1                                                            
+         BNL   EILS                IF NOT, BIT LIST IS INVALID                  
+         TRT   BYTE,TRTBIT         R2=INDEX OF FIRST BIT (STILL) SET            
+         LR    R0,R3               SEQUENCE NUMBER IS BYTE INDEX PLUS           
+         AR    R0,R2               1ST BIT NUMBER IN BYTE                       
+         LR    R1,R4                                                            
+         AR    R1,R6               POINT TO NEXT ENTRY IN SEQLIST               
+         CLC   SRCHLNTL-SRCHLSTD(,R6),=Y(3)                                     
+         BE    BTS45               SKIP IF 3 BYTE CODES                         
+         STCM  R0,B'0011',0(R1)    STORE 2 BYTE SEQ                             
+         LA    R4,2(,R4)                                                        
+         B     BTS50                                                            
+BTS45    STCM  R0,B'0111',0(R1)    STORE 3 BYTE SEQ                             
+         LA    R4,3(,R4)                                                        
+*                                                                               
+BTS50    LA    R1,X'100'           GET MASK FOR 1ST BIT IN BYTE, -1             
+         SRL   R1,0(R2)            SHIFT TO BIT JUST DONE                       
+         EX    R1,BTSXI            SET OFF BIT JUST DONE                        
+         BNZ   BTS40               FIND NEXT BIT IF MORE                        
+         LA    RE,1(,RE)           POINT TO NEXT BYTE                           
+         BCT   RF,BTS30            FIND NEXT NONZERO BYTE IF NOT END            
+         DROP  R5                                                               
+*                                                                               
+*        AT END OF BITLIST, SHOULD HAVE EXACTLY FILLED CALCULATED SPACE         
+*                                                                               
+         USING SRCHLSTD,R6                                                      
+BTS90    SR    RF,RF                                                            
+         ICM   RF,3,SRCHLLEN                                                    
+         CR    R4,RF                                                            
+         BNE   EILS                BUGGERED BIT LIST IF NOT                     
+         DROP  R6                                                               
+*                                                                               
+         TM    SBSTYLO,SBSTSEQ     SEQ LIST OUTPUT REQUIRED                     
+         BO    GUDEXIT             YES, RETURN IT                               
+         LR    R5,R6               INTERMEDIATE SEQLIST FOR SEQTODAL            
+         B     SEQTODAL            CONVERT SEQLIST TO DALIST                    
+*                                                                               
+BTSXI    XI    BYTE,0              * EXECUTED *                                 
+         EJECT                                                                  
+**************************************************************                  
+* INPUT IS SEQUENCE LIST                                     *                  
+*        R5=A(SEQLIST)                                       *                  
+*        GET NEXT SEQUENCE NUMBER FROM SEQLIST INTO SBSEQNCE *                  
+*        OR GO TO SEQTODAL TO CREATE DALIST FROM SEQLIST     *                  
+**************************************************************                  
+         USING SRCHLSTD,R5                                                      
+SELSTYLE CLC   SRCHLTYP,=AL2(SRCHLTSQ) IS IT A SEQ LIST ?                       
+         BNE   EILS                NO, INVALID LIST                             
+*                                                                               
+         TM    SRCHLFLG,SRCHLFDQ   DIRECTORY FILTERING ALREADY DONE             
+         BO    *+8                 NO, DO IT NOW IF REQUIRED                    
+         NI    DIRFLAG,255-SRCHLFDQ DISABLE DIRECTORY FILTERING                 
+         TM    SRCHLFLG,SRCHLSDQ   DIRECTORY SECURITY CHECKED                   
+         BZ    *+8                 NO, DO IT NOW IF REQUIRED                    
+         NI    DIRFLAG,255-SRCHLSDQ DISABLE SECURITY CHECK                      
+*                                                                               
+         TM    SBSTYLO,SBSTLSTQ    DA LIST OUTPUT                               
+         BO    SEQTODAL            YES, GO BUILD DALIST FROM SEQLIST            
+*                                                                               
+         XC    SBSEQNCE,SBSEQNCE                                                
+         XC    SBDA,SBDA                                                        
+         XR    R1,R1                                                            
+         ICM   R1,B'0111',SRCHLNXT GET INDEX TO NEXT ENTRY (0 BASED)            
+         TM    SBSTYLI,SBSTPRVQ    DO WE WANT NEXT, OR PREVIOUS                 
+         BO    SEL10               PREVIOUS                                     
+         LA    RE,1(,R1)           INCREMENT FOR NEXT TIME                      
+         CLM   R1,B'0111',SRCHLNAC CHECK WITH NUMBER OF ACTIVE ENTRIES          
+         BH    EPEL                ALREADY PAST END OF LIST IF HIGH             
+         STCM  RE,B'0111',SRCHLNXT SAVE UPDATED INDEX                           
+         BE    EEOL                END OF LIST IF SAME                          
+         B     SEL20                                                            
+SEL10    BCTR  R1,0                DECREMENT FOR NEXT TIME                      
+         LTR   R1,R1               TEST INDEX                                   
+         BM    EPEL                ALREADY PASSED START OF LIST IF NEG          
+         STCM  R1,B'0111',SRCHLNXT SAVE UPDATED INDEX                           
+         BZ    EEOL                END OF LIST                                  
+         CLM   R1,B'0111',SRCHLNAC ARE WE BEYOND END                            
+         BNH   SEL15               NO                                           
+         ICM   R1,B'0111',SRCHLNAC YES, POINT TO END                            
+         STCM  R1,B'0111',SRCHLNXT SAVE UPDATED INDEX                           
+SEL15    BCTR  R1,0                USE ENTRY BEFORE INDEX                       
+SEL20    LR    R0,R1               SAVE INDEX                                   
+         AR    R1,R1               INDEX TIMES SMALL ENTRY LEN (2)              
+         CLC   SRCHLNTL,=Y(3)                                                   
+         BNE   *+6                 SKIP IF NOT 3 BYTE ENTRIES                   
+         AR    R1,R0               ELSE ADD 1X TO 2X TO GET 3X                  
+         LA    R1,SRCHLLST(R1)     POINT AT ENTRY IN LIST                       
+         MVC   SBSEQNCE+1(3),0(R1) COPY 3 BYTE SEQ                              
+         CLC   SRCHLNTL,=Y(3)                                                   
+         BE    SEL30               SKIP IF 3 BYTE ENTRIES                       
+         MVC   SBSEQNCE+2(2),0(R1) COPY 2 BYTE SEQ                              
+SEL30    TM    SBSTYLO,SBSTDAQ     DO WE WANT DA FROM SEQ                       
+         BZ    GUDEXIT             NO, ALL DONE                                 
+         B     SEQSTYLE            GO GET DA                                    
+         DROP  R5                                                               
+         EJECT                                                                  
+**********************************************************************          
+* CONVERT SEQUENCE LIST INTO DALIST                                  *          
+*        R5=A(SEQLIST), SBAOUT=A(DALIST)                             *          
+*        THIS ROUTINE WILL APPLY DIRECTORY FILTERS IF REQUESTED, AND *          
+*        NOT ALREADY APPLIED TO INPUT LIST.                          *          
+**********************************************************************          
+*                                                                               
+*        INITIALIZE DA LIST                                                     
+*                                                                               
+         USING SRCHLSTD,R5                                                      
+SEQTODAL LH    R1,SDSYDLEN         GET CORE REQUIRED FOR DIRECTORY REC          
+         BAS   RE,GETWRK                                                        
+         LR    R4,R0               R4=DIRECTORY BUFFER                          
+*                                                                               
+         XR    R2,R2                                                            
+         ICM   R2,B'0111',SRCHLNAC GET REQUIRED SIZE OF DALIST                  
+         SLL   R2,2                BIG ENOUGH FOR ALL ACTIVE SEQLIST            
+         LA    R2,SRCHLLNQ(,R2)    ALLOW FOR HEADER                             
+         LA    R3,SRCHLLST         R3=FIRST SEQ NUMBER                          
+         DROP  R5                                                               
+*                                                                               
+         USING SRCHLSTD,R6                                                      
+         L     R6,SBAOUT           POINT TO OUTPUT AREA GIVEN                   
+         CH    R2,SRCHLLEN         IS GIVEN AREA LONG ENOUGH                    
+         BH    ELTS                NO, OUTPUT LIST TOO SMALL                    
+         XC    SRCHLSTD(SRCHLLNQ),SRCHLSTD  CLEAR HEADER                        
+         STH   R2,SRCHLLEN         PUT MAX LENGTH IN HEADER                     
+         MVC   SRCHLTYP,=AL2(SRCHLTDQ) SET TYPE IS DALIST                       
+         MVC   SRCHLNAL,SRCHLNAC-SRCHLSTD(R5) ALLOCATED ENTRIES                 
+         MVC   SRCHLFLG,SRCHLFLG-SRCHLSTD(R5) COPY FILTERING DONE ALRDY         
+         NI    SRCHLFLG,SRCHLSDQ+SRCHLFDQ SET OFF RUBBISH                       
+         LA    R2,SRCHLLST         R2=FIRST DISK ADDRESS                        
+         DROP  R6                                                               
+*                                                                               
+*        GET INITIAL TYPE 2 (SEQ/WORD) PASSIVE KEY                              
+*                                                                               
+         BAS   RE,ASYSKSET         GET SYSTEM KEY                               
+         BNE   EXIT                EXIT IF ERROR                                
+         BAS   RE,ASRCKSET         GET SEARCH KEY                               
+         BNE   EXIT                EXIT IF ERROR                                
+         BAS   RE,GETDIRN          GET DIRECTORY NAME                           
+         LH    R1,SDSRDT12         TYPE 1/2 MOD OFFSET IN KEY                   
+         LA    R1,KEY(R1)                                                       
+         OC    0(1,R1),SDSRVT2     SET TYPE 2 (SEQ/WORD PAIR)                   
+*                                                                               
+*        LOOP THROUGH SEQLIST CONVERTING EACH TO A DISK ADDRESS VIA             
+*        DIRECTORY LOOKUP.                                                      
+*                                                                               
+         LH    R0,SRCHLLEN-SRCHLSTD(,R5)                                        
+         AR    R0,R5               R0=ADDRESS OF SEQLIST END                    
+*                                                                               
+STD20    CR    R3,R0                                                            
+         BNL   STD90               EXIT IF NO MORE ENTRIES                      
+*                                                                               
+         XR    RE,RE                                                            
+         CLC   SRCHLNTL-SRCHLSTD(,R5),=Y(3)                                     
+         BE    STD25               SKIP IF THREE BYTE SEQNOS                    
+         ICM   RE,B'0011',0(R3)    GET NEXT 2 BYTE SEQUENCE NO                  
+         LA    R3,2(,R3)                                                        
+         B     STD30                                                            
+STD25    ICM   RE,B'0111',0(R3)    GET NEXT 3 BYTE SEQUENCE NO                  
+         LA    R3,3(,R3)                                                        
+*                                                                               
+STD30    LCR   RE,RE               SEQ IS ALWAYS COMPLEMENT IN PASSIVE          
+         LA    RE,0(,RE)           CLEAR HOB                                    
+         LH    R1,SDSRDWRD         WORD/SEQ PAIR OFFSET IN KEY                  
+         LA    R1,KEY(R1)                                                       
+         STCM  RE,B'0011',0(R1)    SET 2 BYTE SEQUENCE NO                       
+         CLC   SDSRLSEQ,=Y(3)                                                   
+         BNE   *+8                 SKIP IF NOT THREE BYTES                      
+         STCM  RE,B'0111',0(R1)    SET 3 BYTE SEQUENCE NO                       
+*                                                                               
+*                                  READ FIRST TYPE 2 FOR THIS SEQNO             
+         GOTO1 DMGCALL,DMCB,DMRDHI,DIRNAME,KEY,(R4)                             
+         CLI   DMCB+8,0                                                         
+         BNE   EIIO                DON'T ALLOW ANY ERROR                        
+         LH    R1,SDSRDWRD         WORD/SEQ PAIR OFFSET IN KEY                  
+         AH    R1,SDSRLSEQ         PLUS LENGTH SEQUENCE NUMBER                  
+         BCTR  R1,0                LESS 1 FOR CLC                               
+         EX    R1,STDCLC           COMPARE KEY WITH RECORD READ                 
+         BE    STD40               SKIP IF SAME, (FOUND)                        
+         CLI   SBNNAMES,0          IF NO NAMES, LIST COULD CONTAIN              
+         BE    STD20               NON-EXISTANT ITEMS, SO IGNORE                
+         B     ENRF                ELSE NO RECORD FOUND ERROR                   
+*                                                                               
+STD40    LR    R1,R4                                                            
+         BAS   RE,ASRCDSEC         CALL DIRECTORY SECURITY CHECKER              
+         BNE   STD20               FAILED, IGNORE SEQNO                         
+         LR    R1,R4                                                            
+         BAS   RE,ASRCDFLT         CALL DIRECTORY FILTER                        
+         BNE   STD20               FAILED, IGNORE SEQNO                         
+*                                                                               
+         LH    R1,SDSYKLEN         GET KEY LENGTH PLUS                          
+         AH    R1,SDSYSLEN         STATUS LENGTH GIVING DISP TO D/A             
+         AR    R1,R4               ADD DIR RECORD ADDRESS                       
+         MVC   0(4,R2),0(R1)       COPY DISK ADDRESS TO DALIST                  
+         LA    R2,4(,R2)           NEXT DALIST ENTRY                            
+         B     STD20               GET NEXT SEQ LIST ENTRY                      
+*                                                                               
+*        AT END OF SEQLIST, RESET DALIST HEADER TO ACTUAL SIZE CREATED          
+*                                                                               
+         USING SRCHLSTD,R6                                                      
+STD90    SR    R2,R6               GET LENGTH USED FOR DA LIST                  
+         STH   R2,SRCHLLEN         PUT IN HEADER                                
+         SH    R2,=Y(SRCHLLNQ)     SUBTRACT HEADER LENGTH                       
+         SRL   R2,2                DIV BY 4, GIVES NUMBER OF ENTRIES            
+         STCM  R2,B'0111',SRCHLNAL ALLOCATED ENTRIES                            
+         STCM  R2,B'0111',SRCHLNAC ACTIVE ENTRIES                               
+         OC    SRCHLFLG,DIRFLAG    SET DIRECTORY FILTERING USED ON LIST         
+         DROP  R6                                                               
+         B     GUDEXIT             RETURN DALIST                                
+*                                                                               
+STDCLC   CLC   KEY(0),0(R4)        * EXECUTED *                                 
+         EJECT                                                                  
+******************************************************                          
+* INPUT IS DISK ADDRESS LIST                         *                          
+*        R5=A(DALIST)                                *                          
+*        GET NEXT DISK ADDRESS FROM DALIST INTO SBDA *                          
+******************************************************                          
+         USING SRCHLSTD,R5                                                      
+DALSTYLE CLC   SRCHLTYP,=AL2(SRCHLTDQ) IS IT A DA LIST ?                        
+         BNE   EILS                NO, INVALID LIST                             
+*                                                                               
+         TM    SRCHLFLG,SRCHLFDQ   DIRECTORY FILTERING ALREADY DONE             
+         BO    *+8                 NO, DO IT NOW IF REQUIRED                    
+         NI    DIRFLAG,255-SRCHLFDQ DISABLE DIRECTORY FILTERING                 
+         TM    SRCHLFLG,SRCHLSDQ   DIRECTORY SECURITY CHECKED                   
+         BZ    *+8                 NO, DO IT NOW IF REQUIRED                    
+         NI    DIRFLAG,255-SRCHLSDQ DISABLE SECURITY CHECK                      
+*                                                                               
+         XC    SBSEQNCE,SBSEQNCE   SEQ NOT DIRECTLY OBTAINABLE FROM DA          
+         XC    SBDA,SBDA                                                        
+         XR    R1,R1                                                            
+         ICM   R1,B'0111',SRCHLNXT GET INDEX TO NEXT ENTRY (0 BASED)            
+         TM    SBSTYLI,SBSTPRVQ    DO WE WANT NEXT, OR PREVIOUS                 
+         BO    DAL10               PREVIOUS                                     
+         LA    RE,1(,R1)           INCREMENT FOR NEXT TIME                      
+         CLM   R1,B'0111',SRCHLNAC CHECK WITH NUMBER OF ACTIVE ENTRIES          
+         BH    EPEL                ALREADY PAST END OF LIST IF HIGH             
+         STCM  RE,B'0111',SRCHLNXT SAVE UPDATED INDEX                           
+         BE    EEOL                END OF LIST IF SAME                          
+         B     DAL20                                                            
+DAL10    BCTR  R1,0                DECREMENT FOR NEXT TIME                      
+         LTR   R1,R1               TEST INDEX                                   
+         BM    EPEL                ALREADY PASSED START OF LIST IF NEG          
+         STCM  R1,B'0111',SRCHLNXT SAVE UPDATED INDEX                           
+         BZ    EEOL                END OF LIST                                  
+         BCTR  R1,0                USE ENTRY BEFORE INDEX                       
+DAL20    SLL   R1,2                INDEX TIMES ENTRY LENGTH (4)                 
+         LA    R1,SRCHLLST(R1)     POINT TO ENTRY IN LIST                       
+         MVC   SBDA,0(R1)          COPY IT                                      
+         TM    SBSTYLO,SBSTREQ     DO WE WANT RECORD FROM DA                    
+         BZ    GUDEXIT             NO, ALL DONE                                 
+         B     DASTYLE             GO GET RECORD                                
+         DROP  R5                                                               
+         EJECT                                                                  
+***************************************************************                 
+* INPUT IS SINGLE SEQUENCE NUMBER IN SBSEQNCE                 *                 
+*        SET SBDA TO DISK ADDR OF RECORD WITH SEQNUM=SBSEQNCE *                 
+***************************************************************                 
+SEQSTYLE XC    SBDA,SBDA           DON'T KNOW DISK ADDRESS YET                  
+*                                                                               
+         BAS   RE,ASYSKSET         GET SYSTEM KEY                               
+         BNE   EXIT                EXIT IF ERROR                                
+         BAS   RE,ASRCKSET         GET SEARCH KEY                               
+         BNE   EXIT                EXIT IF ERROR                                
+         BAS   RE,GETDIRN          GET DIRECTORY NAME                           
+         LH    R1,SDSRDT12         TYPE 1/2 MOD OFFSET IN KEY                   
+         LA    R1,KEY(R1)                                                       
+         OC    0(1,R1),SDSRVT2     SET TYPE 2 (SEQ/WORD PAIR)                   
+         L     RE,SBSEQNCE         GET SEQUENCE NUMBER                          
+         LCR   RE,RE               SEQ IS ALWAYS COMPLEMENT IN PASSIVE          
+         LA    RE,0(,RE)           CLEAR HOB                                    
+         LH    R1,SDSRDWRD         WORD/SEQ PAIR OFFSET IN KEY                  
+         LA    R1,KEY(R1)                                                       
+         STCM  RE,B'0011',0(R1)    SET 2 BYTE SEQUENCE NUMBER                   
+         CLC   SDSRLSEQ,=Y(3)                                                   
+         BNE   *+8                 SKIP IF NOT THREE BYTES                      
+         STCM  RE,B'0111',0(R1)    SET 3 BYTE SEQUENCE NUMBER                   
+         LH    R1,SDSYDLEN         GET DIRECTORY RECORD LENGTH                  
+         BAS   RE,GETWRK           GET STORAGE FOR IT                           
+         LR    R6,R0                                                            
+*                                                                               
+*                                  READ FIRST TYPE 2 FOR THIS SEQNO             
+         GOTO1 DMGCALL,DMCB,DMRDHI,DIRNAME,KEY,(R6)                             
+         CLI   DMCB+8,0                                                         
+         BNE   EIIO                DON'T ALLOW ANY ERROR                        
+         LH    R1,SDSRDWRD         WORD/SEQ PAIR OFFSET IN KEY                  
+         AH    R1,SDSRLSEQ         PLUS LENGTH SEQUENCE NUMBER                  
+         BCTR  R1,0                LESS 1 FOR CLC                               
+         EX    R1,SEQCLC           COMPARE KEY WITH RECORD READ                 
+         BE    SEQ10               SKIP IF SAME, (FOUND)                        
+         TM    SBSTYLI,SBSTLSTQ    WAS INPUT A LIST                             
+         BZ    ENRF                NO, TAKE NO RECORD FOUND EXIT                
+         CLI   SBNNAMES,0          IF NO NAMES, LIST COULD CONTAIN              
+         BE    SEQ50               NON-EXISTANT ITEMS, SO IGNORE                
+         B     ENRF                ELSE NO RECORD FOUND ERROR                   
+*                                                                               
+SEQ10    LR    R1,R6                                                            
+         BAS   RE,ASRCDSEC         CALL DIRECTORY SECURITY CHECKER              
+         BE    SEQ20               PASSED                                       
+         TM    SBSTYLI,SBSTLSTQ    WAS INPUT A LIST                             
+         BNZ   SEQ50               YES, GO GET NEXT ENTRY                       
+         B     ESEC                NO, RETURN SECURITY LOCKOUT                  
+SEQ20    LR    R1,R6                                                            
+         BAS   RE,ASRCDFLT         CALL DIRECTORY FILTER                        
+         BE    SEQ40               PASSED                                       
+         TM    SBSTYLI,SBSTLSTQ    WAS INPUT A LIST                             
+         BNZ   SEQ50               YES, GO GET NEXT ENTRY                       
+         B     EFLT                NO, FILTER FAILED                            
+*                                                                               
+SEQ40    LH    R1,SDSYKLEN         GET KEY LENGTH PLUS                          
+         AH    R1,SDSYSLEN         STATUS LENGTH GIVING DISP TO D/A             
+         AR    R1,R6               ADD DIR RECORD ADDRESS                       
+         MVC   SBDA,0(R1)          COPY DISK ADDRESS FROM IT                    
+         TM    SBSTYLO,SBSTREQ     DO WE WANT RECORD FROM DA                    
+         BZ    GUDEXIT             NO, ALL DONE                                 
+         BAS   RE,PUTWRK           FREE STORAGE AQUIRED                         
+         B     DASTYLE             GO SEE WHAT TO DO WITH DA                    
+*                                                                               
+SEQ50    BAS   RE,PUTWRK           FREE STORAGE AQUIRED                         
+         B     NEXTONE             GO AND GET NEXT LIST ENTRY                   
+*                                                                               
+SEQCLC   CLC   KEY(0),0(R6)        * EXECUTED *                                 
+         EJECT                                                                  
+*******************************************************************             
+* INPUT IS SINGLE DISK ADDRESS IN SBDA                            *             
+*        READ CORRESPONDING FILE RECORD INTO ADDRESS IN SBAOUT OR *             
+*        INTO A WORK AREA                                         *             
+*******************************************************************             
+DASTYLE  L     R6,SBAOUT           READ RECORD INTO OUTPUT AREA                 
+         TM    SBSTYLO,SBSTRXQ     IF EXTRACT NOT REQUIRED                      
+         BZ    DAS10                                                            
+         LA    R1,4095                                                          
+         BAS   RE,GETWRK           ELSE USE 4K INTERMEDIATE AREA                
+         LR    R6,R0                                                            
+*                                                                               
+DAS10    LA    RF,SDSYFILN         ASSUME SYSTEM FILE NAME                      
+         NC    SBDOFILN,SBDOFILN   IS THERE AN OVERRIDE FILE NAME               
+         BZ    DAS15                                                            
+         LH    RF,SBDOFILN         OFFSET OF OVERRIDE NAME IN SBASAVE           
+         LA    RF,SBASAVE(RF)      ADDRESS OF NAME                              
+*                                  READ RECORD WITH ADDR IN SBDA                
+DAS15    GOTO1 DMGCALL,DMCB,GETREC,(RF),SBDA,(R6),DMWORK                        
+         CLI   DMCB+8,0                                                         
+         BNE   EIIO                DON'T ALLOW ANY ERROR                        
+*                                                                               
+         LR    R1,R6                                                            
+         BAS   RE,ASRCFSEC         CALL FILE SECURITY CHECK                     
+         BE    DAS20               PASSED                                       
+         TM    SBSTYLI,SBSTLSTQ    WAS INPUT A LIST                             
+         BNZ   DAS50               YES, GO GET NEXT ENTRY                       
+         B     ESEC                NO, RETURN SECURITY LOCKOUT                  
+DAS20    LR    R1,R6                                                            
+         BAS   RE,ASRCFFLT         CALL FILE FILTER                             
+         BE    DAS30               PASSED                                       
+         TM    SBSTYLI,SBSTLSTQ    WAS INPUT A LIST                             
+         BNZ   DAS50               YES, GO GET NEXT ENTRY                       
+         B     EFLT                NO, FILTER FAILED                            
+*                                                                               
+DAS30    TM    SBSTYLO,SBSTRXQ     DO WE WANT EXTRACT FROM RECORD               
+         BZ    GUDEXIT             NO, ALL DONE                                 
+         LR    R5,R6               RECORD IS INPUT TO EXTRACT                   
+         B     RECSTYLE            GO DO EXTRACT                                
+*                                                                               
+DAS50    BAS   RE,PUTWRK           FREE STORAGE AQUIRED                         
+         B     NEXTONE             GO AND GET NEXT LIST ENTRY                   
+         EJECT                                                                  
+*******************************************************************             
+* INPUT IS FILE RECORD                                            *             
+*        R5=A(RECORD), SBAOUT=A(EXTRACT OUTPUT OR PASSIVE OUTPUT) *             
+*        USE APPLICATION EXTRACT ROUTINE TO BUILD RECORD EXTRACT  *             
+*******************************************************************             
+RECSTYLE L     R6,SBAOUT           OUTPUT AREA                                  
+*                                                                               
+         NC    SBEXHEAD(2),SBEXHEAD HAVE WE GOT AN EXTRACT HEADER               
+         BNZ   RECS10              YES                                          
+         MVI   SBMODE,0            GET EXTRACT HEADER IN SBEXHEAD FIRST         
+         BAS   RE,ASRCEXTR                                                      
+         BNE   EXIT                ERROR EXIT                                   
+*                                                                               
+RECS10   LR    R1,R6               R1=A(O/P AREA)                               
+         LR    R0,R5               R0=A(RECORD)                                 
+         MVI   SBMODE,1            RETURN RECORD DETAIL EXTRACT                 
+         BAS   RE,ASRCEXTR                                                      
+         B     EXIT                EXIT WITH RETURNED CC CODE                   
+         EJECT                                                                  
+*******************************************************************             
+* INPUT IS FILE RECORD, OUTPUT IS PASSIVE POINTER LIST            *             
+*        R5=A(RECORD), SBAOUT=A(PASSIVE OUTPUT AREA)              *             
+*                                                                 *             
+*        SBDA=DISK ADDRESS OF EXISTING RECORD, ZERO IF NEW RECORD *             
+*        IF NEW RECORD ALLOCATE NEW SEQUENCE NUMBER, IF EXISTING  *             
+*        RECORD, USE SBSEQNCE IF NOT ZERO, ELSE DETERMINE CURRENT *             
+*        SEQUENCE NUMBER FOR RECORD AND USE THAT.                 *             
+*                                                                 *             
+*        IF RUNNING UNDER DMLDMOD, SBMODE IS SET TO EITHER ZERO   *             
+*        TO TEST PASSIVE POINTER (TPTR) OR 1 TO CREATE PASSIVES   *             
+*        (CPTR) SEQUENCE NUMBERS ARE THEN REALLOCATED SEQUENTIALY *             
+*        TO EACH RECORD STARTING AT ONE, REGARDLESS OF SBSEQUENCE *             
+*        IF NOT RUNNING INDER DMLDMOD, SBMODE IS FORCED TO 1. NEW *             
+*        SEQUENCE IS ALLOCATED FROM NEXT AVAILABLE NUMBER ON FILE.*             
+*                                                                 *             
+*        IF SBSTYLI=SBPSOVSQ, SRCHEXEC DOES NOT SET SEQUENCE NOS, *             
+*        THEY ARE CONTROLLED BY USER AND VALUE PASSED IN SBSEQNCE *             
+*        IS USED.                                                 *             
+*******************************************************************             
+RECPASS  TM    SBCALLER,SBCALLDQ   ARE WE CALLED BY DMLDMOD                     
+         BNO   RECP10              NO                                           
+         CLI   SBMODE,0            YES, IS IT A TPTR CALL                       
+         BNE   RECP10              NO                                           
+         LR    R1,R5               R1=A(DIRECTORY RECORD)                       
+         BAS   RE,ASYSPASS         CALL PASSIVE TEST                            
+         B     EXIT                EXIT WITH RETURNED CC CODE                   
+*                                                                               
+* CALL APPLICATION TO TEST IF RECORD SEARCHABLE, AND OBTAIN SKELETON            
+* PASSIVE KEY AND NAME TO BE USED. APPLICATION MAY ALSO PROVIDE THE             
+* SEQUENCE NUMBER IN SBSEQNCE BY SETTING SBPSOVSQ IN SBSTYLI.                   
+*                                                                               
+RECP10   MVI   SBMODE,1            SET POINTER BUILD CALL                       
+         LA    R0,KEY              SKELETON PASSIVE REQUIRED IN KEY             
+         LA    R1,WORK             NAME IN WORK+DMWORK                          
+         STM   R0,R1,DMCB+8                                                     
+         LR    R1,R5               R1=A(RECORD)                                 
+         BAS   RE,ASYSPASS                                                      
+         BM    RECPX               CC MINUS IF NOT SEARCHABLE ITEM              
+         BE    RECP15              SEARCHABLE, AND SAME SET AS LAST             
+         TM    SBCALLER,SBCALLDQ   ARE WE CALLED BY DMLDMOD                     
+         BNO   RECP15              NO                                           
+         XC    SBMAXSEQ,SBMAXSEQ   RESET SEQ FOR NEW SET IF DMLDMOD             
+*                                                                               
+* GET DIRECTORY NAME, WHICH PASSIVE HANDLER MAY HAVE OVERRIDEN                  
+* SEE IF PASSIVE HANDLER HAS SET OR CHANGED THE SEARCH CODE                     
+*                                                                               
+RECP15   BAS   RE,GETDIRN          GET DIRECTORY NAME                           
+         CLM   R7,B'0111',SBASRCH  SEARCH DIRECTORY ADDRESS SAME                
+         BE    RECP20              YES, SKIP                                    
+         L     R7,SBASRCH          SET NEW SEARCH DIRECTORY ADDRESS             
+         LA    RF,SDSRCHCD                                                      
+         CLI   SDSRCHCD,0                                                       
+         BNE   RECP16                                                           
+         XR    RF,RF                                                            
+         IC    RF,SBLANG                                                        
+         SLL   RF,2                                                             
+         XR    RE,RE                                                            
+         ICM   RE,3,SDSRCHCX       POINT TO SEARCH CODE INDEX                   
+         AR    RE,R7                                                            
+         LH    RF,0(RE,RF)         GET DISP FROM INDEX                          
+         AR    RF,RE               R2=A(CODE)                                   
+RECP16   MVC   SBSEARCH,0(RF)      COPY FULL NAME FOR LANG=SBLANG               
+         XR    RF,RF                                                            
+         ICM   RF,7,SDSYDRTA                                                    
+         AH    RF,2(,RF)           DIRECTORY START ADDRESS                      
+         LR    RE,R7                                                            
+         SR    RE,RF                                                            
+         STCM  RE,B'0011',SBDSRCH  SEARCH DIRECTORY DISPLACEMENT                
+*                                                                               
+* PARSE THE NAME TO PRODUCE WORDS FOR BUILDING THE PASSIVES.                    
+*                                                                               
+RECP20   MVC   DMCB+4(4),DMCB+12   PARSE THE NAME RETURNED                      
+         LA    R0,SBPARSPQ         USING PASSIVE STYLE CALL                     
+         GOTO1 SBPARSER,DMCB,((R0),(R9))                                        
+         BE    RECP30              NO ERRORS                                    
+         CLI   SBRETURN,SBERRORQ                                                
+         BL    *+6                                                              
+         DC    H'0'                DIE IF NASTY ERROR                           
+         CLI   SBNNAMES,0          ANY WORDS FOUND                              
+         BNE   *+10                YES, IGNORE PARSER ERROR                     
+         MVC   SBNAMES(NONAMEL),NONAME ELSE SET DUMMY NAME                      
+*                                                                               
+* DETERMINE SEQUENCE NUMBER TO USE.                                             
+*                                                                               
+*        ALWAYS USE SEQUENCE NUMBER SUPPLIED BY USER IF REQUESTED               
+*                                                                               
+RECP30   L     R5,SBSEQNCE         USER SUPPLIED SEQUENCE NUMBER                
+         TM    SBSTYLI,SBPSOVSQ    TEST USER CONTROLLING SEQ NUMBER             
+         BO    RECP60              YES, SKIP                                    
+*                                                                               
+*        IF RUNNING UNDER DMLDMOD, NUMBER IS ONE HIGHER THAN LAST USED          
+*                                                                               
+         TM    SBCALLER,SBCALLDQ   ARE WE CALLED BY DMLDMOD                     
+         BNO   RECP40              NO                                           
+         L     R5,SBMAXSEQ                                                      
+         LA    R5,1(,R5)           NEXT NUMBER                                  
+         ST    R5,SBMAXSEQ                                                      
+         ST    R5,SBSEQNCE         SET SEQUENCE OF NEW RECORD                   
+         B     RECP60              GO BUILD PASSIVES                            
+*                                                                               
+* IF NOT DMLDMOD, AND SBDA IS ZERO, THIS IS A NEW RECORD AND A NEW              
+* SEQUENCE NUMBER IS THEREFORE ALLOCATED TO IT.                                 
+* COMPLEMENTED VALUE OF HIGHEST USED NUMBER IS IN FIRST TYPE 2 PASSIVE          
+* WHEN READING TO OBTAIN HIGHEST, LOCK TO PREVENT CONCURRENT ALLOCATION         
+*                                                                               
+RECP40   NC    SBDA,SBDA           IS IT A NEW RECORD                           
+         BNZ   RECP50              NO - SEE IF GOT SEQUENCE                     
+         MVC   WORK,KEY                                                         
+         LH    RE,SDSRDT12                                                      
+         LA    RE,WORK(RE)                                                      
+         OC    0(1,RE),SDSRVT2     BUILD NULL TYPE 2                            
+         LH    R2,SDSRDWRD         R2=DISPLACEMENT OF TYPE 2 SEQ                
+         LA    RE,WORK(R2)                                                      
+         XC    0(3,RE),0(RE)                                                    
+         GOTO1 DMGCALL,DMCB,(X'80',DMRDHI),DIRNAME,WORK,DMWORK                  
+         CLI   DMCB+8,0                                                         
+         BNE   EIIO                                                             
+         XR    R5,R5               DEFAULT ZERO IF NOT FOUND                    
+         BCTR  R2,0                                                             
+         EX    R2,*+8                                                           
+         B     *+10                                                             
+         CLC   WORK(0),DMWORK                                                   
+         BNE   RECP45              NO MATCHING TYPE 2 FOUND                     
+         LA    RE,DMWORK+1(R2)                                                  
+         ICM   R5,B'0011',0(RE)    GET 2 BYTE SEQ                               
+         CLC   SDSRLSEQ,=Y(3)                                                   
+         BNE   *+8                                                              
+         ICM   R5,B'0111',0(RE)    GET 3 BYTE SEQ                               
+         LCR   R5,R5               (COMPLEMENTED IN PASSIVES)                   
+RECP45   LA    R5,1(,R5)           NEXT SEQUENCE                                
+         ST    R5,SBMAXSEQ                                                      
+         ST    R5,SBSEQNCE                                                      
+         B     RECP60                                                           
+*                                                                               
+* IF NOT DMLDMOD, AND SBDA NOT ZERO, (EXISTING RECORD), USE SBSEQNCE,           
+* UNLESS SBSEQNCE IS ZERO, WHEN FIND THIS RECORDS SEQUENCE BY LOOKING           
+* FOR ONE OF ITS TYPE 1 PASSIVES.                                               
+* WHEN UPDATING AN EXISTING RECORD, THE CALLER WOULD ZERO SBSEQNCE AND          
+* CALL SEARCH TO BUILD THE OLD PASSIVE LIST, SBSEQNCE WILL BE SET TO            
+* THE VALUE ALLOCATED TO THE RECORD. AFTER CHANGING THE RECORD, THE             
+* SECOND CALL IS MADE, KEEPING SBSEQNCE UNCHANGED AND THE NEW PASSIVE           
+* LIST IS BUILT. THE CALLER THEN SIMPLY DELETES THE OLD ONES AND ADDS           
+* OR UNDELETES THE NEW ONES.                                                    
+*                                                                               
+RECP50   ICM   R5,15,SBSEQNCE      GET SBSEQUENCE                               
+         BNZ   RECP60              USE IT IF NOT ZERO.                          
+         MVC   WORK,KEY                                                         
+         LH    RE,SDSRDT12                                                      
+         LA    RE,WORK(RE)                                                      
+         OC    0(1,RE),SDSRVT1     BUILD NULL TYPE 1                            
+         LH    R2,SDSRDWRD         R2=DISPLACEMENT OF TYPE 1 WORD               
+         LA    RE,WORK(R2)                                                      
+         LH    R1,SDSRLWRD         LENGTH OF WORD                               
+         BCTR  R1,0                                                             
+         AR    R2,R1               R2=COMPARE LENGTH FOR MATCHING WORD          
+         EX    R1,*+8                                                           
+         B     *+10                                                             
+         MVC   0(0,RE),SPACES                                                   
+         IC    R1,SBPNAMES+2       GET LENGTH OF FIRST WORD                     
+         BCTR  R1,0                                                             
+         EX    R1,*+8                                                           
+         B     *+10                                                             
+         MVC   0(0,RE),SBPNAMES+4  COPY IN FIRST WORD                           
+         GOTO1 ,DMCB,,DIRNAME,WORK,DMWORK                                       
+         LA    R0,DMRDHI                                                        
+         B     *+8                                                              
+RECP55   LA    R0,DMRSEQ                                                        
+         GOTO1 DMGCALL,DMCB,(R0)                                                
+         CLI   DMCB+8,0                                                         
+         BNE   EIIO                                                             
+         EX    R2,*+8                                                           
+         B     *+10                                                             
+         CLC   WORK(0),DMWORK      TEST IF MATCHING TYPE 1 FOUND                
+         BNE   RECPX               IF NOT, ASSUME NO PASSIVES                   
+         LH    RE,SDSYDLEN                                                      
+         LA    RE,DMWORK-4(RE)     POINT TO DISK ADDRESS IN DIRREC              
+         CLC   SBDA,0(RE)                                                       
+         BNE   RECP55              SCAN TILL POINTER FOUND WITH SAME DA         
+         LA    RE,DMWORK+1(R2)                                                  
+         ICM   R5,B'0011',0(RE)    GET 2 BYTE SEQ                               
+         CLC   SDSRLSEQ,=Y(3)                                                   
+         BNE   *+8                                                              
+         ICM   R5,B'0111',0(RE)    GET 3 BYTE SEQ                               
+         LCR   R5,R5               (COMPLEMENTED IN PASSIVES)                   
+         LA    R5,0(,R5)           CLEAR HIGH ORDER BYTE                        
+         ST    R5,SBSEQNCE                                                      
+*                                                                               
+* BUILD PAIR OF PASSIVES FOR EACH WORD USING SEQUENCE IN R5                     
+*                                                                               
+RECP60   CLI   SBPNAMES,SBNAMELQ   TEST VALID NAME ELEMENT                      
+         BNE   EINF                NO - ERROR                                   
+         LA    R6,0(,R6)           CLEAR HOB                                    
+         LCR   R5,R5               R5=SEQUENCE (COMPLEMENT IN PASSIVES)         
+         LA    R2,SBPNAMES                                                      
+         XR    R3,R3                                                            
+         LR    R1,R3                                                            
+         ZIC   R3,1(,R2)                                                        
+         AR    R3,R2               R3=END OF WORDS                              
+         LA    R2,2(,R2)           R2=FIRST WORD                                
+         LH    R4,SDSYDLEN                                                      
+         BCTR  R4,0                R4=DIRECTORY RECORD LENGTH MINUS 1           
+         LA    RE,KEY-4+1(R4)      POINT TO LAST 4 BYTES IN DIRREC              
+         MVC   0(4,RE),SBDA        COPY SUPPLIED DISK ADDRESS INTO IT           
+         LH    RF,SDSRLWRD                                                      
+         BCTR  RF,0                RF=LENGTH-1 OF WORD IN PASSIVES              
+*                                                                               
+RECP70   CR    R2,R3               TEST REACHED END OF NAME ELEMENT             
+         BH    EINF                ERROR IF NOT EXACTLY REACHED END             
+         BE    RECPX               NO MORE WORDS IF REACHED END                 
+         IC    R1,0(R2)                                                         
+         BCTR  R1,0                R1=LENGTH-1 OF THIS WORD                     
+*                                                                               
+         EX    R4,*+8                                                           
+         B     *+10                                                             
+         MVC   0(0,R6),KEY         COPY SKELETON PASSIVE                        
+         LR    RE,R6                                                            
+         AH    RE,SDSRDT12         POSITION OF TYPE 1/2 INDICATOR               
+         OC    0(1,RE),SDSRVT1     BUILDING TYPE 1                              
+         LR    RE,R6                                                            
+         AH    RE,SDSRDWRD         POSITION OF WORD/SEQ-SEQ/WORD                
+         EX    RF,*+8                                                           
+         B     *+10                                                             
+         MVC   0(0,RE),SPACES      CLEAR WORD                                   
+         EX    R1,*+8                                                           
+         B     *+10                                                             
+         MVC   0(0,RE),2(R2)       MOVE IN WORD                                 
+         LA    RE,1(RE,RF)         SEQ IS AT END OF WORD IN TYPE 1              
+         STCM  R5,B'0011',0(RE)    SET 2 BYTE SEQ                               
+         CLC   SDSRLSEQ,=Y(3)                                                   
+         BNE   *+8                                                              
+         STCM  R5,B'0111',0(RE)    UNLESS 3 BYTE SEQ REQUIRED                   
+         LA    R6,1(R6,R4)         NEXT PASSIVE SLOT                            
+*                                                                               
+         EX    R4,*+8                                                           
+         B     *+10                                                             
+         MVC   0(0,R6),KEY         COPY SKELETON PASSIVE                        
+         LR    RE,R6                                                            
+         AH    RE,SDSRDT12         POSITION OF TYPE 1/2 INDICATOR               
+         OC    0(1,RE),SDSRVT2     BUILDING TYPE 2                              
+         LR    RE,R6                                                            
+         AH    RE,SDSRDWRD         POSITION OF WORD/SEQ-SEQ/WORD                
+         STCM  R5,B'0011',0(RE)    SET 2 BYTE SEQ                               
+         CLC   SDSRLSEQ,=Y(3)                                                   
+         BNE   *+8                                                              
+         STCM  R5,B'0111',0(RE)    UNLESS 3 BYTE SEQ REQUIRED                   
+         AH    RE,SDSRLSEQ         WORD IS AT END OF SEQ IN TYPE 2              
+         EX    RF,*+8                                                           
+         B     *+10                                                             
+         MVC   0(0,RE),SPACES      CLEAR WORD                                   
+         EX    R1,*+8                                                           
+         B     *+10                                                             
+         MVC   0(0,RE),2(R2)       MOVE IN WORD                                 
+         LA    R6,1(R6,R4)         NEXT PASSIVE SLOT                            
+*                                                                               
+         LA    R2,3(R2,R1)         NEXT WORD                                    
+         B     RECP70                                                           
+*                                                                               
+RECPX    ST    R6,SBAOUT           RETURN ADDRESS OF NEXT SLOT                  
+         B     GUDEXIT                                                          
+         EJECT                                                                  
+********************************                                                
+* APPLICATION SUBROUTINE CALLS *                                                
+********************************                                                
+ASYSKSET ICM   R9,B'1000',=AL1(SDSSYKSQ) SYSTEM KEYSET ROUTINE                  
+         XC    KEY,KEY                                                          
+         B     *+8                                                              
+         SPACE                                                                  
+ASRCKSET ICM   R9,B'1000',=AL1(SDSSEKSQ) SEARCH KEYSET ROUTINE                  
+         LA    RF,KEY                                                           
+         ST    RF,DMCB+4                                                        
+         B     APPGO0              MODE NOT USED                                
+         SPACE                                                                  
+ASRCISEC MVI   SBMODE,0            INITIALIZE SECURITY CHECK                    
+         B     ASRCSECH                                                         
+ASRCDSEC TM    DIRFLAG,SRCHLSDQ    DIRECTORY SECURITY CHECK                     
+         BZR   RE                  RETURN IF NOT REQUIRED (CC EQ/ZERO)          
+         MVI   SBMODE,1                                                         
+         B     ASRCSECH                                                         
+ASRCFSEC MVI   SBMODE,2            FILE SECURITY CHECK                          
+ASRCSECH ICM   R9,B'1000',=AL1(SDSSESCQ) SECURITY CHECK ROUTINE                 
+         ST    R1,DMCB+4           R1=A(DIR/FIL RECORD)                         
+         B     APPGO               MODE ALREADY SET                             
+         SPACE                                                                  
+ASRCIFLT MVI   SBMODE,0            INITIALIZE FILTERS                           
+         B     ASRCFILT                                                         
+ASRCDFLT TM    DIRFLAG,SRCHLFDQ    DIRECTORY FILTER ROUTINE                     
+         BZR   RE                  RETURN IF NOT REQUIRED (CC EQ/ZERO)          
+         MVI   SBMODE,1                                                         
+         B     ASRCFILT                                                         
+ASRCFFLT MVI   SBMODE,2            FILE FILTER ROUTINE                          
+ASRCFILT ICM   R9,B'1000',=AL1(SDSSEFIQ) FILTER ROUTINE                         
+         ST    R1,DMCB+4           R1=A(DIR/FIL RECORD) OR A(TWA FIELD)         
+         B     APPGO               MODE ALREADY SET                             
+         SPACE                                                                  
+ASRCEXTR ICM   R9,B'1000',=AL1(SDSSERXQ) RECORD EXTRACT ROUTINE                 
+         ST    R1,DMCB+4           R1=A(O/P AREA)                               
+         ST    R0,DMCB+8           R0=A(RECORD)                                 
+         B     APPGO               MODE ALREADY SET                             
+         SPACE                                                                  
+ASRCPRBL ICM   R9,B'1000',=AL1(SDSSEPBQ) PRESET BITLIST ROUTINE                 
+         ST    R5,DMCB+4           R5=A(BIT LIST)                               
+         B     APPGO0              MODE NOT USED                                
+         SPACE                                                                  
+ASYSPASS ICM   R9,B'1000',=AL1(SDSSYPPQ) PASSIVE POINTER ROUTINE                
+         ST    R1,DMCB+4           R1=A(RECORD)                                 
+         B     APPGO               OTHER DMCB AND MODE ALREADY SET              
+         SPACE                                                                  
+APPGO0   MVI   SBMODE,0            MODE NOT USED                                
+APPGO    ST    RE,SAVERE           MODE PRESET                                  
+         GOTO1 SDSYDRTN,DMCB,(R9)  WILL SET CONDITION CODE                      
+         L     RE,SAVERE                                                        
+         BR    RE                                                               
+         SPACE                                                                  
+***********************************************************************         
+* CALL DATAMGR, THEN CHECK IF IO LIMIT EXCEEDED                       *         
+***********************************************************************         
+DMGCALL  ST    RE,SAVEREIO                                                      
+         L     RF,SBCOMFAC                                                      
+         L     RF,CDATAMGR-COMFACSD(,RF)                                        
+         GOTO1 (RF),(R1)           PARMS ALREADY SET UP BY CALLER               
+         CLI   8(R1),0             TEST ERROR RETURN                            
+         BNE   DMGCALLX            YES, SKIP IO COUNT CHECK                     
+         TM    SBCALLER,SBCALONQ   TEST ONLINE                                  
+         BZ    DMGCALLX            NO, NO NEED FOR IO COUNT CHECK               
+         L     RF,SBCOMFAC                                                      
+         L     RF,CGETFACT-COMFACSD(,RF)                                        
+         XC    DMCBIO,DMCBIO                                                    
+         GOTO1 (RF),DMCBIO                                                      
+         L     R1,0(,R1)                                                        
+         USING FACTSD,R1                                                        
+         XR    RE,RE                                                            
+         ICM   RE,3,FATIOCNT                                                    
+         LA    RE,20(,RE)          ALLOW SOME LEEWAY                            
+         CLM   RE,3,FATMAXIO                                                    
+         BNL   ELTS                TAKE TOO MANY ITEMS EXIT                     
+         DROP  R1                                                               
+DMGCALLX L     RE,SAVEREIO                                                      
+         BR    RE                                                               
+         SPACE                                                                  
+***********************************************************************         
+* OBTAIN DIRECTORY FILE NAME                                          *         
+***********************************************************************         
+GETDIRN  NC    SBDODIRN,SBDODIRN   IS THERE AN OVERRIDE DIR NAME                
+         BNZ   GETDIRNO                                                         
+         MVC   DIRNAME,SDSYDIRN    NO, USE SYSTEM DIRECTORY NAME                
+         BR    RE                                                               
+GETDIRNO ST    RE,SAVERE                                                        
+         LH    RE,SBDODIRN         OFFSET OF OVERRIDE NAME IN SBASAVE           
+         LA    RE,SBASAVE(RE)      ADDRESS OF NAME                              
+         MVC   DIRNAME,0(RE)       COPY OVERRIDE NAME                           
+         L     RE,SAVERE                                                        
+         BR    RE                                                               
+         SPACE                                                                  
+***********************************************************************         
+* EXTEND WORKING STORAGE                                              *         
+*        R1=LENGTH OF STORAGE REQUIRED                                *         
+*        R0=ADDRESS OF STORAGE REQUIRED ON EXIT                       *         
+***********************************************************************         
+GETWRK   AH    R1,=Y(7)            ROUND TO DWRD                                
+         SRL   R1,3                                                             
+         SLL   R1,3                                                             
+         L     RF,4(,RD)           GET PREVIOUS SAVE AREA                       
+         LR    R0,RD               ADDRESS OF STORAGE AQUIRED                   
+         AR    RD,R1               SET NEW SVAREA ADDRESS                       
+         ST    RD,8(,RF)           SET NEW FORWARD POINTER                      
+         ST    RF,4(,RD)           SAVE BACKWARD POINTER IN NEW SVAREA          
+         BR    RE                                                               
+         SPACE                                                                  
+***********************************************************************         
+* RELEASE ALL GETWRK'ED STORAGE                                       *         
+***********************************************************************         
+PUTWRK   L     RF,4(,RD)           GET PREVIOUS SAVE AREA                       
+         LA    RD,72(,RF)          END OF PREVIOUS SAVE AREA                    
+         CR    RD,RC                                                            
+         BNE   *+8                 SKIP IF NOT NMODDED STORAGE                  
+         LA    RD,(((SRCHWRKL+7)/8)*8)(,RD) ALLOW FOR IT IF IT IS               
+         ST    RD,8(,RF)           RESET FORWARD POINTER                        
+         ST    RF,4(,RD)           RESET BACKWARD POINTER IN NEW SVAREA         
+         BR    RE                                                               
+         SPACE                                                                  
+***********************************************************************         
+* GET WORD IN SBLANG LANGUAGE                                         *         
+*        R1=A(LANGINDEX FOR WORD                                      *         
+*        R1=A(WORD) RETURNED ON EXIT                                  *         
+***********************************************************************         
+GETWORD  XR    RF,RF                                                            
+         IC    RF,SBLANG                                                        
+         AR    RF,RF                                                            
+         LH    RF,0(RF,R1)                                                      
+         AR    RF,R1                                                            
+         BR    RE                                                               
+         EJECT                                                                  
+*************************                                                       
+* ERROR AND OTHER EXITS *                                                       
+*************************                                                       
+EMIF     MVI   SBRETURN,SBEMIFQ    MISSING INPUT FIELD                          
+         B     BADEXIT                                                          
+ESTI     MVI   SBRETURN,SBESTIQ    INVALID INPUT STYLE                          
+         B     BADEXIT                                                          
+ESTO     MVI   SBRETURN,SBESTOQ    INVALID OUTPUT STYLE                         
+         B     BADEXIT                                                          
+ESTC     MVI   SBRETURN,SBESTCQ    INCOMPATIBLE OUTPUT STYLE                    
+         B     BADEXIT                                                          
+EIIO     MVI   SBRETURN,SBEIIOQ    INVALID IO RETURN                            
+         B     BADEXIT                                                          
+ENRF     MVI   SBRETURN,SBENRFQ    NO RECORD FOUND                              
+         B     BADEXIT                                                          
+EILS     MVI   SBRETURN,SBEILSQ    INVALID LIST                                 
+         B     BADEXIT                                                          
+EPEL     MVI   SBRETURN,SBEPELQ    PASSED END OF LIST                           
+         B     BADEXIT                                                          
+EINF     MVI   SBRETURN,SBEINFQ    INVALID NAME FIELD                           
+         B     BADEXIT                                                          
+EMNF     MVI   SBRETURN,SBEMNFQ    MISSING NAME FIELD                           
+         B     BADEXIT                                                          
+ETNF     MVI   SBRETURN,SBETNFQ    TOO MANY NAME FIELDS                         
+         B     BADEXIT                                                          
+ESYS     MVI   SBRETURN,SBESYSQ    SYSTEM INVALID                               
+         B     ESYSFLD                                                          
+EAUT     MVI   SBRETURN,SBAUTHQ    NOT AUTHORIZED FOR SYSTEM                    
+         B     ESYSFLD                                                          
+ENOP     MVI   SBRETURN,SBENOPQ    SYSTEM NOT OPERATIONAL                       
+ESYSFLD  MVC   SBOPTTXT(L'SBSYSTEM),SBSYSTEM                                    
+         MVI   GTLTXT-GTBLOCK+SBTXTBLK,L'SBSYSTEM                               
+         B     ETXTFLD                                                          
+ESRC     MVI   SBRETURN,SBESRCQ    SEARCH INVALID                               
+ESRCFLD  MVC   SBOPTTXT(L'SBSYSTEM),SBSYSTEM                                    
+         MVI   SBOPTTXT+L'SBSYSTEM,C' '                                         
+         MVC   SBOPTTXT+L'SBSYSTEM+1(L'SBSEARCH),SBSEARCH                       
+         MVI   GTLTXT-GTBLOCK+SBTXTBLK,L'SBSYSTEM+L'SBSEARCH+1                  
+         B     ETXTFLD                                                          
+ELTS     MVI   SBRETURN,SBELTSQ    LIST TOO SMALL (TOO MANY ITEMS)              
+         B     BADEXIT                                                          
+EFLT     MVI   SBRETURN,SBRFLTQ    SINGLE ENTRY FILTERED OUT                    
+         B     BADEXIT                                                          
+EEOL     MVI   SBRETURN,SBREOLQ    END OF LIST                                  
+         B     BADEXIT                                                          
+ESEC     MVI   SBRETURN,SBRSECQ    SECURITY LOCKOUT                             
+         B     BADEXIT                                                          
+ETXTFLD  LA    RE,SBOPTTXT                                                      
+         STCM  RE,B'0111',GTATXT-GTBLOCK+SBTXTBLK                               
+         B     BADEXIT                                                          
+         SPACE                                                                  
+BADEXIT  LTR   RB,RB               CC NOT EQUAL/NOT ZERO IF ERROR               
+         B     EXIT                                                             
+                                                                                
+GUDEXIT  CR    RB,RB               CC EQUAL/ZERO IF OK                          
+EXIT     XMOD1 ,                                                                
+*                                                                               
+PACHAREA DC    32S(*)                                                           
+         EJECT                                                                  
+***********************************************************************         
+*        LITERAL STORAGE                                              *         
+***********************************************************************         
+VLSYSDIR DC    V(SRCHDIR)          SYSTEM DIRECTORY                             
+VLPARSER DC    V(SRCHPARS)         PARSER ROUTINE                               
+VLDMOD   DC    V(DMLDMOD)          NON ZERO IF RUNNING UNDER DMLDMOD            
+VLSSB    DC    V(SSB)              TO TEST ON OR OFFLINE                        
+VLDATAMG DC    V(DATAMGR)          FOR USE IF OFFLINE                           
+         SPACE                                                                  
+* TRANSLATE TABLE TO RETURN NUMBER OF FIRST NONZERO BIT IN BYTE                 
+*                                                                               
+TRTBIT   DC    AL1(0,8),2AL1(7),4AL1(6),8AL1(5),16AL1(4)                        
+         DC    32AL1(3),64AL1(2),128AL1(1)                                      
+         SPACE                                                                  
+* TABLE OF VALID INPUT ACTIONS.                                                 
+*        VALID OUTPUT ACTION IS ANY ENTRY FOLLOWING INPUT ACTION                
+*        SBSTRXQ IS TERMINATOR FOR INPUT ACTIONS,                               
+*        X'FF' IS TERMINATOR FOR OUTPUT ACTIONS.                                
+*                                                                               
+ACTABLE  DC    AL1(SBSTVALQ)       INPUT IS A TWA KEYWORD STRING                
+         DC    AL1(SBSTSRCQ)       INPUT STYLE IS SEARCH                        
+ACTABLO  EQU   *                   FIRST VALID OUTPUT STYLE                     
+         DC    AL1(SBSTBTLQ)       BITLIST IN/OUT                               
+         DC    AL1(SBSTSELQ)       SEQUENCE CODE LIST IN/OUT                    
+         DC    AL1(SBSTDALQ)       DISK ADDRESS LIST IN/OUT                     
+         DC    AL1(SBSTSEQ)        SEQUENCE CODE IN/OUT                         
+         DC    AL1(SBSTDAQ)        DISK ADDRESS IN/OUT (NOT FROM SEQ)           
+         DC    AL1(SBSTREQ)        RECORD IN/OUT                                
+ACTABLEX EQU   *                   TERMINATOR FOR INPUT STYLES                  
+         DC    AL1(SBSTRXQ)        RECORD EXTRACT OUT                           
+ACTABLOX EQU   *                   TERMINATOR FOR OUTPUT STYLES                 
+         DC    AL1(255)            TERMINATOR                                   
+         SPACE                                                                  
+DMREAD   DC    CL8'DMREAD  '                                                    
+DMRDHI   DC    CL8'DMRDHI  '                                                    
+DMRSEQ   DC    CL8'DMRSEQ  '                                                    
+GETREC   DC    CL8'GETREC  '                                                    
+TEMPSTR  DC    CL8'TEMPSTR '                                                    
+DMTIME   DC    CL8'DMTIME  '                                                    
+         SPACE                                                                  
+XFFS     DC    4X'FF'                                                           
+         SPACE                                                                  
+SPACES   DC    CL64' '                                                          
+         SPACE                                                                  
+NONAME   DC    AL1(1,SBNAMELQ,NONAMEL-1,6,SBNWFOWQ),C'NONAME'                   
+NONAMEL  EQU   *-NONAME                                                         
+         SPACE                                                                  
+DCSYS    DC    8AL2(DCSYSENG-DCSYS) 'SYSTEM' IN VARIOUS LANGUAGES               
+         ORG   DCSYS+2*LANGDUT                                                  
+         DC    AL2(DCSYSDUT-DCSYS)                                              
+         ORG   ,                                                                
+DCSYSENG DC    CL8'SYSTEM  '                                                    
+DCSYSDUT DC    CL8'SYSTEEM '                                                    
+         SPACE                                                                  
+DCSEA    DC    8AL2(DCSEAENG-DCSEA) 'SEARCH' IN VARIOUS LANGUAGES               
+         ORG   DCSEA+2*LANGGER                                                  
+         DC    AL2(DCSEAGER-DCSEA)                                              
+         ORG   DCSEA+2*LANGDUT                                                  
+         DC    AL2(DCSEADUT-DCSEA)                                              
+         ORG   ,                                                                
+DCSEAENG DC    CL8'SEARCH  '                                                    
+DCSEAGER DC    CL8'SUCHE   '                                                    
+DCSEADUT DC    CL8'ZOEK    '                                                    
+         SPACE                                                                  
+         LTORG                                                                  
+         EJECT                                                                  
+***********************************************************************         
+*        WORKING STORAGE                                              *         
+***********************************************************************         
+SRCHWORK DSECT                                                                  
+DUB      DS    D                                                                
+FULL     DS    F                                                                
+HALF     DS    H                                                                
+BYTE     DS    C                                                                
+DIRFLAG  DS    X                   DIRECTORY FILTER/SECURITY CHECK FLAG         
+RELO     DS    A                                                                
+APARMS   DS    A                   ADDRESS CALLERS PARAMETER LIST               
+SAVERE   DS    A                                                                
+SAVEREIO DS    A                                                                
+VPROTOFF DS    A                                                                
+VPROTON  DS    A                                                                
+DMCBIO   DS    F                                                                
+DMCB     DS    6F                                                               
+*                                                                               
+WORK     DS    CL64                                                             
+DMWORK   DS    CL64                                                             
+KEY      DS    CL64                SUPPORT UP TO 64 BYTE KEY                    
+*                                                                               
+DIRNAME  DS    CL7                 DIRECTORY FILE NAME                          
+IDLANG   DS    CL1                 ID LANGUAGE                                  
+*                                                                               
+NULLS    DS    XL10                                                             
+*        DS    0D                                                               
+SRCHWRKL EQU   *-SRCHWORK          BASIC DSECT LENGTH                           
+*                                                                               
+*        EXTENSION FOR SEARCH SUBSECTION.                                       
+*                                                                               
+SAVESRCH DS    4F                  SAVE AREA FOR SEARCH REGISTERS               
+WORD     DS    (SBNAWXTQ)CL(SBNAWLNQ),CL1 WORD SPACE AND TERMINATOR             
+         ORG   WORD                                                             
+LONGWORD DS    (SBMNAMEQ)CL(SBNAWLNQ+2) SPACE FOR LONGEST WORD ENTRY            
+*                                  FROM EACH POSSIBLE NAME STRING               
+         ORG   ,                                                                
+SRCB     DS    6F                  SEARCH DMCB                                  
+PASSIO   DS    CL64                PASSIVE POINTER IO AREA                      
+MULTWORD DS    C                   Y=TWO PASSES REQUIRED                        
+FLAGSSET DS    C                   Y=SBNWFMTQ FLAGS NEED TO BE UNSET            
+*                                                                               
+SRCHSXTL EQU   *-SRCHWORK          EXTENDED LENGTH                              
+         EJECT                                                                  
+       ++INCLUDE GESRCHBLKD                                                     
+         EJECT                                                                  
+       ++INCLUDE GESRCHDIRD                                                     
+         EJECT                                                                  
+* FATWA                                                                         
+* FATCB (FOR SWITCH DSECT)                                                      
+* FAFACTS                                                                       
+* DDCOMFACS                                                                     
+* FAGETTXTD                                                                     
+* DDLANGEQUS                                                                    
+* FALIMACCD                                                                     
+         PRINT OFF                                                              
+       ++INCLUDE FATWA                                                          
+       ++INCLUDE FATCB                                                          
+       ++INCLUDE FAFACTS                                                        
+       ++INCLUDE DDCOMFACS                                                      
+       ++INCLUDE FAGETTXTD                                                      
+       ++INCLUDE DDLANGEQUS                                                     
+       ++INCLUDE FALIMACCD                                                      
+         PRINT ON                                                               
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'010GESRCHEXEC01/20/16'                                      
+         END                                                                    

@@ -1,0 +1,198 @@
+*          DATA SET DDRECOVR   AT LEVEL 031 AS OF 09/17/20                      
+*CATALP RECOVR                                                                  
+         TITLE 'RECOVER - INVOKE OFFLINE RECOVERY AND AWAIT COMPLETION'         
+         PRINT NOGEN                                                            
+RECOVR   CSECT                                                                  
+*                                                                               
+         NMOD1 WORKX-WORKD,**RECO**,RA,R9,CLEAR=YES                             
+         USING WORKD,RC                                                         
+         ST    RD,SAVERD                                                        
+*                                                                               
+         XC    DMCB,DMCB           ENQUIRE ON ZERO                              
+         OI    DMCB+4,X'20'                                                     
+         GOTO1 =V(DATAMGR),DMCB,=C'LOCKSPC'                                     
+         L     R1,8(R1)                                                         
+         USING DMSPACED,R1         EXTRACT JOB NAME/NUMBER/ASID                 
+         MVC   JNAME,DSPMVS                                                     
+         MVC   JNUM,DSPJOB                                                      
+         MVC   JASID,DSPLOCK+2     ASID FROM LOCKWORD                           
+         DROP  R1                                                               
+*                                                                               
+         OC    JNAME,JNAME         DON'T ALLOW ZERO RETURNS                     
+         BNZ   *+6                                                              
+         DC    H'0'                                                             
+*                                                                               
+         L     RE,=V(SSB)                                                       
+         MVC   DMALET,SSBALET-SSBD(RE)                                          
+         EJECT                                                                  
+************************************************************                    
+* FIND THIS JOB IN JOBTABLES AND FLAG IT DSJOBABN          *                    
+************************************************************                    
+         SPACE 1                                                                
+         SAC   512                 SET UP AMODE                                 
+         LAM   ARE,AR1,=4F'0'                                                   
+         LAM   AR2,AR2,DMALET                                                   
+         SR    R2,R2                                                            
+*                                                                               
+         L     R2,12(,R2)          GET ADVS TABLE                               
+*                                                                               
+         LA    R0,32               32 ENTRIES                                   
+MAIN002  CLC   0(8,R2),JNAME                                                    
+         BNE   MAIN005                                                          
+*                                                                               
+         MVC   ADVNUM,10(R2)       SAVE ADVNUM THEN CLEAR IT                    
+*                                                                               
+MAIN005  LA    R2,32(,R2)          NEXT ADV TABLE ENTRY                         
+         BCT   R0,MAIN002                                                       
+*                                                                               
+         SR    R2,R2                                                            
+MAIN010  LA    R2,64(,R2)          FIRST / NEXT SYSTEM                          
+         ST    R2,DINDEX                                                        
+         C     R2,=X'00004000'     64*256 SYSTEM ENTRIES                        
+         BE    MAIN200                                                          
+         USING DMSPACED,R2                                                      
+*                                                                               
+         MVC   SENAM,16(R2)        SAVE SYMBOLIC NAME                           
+         SR    R1,R1                                                            
+         ICM   R1,7,DSPECB+1       GET SYSTEM HEADER                            
+         BZ    MAIN010                                                          
+         LR    R2,R1                                                            
+         ST    R2,DSYSHDR          SAVE A(SYSTEM HEADER)                        
+         USING DMSYSHDR,R2                                                      
+         MVC   SENUM,DSYSENUM+1    SAVE SE NUMBER                               
+*                                                                               
+         L     R2,DSYAJOBS         GET JOB TABLE                                
+         USING DSJOBHDR,R2                                                      
+*                                                                               
+         LA    R0,DSJBHMXQ         MAX ENTRIES                                  
+*                                                                               
+MAIN020  CLC   DSJOBNAM,JNAME      MUST MATCH ALL THREE                         
+         BNE   MAIN025                                                          
+         CLC   DSJOBNUM,JNUM                                                    
+         BNE   MAIN025                                                          
+         CLC   DSJOASID,JASID                                                   
+         BNE   MAIN025                                                          
+*                                                                               
+         OI    DSJOBFLG,DSJOBABN   SET ABEND FLAG                               
+*                                                                               
+         LA    R1,RCVRLIST         AND SAVE IN RECOVERY LIST                    
+         LA    RF,100                                                           
+MAIN023  OC    0(4,R1),0(R1)                                                    
+         BZ    MAIN024                                                          
+         LA    R1,4(R1)                                                         
+         BCT   RF,MAIN023                                                       
+         DC    H'0'                YOU HAVE UPDATED MORE THAN 100 SE            
+*                                                                               
+MAIN024  ST    R2,0(R1)            SAVE ADDRESS OF THIS ENTRY                   
+*                                                                               
+MAIN025  LA    R2,16(,R2)          NEXT JOBTAB ENTRY                            
+         BCT   R0,MAIN020                                                       
+*                                                                               
+         SAC   512                                                              
+         L     R2,DINDEX           LOOP BACK FOR NEXT                           
+         B     MAIN010                                                          
+         EJECT                                                                  
+************************************************************                    
+* ASYNC WAIT FOR ALL SET DSJOBABN FLAGS TO BE CLEARED      *                    
+************************************************************                    
+         SPACE 1                                                                
+MAIN200  SR    R3,R3               USE R3 AS A COUNTER                          
+*                                                                               
+MAIN210  LA    R3,1(R3)            COUNT SECONDS WAITED                         
+         CHI   R3,600                                                           
+         BL    MAIN220                                                          
+         DC    H'0'                AFTER 10 MINUTES ABEND MAIN TASK             
+*                                                                               
+MAIN220  SAC   0                   WAIT 1 SEC FOR RECOVERY                      
+         SR    R0,R0                                                            
+         LA    R1,10                                                            
+         M     R0,=F'38400'                                                     
+         ST    R1,FULL                                                          
+         STIMER WAIT,TUINTVL=FULL                                               
+*                                                                               
+         USING DSJOBHDR,R2                                                      
+         LA    R1,RCVRLIST         LIST OF RECOVERY PENDINGS                    
+MAIN230  ICM   R2,15,0(R1)                                                      
+         BZ    MAINX                                                            
+         SAC   512                                                              
+         TM    DSJOBFLG,DSJOBABN   TEST ABEND FLAG                              
+*                                                                               
+         BO    MAIN210             WAIT SOME MORE                               
+         LA    R1,4(R1)                                                         
+         B     MAIN230             TRY NEXT                                     
+*                                                                               
+MAINX    SAC   0                                                                
+         B     XMOD1                                                            
+*                                                                               
+XMOD1    L     RD,SAVERD           EXIT FROM TOP                                
+         XMOD1                                                                  
+*                                                                               
+M24SET   SLL   RE,1                SET AMODE 24                                 
+         SRL   RE,1                                                             
+         BSM   0,RE                                                             
+*                                                                               
+M31SET   ICM   RE,8,=X'80'         SET AMODE 31                                 
+         BSM   0,RE                                                             
+         EJECT                                                                  
+*************************************************************                   
+*        CONSTANTS AND LTORG                                *                   
+*************************************************************                   
+         SPACE 2                                                                
+SPACES   DC    CL16'      '                                                     
+         SPACE 2                                                                
+         LTORG                                                                  
+         EJECT                                                                  
+*************************************************************                   
+*        WORKING STORAGE                                    *                   
+*************************************************************                   
+         SPACE 2                                                                
+WORKD    DSECT                                                                  
+SAVERD   DS    A                                                                
+SAVERE   DS    A                                                                
+ADMGRFLS DS    A                                                                
+ASYSFLES DS    A                                                                
+DMALET   DS    A                                                                
+DINDEX   DS    A                                                                
+DSYSHDR  DS    A                                                                
+*                                                                               
+DUB      DS    D                                                                
+FULL     DS    F                                                                
+HALF     DS    H                                                                
+BYTE     DS    X                                                                
+*                                                                               
+DMCB     DS    6F                                                               
+*                                                                               
+RCVRLIST DS    100F                RECOVERY LIST UP TO 100 SE                   
+RCVRLISX DS    F                                                                
+*                                                                               
+ADVNUM   DS    XL1                 RESOURCE NUMBER                              
+SENUM    DS    CL1                 SE NUMBER                                    
+SENAM    DS    CL8                 SE NAME                                      
+*                                                                               
+JNAME    DS    CL8                                                              
+JNUM     DS    CL2                                                              
+JASID    DS    CL2                                                              
+*                                                                               
+WORKX    EQU   *                                                                
+         EJECT                                                                  
+*************************************************************                   
+*        OTHER DSECTS                                       *                   
+*************************************************************                   
+         SPACE 2                                                                
+* FASSBOFF                                                                      
+* DMDSYSHDR                                                                     
+* DMDSHDR                                                                       
+* DMSPACED                                                                      
+* FADSECTS                                                                      
+         PRINT OFF                                                              
+       ++INCLUDE FASSBOFF                                                       
+       ++INCLUDE DMDSYSHDR                                                      
+       ++INCLUDE DMDSHDR                                                        
+       ++INCLUDE DMSPACED                                                       
+       ++INCLUDE DMGREQUS                                                       
+       ++INCLUDE FAD                                                            
+         PRINT ON                                                               
+         EJECT                                                                  
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'031DDRECOVR  09/17/20'                                      
+         END                                                                    

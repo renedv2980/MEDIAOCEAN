@@ -1,0 +1,478 @@
+*          DATA SET GESRCHPASS AT LEVEL 012 AS OF 06/17/10                      
+*CATALP SRCHPASS                                                                
+         TITLE 'SEARCH SYSTEM, PASSIVE POINTER MAINTENANCE MODULE'              
+***********************************************************************         
+*                                                                     *         
+* MODULE CALLED BY APPLICATION TO BUILD AND UPDATE PASSIVE POINTERS.  *         
+*                                                                     *         
+* FOUR ACTIONS AVAILABLE, APPLICATION WOULD USE ONE OR TWO CALLS      *         
+* ACCORDING TO THE ACTION BEING PROCESSED. ACTIONS ARE AS FOLLOWS:    *         
+* 'B' RETURN 'BEFORE' PASSIVE LIST FROM ORIGINAL UN-UPDATED RECORD    *         
+* 'A' BUILD 'AFTER' PASSIVE LIST FROM UPDATED RECORD, COMPARE WITH    *         
+*     'BEFORE' LIST AND UPDATE DIRECTORY TO REFLECT DIFFERENCES.      *         
+* 'N' ALLOCATE SEQUENCE NUMBER TO RECORD, BUILD PASSIVE LIST AND ADD  *         
+*     PASSIVES TO DIRECTORY.                                          *         
+* 'D' DELETE ITEMS IN A GIVEN 'BEFORE' PASSIVE LIST FROM DIRECTORY    *         
+*                                                                     *         
+* TYPICALLY, AN LFM WOULD USE THE FOLLOWING CALL SEQUENCES, ACCORDING *         
+* TO THE ACTION:                                                      *         
+* A. ADDING A NEW RECORD. AN ACTION 'N' CALL IS USED AFTER THE ADDREC *         
+*    FOR THE NEW RECORD. REQUIRED PARAMETERS FOR THE 'N' CALL ARE 1,  *         
+*    A(NEW RECORD), 2, A(NEW DISK ADDRESS), 3, A(AREA) TO USE FOR     *         
+*    SEARCH BLOCK.                                                    *         
+* B. CHANGING A RECORD. AN ACTION 'B' CALL IS USED AFTER THE RECORD IS*         
+*    GETREC'ED. THIS BUILDS A LIST OF 'BEFORE' PASSIVES WHICH SHOULD  *         
+*    REFLECT THOSE CURRENTLY ON THE FILE. AFTER CHANGES TO THE RECORD *         
+*    IN CORE HAVE BEEN COMPLETED, AN 'A' CALL IS USED TO BUILD A LIST *         
+*    OF 'AFTER' PASSIVES AND TO UPDATE THE DIRECTORY IF ANY DIFFERENCE*         
+*    IS FOUND. REQUIRED PARAMETERS FOR THE 'B' CALL ARE 1, A(OLD REC),*         
+*    2, A(AREA) IN WHICH 'BEFORE' PASSIVE LIST IS RETURNED, 3 A(AREA) *         
+*    IN WHICH SEARCH BLOCK IS RETURNED, 4, A(DISK ADDRESS). REQUIRED  *         
+*    PARAMETERS FOR THE 'A' CALL ARE 1, A(CHANGED RECORD), 2, A(AREA) *         
+*    CONTAINING 'BEFORE' PASSIVE LIST (FROM 'B' CALL), 3, A(AREA)     *         
+*    CONTAINING SEARCH BLOCK (ALSO FROM 'B' CALL).                    *         
+* C. DELETING A RECORD. AN ACTION 'B' CALL IS USED AFTER THE RECORD IS*         
+*    GETREC'ED, EXACTLY AS FOR THE CHANGE ACTION. AFTER THE RECORD IS *         
+*    PUTREC'ED, AN ACTION 'D' CALL IS USED TO DELETE THE PASSIVES.    *         
+*    REQUIRED PARAMETERS FOR THE 'D' CALL ARE 1, A(AREA) CONTAINING   *         
+*    'BEFORE' PASSIVE LIST (FROM 'B' CALL), 2, A(AREA) CONTAINING     *         
+*    SEARCH BLOCK (ALSO FROM 'B' CALL).                               *         
+*                                                                     *         
+* PARAMETERS                                                          *         
+* P1 BYTE 0    ACTION CODE B=BEFORE, A=AFTER, N=NEW, D=DELETE         *         
+* P1 BYTE 1-3  A(SEARCH BLOCK)                                        *         
+* P2 BYTE 0    INDICATORS X'80' COUNT NO. OF ADDS/WRITES              *         
+*                               ON EXIT P1 0-1 = NO. OF ADDS          *         
+*                                       P1 2-3 = NO. OF WRITES        *         
+*                         X'40' RUNNING OFF-LINE BUT USE A(COMFACS)   *         
+*                         X'3F' COUNTRY CODE (DDLANGEQUS) FOR SBCTRY  *         
+*                               (USE TAGCTRY IF 0)                    *         
+* P2 BYTE 1-3  A(COMFACS) IF ONLINE                                   *         
+* P3 BYTE 0    LANGUAGE CODE (DDLANGEQUS) FOR SBLANG (USE TLANG IF 0) *         
+* P3 BYTE 1-3  A(RECORD) FOR ACTION B/A/N, IGNORED FOR D              *         
+* P4 BYTE 0    LIST TERMINATOR (USUALLY X'FF')                        *         
+* P4 BYTE 1-3  A(PASSIVE LIST AREA) FOR ACTION B/A/D, IGNORED FOR N   *         
+*              P5 AND P6 ARE IGNORED FOR ACTION A AND D.              *         
+* P5 BYTE 0-3  A(DISK ADDRESS)                                        *         
+* P6 BYTE 0    TYPE OF SYSTEM CODE, 0=USE CONNECTED SYSTEM            *         
+*                                   1=SYSTEM CODE PROVIDED            *         
+* P6 BYTE 1-3  ADDRESS OF 6 BYTE SYSTEM CODE IF P6/0=1                *         
+*                                                                     *         
+* ACTION N, A AND D WILL PERFORM FILE I/O SO CALLER MUST ASSUME THAT  *         
+* THE DIRECTORY SEQUENCE WILL BE BROKEN.                              *         
+*                                                                     *         
+* SIZE OF PASSIVE LIST AREA IS GIVEN BY DIRECTORY RECORD SIZE TIMES   *         
+* TWICE MAX NUMBER OF WORDS (2*SBNAWMXQ) PLUS ONE FOR TERMINATOR AND  *         
+* 8 FOR SAVED ISFILE NAME, I.E. PLSIZE=(DIRRECLEN*2*SBNAWMXQ)+1+8.    *         
+* IF SDSRIXTQ IS SET IN SDSRIND1, MAX NUMBER OF WORDS IS SBNAWXTQ.    *         
+*                                                                     *         
+* ISFILE NAME IS SAVED AT FRONT OF PASSIVE LIST FOR THOSE APPLICATIONS*         
+* WHICH SUPPORT MULTIPLE DIRECTORIES. IN THIS CASE, A CHANGE TO A DA  *         
+* RECORD MAY RESULT IN THE PASSIVES MOVING TO A DIFFERENT DIRECTORY.  *         
+* THIS IS FULLY SUPPORTED, ALL OLD PASSIVES ARE DELETED FROM OLD      *         
+* DIRECTORY AND NEW ONES ADDED TO NEW DIRECTORY. SETTING OF OPTIONAL  *         
+* OVERRIDE DIRECTORY NAME IS THE RESPONSIBILITY OF THE APPLICATION    *         
+* INTERFACE.                                                          *         
+***********************************************************************         
+         EJECT                                                                  
+SRCHPASS CSECT                                                                  
+         PRINT NOGEN                                                            
+         NMOD1 SRCHWRKL,**SRPA**                                                
+*                                                                               
+         USING SRCHWORK,RC         RC=TEMP WORK AREA                            
+         MVC   PARMS(PARMSL),0(R1) SAVE PARAMETERS                              
+         ST    R1,APARMS                                                        
+*                                                                               
+         CLI   PTERMCHR,0                                                       
+         BNE   *+8                                                              
+         MVI   PTERMCHR,X'FF'      DEFAULT LIST TERMINATOR                      
+*                                                                               
+         L     RA,PASRCHBK         RA=A(SEARCH BLOCK)                           
+         LA    RA,0(,RA)                                                        
+         USING SEARCHD,RA                                                       
+*                                                                               
+         L     R9,PAREC            R9=A(RECORD) UNLESS ACTION 'D'               
+         LA    R9,0(,R9)                                                        
+*                                                                               
+OFFL     TM    PINDS,PICOMOFF      TEST OFFLINE BUT HAVE COMFACS                
+         BZ    OFFL02                                                           
+         L     RF,PCOMFACS                                                      
+         MVC   VDATAMGR,CDATAMGR-COMFACSD(RF)                                   
+         B     OFFL04                                                           
+OFFL02   MVC   VDATAMGR,=V(DATAMGR) ASSUME DMGR LINKED AND OFFLINE              
+         OC    VDATAMGR,VDATAMGR   TEST DMGR WAS LINKED                         
+         BZ    ONLN                NO, ASSUME ONLINE                            
+OFFL04   MVC   VSRCHXEC,=V(SRCHEXEC)                                            
+         XC    VSWITCH,VSWITCH     SWITCH N/A OFFLINE                           
+         B     INIT                                                             
+*                                                                               
+ONLN     L     RF,PCOMFACS         ONLINE ADDRESSES VIA COMFACS                 
+         MVC   VDATAMGR,CDATAMGR-COMFACSD(RF)                                   
+         MVC   VSRCHXEC,CSEARCH-COMFACSD(RF)                                    
+         MVC   VSWITCH,CSWITCH-COMFACSD(RF)                                     
+         EJECT                                                                  
+***********************************************************************         
+*        INITIALIZATION                                               *         
+***********************************************************************         
+INIT     CLI   PACTION,PACTNEWQ    'NEW' AND 'BEFORE' CALLS NEED                
+         BE    INITBLOK            SEARCH BLOCK INITIALISED                     
+         CLI   PACTION,PACTBEFQ                                                 
+         BE    INITBLOK                                                         
+         NC    SBASYS,SBASYS       'AFTER' AND 'DELETE' CALLS USE               
+         BNZ   *+6                 SEARCH BLOCK FROM 'BEFORE' CALL              
+         DC    H'0'                SO DIE IF NOT INITIALISED                    
+         CLI   PACTION,PACTAFTQ                                                 
+         BE    INITAFT                                                          
+         CLI   PACTION,PACTDELQ                                                 
+         BE    INITDEL                                                          
+         DC    H'0'                DIE IF INVALID CALL ACTION                   
+         SPACE                                                                  
+INITBLOK XR    R1,R1                                                            
+         ICM   R1,7,PADA+1         'NEW' AND 'BEFORE' CALLS MUST HAVE           
+         BNZ   *+6                 A DISK ADDRESS                               
+         DC    H'0'                DIE IF A(DA) ZERO                            
+*                                                                               
+         XC    SEARCHD(SBSAVE-SEARCHD),SEARCHD CLEAR SEARCH BLOCK               
+         XC    SBSAVE(SBLSAVE),SBSAVE                                           
+*                                                                               
+         MVC   SBCTRY,PINDS        COUNTRY                                      
+         NI    SBCTRY,PICTRY                                                    
+         MVC   SBLANG,PLANG        LANGUAGE                                     
+*                                                                               
+         MVI   SBID,C' '           CLEAR SEARCH ID TO SPACES                    
+         MVC   SBID+1(L'SBID-1),SBID                                            
+         CLI   PTSYSTEM,PTSYCONQ                                                
+         BE    INITBLO2            USE CONNECTED SYSTEM                         
+         CLI   PTSYSTEM,PTSYCODQ                                                
+         BE    *+6                 USE GIVEN SYSTEM                             
+         DC    H'0'                INVALID PARAMETER                            
+         L     RE,PASYSTEM                                                      
+         MVC   SBSYSTEM,0(RE)      COPY TO SYSTEM FIELD                         
+*                                                                               
+INITBLO2 ICM   RF,15,VSWITCH       SEE IF SWITCH AVAILABLE                      
+         BZ    INITBLOX            NO, LEAVE THIS LOT OUT                       
+         GOTO1 (RF),DMCB,X'00FFFFFF' GET TCB ADDRESS                            
+         L     R2,0(,R1)           R2=A(TCB)                                    
+         USING TCBD,R2                                                          
+         L     R3,TCBUTL           R3=A(UTL)                                    
+         USING UTLD,R3                                                          
+         MVC   SBUSER,TUSER        USERID NUMBER                                
+         MVC   SBPASSWD,TPASSWD    PASSWORD ID NUMBER                           
+         MVC   SBAGY,TAGY          AGENCY ALPHA                                 
+         MVC   SBAGYB,TAGYB        AGENCY BINARY                                
+         MVC   SBACCS,TACCS        LIMIT ACCESS                                 
+         TM    TTEST,TTESTTAC      TEST MODE?                                   
+         BZ    *+14                                                             
+         ICM   R1,15,TACCS         YES, LIMIT ACCESS IS IN TESTTAB              
+         MVC   SBACCS,TSTTACCS-TSTTABD(R1)                                      
+         L     R1,TCBWRKA          R1=MONITOR'S SAVE AREA                       
+         L     R1,8(,R1)           R1=CALLERS ROOT SAVE AREA                    
+         L     R1,24(,R1)          R1=APPLICATIONS PARM LIST (FAPARM)           
+         MVC   SBAPPFAC,8(R1)      SYSTEM FACLIST ADDRESS (SEE LATER)           
+         MVC   SBOVSYS,TOVSYS      LOGICAL SYSTEM NUMBER                        
+         MVC   SBCOMFAC,PCOMFACS   FILL IN COMFACS ADDRESS                      
+         MVI   SBCOMFAC,0          CLEAR COMFACS HOB                            
+         MVC   SBATWA,TCBTWA       FILL IN TWA ADDRESS                          
+         CLI   SBCTRY,0                                                         
+         BNE   *+10                                                             
+         MVC   SBCTRY,TAGCTRY      (DEFAULT TO CONNECTED AGYCTRY)               
+         CLI   SBLANG,0                                                         
+         BNE   *+10                                                             
+         MVC   SBLANG,TLANG        (DEFAULT TO CONNECTED LANGUAGE)              
+         DROP  R2,R3                                                            
+*                                                                               
+INITBLOX TM    PINDS,PICOMOFF      TEST OFFLINE BUT HAVE COMFACS                
+         BZ    *+10                                                             
+         MVC   SBCOMFAC,PCOMFACS                                                
+         CLI   PACTION,PACTBEFQ                                                 
+         BE    INITBEF                                                          
+         SPACE                                                                  
+INITNEW  LA    R7,PTERMCHR-8       'NEW' CALL EMPLOYS EMPTY 'BEFORE'            
+         LH    R1,=Y(LISTSIZE)     LIST AND AQUIRES DYNAMIC SPACE FOR           
+         BAS   RE,GETWRK           'AFTER' LIST. IF NO 'BEFORES', ALL           
+         LR    R8,R0               'AFTERS' WILL BE ADDED TO FILE               
+         B     BUILD               GO BUILD 'AFTER' LIST                        
+         SPACE                                                                  
+INITBEF  XR    R7,R7               'BEFORE' CALL BUILDS 'BEFORE' LIST           
+         L     R8,PALIST           IN GIVEN AREA.                               
+         L     R1,PADA                                                          
+         MVC   SBDA,0(R1)          COPY DA TO INDICATE NOT NEW RECORD           
+         B     BUILD               GO BUILD 'BEFORE' LIST                       
+         SPACE                                                                  
+INITAFT  L     R7,PALIST           'AFTER' CALL USES GIVEN 'BEFORE'             
+         LH    R1,=Y(LISTSIZE)     LIST, BUILT BY 'BEFORE' CALL, AND            
+         BAS   RE,GETWRK           BUILDS 'AFTER' LIST IN DYNAMIC               
+         LR    R8,R0               SPACE, BEFORE UPDATING FILE                  
+         B     BUILD               GO BUILD 'AFTER' LIST                        
+         SPACE                                                                  
+INITDEL  L     R5,SBASYS           R5=A(SYSTEM DIRECTORY ENTRY)                 
+         L     R7,PALIST           'DELETE' CALL USES GIVEN 'BEFORE'            
+         LA    R8,PTERMCHR-8       LIST, BUILT BY 'BEFORE' CALL, AND            
+         B     UPDATE              EMPTY 'AFTER' LIST SO DELETES ALL            
+         EJECT                                                                  
+***********************************************************************         
+*        BUILD PASSIVE POINTER LIST. R9=RECORD, R8=LIST AREA          *         
+***********************************************************************         
+BUILD    ST    R9,SBAIN                                                         
+         MVI   SBSTYLI,SBSTREQ     INPUT IS A RECORD                            
+         LA    R1,8(,R8)           1ST 8 BYTES OF OUTPUT IS DIRNAME             
+         ST    R1,SBAOUT                                                        
+         MVI   SBSTYLO,SBSTPASQ    OUTPUT IS A PASSIVE LIST                     
+         L     R2,SBAPPFAC         A(APPLICATION FACILITIES LIST)               
+         MVC   FACAREA,0(R2)       COPY LIST TO WORK AREA, AS MAY BE            
+         LA    R1,FACAREA          OVERWRITTEN IF SEARCH SWITCHES               
+         STCM  R1,7,SBAPPFAC+1     PASS ADDRESS OF COPY                         
+         GOTO1 VSRCHXEC,DMCB,(RA)                                               
+         ST    R2,SBAPPFAC         RESET A(APPLCATION FACILITIES LIST)          
+         L     R1,SBAOUT           GET LIST END ADDRESS                         
+         MVC   0(1,R1),PTERMCHR    TERMINATE LIST                               
+         BE    BUILDOK             SKIP IF NO ERROR RETURNED                    
+         CLI   SBRETURN,SBERRORQ   SEE IF NASTY ERROR                           
+         BL    BUILDOK             IGNORE IF NOT                                
+         DC    H'0'                ELSE DIE                                     
+*                                                                               
+BUILDOK  L     R5,SBASYS           R5=A(SYSTEM DIRECTORY ENTRY)                 
+         USING SDSYSD,R5                                                        
+         LA    R1,SDSYDIRN         DIRECTORY NAME                               
+         XR    RE,RE                                                            
+         ICM   RE,B'0011',SBDODIRN ANY OVERRIDE DIR NAME IN SBASAVE             
+         BZ    *+8                                                              
+         LA    R1,SBASAVE(RE)      YES, POINT TO IT                             
+         MVC   0(8,R8),0(R1)       SAVE DIRNAME IN FRONT OF LIST                
+*                                                                               
+         CLI   PACTION,PACTBEFQ                                                 
+         BE    EXIT                ALL DONE IF 'BEFORE' CALL                    
+         CLI   PACTION,PACTNEWQ                                                 
+         BNE   UPDATE              UPDATE IF NOT 'NEW' CALL                     
+         L     RE,PADA             'NEW' CALL INDICATED BY SBDA=0,              
+         MVC   SBDA,0(RE)          COPY PASSED DA NOW FOR PASSIVES              
+         EJECT                                                                  
+***********************************************************************         
+*        COMPARE PASSIVE POINTER LISTS, AND UPDATE FILE IF DIFFERENT  *         
+*        HANDLE POSSIBLE CHANGE OF DIRECTORY NAME TOO                 *         
+***********************************************************************         
+UPDATE   XC    TOTS,TOTS                                                        
+         LH    R4,SDSYKLEN                                                      
+         BCTR  R4,0                R4=KEY LENGTH - 1                            
+         LH    R3,SDSYSLEN                                                      
+         BCTR  R3,0                R3=STATUS LENGTH - 1                         
+*                                                                               
+         LR    R9,R7               SAVE ADDRESS OF OLD PASSIVE LIST             
+*                                                                               
+         MVC   DIRNAME,0(R8)       COPY NEW DIRECTORY NAME                      
+         CLC   DIRNAME,0(R7)       IS OLD DIRECTORY NAME THE SAME               
+         BE    *+8                                                              
+         LA    R7,PTERMCHR-8       NO, NO OLD LIST FOR NEW FILE                 
+         LA    R8,8(,R8)           FIRST ENTRY IN NEW LIST                      
+         LA    R7,8(,R7)           FIRST ENTRY IN OLD LIST                      
+         LR    R6,R7               SAVE FIRST OLD ENTRY                         
+*                                                                               
+UPD10    CLC   PTERMCHR,0(R8)      IS THIS THE LAST NEW PASSIVE                 
+         BE    UPD60               YES - GO CHECK IF OLD ONES TO DELETE         
+*                                                                               
+*        MATCH EACH NEW ENTRY IN TURN AGAINST ALL THE OLD ONES                  
+*                                                                               
+UPD20    CLC   PTERMCHR,0(R7)      IS THIS THE LAST OLD PASSIVE                 
+         BE    UPD45               YES - GO ADD THE NEW ONE                     
+*                                                                               
+         NC    0(3,R7),0(R7)       IS THIS A DELETED OLD ENTRY ?                
+         BZ    UPD30               YES - NEXT OLD ENTRY                         
+*                                                                               
+         EX    R4,UPD20EX1         IS OLD ENTRY SAME KEY AS NEW ?               
+         BE    UPD40               YES - GO SEE IF STATUS CHANGED               
+*                                                                               
+UPD30    AH    R7,SDSYDLEN         NEXT OLD PASSIVE ENTRY                       
+         B     UPD20               GO ROUND AGAIN                               
+*                                                                               
+UPD20EX1 CLC   0(0,R8),0(R7)       * EXECUTED *                                 
+*                                                                               
+*        A NEW AND OLD ENTRY HAVE THE SAME KEY                                  
+*                                                                               
+UPD40    XC    0(3,R7),0(R7)        DELETE OLD ENTRY TO SHOW DONE               
+*                                                                               
+         LA    RE,1(R7,R4)         OLD STATUS                                   
+         LA    RF,1(R8,R4)         NEW STATUS                                   
+         EX    R3,UPD40EX1         IF STATUS CHANGED,                           
+         BNE   UPD45               UPDATE WITH NEW STATUS                       
+         B     UPD55               ELSE THIS ONE UNCHANGED, DO NEXT             
+*                                                                               
+UPD40EX1 CLC   0(0,RE),0(RF)       * EXECUTED *                                 
+*                                                                               
+*        ADD OR UPDATE NEW RECORD ONTO THE FILE                                 
+*                                                                               
+UPD45    LA    RE,2(R3,R4)         LENGTH KEY PLUS STATUS                       
+         AR    RE,R8               A(DISK ADDRESS IN RECORD)                    
+         MVC   0(4,RE),SBDA        COPY IN DISK ADDRESS                         
+*                                                                               
+         MVC   KEY,0(R8)                                                        
+         BAS   RE,UPDREAD          READ FOR OLD RECORD                          
+         MVC   DIRREC,0(R8)        COPY NEW RECORD TO IO AREA                   
+         BNE   UPD50               IF NOT THERE, ADD NEW ONE                    
+         BAS   RE,UPDWRITE         REWRITE WITH THE NEW STATUS                  
+         B     UPD55               GO DO NEXT NEW ENTRY                         
+UPD50    BAS   RE,UPDADD           ADD THE NEW ENTRY, WITH NEW STATUS           
+*                                                                               
+UPD55    AH    R8,SDSYDLEN         NEXT NEW PASSIVE ENTRY                       
+         LR    R7,R6               RESET TO FIRST OLD PASSIVE                   
+         B     UPD10               GO ROUND AGAIN                               
+*                                                                               
+*        NOW DELETE ANY UNMATCHED OLD PASSIVE POINTERS                          
+*                                                                               
+UPD60    LR    R7,R9               RESET TO ORIGINAL OLD PASSIVE LIST           
+*                                                                               
+         MVC   DIRNAME,0(R7)       COPY OLD DIRECTORY NAME                      
+         LA    R7,8(,R7)           FIRST ENTRY IN OLD LIST                      
+*                                                                               
+UPD70    CLC   PTERMCHR,0(R7)      IS THIS THE LAST OLD PASSIVE                 
+         BE    UPDX                YES - ALL DONE, EXIT                         
+*                                                                               
+         NC    0(3,R7),0(R7)       IS THIS A DELETED OLD ENTRY ?                
+         BZ    UPD80               YES - NEXT OLD ENTRY                         
+*                                                                               
+         MVC   KEY,0(R7)                                                        
+         BAS   RE,UPDREAD          READ THE RECORD                              
+         BNE   UPD80               IF NOT THERE, JUST IGNORE IT                 
+*                                                                               
+         LA    RE,DIRREC+1(R4)     POINT TO STATUS AREA                         
+         OI    0(RE),X'80'         SET DELETE BIT ON                            
+         BAS   RE,UPDWRITE         REWRITE DELETED RECORD                       
+*                                                                               
+UPD80    AH    R7,SDSYDLEN         NEXT OLD PASSIVE ENTRY                       
+         B     UPD70               GO ROUND AGAIN                               
+*                                                                               
+UPDX     TM    PINDS,PICOUNT       TEST COUNT REQUIRED                          
+         BZ    EXIT                                                             
+         L     RE,APARMS                                                        
+         MVC   0(L'TOTS,RE),TOTS                                                
+         B     EXIT                                                             
+*                                                                               
+UPDREAD  ST    RE,SAVERE                                                        
+         GOTO1 VDATAMGR,DMCB,(X'88',DMREAD),DIRNAME,KEY,DIRREC                  
+         TM    8(R1),X'FF'-X'12'                                                
+         BZ    *+6                                                              
+         DC    H'0'                ANY IO ERROR BUT NRF OR DELETED              
+         TM    8(R1),X'10'         TEST NO RECORD FOUND                         
+         L     RE,SAVERE                                                        
+         BR    RE                  EXIT WITH CC NEQ IF NOT FOUND                
+*                                                                               
+UPDWRITE ST    RE,SAVERE                                                        
+         GOTO1 VDATAMGR,DMCB,(X'88',DMWRT),DIRNAME,DIRREC,DIRREC                
+         CLI   8(R1),0                                                          
+         BE    *+6                                                              
+         DC    H'0'                ANY IO ERROR                                 
+         LH    RF,TOTWRTS                                                       
+         LA    RF,1(RF)                                                         
+         STH   RF,TOTWRTS                                                       
+         L     RE,SAVERE                                                        
+         BR    RE                                                               
+*                                                                               
+UPDADD   ST    RE,SAVERE                                                        
+         GOTO1 VDATAMGR,DMCB,(X'88',DMADD),DIRNAME,DIRREC,DIRREC                
+         CLI   8(R1),0                                                          
+         BE    *+6                                                              
+         DC    H'0'                ANY IO ERROR                                 
+         LH    RF,TOTADDS                                                       
+         LA    RF,1(RF)                                                         
+         STH   RF,TOTADDS                                                       
+         L     RE,SAVERE                                                        
+         BR    RE                                                               
+*                                                                               
+         DROP  R5                                                               
+         EJECT                                                                  
+********************************                                                
+*        SUBROUTINES, AND EXIT *                                                
+********************************                                                
+EXIT     XIT1                                                                   
+         SPACE                                                                  
+**************************************************                              
+* EXTEND WORKING STORAGE                         *                              
+*        R1=LENGTH OF STORAGE REQUIRED           *                              
+*        R0=ADDRESS OF STORAGE REQUIRED ON EXIT  *                              
+**************************************************                              
+GETWRK   LA    R1,7(,R1)           ROUND TO DWRD                                
+         SRL   R1,3                                                             
+         SLL   R1,3                                                             
+         L     RF,4(,RD)           GET PREVIOUS SAVE AREA                       
+         LR    R0,RD               ADDRESS OF STORAGE AQUIRED                   
+         AR    RD,R1               SET NEW SVAREA ADDRESS                       
+         ST    RD,8(,RF)           SET NEW FORWARD POINTER                      
+         ST    RF,4(,RD)           SAVE BACKWARD POINTER IN NEW SVAREA          
+         BR    RE                                                               
+         EJECT                                                                  
+************************                                                        
+*        LITERALS      *                                                        
+************************                                                        
+DMREAD   DC    CL8'DMREAD'                                                      
+DMWRT    DC    CL8'DMWRT'                                                       
+DMADD    DC    CL8'DMADD'                                                       
+         LTORG                                                                  
+         EJECT                                                                  
+***********************************************************************         
+*        WORKING STORAGE                                              *         
+***********************************************************************         
+SRCHWORK DSECT                                                                  
+DMCB     DS    6F                                                               
+SAVERE   DS    A                                                                
+APARMS   DS    A                                                                
+*                                                                               
+VSRCHXEC DS    A                   ADDRESS SEARCH EXEC MODULE                   
+VDATAMGR DS    A                                                                
+VSWITCH  DS    A                                                                
+*                                                                               
+TOTS     DS    0XL4                                                             
+TOTADDS  DS    H                   NUMBER OF RECORDS ADDED                      
+TOTWRTS  DS    H                   NUMBER OF RECORDS WRITTEN                    
+*                                                                               
+PARMS    DS    0A                  COPY CALLERS PARAMETER LIST                  
+PACTION  DS    0AL1         P1/0   ACTION BYTE                                  
+PACTNEWQ EQU   C'N'                AFTER ADDING NEW RECORD                      
+PACTBEFQ EQU   C'B'                BEFORE CHANGING OR DELETING RECORD           
+PACTAFTQ EQU   C'A'                AFTER CHANGING RECORD                        
+PACTDELQ EQU   C'D'                AFTER DELETING RECORD                        
+PASRCHBK DS    A            P1/1-3 A(SEARCH BLOCK)                              
+PINDS    DS    0CL1         P2/0   INDICATORS                                   
+PICOUNT  EQU   X'80'               COUNT ADDS/WRITES IF ACTION A/N/D            
+PICOMOFF EQU   X'40'               RUNNING OFF-LINE BUT USE PCOMFACS            
+PICTRY   EQU   X'3F'               COUNTRY CODE                                 
+PCOMFACS DS    A            P2/1-3 A(COMFACS)                                   
+PLANG    DS    0CL1         P3/0   LANGUAGE CODE                                
+PAREC    DS    A            P3/1-3 A(RECORD) IF ACTION N/B/A                    
+PTERMCHR DS    0X           P4/0   LIST TERMINATOR CHARACTER                    
+PALIST   DS    A            P4/1-3 A(LIST AREA) IF ACTION B/A/D                 
+PADA     DS    A            P5/0-3 A(DISK ADDRESS) IF ACTION B/N                
+PTSYSTEM DS    0X           P6/0   TYPE OF SYSTEM CODE IF ACTION B/N            
+PTSYCONQ EQU   0                   USE CONNECTED OVSYS                          
+PTSYCODQ EQU   1                   PASYSTEM -> CL6'SYSTEM CODE'                 
+PASYSTEM DS    A            P6/1-3 A(SYSTEM CODE) IF ACTION B/N                 
+PARMSL   EQU   *-PARMS                                                          
+*                                                                               
+FACAREA  DS    CL256               COPY OF APPLICATION FACILITIES LIST          
+         ORG   FACAREA             TEMP DURING SEARCH CALL ONLY                 
+*                                                                               
+KEY      DS    CL64                USE SAME AREA FOR KEY AND                    
+DIRREC   DS    CL64                DIRECTORY RECORD                             
+*                                                                               
+DIRNAME  DS    CL7                 ISFILE NAME                                  
+         ORG   ,                                                                
+*                                                                               
+SRCHWRKL EQU   *-SRCHWORK                                                       
+*                                                                               
+LISTSIZE EQU   8+SBNAWXTQ*2*L'DIRREC+1 MAXIMUM SIZE OF PASSIVE LIST             
+         EJECT                                                                  
+* GESRCHBLKD                                                                    
+* GESRCHDIRD                                                                    
+* DDCOMFACS                                                                     
+* FATCB                                                                         
+* FAUTL                                                                         
+* FATSTTAB                                                                      
+         PRINT OFF                                                              
+       ++INCLUDE GESRCHBLKD                                                     
+       ++INCLUDE GESRCHDIRD                                                     
+       ++INCLUDE DDCOMFACS                                                      
+       ++INCLUDE FATCB                                                          
+       ++INCLUDE FAUTL                                                          
+       ++INCLUDE FATSTTAB                                                       
+         PRINT ON                                                               
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'012GESRCHPASS06/17/10'                                      
+         END                                                                    

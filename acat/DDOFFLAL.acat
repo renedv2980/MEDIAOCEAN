@@ -1,0 +1,359 @@
+*          DATA SET DDOFFLAL   AT LEVEL 050 AS OF 11/25/02                      
+*CATALP OFFLAL                                                                  
+*********************************************************************           
+* THIS PROGRAM IS INCLUDED IN DDOFFICER.                            *           
+* THIS PROGRAM READ THE LAL (LIMIT ACCESS LIST) SECURITY RECORD AND *           
+* SAVE THE RECORD TO THE GIVEN USER BUFFER.                         *           
+*                                                                   *           
+* IN ADDITIONAL, THIS PROGRAM PERFORMS THE FOLLOWING 2 FUNCTIONS:   *           
+* 1) VALIDATE IF THE ACCESS IS ALLOWED FOR THE GIVEN LIMIT ACCESS   *           
+*    TYPE AND VALUE.  RETURN A "Y/N" FLAG BACK TO THE CALLER.       *           
+*             --------------  OR  --------------                    *           
+* 2) EXTRACT THE RECORD AND PARSE ALL ELEMENTS INTO A TEXT STRING   *           
+*    FORMAT.  THE STRING WILL BE STORED BACK TO THE GIVEN USER      *           
+*    BUFFER.  THIS IS EXCLUSIVE USED BY JMOU AT THIS POINT.(11/2002)*           
+*                                                                   *           
+*                                                                   *           
+* PARAMETER LISTS ARE AS FOLLOWS                                    *           
+*                                                                   *           
+* P1  BYTE 0      ON ENTRY   X'00' = VALIDATE COMMAND               *           
+*                            X'01' = EXTRACT  COMMAND               *           
+*                                                                   *           
+*                 ON EXIT    X'00' = AUTHORIZED                     *           
+*                            X'FF' = NOT AUTHORIZED                 *           
+*                            X'F0' = UNKNOWN COMMAND ERROR          *           
+*                            X'F1' = RECORD NOT FOUND               *           
+*                            X'F2' = UNKNOWN FILTER TYPE            *           
+*                            X'F3' = CONFLICTIVE FILTER TYPES       *           
+*                            X'F4' = MISSING FILTER                 *           
+*                            X'F5' = INVALID FILTER                 *           
+*                            X'F6' =                                *           
+*                                                                   *           
+*     BYTE 1-3    A(COMFACS)                                        *           
+*                                                                   *           
+* P2              A(LAL RECORD KEY)                                 *           
+*                                                                   *           
+* P3  BYTE 0      X'80' = FORCE IO READ REGARDLESS WHAT IS IN BUFFER*           
+*                 A(USER BUFFER)  (NOTE: AT LEAST 2000 BYTES)       *           
+*                                                                   *           
+* P4              A(STRING OF TYPE & VALUE TO BE VALIDATED)         *           
+*                   EX: (M)03(T)00                      M=T         *           
+*                       (M)03(T)(C)05(ABC)00            C=T,ABC     *           
+*                       (M)03(T)(C)05(ABC)(P)05(POL)00  P=T,ABC,POL *           
+*                       (O)04(AP)00                     O=AP        *           
+*********************************************************************           
+         TITLE 'OFFLAL - TEST LIMIT ACCESS LIST VALUES'                         
+OFFLAL   CSECT                                                                  
+         PRINT NOGEN                                                            
+         NMOD1 WORKX-WORKD,*OFFLAL*                                             
+         USING WORKD,RC                                                         
+*                                                                               
+         LR    RA,R1               SAVE PARMS ADDRESS                           
+         USING PARMD,RA                                                         
+*                                                                               
+         L     R5,P1                                                            
+         USING COMFACSD,R5                                                      
+*                                                                               
+         CLI   P1,0                VALIDATE?                                    
+         BE    VALIDATE                                                         
+         CLI   P1,1                EXTRACT?                                     
+         BE    EXTRACT                                                          
+         MVI   P1,X'F0'            UNKNOWN COMMAND ERROR                        
+         B     EXIT                                                             
+*                                                                               
+VALIDATE DS    0H                                                               
+         MVC   ABUFF,P3            A(USER BUFFER)                               
+         TM    ABUFF,X'80'         FORCE AN IO READ ANYWAY?                     
+         BZ    VAL10               NO, COMPARE KEY AND IO BUFFER                
+         NI    ABUFF,X'FF'-X'80'   RESET THIS BIT                               
+         B     VAL20               DON'T COMPARE KEY AND IO BUFFER              
+*                                                                               
+VAL10    L     R2,P2               A(LAL REC KEY)                               
+         L     R3,ABUFF            A(USER BUFFER)                               
+         CLC   0(L'SATLKEY,R2),0(R3)  SAME KEY?                                 
+         BE    VAL30                  YES, DON'T READ RECORD AGAIN              
+*                                                                               
+VAL20    GOTO1 CDATAMGR,DMCB,(0,=C'DMRDHI'),=C'CTFILE',(R2),(R3)                
+         CLC   0(SATLDEF-SATLKEY,R2),0(R3)   SAME KEY?                          
+         BE    VAL30                         YES                                
+         MVI   P1,X'F1'            LAL RECORD NOT FOUND                         
+         B     EXIT                                                             
+*                                                                               
+VAL30    BAS   R7,VALP4            VALIDATE THE FILTER LIST                     
+*                                                                               
+         LA    R3,SATLDATA-SATLREC(R3) GET ELEMENT DATA                         
+VAL40    CLI   0(R3),0                                                          
+         BE    VAL200              END OF RECORD, STILL NOT A MATCH             
+         CLI   0(R3),SATLMELQ      LIMIT ACCESS LIST ELEMENT?                   
+         BE    VAL55               YES - CHECK THE FILTER TYPE                  
+*                                                                               
+VAL50    SR    R0,R0               GET NEXT ELEMENT                             
+         IC    R0,1(R3)                                                         
+         AR    R3,R0                                                            
+         B     VAL40                                                            
+*                                                                               
+         USING SATLMD,R3                                                        
+VAL55    CLC   TYPE,SATLMTYP       MATCH FILTER TYPE?                           
+         BNE   VAL50               NO - NEXT ELEMENT                            
+*                                                                               
+         TM    SATLMCTL,SATLMNFQ   NEGATIVE FILTER?                             
+         BNO   *+8                 NO                                           
+         OI    FLAG,SATLMNFQ                                                    
+*                                                                               
+         LA    R0,1                LEVEL COUNTER                                
+         LA    R1,VL1                                                           
+         LA    RF,SATLMDTA                                                      
+*                                                                               
+VAL60    CLI   0(RF),C'*'          VALUE=*?                                     
+         BNE   *+12                NO                                           
+         AHI   RF,1                YES - SKIP THIS LEVEL CHECKING               
+         B     VAL70                                                            
+*                                                                               
+         ZIC   RE,1(R1)            LENGTH OF VALUE + TYPE + LEN                 
+         SHI   RE,3                -2 FOR TYPE + LEN, -1 FOR EX CLC             
+         EX    RE,*+8                                                           
+         B     *+10                                                             
+         CLC   2(0,R1),0(RF)                                                    
+         BNE   VAL50               NEXT ELEMENT                                 
+         LA    RF,1(RE,RF)                                                      
+*                                                                               
+VAL70    CH    R0,LEVEL            REACH THE TARGET LEVEL?                      
+         BNL   VAL80               YES                                          
+         CLI   0(RF),C','                                                       
+         BE    *+6                                                              
+         DC    H'0'                MUST BE A ','                                
+*                                                                               
+         AHI   R0,1                INCREMENT LEVEL COUNTER                      
+         AHI   RF,1                NEXT LEVEL VALUE IN ELEMENT                  
+         AHI   R1,L'VL1            NEXT LEVEL VALUE TO BE VALIDATED             
+         B     VAL60                                                            
+*                                                                               
+VAL80    TM    SATLMCTL,SATLMNFQ   NEGATIVE FILTER?                             
+         BO    VAL190              YES - NOT AUTHORIZED                         
+*                                                                               
+*THE READ/WRITE ACCESS INFO CAN PASS BACK TOO IF NEEDED IN THE FUTURE           
+*        MVI   P1+1,C'W'           ASSUME WRITE ACCESS FIRST                    
+*        TM    SATLMCTL,SATLMRDQ                                                
+*        BZ    *+8                                                              
+*        MVI   P1+1,C'R'           READ ONLY ACCESS                             
+*                                                                               
+         MVI   P1,X'00'            OTHERWISE, AUTHORIZED                        
+         B     EXIT                                                             
+*                                                                               
+VAL190   MVI   P1,X'FF'            NOT AUTHORIZED                               
+         B     EXIT                                                             
+*                                                                               
+*NO MATCH, BUT CHECK THEY ARE NEGATIVE FILTER --> AUTHORIEZED                   
+VAL200   TM    FLAG,SATLMNFQ       NEGATIVE FILTER?                             
+         BNO   VAL210              NO - NOT AUTHORIZED                          
+*                                                                               
+         MVI   P1,X'00'            OTHERWISE, AUTHORIZED                        
+         B     EXIT                                                             
+*                                                                               
+VAL210   MVI   P1,X'FF'            NOT AUTHORIZED                               
+         B     EXIT                                                             
+         DROP  R3                                                               
+*                                                                               
+*                                                                               
+*VALIDATE THE INPUT FILTER LIST                                                 
+*                                                                               
+VALP4    XC    VL1(L'VL1+L'VL2+L'VL3+L'VL4),VL1                                 
+         XC    FLAG,FLAG                                                        
+         L     RF,P4                                                            
+*                                                                               
+VALP410  CLI   0(RF),0             END OF FILTER LIST?                          
+         BE    VALP450                                                          
+*                                                                               
+         LA    RE,TYPETAB                                                       
+VALP420  OC    0(L'TYPETAB,RE),0(RE)                                            
+         BNZ   *+12                UNKNOWN FILTER TYPE                          
+         MVI   P1,X'F2'                                                         
+         B     EXIT                                                             
+*                                                                               
+         CLC   0(1,RE),0(RF)                                                    
+         BE    VALP430                                                          
+         AHI   RE,L'TYPETAB                                                     
+         B     VALP420                                                          
+*                                                                               
+VALP430  ZIC   R1,1(RE)            LEVEL NUMBER                                 
+         BCTR  R1,0                                                             
+         MHI   R1,L'VL1                                                         
+         LA    R1,VL1(R1)                                                       
+*                                                                               
+         OC    0(L'VL1,R1),0(R1)   ALREADY SOMETHING THERE?                     
+         BZ    *+12                                                             
+         MVI   P1,X'F3'            CONFLICTIVE FILTER TYPES                     
+         B     EXIT                                                             
+*                                                                               
+         ZIC   RE,1(RF)            LENGTH                                       
+         CHI   RE,L'VL1            BIGGER THAN LV FIELD?                        
+         BNH   *+6                 NO                                           
+         DC    H'0'                NEED TO SIZE OF LV'S                         
+*                                                                               
+         BCTR  RE,0                                                             
+         EX    RE,*+8                                                           
+         B     *+10                                                             
+         MVC   0(0,R1),0(RF)       SAVE FILTER TYPE & VALUE                     
+*                                                                               
+         LA    RF,1(RE,RF)         NEXT FILTER                                  
+         B     VALP410                                                          
+*                                                                               
+*AT THIS POINT, ALL FILTERS ARE SAVED IN LV(N) FIELDS                           
+VALP450  DS    0H                  FIND THE HIGHEST LEVEL FILTER                
+         LA    R0,4                ASSUME THIS IS LEVEL 4 FILTER                
+         LA    R1,VL4                                                           
+         OC    0(L'VL1,R1),0(R1)                                                
+         BNZ   VALP470                                                          
+*                                                                               
+         LA    R0,3                ASSUME THIS IS LEVEL 3 FILTER                
+         LA    R1,VL3                                                           
+         OC    0(L'VL1,R1),0(R1)                                                
+         BNZ   VALP470                                                          
+*                                                                               
+         LA    R0,2                ASSUME THIS IS LEVEL 2 FILTER                
+         LA    R1,VL2                                                           
+         OC    0(L'VL1,R1),0(R1)                                                
+         BNZ   VALP470                                                          
+*                                                                               
+         LA    R0,1                ASSUME THIS IS LEVEL 1 FILTER                
+         LA    R1,VL1                                                           
+         OC    0(L'VL1,R1),0(R1)                                                
+         BNZ   VALP470                                                          
+         MVI   P1,X'F4'            MISSING FILTER                               
+         B     EXIT                                                             
+*                                                                               
+VALP470  STH   R0,LEVEL            SAVE THE HIGHEST LEVEL NUMBER                
+         MVC   TYPE,0(R1)          SAVE THE FILTER TYPE                         
+         B     VALP490                                                          
+*                                                                               
+*ALL LV'S FROM THIS LEVEL DOWN MUST HAVE SOMETHING IN THEM                      
+VALP480  SHI   R1,L'VL1                                                         
+         OC    0(L'VL1,R1),0(R1)                                                
+         BNZ   VALP490                                                          
+         MVI   P1,X'F5'            INVALID FILTER                               
+         B     EXIT                                                             
+VALP490  BCT   R0,VALP480                                                       
+*                                                                               
+         BR    R7                  FILTERS CHECKED OKAY, BACK TO VAL30          
+*                                                                               
+*********************************************************************           
+* EXTRACT ALL THE ELEMENTS AND CONTRUCT A STRING BACK TO THE USER   *           
+* BUFFER.                                                           *           
+*                                                                   *           
+*   DESCRIPTION    INPUT ELEMENT            OUTPUT STRING           *           
+*   -----------    -------------            -------------           *           
+*     M=R          0706D40000D9             D4E6D900                *           
+*                   . . M . . R              M W R .                *           
+*                                                                   *           
+*     M=-T         0706D48000E3             D4E660E300              *           
+*                   . . M . . T              M W - T .              *           
+*                                                                   *           
+*     C=T,ABC      070AC30000E36BC1C2C3     C3E6E36BC1C2C300        *           
+*                   . . C . . T , A B C      C W T , A B C .        *           
+*                                                                   *           
+*     C=-T,ABC     070AC38000E36BC1C2C3     C3E660E36BC1C2C300      *           
+*                   . . C . . T , A B C      C W - T , A B C .      *           
+*                                                                   *           
+*     C=*,ABC      070AC300005C6BC1C2C3     C3E6E36BC1C2C300        *           
+*                   . . C . . * , A B C      C W * , A B C .        *           
+*                                                                   *           
+*     C=T,ABC      070AC34000E36BC1C2C3     C3D9E36BC1C2C300        *           
+*   (READ ONLY)     . . C . . T , A B C      C R T , A B C .        *           
+*                                                                   *           
+* THERE IS AN ADDITIONAL X'00' AT THE END OF OUTPUT STRING.         *           
+*                                                                   *           
+*********************************************************************           
+EXTRACT  DS    0H                                                               
+         L     R2,P2               A(LAL REC KEY)                               
+         L     R3,P3               A(USER BUFFER)                               
+*                                                                               
+         GOTO1 CDATAMGR,DMCB,(0,=C'DMRDHI'),=C'CTFILE',(R2),(R3)                
+         CLC   0(SATLDEF-SATLKEY,R2),0(R3)   SAME KEY?                          
+         BE    EXTR10                        YES                                
+         MVI   P1,X'F1'            LAL RECORD NOT FOUND                         
+         B     EXIT                                                             
+*                                                                               
+*NOW THE LAL RECORD IN USER BUFFER, READ THE ELEMENT AND WRITE BACK             
+*TO THE USER BUFFER, ONE ELEMENT AT A TIME.                                     
+*                                                                               
+EXTR10   LR    R4,R3                                                            
+         LA    R3,SATLDATA-SATLREC(R3) GET ELEMENT DATA                         
+EXTR20   CLI   0(R3),0                                                          
+         BE    EXTR90              END OF RECORD                                
+         CLI   0(R3),SATLMELQ                                                   
+         BNE   EXTR70              NEXT ELEMENT                                 
+*                                                                               
+         USING SATLMD,R3                                                        
+         MVC   0(1,R4),SATLMTYP    FILTER TYPE                                  
+*                                                                               
+         MVI   1(R4),C'W'          ASSUME WRITE ACCESS FIRST                    
+         TM    SATLMCTL,SATLMRDQ                                                
+         BZ    *+8                                                              
+         MVI   1(R4),C'R'          READ ONLY ACCESS                             
+         AHI   R4,2                +2 FOR TYPE AND W/R ACCESS                   
+*                                                                               
+         TM    SATLMCTL,SATLMNFQ                                                
+         BZ    *+12                                                             
+         MVI   0(R4),C'-'          NEGATIVE FILTER                              
+         AHI   R4,1                +1 FOR "-" SIGN                              
+*                                                                               
+         ZIC   RF,SATLMLEN                                                      
+         SHI   RF,SATLMDTA-SATLMEL+1                                            
+         EX    RF,*+8                                                           
+         B     *+10                                                             
+         MVC   0(0,R4),SATLMDTA                                                 
+         DROP  R3                                                               
+*                                                                               
+         LA    R4,1(RF,R4)         BUMP TO THE END OF ELEMENT STRING            
+         MVI   0(R4),0             MARK THE END OF ONE ELEMENT                  
+         AHI   R4,1                +1 FOR END OF ELEMENT MARKER                 
+*                                                                               
+EXTR70   SR    R0,R0               GET NEXT ELEMENT                             
+         IC    R0,1(R3)                                                         
+         AR    R3,R0                                                            
+         B     EXTR20                                                           
+*                                                                               
+EXTR90   MVI   0(R4),0             MARK THE END OF STRING                       
+         MVI   P1,0                                                             
+*                                                                               
+EXIT     XMOD1                                                                  
+*                                                                               
+TYPETAB  DS    0XL2                                                             
+         DC    C'M',X'01'          MEDIA    - 1ST LEVEL                         
+         DC    C'O',X'01'          OFFICE   - 1ST LEVEL                         
+         DC    C'S',X'01'          STATION  - 1ST LEVEL                         
+         DC    C'C',X'02'          CLIENT   - 2ND LEVEL                         
+         DC    C'P',X'03'          PRODUCT  - 3RD LEVEL                         
+         DC    C'E',X'04'          ESTIMATE - 4TH LEVEL                         
+         DC    X'0000'             END OF TABLE                                 
+*                                                                               
+         LTORG                                                                  
+         EJECT                                                                  
+WORKD    DSECT                                                                  
+DMCB     DS    6F                                                               
+ABUFF    DS    A                                                                
+LEVEL    DS    H                                                                
+FLAG     DS    X                                                                
+TYPE     DS    X                                                                
+VL1      DS    XL10                (1,TYPE)(1,LEN)(N,VALUE)                     
+VL2      DS    XL10                                                             
+VL3      DS    XL10                                                             
+VL4      DS    XL10                                                             
+WORKX    EQU   *                                                                
+*                                                                               
+* SEACSFILE                                                                     
+* DDCOMFACS                                                                     
+         PRINT OFF                                                              
+       ++INCLUDE SEACSFILE                                                      
+       ++INCLUDE DDCOMFACS                                                      
+         PRINT ON                                                               
+*                                                                               
+PARMD    DSECT                                                                  
+P1       DS    A                   COMMAND#/RETURN CODE  (1ST BYTE)             
+P2       DS    A                   A(LAL KEY)                                   
+P3       DS    A                   A(USER BUFFER)                               
+P4       DS    A                   A(FILTER TYPE & VALUE)                       
+*                                                                               
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'050DDOFFLAL  11/25/02'                                      
+         END                                                                    

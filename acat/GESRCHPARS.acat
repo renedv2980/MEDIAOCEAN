@@ -1,0 +1,647 @@
+*          DATA SET GESRCHPARS AT LEVEL 018 AS OF 01/19/96                      
+*CATALP SRCHPARS                                                                
+         TITLE 'SEARCH SYSTEM, NAME PARSING MODULE'                             
+*                                                                               
+* PWES 018 19JAN95 SUPPORT SDSRIINQ - KEEP INCLUDED WORDS/PART WORDS            
+*      017 21JUN90 'PREVIOUS LAST CHANGE'                                       
+***********************************************************************         
+*                                                                     *         
+* THIS MODULE IS VERY LANGUAGE SENSITIVE. IT SUPPORTS GERMAN NOW, AND *         
+* MUST BE EXTENDED TO COVER EACH NEW LANGUAGE TO BE USED WITH SEARCH  *         
+*                                                                     *         
+***********************************************************************         
+         SPACE                                                                  
+SRCHPARS CSECT                                                                  
+         PRINT NOGEN                                                            
+         NMOD1 SRCHWRKL,**SRPA**,RR=RE                                          
+*                                                                               
+         USING SRCHWORK,RC         RC=TEMP WORK AREA                            
+         ST    RE,RELO                                                          
+         ST    R1,APARMS                                                        
+         MVC   PARMS(PARMSL),0(R1)    SAVE PARAMETERS                           
+         L     RA,0(,R1)                                                        
+         USING SEARCHD,RA          RA=ADDRESS OF SEARCH CONTROL BLOCK           
+         L     R9,SBASRCH                                                       
+         USING SDSRCHD,R9          R9=SEARCH DIRECTORY ENTRY                    
+*                                                                               
+         MVI   SBRETURN,0          CLEAR RETURN CODE                            
+*                                                                               
+         MVI   STRING,C' '         CLEAR STRING WORK AREA                       
+         MVC   STRING+1(L'STRING-1),STRING                                      
+         XR    R1,R1               COPY INPUT STRING TO WORK AREA               
+         ICM   R1,1,LNAMEIN                                                     
+         BZ    EMIF                STRING MISSING                               
+         STC   R1,LSTRING          COPY ITS LENGTH                              
+         BCTR  R1,0                                                             
+         ICM   RE,7,ANAMEIN        A(INPUT NAME STRING)                         
+         EX    R1,*+8                                                           
+         B     *+10                                                             
+         MVC   STRING(0),0(RE)     TAKE A COPY OF THE INPUT TEXT                
+*                                                                               
+         L     RE,=A(TRTCASE)      ENGLISH/DEFAULT CASE TABLE                   
+         CLI   SBLANG,LANGGER                                                   
+         BNE   *+8                                                              
+         L     RE,=A(TRTCGER)      GERMAN CASE TRANSLATION                      
+         A     RE,RELO                                                          
+         EX    R1,*+8                                                           
+         B     *+10                                                             
+         TR    STRING(0),0(RE)     TRANSLATE LOWER CASE TO UPPER                
+         EJECT                                                                  
+***********************************************************************         
+* CHECK AND TRANSLATE INPUT STRING                                    *         
+*                                                                     *         
+*        CHECK LENGTH OF STRING BY TYPE. FOR KEY VALIDATION STYLE,    *         
+*        THERE CAN BE A NUMBER OF NAMES, EACH IS PASSED INDIVIDUALLY  *         
+*        TO THIS MODULE, AND CANNOT BE MORE THAN 'SBNALENQ' BYTES LONG*         
+*        FOR THE PASSIVE STYLE CALL, ALL WORDS USED TO BUILD A SET OF *         
+*        PASSIVES ARE HANDLED TOGETHER, AND CAN FORM A STRING UP TO   *         
+*        255 BYTES LONG, BUT ONLY FIRST 16 SIGNIFICANT WORDS ARE USED *         
+*                                                                     *         
+*        FOR A KEY STYLE CALL, IF A STRING CONSISTS OF A SINGLE '*',  *         
+*        TREAT IT AS 'ALL', I.E. DO NOT ADD IT TO THE OUTPUT AREA.    *         
+*        THIS HAS THE INTERESTING EFFECT THAT IF ANY OTHER NAME IS    *         
+*        THE '*' IS OVERRIDEN.                                        *         
+*                                                                     *         
+*        FINALLY LOOK FOR 'SPECIAL' STRINGS, THEN TRANSLATE TO REMOVE *         
+*        ANY UNWANTED SPECIAL CHARACTERS.                             *         
+***********************************************************************         
+CHKLEN   CLI   STYLE,SBPARSPQ      IS IT PASSIVE STYLE ?                        
+         BNE   CHKLKEY             NO, MUST BE KEY VALIDATE CALL                
+         MVI   SBNNAMES,0          FORCE EMPTY BLOCK IF PASSIVE CALL            
+         B     TRANSP              AND ALLOW LONG NAME STRING (1-255)           
+CHKLKEY  NC    SBASYS,SBASYS       VALIDATE SEARCH KEY STYLE CALL               
+         BZ    ENIT                ERROR IF NOT INITIALIZED                     
+         CLI   LNAMEIN,SBNALENQ                                                 
+         BH    EFTL                STRING TOO LONG                              
+         CLI   LSTRING,1                                                        
+         BNE   TRANSP              SKIP IF NOT EXACTLY ONE CHAR                 
+         CLI   STRING,C'*'                                                      
+         BE    GUDEXIT             IGNORE SINGLE ASTERISK                       
+*                                                                               
+TRANSP   LA    RE,STRING           TRANSLATE 'SPECIAL'S                         
+         ZIC   R0,LSTRING                                                       
+         LR    R1,R0                                                            
+TRANSPLP CLI   SBLANG,2            ONLY IF ENGLISH                              
+         BH    TRANSPX                                                          
+         CLC   0(3,RE),=C'''N'''                                                
+         BNE   TRANSPX                                                          
+         MVC   0(3,RE),SPACES      REPLACE 'N' WITH SPACES                      
+TRANSPX  LA    RE,1(,RE)                                                        
+         BCT   R0,TRANSPLP                                                      
+*                                                                               
+         L     RE,=A(TRTSPEC)      ENGLISH/DEFAULT SPECIAL CHARS                
+         CLI   SBLANG,LANGGER                                                   
+         BNE   *+8                                                              
+         L     RE,=A(TRTSGER)      GERMAN SPECIAL CHARS                         
+         A     RE,RELO                                                          
+         BCTR  R1,0                                                             
+         EX    R1,*+8                                                           
+         B     *+10                                                             
+         TR    STRING(0),0(RE)     TRANSLATE SPECIAL CHARACTERS                 
+         EJECT                                                                  
+*****************************************************************               
+* CONVERT STRING INTO SORTED TABLE OF WORDS.                    *               
+*        TRANSLATED INPUT STRING IS NOW IN STRING WITH WORDS    *               
+*        SEPARATED BY SPACES, AND POSSIBLE IMBEDDED NULLS       *               
+*****************************************************************               
+SCAN     XC    WORDTAB(L'WORDTAB*SBNAWXTQ),WORDTAB                              
+         XR    R7,R7               R7=NUMBER OF WORDS FOUND SO FAR              
+         LA    R4,SBNAWLNQ         R4=MAXIMUM LENGTH OF A WORD                  
+         CH    R4,SDSRLWRD         SEARCH MAY USE SHORTER WORDS                 
+         BNH   *+8                                                              
+         LH    R4,SDSRLWRD         GET MAXIMUM FOR SEARCH IF SO                 
+         LA    R2,STRING           R2=START OF INPUT TEXT,                      
+         ZIC   R3,LSTRING          R3=LENGTH OF STRING                          
+*                                                                               
+SCAN10   CLI   0(R2),C' '          LOOK FOR START OF A WORD                     
+         BNH   SCAN15              IGNORE BLANKS, NULLS                         
+         CLI   0(R2),C'*'          AND *'S                                      
+         BNE   SCAN20              ANYTHING ELSE IS START OF WORD               
+SCAN15   LA    R2,1(R2)            ELSE KEEP LOOKING                            
+         BCT   R3,SCAN10                                                        
+         B     SCAN90              END OF STRING                                
+*                                                                               
+SCAN20   XC    WORDBLK,WORDBLK     WORK AREA FOR WORD                           
+         LA    RE,WORDBLK+2        RE=NEXT POSITION IN WORD WORK AREA           
+         LA    RF,0(RE,R4)         RF=END OF MAX LENGTH WORD                    
+SCAN25   CR    RE,RF               HAVE WE GOT MAX WORD LENGTH                  
+         BNL   SCAN26              YES, IGNORE REST OF WORD                     
+         MVC   0(1,RE),0(R2)       COPY CHARACTER TO WORK AREA                  
+         LA    RE,1(,RE)                                                        
+SCAN26   LA    R2,1(,R2)                                                        
+         BCT   R3,*+8                                                           
+         B     SCAN28              END OF STRING, THEREFORE WORD TOO            
+         CLI   0(R2),C' '          BLANK IS END OF WORD                         
+         BE    SCAN28                                                           
+         CLI   0(R2),0             NULLS EMBEDDED IN WORD ARE IGNORED           
+         BE    SCAN26                                                           
+         CLI   0(R2),C'*'          * MAY HAVE SPECIAL MEANING                   
+         BNE   SCAN25              ANYTHING ELSE IS PART OF WORD                
+*                                  - FOUND *                                    
+         CLI   STYLE,SBPARSPQ      IF PASSIVE STYLE CALL, PARTIAL WORDS         
+         BE    SCAN30              DON'T APPLY, TREAT * AS END OF WORD          
+         TM    SDSRIND1,SDSRITYQ   DOES SEARCH SUPPORT XXX* SYNTAX              
+         BNO   SCAN28              NO, TREAT * AS END OF WORD                   
+         CLI   1(R2),C'*'          IF * FOLLOWED BY ANOTHER *                   
+         BE    SCAN26              IGNORE IT (TREAT AS NULL)                    
+         B     SCAN29              ELSE ITS END OF PARTIAL WORD                 
+*                                  - FOUND END OF WORD                          
+SCAN28   CLI   STYLE,SBPARSPQ      IF PASSIVE STYLE CALL,                       
+         BE    SCAN30              PARTIAL WORDS DON'T APPLY                    
+         TM    SDSRIND1,SDSRITYQ   DOES SEARCH ASSUME ALL PARTIAL WORDS         
+         BNM   SCAN30              NO, SKIP                                     
+SCAN29   OI    WORDBLK+1,SBNWFPMQ  SET PARTIAL MATCH FOR THIS WORD              
+*                                                                               
+SCAN30   LA    RF,WORDBLK+2        START OF WORD                                
+         SR    RE,RF               RE=LENGTH OF WORD                            
+         STC   RE,WORDBLK                                                       
+         TM    WORDBLK+1,SBNWFPMQ  IS IT A PARTIAL WORD                         
+         BO    SCAN40              YES, DON'T CHECK SPECIAL WORD                
+         XR    R1,R1                                                            
+         LA    RF,STOPWENG                                                      
+         CLI   SBLANG,2                                                         
+         BNH   SCAN35              3 FORMS OF ENGLISH USE SAME TABLE            
+         LA    RF,STOPWGER         GERMAN HAS ITS OWN                           
+         CLI   SBLANG,LANGGER                                                   
+         BE    SCAN35                                                           
+         LA    RF,STOPWDUT         DUTCH HAS ITS OWN                            
+         CLI   SBLANG,LANGDUT                                                   
+         BNE   SCAN40              ALL OTHERS FORGET IT                         
+SCAN35   CLI   0(RF),0             END OF TABLE HIT ?                           
+         BE    SCAN40                                                           
+         IC    R1,0(,RF)           CHECK LENGTH FIRST                           
+         CR    R1,RE                                                            
+         BL    SCAN40              NOT FOUND IF PASSED LENGTH                   
+         BH    SCAN38              IGNORE TILL WE REACH SAME LENGTH             
+         BCTR  R1,0                                                             
+         EX    R1,SCAN39                                                        
+         BE    SCAN80              IGNORE WORD IF ITS A STOPWORD                
+         LA    R1,1(,R1)           RESET LENGTH                                 
+SCAN38   LA    RF,1(RF,R1)         NEXT STOPWORD                                
+         B     SCAN35                                                           
+SCAN39   CLC   WORDBLK+2(0),1(RF) * EXECUTED *                                  
+*                                                                               
+SCAN40   LA    R5,WORDTAB          POINT TO WORDTAB                             
+         LTR   R6,R7               R6=ACTUAL NUMER FOUND SO FAR                 
+         BZ    SCAN70              IF NONE, JUST BUNG THE WORD IN               
+         TM    SDSRIND1,SDSRISEQ   IS SEQUENCE RELEVENT                         
+         BZ    SCAN50              NO, FIND RIGHT POSITION                      
+         MH    R6,=Y(L'WORDTAB)    YES, ALWAYS ADD TO END.                      
+         AR    R5,R6                                                            
+         B     SCAN70                                                           
+*                                                                               
+SCAN50   LA    R1,SBNAWLNQ         NORMALLY COMPARE FULL LENGTH.                
+         TM    1(R5),SBNWFPMQ      UNLESS OLD OR NEW IS PARTIAL                 
+         BO    SCAN51                                                           
+         TM    WORDBLK+1,SBNWFPMQ                                               
+         BZ    SCAN52                                                           
+SCAN51   IC    R1,0(,R5)                                                        
+         CLC   0(1,R5),WORDBLK     IN WHICH CASE, USE SHORTER LENGTH            
+         BNH   *+8                                                              
+         IC    R1,WORDBLK                                                       
+SCAN52   BCTR  R1,0                                                             
+         EX    R1,SCAN59           COMPARE NEW V. OLD                           
+         BE    SCAN60              EQUAL, IT GETS COMPLEX                       
+         BL    SCAN70              LOW, INSERT IT                               
+SCAN55   LA    R5,L'WORDTAB(,R5)                                                
+         BCT   R6,SCAN50           HIGH, LOOK AT NEXT                           
+         B     SCAN70              UNLESS REACHED END                           
+SCAN59   CLC   WORDBLK+2(0),2(R5)  * EXECUTED *                                 
+*                                                                               
+SCAN60   TM    1(R5),SBNWFPMQ      EQUAL, IS OLD PARTIAL                        
+         BZ    SCAN63              NO, SKIP                                     
+         TM    WORDBLK+1,SBNWFPMQ  IS NEW PARTIAL TOO                           
+         BZ    SCAN66              NO, SKIP                                     
+*                                  BOTH ARE EQUAL, BOTH PARTIAL                 
+         TM    SDSRIND1,SDSRIINQ   TEST KEEPING INCLUDED WORDS                  
+         BO    SCAN61              YES                                          
+         CLC   0(1,R5),WORDBLK     BOTH ARE EQUAL, BOTH PARTIAL                 
+         BH    SCAN78              REPLACE OLD IF LONGER THAN NEW               
+         B     SCAN80              ELSE IGNORE NEW                              
+SCAN61   CLC   0(1,R5),WORDBLK     KEEPING INCLUDED WORDS                       
+*!*!*    BE    SCAN69              TREAT AS PER NON PARTIAL DUPLICATES          
+         BE    SCAN70              INSERT NEW PARTIAL DUPE                      
+         BH    *+12                OLD PARTIAL LONGER THAN NEW PARTIAL          
+         OI    1(R5),SBNWFINQ      FLG OLD PARTIAL INCLUDES NEW PARTIAL         
+         B     SCAN55              INSERT NEW PARTIAL LATER                     
+         OI    WORDBLK+1,SBNWFINQ  FLG NEW PARTIAL INCLUDES OLD PARTIAL         
+         B     SCAN70              INSERT NEW PARTIAL                           
+*                                                                               
+SCAN63   TM    WORDBLK+1,SBNWFPMQ  OLD NOT PARTIAL, IS NEW PARTIAL              
+         BZ    SCAN69              NO, SKIP                                     
+         CLC   0(1,R5),WORDBLK     OLD NOT PARTIAL, NEW PARTIAL                 
+         BNH   SCAN55              OLD NOT LONGER, LOOK TO NEXT                 
+         TM    SDSRIND1,SDSRIINQ   TEST KEEPING INCLUDED WORDS                  
+         BZ    SCAN78              NO, REPLACE OLD                              
+         OI    WORDBLK+1,SBNWFINQ  NEW PARTIAL INCLUDES OLD SPECIFIC            
+         B     SCAN70              INSERT NEW                                   
+*                                                                               
+SCAN66   CLC   0(1,R5),WORDBLK     OLD PARTIAL, NEW NOT PARTIAL                 
+         BNL   SCAN70              NEW NOT LONGER, INSERT IT                    
+         TM    SDSRIND1,SDSRIINQ   TEST KEEPING INCLUDED WORDS                  
+         BZ    SCAN80              NO, DROP NEW                                 
+         OI    1(R5),SBNWFINQ      OLD PARTIAL INCLUDES NEW SPECIFIC            
+         B     SCAN55              INSERT NEW LATER                             
+*                                                                               
+SCAN69   TM    SDSRIND1,SDSRIDUQ   BOTH ARE EQUAL, NEITHER IS PARTIAL           
+         BZ    SCAN80              DROP NEW IF DUPLICATES ARE DROPPED           
+         OI    WORDBLK+1,SBNWFDWQ  MARK WORD IS A DUPLICATE                     
+*                                                                               
+SCAN70   CH    R7,=Y(SBNAWMXQ)     HAVE WE REACHED MAXIMUM WORDS                
+         BL    SCAN72              NO                                           
+         CLI   STYLE,SBPARSPQ      IS IT PASSIVE STYLE CALL                     
+         BNE   ETMW                NO, KEY STYLE, TOO MANY WORDS ERROR          
+         TM    SDSRIND1,SDSRIXTQ   YES, ARE EXTRA WORDS ALLOWED                 
+         BZ    SCAN90              NO, IGNORE EXCESS WORDS                      
+         CH    R7,=Y(SBNAWXTQ)     HAVE WE REACHED EXTRA MAXIMUM WORDS          
+         BNL   SCAN90              YES, IGNORE EXCESS WORDS                     
+SCAN72   LA    R7,1(,R7)           COUNT WORDS ADDED                            
+SCAN75   XC    WORDBLK,0(R5)       SWAP NEW WORD WITH TABLE                     
+         XC    0(L'WORDBLK,R5),WORDBLK                                          
+         XC    WORDBLK,0(R5)                                                    
+         BZ    SCAN80              END IF SWAPPED WITH EMPTY ENTRY              
+         LA    R5,L'WORDTAB(,R5)                                                
+         B     SCAN75              ELSE REPEAT TILL REACHED END                 
+*                                                                               
+SCAN78   MVC   0(L'WORDBLK,R5),WORDBLK REPLACE WORD IN TABLE WITH NEW           
+*                                                                               
+SCAN80   LTR   R3,R3               DID WE HIT END OF STRING                     
+         BNZ   SCAN10              NO, LOOK FOR ANOTHER WORD                    
+*                                                                               
+SCAN90   LTR   R7,R7                                                            
+         BZ    ENWF                NO WORDS FOUND                               
+         LR    RE,R7                                                            
+         BCT   RE,*+8              SKIP IF MORE THAN ONE WORD                   
+         OI    WORDTAB+1,SBNWFOWQ  INDICATE FIRST IS ONLY WORD                  
+         EJECT                                                                  
+***********************************************************************         
+* BUILD NAME ELEMENT IN STRING, USING WORDTAB, R7=NUMBER OF WORDS     *         
+* THEN TOSS IT INTO THE OUTPUT AREA IN THE SEARCH BLOCK               *         
+***********************************************************************         
+ELEM     MVI   STRING,SBNAMELQ     SET ELEMENT CODE                             
+         LA    R3,WORDTAB          R3=WORD TABLE ENTRY                          
+         LA    R4,STRING+2         R4=NEXT PLACE IN STRING                      
+         LA    R5,2                R5=LENGTH SO FAR                             
+         XR    R1,R1                                                            
+*                                                                               
+ELEM10   MVC   0(L'WORDTAB,R4),0(R3) COPY A WORD IN                             
+         IC    R1,0(,R4)           GET ITS LENGTH                               
+         LA    R4,2(R1,R4)         NEXT SLOT IN ELEMENT                         
+         LA    R5,2(R1,R5)         LENGTH SO FAR                                
+         CH    R5,=Y(L'SBPNAMES)   PASSIVE CALL COULD (RARELY) EXCEED           
+         BH    ELEM15              SPACE AVAILABLE, IGNORE REST IF SO           
+         STC   R5,STRING+1         BUNG LENGTH IN THE ELEMENT                   
+         LA    R3,L'WORDTAB(,R3)   NEXT WORD TABLE ENTRY                        
+         BCT   R7,ELEM10           LOOP TILL ALL WORDS DONE.                    
+*                                                                               
+ELEM15   XR    R4,R4                                                            
+         IC    R4,STRING+1         R4=NEW ELEMENT LENGTH                        
+         LA    R2,SBPNAMES         R2=FIRST SLOT IN OUTPUT AREA                 
+         LR    R5,R2               R5=INITIAL SLOT TO INSERT NEW EL             
+         ICM   R7,B'0001',SBNNAMES R7=NUMBER OF NAMES ALREADY                   
+         BZ    ELEM50              INSERT AT START IF NONE                      
+         LR    R6,R7               R6=NUMBER OF NAMES FOR BCT LOOP              
+         XR    R3,R3                                                            
+*                                                                               
+ELEM20   CLI   0(R2),SBNAMELQ      CHECK EXISTING OUTPUT IS VALID               
+         BNE   EINF                INVALID NAME FIELD                           
+         IC    R3,1(,R2)           R3=OLD ELEMENT LENGTH                        
+         LR    R1,R4               R1=LENGTH OF NEW ELEMENT                     
+         CR    R4,R3               IS NEW SHORTER                               
+         BNH   *+6                                                              
+         LR    R1,R3               NO, USE SHORTER LENGTH                       
+         SH    R1,=Y(3)            DECREMENT FOR CLC                            
+         BNP   EINF                TEST AT LEAST 4 LONG, (S/B 5 MIN)            
+         EX    R1,ELEM29           COMPARE NEW ELEMENT TO OLD                   
+         BL    ELEM30              NEW LOW, ALREADY GOT INSERT POINT.           
+         BH    ELEM25              NEW HIGH, MUST GO AFTER THIS ONE             
+         CR    R4,R3               EQUAL, CHECK LENGTHS                         
+         BL    ELEM30              NEW SHORT, ALREADY GOT INSERT POINT.         
+         BE    EDNF                EQUAL, ITS A DUPLICATE                       
+ELEM25   LA    R5,0(R2,R3)         SET LATEST INSERT POINT                      
+         B     ELEM30              NEXT ELEMENT                                 
+ELEM29   CLC   STRING+2(0),2(R2)   * EXECUTED *                                 
+*                                                                               
+ELEM30   AR    R2,R3               NEXT OLD ELEMENT                             
+         BCT   R6,ELEM20           LOOP TILL ALL CHECKED                        
+*                                                                               
+ELEM50   CH    R7,=Y(SBMNAMEQ)     ARE THERE ALREADY MAXNAMES ?                 
+         BH    ETNF                YES, TOO MANY NAME FIELDS                    
+         LA    RE,SBPNAMES+L'SBPNAMES RE=END OF NAME AREA                       
+         SR    RE,R4               RE=LAST POSITION NEW NAME WILL FIT           
+         CR    RE,R2               IS THERE ROOM, R2=LAST POSITION USED         
+         BL    EXNF                NO, EXCESSIVE NAME INFORMATION               
+         LR    R3,R2               R3=ADDRESS OF END OF OLD NAMES               
+         SR    R3,R5               R3=NUMBER OF BYTES TO SHUFFLE UP             
+         BZ    ELEM55              SKIP IF NONE (INSERT ON END)                 
+         BCTR  R3,0                DECREMENT FOR MVC'S                          
+         EX    R3,ELEM57           COPY SHUFFLED TEXT OUT                       
+         LA    R2,0(R5,R4)         R2=NEW POSITION FOR SHUFFLED TEXT            
+         EX    R3,ELEM58           COPY BACK TO NEW POSITION                    
+ELEM55   BCTR  R4,0                DECREMENT NEW LENGTH FOR MVC                 
+         EX    R4,ELEM59           MOVE NEW ELEMENT IN TO VACATED SLOT          
+         LA    R7,1(,R7)           COUNT NAMES USED                             
+         STC   R7,SBNNAMES                                                      
+         B     GUDEXIT                                                          
+ELEM57   MVC   SHUFFLE(0),0(R5)    * EXECUTED *                                 
+ELEM58   MVC   0(0,R2),SHUFFLE     * EXECUTED *                                 
+ELEM59   MVC   0(0,R5),STRING      * EXECUTED *                                 
+         EJECT                                                                  
+***********************************************************************         
+*        ERRORS AND EXITS                                             *         
+***********************************************************************         
+ENIT     MVI   SBRETURN,SBENITQ    NOT INITIALIZED                              
+         B     ENOTEXT                                                          
+EFTL     MVI   SBRETURN,SBEFTLQ    FIELD TOO LONG                               
+         B     BADEXIT                                                          
+EMIF     MVI   SBRETURN,SBEMIFQ    MISSING INPUT FIELD                          
+         B     BADEXIT                                                          
+ENWF     MVI   SBRETURN,SBENWFQ    NO USEABLE WORDS FOUND IN NAME               
+         B     ENOTEXT                                                          
+ETMW     MVI   SBRETURN,SBETMWQ    TOO MANY WORDS FOUND IN NAME                 
+         B     ENOTEXT                                                          
+EDNF     MVI   SBRETURN,SBEDNFQ    DUPLICATE NAME FIELD                         
+         B     ENOTEXT                                                          
+EINF     MVI   SBRETURN,SBEINFQ    INVALID NAME FIELD                           
+         B     ENOTEXT                                                          
+ETNF     MVI   SBRETURN,SBETNFQ    TOO MANY NAME FIELDS                         
+         B     ENOTEXT                                                          
+EXNF     MVI   SBRETURN,SBEXNFQ    EXCESS NAME DATA (AREA FULL)                 
+         B     ENOTEXT                                                          
+         SPACE                                                                  
+ENOTEXT  MVI   GTLTXT-GTBLOCK+SBTXTBLK,0 DISABLE ANY EXTRA TEXT                 
+         SPACE                                                                  
+BADEXIT  LTR   RB,RB               CC NEQ/NOT ZERO IF ERROR                     
+         B     EXIT                                                             
+GUDEXIT  CR    RB,RB               CC EQ/ZERO IF OK                             
+         SPACE 3                                                                
+EXIT     XMOD1 1                                                                
+         EJECT                                                                  
+************************                                                        
+*        LITERALS      *                                                        
+************************                                                        
+SPACES   DC    CL(SBNAWLNQ)' '                                                  
+         SPACE                                                                  
+         LTORG                                                                  
+         SPACE                                                                  
+**************************************************************                  
+* STOP WORD TABLE. THESE WORDS ARE IGNORED IF THEY APPEAR IN *                  
+* THE TEXT. ENTRIES WITHIN LANGUAGE MUST BE IN SEQUENCE BY   *                  
+* LENGTH (LONGEST FIRST)                                     *                  
+**************************************************************                  
+STOPWENG DS    0AL1                ENGLISH STOP WORDS                           
+*                                                                               
+         DC    AL1(3),C'AND'       3 CHARACTER WORDS                            
+         DC    AL1(3),C'THE'                                                    
+*                                                                               
+         DC    AL1(2),C'OF'        2 CHARACTER WORDS                            
+         DC    AL1(2),C'IN'                                                     
+         DC    AL1(2),C'ON'                                                     
+         DC    AL1(2),C'TO'                                                     
+*                                                                               
+         DC    AL1(0)              TERMINATOR                                   
+*                                                                               
+STOPWGER DS    0AL1                GERMAN STOP WORDS                            
+*                                                                               
+         DC    AL1(3),C'DER'       3 CHARACTER WORDS                            
+         DC    AL1(3),C'DIE'                                                    
+         DC    AL1(3),C'DAS'                                                    
+         DC    AL1(3),C'F!R'                                                    
+         DC    AL1(3),C'DEN'                                                    
+         DC    AL1(3),C'DES'                                                    
+         DC    AL1(3),C'UND'                                                    
+         DC    AL1(3),C'ZUM'                                                    
+*                                                                               
+         DC    AL1(2),C'IN'        2 CHARACTER WORDS                            
+         DC    AL1(2),C'IM'                                                     
+         DC    AL1(2),C'ZU'                                                     
+*                                                                               
+         DC    AL1(0)              TERMINATOR                                   
+*                                                                               
+STOPWDUT DS    0AL1                DUTCH STOP WORDS                             
+*                                                                               
+         DC    AL1(3),C'HET'       3 CHARACTER WORDS                            
+         DC    AL1(3),C'VAN'                                                    
+         DC    AL1(3),C'EEN'                                                    
+*                                                                               
+         DC    AL1(2),C'EN'        2 CHARACTER WORDS                            
+         DC    AL1(2),C'DE'                                                     
+         DC    AL1(2),C'OP'                                                     
+         DC    AL1(2),C'IN'                                                     
+*                                                                               
+         DC    AL1(0)              TERMINATOR                                   
+         EJECT                                                                  
+***********************************************************************         
+*        CHARACTER TRANSLATION TABLES                                 *         
+*                                                                     *         
+*        TRANSLATION OF NON ENGLISH CHARACTERS -                      *         
+*        ALL NAME STRINGS ARE ORIGINALLY ENTERED VIA DDS SCREENS.     *         
+*        ACCENTED CHARACTERS VARY FROM ONE LANGUAGE TO ANOTHER BUT    *         
+*        EACH LANGUAGE REUSES THE AVAILABLE CODES SO A PARTICULAR     *         
+*        CODE MAY BE AN ACCENTED 'A' IN ONE LANGUAGE, A DIFFERENT     *         
+*        ACCENTED LETTER IN ANOTHER LANGUAGE, AND A SPECIAL CHARACTER *         
+*        E.G. A DOLLAR SIGN, IN A THIRD LANGUAGE. THIS MEANS THAT ANY *         
+*        UPPER CASE TRANSLATION, AND THE REMOVAL OF UNWANTED SPECIAL  *         
+*        CHARACTERS MUST BE HIGHLY LANGUAGE SENSITIVE.                *         
+*                                                                     *         
+*        IT SHOULD BE THE RULE THAT PASSIVES SHOULD BE BUILT UNDER    *         
+*        THE LANGUAGE OF THE USER, AND SEARCH KEYS PARSED IN THE      *         
+*        CONNECTED LANGUAGE. WHERE USERS CAN ACCESS THE SAME DATA IN  *         
+*        MULTIPLE LANGUAGES, PASSIVES SHOULD BE BUILT IN ENGLISH, OR  *         
+*        IN THE LANGUAGE OF THE INDIVIDUAL RECORD.                    *         
+*                                                                     *         
+***********************************************************************         
+         SPACE                                                                  
+***********************************************************************         
+*        TRANSLATE LOWER TO UPPER CASE - DEFAULT TABLE                *         
+***********************************************************************         
+TRTCASE  DC    256AL1(*-TRTCASE)      TRANSLATED VALUE IS SAME, EXCEPT          
+*                                                                               
+         ORG   TRTCASE+(C'A'-X'40') LOWER CASE LETTERS BECOME UPPER             
+         DC    C'ABCDEFGHI'                                                     
+         ORG   TRTCASE+(C'J'-X'40')                                             
+         DC    C'JKLMNOPQR'                                                     
+         ORG   TRTCASE+(C'S'-X'40')                                             
+         DC    C'STUVWXYZ'                                                      
+*                                                                               
+         ORG   TRTCASE+(C'0'-X'40') LOWER CASE NUMBERS BECOME UPPER             
+         DC    C'0123456789'                                                    
+*                                                                               
+         ORG   ,                                                                
+*                                                                               
+***********************************************************************         
+*        TRANSLATE LOWER TO UPPER CASE - GERMAN                       *         
+***********************************************************************         
+TRTCGER  DC    256AL1(*-TRTCGER)      TRANSLATED VALUE IS SAME, EXCEPT          
+*                                                                               
+         ORG   TRTCGER+(C'A'-X'40') LOWER CASE LETTERS BECOME UPPER             
+         DC    C'ABCDEFGHI'                                                     
+         ORG   TRTCGER+(C'J'-X'40')                                             
+         DC    C'JKLMNOPQR'                                                     
+         ORG   TRTCGER+(C'S'-X'40')                                             
+         DC    C'STUVWXYZ'                                                      
+*                                                                               
+         ORG   TRTCGER+(C'0'-X'40') LOWER CASE NUMBERS BECOME UPPER             
+         DC    C'0123456789'                                                    
+*                                                                               
+         ORG   TRTCGER+X'6A'       6A=L/C O UMLAUT                              
+         DC    X'E0'               E0=U/C                                       
+         ORG   TRTCGER+X'C0'       C0=L/C A UMLAUT                              
+         DC    X'4A'               4A=U/C                                       
+         ORG   TRTCGER+X'D0'       D0=L/C U UMLAUT                              
+         DC    X'5A'               5A=U/C                                       
+*                                                                               
+         ORG   ,                                                                
+         SPACE                                                                  
+***********************************************************************         
+*        TRANSLATE SPECIAL CHARACTERS - DEFAULT TABLE                 *         
+***********************************************************************         
+TRTSPEC  DC    256AL1(0)              TRANSLATED VALUE IS X'00', EXCEPT         
+*                                                                               
+         ORG   TRTSPEC+C'A'        UPPER CASE LETTERS                           
+         DC    C'ABCDEFGHI'                                                     
+         ORG   TRTSPEC+C'J'                                                     
+         DC    C'JKLMNOPQR'                                                     
+         ORG   TRTSPEC+C'S'                                                     
+         DC    C'STUVWXYZ'                                                      
+*                                                                               
+         ORG   TRTSPEC+C'0'        UPPER CASE NUMBERS                           
+         DC    C'0123456789'                                                    
+*                                                                               
+         ORG   TRTSPEC+C' '        SPACES STAY SAME                             
+         DC    X'40'                                                            
+*                                                                               
+         ORG   TRTSPEC+C'*'        '*' STAYS SAME, IN CASE PARTIAL FLAG         
+         DC    C'*'                                                             
+*                                                                               
+         ORG   TRTSPEC+C'.'        THESE SPECIAL CHARS BECOME SPACES            
+         DC    X'40'               AND ARE TREATED AS WORD SEPARATORS           
+         ORG   TRTSPEC+C'<'        ALL OTHERS BECOME NULLS AND ARE              
+         DC    X'40'               IGNORED AS IF COMPRESSED OUT.                
+         ORG   TRTSPEC+C'('                                                     
+         DC    X'40'                                                            
+         ORG   TRTSPEC+C'+'                                                     
+         DC    X'40'                                                            
+         ORG   TRTSPEC+C'&&'                                                    
+         DC    X'40'                                                            
+         ORG   TRTSPEC+C')'                                                     
+         DC    X'40'                                                            
+         ORG   TRTSPEC+C';'                                                     
+         DC    X'40'                                                            
+         ORG   TRTSPEC+C'-'                                                     
+         DC    X'40'                                                            
+         ORG   TRTSPEC+C'/'                                                     
+         DC    X'40'                                                            
+         ORG   TRTSPEC+C','                                                     
+         DC    X'40'                                                            
+         ORG   TRTSPEC+C'_'                                                     
+         DC    X'40'                                                            
+         ORG   TRTSPEC+C'>'                                                     
+         DC    X'40'                                                            
+         ORG   TRTSPEC+C':'                                                     
+         DC    X'40'                                                            
+         ORG   TRTSPEC+C'='                                                     
+         DC    X'40'                                                            
+*                                                                               
+         ORG   ,                                                                
+*                                                                               
+***********************************************************************         
+*        TRANSLATE SPECIAL CHARACTERS - GERMAN TABLE                  *         
+***********************************************************************         
+TRTSGER  DC    256AL1(0)              TRANSLATED VALUE IS X'00', EXCEPT         
+*                                                                               
+         ORG   TRTSGER+C'A'        UPPER CASE LETTERS                           
+         DC    C'ABCDEFGHI'                                                     
+         ORG   TRTSGER+C'J'                                                     
+         DC    C'JKLMNOPQR'                                                     
+         ORG   TRTSGER+C'S'                                                     
+         DC    C'STUVWXYZ'                                                      
+*                                                                               
+         ORG   TRTSGER+X'4A'       4A=U/C A UMLAUT                              
+         DC    X'4A'                                                            
+         ORG   TRTSGER+X'5A'       5A=U/C U UMLAUT (! IN ENGLISH)               
+         DC    X'5A'                                                            
+         ORG   TRTSGER+X'A1'       A1=DIGRAPH                                   
+         DC    X'A1'                                                            
+         ORG   TRTSGER+X'E0'       E0=U/C O UMLAUT                              
+         DC    X'E0'                                                            
+*                                                                               
+         ORG   TRTSGER+C'0'        UPPER CASE NUMBERS                           
+         DC    C'0123456789'                                                    
+*                                                                               
+         ORG   TRTSGER+C' '        SPACES STAY SAME                             
+         DC    X'40'                                                            
+*                                                                               
+         ORG   TRTSGER+C'*'        '*' STAYS SAME, IN CASE PARTIAL FLAG         
+         DC    C'*'                                                             
+*                                                                               
+         ORG   TRTSGER+C'.'        THESE SPECIAL CHARS BECOME SPACES            
+         DC    X'40'               AND ARE TREATED AS WORD SEPARATORS           
+         ORG   TRTSGER+C'<'        ALL OTHERS BECOME NULLS AND ARE              
+         DC    X'40'               IGNORED AS IF COMPRESSED OUT.                
+         ORG   TRTSGER+C'('                                                     
+         DC    X'40'                                                            
+         ORG   TRTSGER+C'+'                                                     
+         DC    X'40'                                                            
+         ORG   TRTSGER+C'&&'                                                    
+         DC    X'40'                                                            
+         ORG   TRTSGER+C')'                                                     
+         DC    X'40'                                                            
+         ORG   TRTSGER+C';'                                                     
+         DC    X'40'                                                            
+         ORG   TRTSGER+C'-'                                                     
+         DC    X'40'                                                            
+         ORG   TRTSGER+C'/'                                                     
+         DC    X'40'                                                            
+         ORG   TRTSGER+C','                                                     
+         DC    X'40'                                                            
+         ORG   TRTSGER+C'_'                                                     
+         DC    X'40'                                                            
+         ORG   TRTSGER+C'>'                                                     
+         DC    X'40'                                                            
+         ORG   TRTSGER+C':'                                                     
+         DC    X'40'                                                            
+         ORG   TRTSGER+C'='                                                     
+         DC    X'40'                                                            
+*                                                                               
+         ORG   ,                                                                
+         EJECT                                                                  
+***********************************************************************         
+*        WORKING STORAGE                                              *         
+***********************************************************************         
+SRCHWORK DSECT                                                                  
+DUB      DS    D                                                                
+FULL     DS    F                                                                
+HALF     DS    H                                                                
+BYTE     DS    C                                                                
+DIRFLAG  DS    X                   DIRECTORY FILTER/SECURITY CHECK FLAG         
+RELO     DS    A                                                                
+APARMS   DS    A                   ADDRESS CALLERS PARAMETER LIST               
+PARMS    DS    0A                  COPY CALLERS PARAMETER LIST                  
+STYLE    DS    AL1                 NAME PARSE STYLE REQUIRED                    
+ASRCHBLK DS    AL3                 ADDRESS OF SEARCH CONTROL BLOCK              
+LNAMEIN  DS    AL1                 LENGTH OF INPUT NAME                         
+ANAMEIN  DS    AL3                 ADDRESS OF INPUT NAME                        
+PARMSL   EQU   *-PARMS                                                          
+*                                                                               
+LSTRING  DS    CL1                 LENGTH OF TEXT IN STRING                     
+STRING   DS    CL255               COPY OF INPUT STRING                         
+*                                                                               
+WORDBLK  DS    CL(SBNAWLNQ+2)                                                   
+WORDTAB  DS    (SBNAWXTQ)CL(L'WORDBLK)                                          
+         ORG   WORDBLK                                                          
+SHUFFLE  DS    CL(L'SBPNAMES)                                                   
+         ORG   ,                                                                
+*                                                                               
+SRCHWRKL EQU   *-SRCHWORK                                                       
+         SPACE 3                                                                
+       ++INCLUDE DDLANGEQUS                                                     
+         EJECT                                                                  
+       ++INCLUDE GESRCHBLKD                                                     
+         EJECT                                                                  
+       ++INCLUDE FAGETTXTD                                                      
+         EJECT                                                                  
+       ++INCLUDE GESRCHDIRD                                                     
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'018GESRCHPARS01/19/96'                                      
+         END                                                                    

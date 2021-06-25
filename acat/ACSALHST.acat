@@ -1,0 +1,1442 @@
+*          DATA SET ACSALHST   AT LEVEL 008 AS OF 05/27/03                      
+*CATALP ACSALHST                                                                
+         TITLE 'ACSALHST - CALCULATE SALARY INFORMATION (NEWCOST)'              
+*                          (NEWCOST VERSION)                                    
+*                                                                               
+*              PARM 1                   A(GLOBAL WORKING STORAGE)               
+*              PARM 2                   A(ACSALHSTD I/O BLOCK)                  
+*              PARM 3                   A(2000 BYTE IO AREA)                    
+*                                                                               
+ACSALHST CSECT                                                                  
+         PRINT NOGEN                                                            
+         NMOD1 WORKDX-WORKD,*ACSALH*,R9,RR=R2,CLEAR=YES                         
+         USING WORKD,RC                                                         
+         MVC   PARMS(PARMQ),0(R1)                                               
+         USING ACWORKD,RA                                                       
+         L     RA,PARM1            *** PARM #1 ***                              
+         MVC   ABLOCK,PARM2        *** PARM #1 ***                              
+         MVC   AIO,PARM3           *** PARM #2 ***                              
+*                                                                               
+         EJECT                                                                  
+***********************************************************************         
+*              MAIN CONTROL LOGIC                                     *         
+***********************************************************************         
+*                                                                               
+MAIN     DS    0H                                                               
+         USING SALARYD,R6          R6 --> A(I/O BLOCK)                          
+         L     R6,ABLOCK                                                        
+         LA    RF,SALINFO          INITIALIZE I/O BLOCK ACCUMS                  
+         LA    R0,SALACUM#                                                      
+         ZAP   0(L'SALINFO,RF),=P'0'                                            
+         LA    RF,L'SALINFO(RF)                                                 
+         BCT   R0,*-10                                                          
+*                                                                               
+         MVC   SALFLAG,=C'**SALB**' DUMP IDENTIFIER                             
+         MVI   ANYIO,C'N'          SET I/O CHECKER                              
+         BAS   RE,OKBLOK           CHECK IF ALL REQUIRED FIELDS PASSED          
+         OC    SALSTAT2,SALSTAT2                                                
+         BNZ   MAINEND             ERROR STATUS SET INFORM USER                 
+*                                                                               
+         BAS   RE,OKSET            BUILD BUFFER TABLES IF NEEDED                
+         BAS   RE,METHOD           READ METHOD RECORD                           
+         BAS   RE,MTHHRS           UPDATE MTHLY HRS TABLE                       
+         TM    SALSTAT1,SALSTAND   IS THIS A STANDARD HRS CALL?                 
+         BO    *+12                YES                                          
+*                                  NO - WE JUST WANT PAYROLL INFO               
+         BAS   RE,HISTORY2         READ SALARY HISTORY RECORD                   
+         B     MAINEND                                                          
+*                                  S T A N D A R D  H O U R S                   
+         BAS   RE,PERSON           READ PERSON, CALENDAR AND STAND HRS          
+         BAS   RE,HISTORY2         READ SALARY HISTORY RECORD                   
+         BAS   RE,DECISION         DECIDE IF SPLIT MONTHS OCCURRED              
+         BNE   MAINEND             IF NO SPLIT MNTHS, YOUR DONE                 
+         BAS   RE,ACTUAL           READ ACTUAL HOURS FOR OTHER DEPTS            
+         BAS   RE,HISTORY          READ SALARY HISTORY RECS OTHER DPTS          
+         BAS   RE,SPLITS           SPLIT SALARY IF OVERLAP ON MONTHS            
+*                                  AND DO FINAL CALCULATIONS                    
+*                                                                               
+MAINEND  XMOD1                                                                  
+EXIT     XIT1                                                                   
+         EJECT                                                                  
+***********************************************************************         
+*              CHECK IF REQUIRED DATA HAS BEEN PASSED BY USER         *         
+***********************************************************************         
+*                                                                               
+OKBLOK   DS    0H                                                               
+         MVI   SALSTAT2,SALOK      CLEAR ERROR STATUS                           
+         CLI   SALCMPY,SPACE       COMPANY                                      
+         BNH   OKBL99                                                           
+         CLI   SALMETHD,SPACE      METHOD                                       
+         BNH   OKBL99                                                           
+         CLI   SALOFFC,SPACE       OFFICE                                       
+         BNH   OKBL99                                                           
+         CLI   SALDEPT,SPACE       DEPARTMENT                                   
+         BNH   OKBL99                                                           
+         CLI   SALSDPT,SPACE       SUB-DEPT                                     
+         BNH   OKBL99                                                           
+         CLI   SALPRSN,SPACE       PERSON                                       
+         BNH   OKBL99                                                           
+         OC    SALSTART,SALSTART   START DATE                                   
+         BZ    OKBL98                                                           
+         OC    SALEND,SALEND       END DATE                                     
+         BZ    OKBL98                                                           
+         CLC   SALSTART,SALEND                                                  
+         BH    OKBL98                                                           
+         TM    SALSTAT1,SALSTAND   ARE WE USING STANDARD HOURS?                 
+         BZ    OKBL99X                                                          
+         OC    SALLEVS,SALLEVS     LEVEL STRUCTURE OF 1R                        
+         BNZ   OKBL99X                                                          
+         OI    SALSTAT2,SALINV1R   LEVELS OF 1R NOT PASSED                      
+         B     OKBL99X                                                          
+OKBL98   OI    SALSTAT2,SALINVDT   DATES ERROR                                  
+         B     OKBL99X                                                          
+OKBL99   OI    SALSTAT2,SALINVKY   LEVELS OF KEY MISSING                        
+OKBL99X  BR    RE                                                               
+         EJECT                                                                  
+***********************************************************************         
+*              BUILD TABLE BUFFERS                                    *         
+***********************************************************************         
+*                                                                               
+OKSET    NTR1                                                                   
+         CLI   OKSTAT,0            ONLY NEED TO DO THIS ONCE                    
+         BNE   OKSETX                                                           
+         MVC   MYSAV(MYSAVLN),SPACES                                            
+         MVI   OKSTAT,2            2 MEANS BUFFER NOT AVAILABLE                 
+         OC    SALACOVL,SALACOVL   A(COVAIL) PASSED FROM BLOCK                  
+         BNZ   *+12                YES - CONTINUE                               
+         OI    SALSTAT2,SALINVCV   SET A(COVAIL) MISSING                        
+         B     OKSETX                                                           
+         MVC   COVAIL,SALACOVL     GET A(COVAIL) FROM BLOCK                     
+         MVI   CALSTAT,0           CLEAR CALENDAR STATUS                        
+         OC    AOKBUFF,AOKBUFF     DID WE ALREADY TAKE THE BUFFER?              
+         BZ    OKSET01                                                          
+         L     R2,AOKBUFF          BEGINNING OF BUFFER                          
+         L     R3,BUFFLEN          LENGTH OF ACQUIRED BUFFER                    
+         LTR   R3,R3                                                            
+         BP    OKSET04                                                          
+         DC    H'0'                                                             
+*                                                                               
+OKSET01  DS    0H                                                               
+         GOTO1 COVAIL,DMCB,C'LOOK'                                              
+         LM    R2,R3,4(R1)         GET A(BUFFER)/L'BUFFER                       
+         LTR   R2,R2               TEST FOR ERROR                               
+         BNZ   *+6                 YES-DIE FOR NOW                              
+         DC    H'0'                                                             
+         S     R3,=F'100000'       LEAVE A BIT FOR FOR OTHERS                   
+         BNM   *+6                 DIE FOR NOW                                  
+         DC    H'0'                                                             
+         LA    RF,CORTABLE         CHECK FOR MINIMUM CORE REQUIRED              
+         LA    R0,CORNUMB          NUMBER OF POSSIBLE TABLES                    
+         USING CORTABD,RF                                                       
+         SR    R2,R2               R4 ADDS UP REQUIRED AMT OF CORE              
+OKSET02  A     R2,CORSIZE          YES- ADD TO MINIMUM CORED REQUIRED           
+         LA    RF,CORLNQ(RF)                                                    
+         BCT   R0,OKSET02                                                       
+         LTR   R2,R2               MINIMUM REQUIRED NOTHING--DIE                
+         BNZ   *+6                                                              
+         DC    H'0'                                                             
+         CR    R3,R2               TEST MINIMUM ALLOCATION AVAILABLE            
+         BNL   *+6                 DIE FOR NOW                                  
+         DC    H'0'                                                             
+         DROP  RF                                                               
+*                                                                               
+         GOTO1 COVAIL,DMCB,C'GET ',(R2),(R2)                                    
+         LM    R2,R3,4(R1)         GET A(BUFFER)/L'BUFFER                       
+         LTR   R2,R2               TEST FOR ALLOCATION ERROR                    
+         BNZ   *+6                 YES-DIE FOR NOW                              
+         DC    H'0'                                                             
+*                                                                               
+OKSET04  MVI   OKSTAT,1            BUFFER ATTAINED                              
+         ST    R2,AOKBUFF          BEGINNING OF BUFFER                          
+         ST    R3,BUFFLEN          LENGTH OF ACQUIRED BUFFER                    
+*                                                                               
+         L     RE,ADMASTC                                                       
+         USING MASTD,RE                                                         
+         STCM  R2,15,MCUSRDMP+8    PRINT THE BUFFER IN A DUMP                   
+         LR    RF,R2                                                            
+         AR    RF,R3                                                            
+         STCM  RF,15,MCUSRDMP+12   END OF DUMP AREA                             
+         DROP  RE                                                               
+*                                                                               
+         LA    RF,CORTABLE         ADDR OF TABLES TO BUILD IN CORE              
+         LA    R0,CORNUMB          NUMBER OF TABLES TO BUILD IN CORE            
+         USING CORTABD,RF                                                       
+OKSET06  DS    0H                                                               
+         MVC   0(L'CORIDEN,R2),CORIDEN  IDENTIFIER FOR DUMP **XXXX**            
+         LA    R2,L'CORIDEN(R2)    BUMP PAST IDENTIFIER TO TABLE START          
+         LA    R1,SALARYD                                                       
+         AH    R1,CORADDR                                                       
+         ST    R2,0(0,R1)          STORE ADDR OF TABLE                          
+         A     R2,CORSIZE          BUMP CORE TO BEGINNING OF NEXT TABLE         
+         LA    RF,CORLNQ(RF)                                                    
+         BCT   R0,OKSET06                                                       
+*                                  BUILD TABLE OF MONTHS IN REQUEST             
+         L     R3,AMTHTAB                                                       
+         LA    R4,MNTHMAX          MAX NUMBER OF MONTHS                         
+         USING MNTHD,R3                                                         
+*                                  CLEAR TABLE AREA TO BINARY ZEROS             
+         L     RE,AMTHTAB          RECEIVING FIELD                              
+         LA    RF,MNTHSIZE         RECEIVING FIELD LENGTH                       
+         SR    R1,R1                                                            
+         SR    R0,R0                                                            
+         MVCL  RE,R0                                                            
+         MVC   WORK(L'SALSTART),SALSTART  1ST ENTRY WILL BE START DATE          
+         B     OKSET12                                                          
+OKSET10  GOTO1 DATCON,DMCB,(1,WORK),(0,WORK+4)                                  
+         L     R2,=F'34'                                                        
+         GOTO1 ADDAY,DMCB,WORK+4,WORK+10,(R2)                                   
+         GOTO1 DATCON,DMCB,(0,WORK+10),(1,WORK)                                 
+OKSET12  MVI   WORK+2,X'01'        SET DAY TO 01                                
+         MVC   MNTHCODE,WORK                                                    
+         ZAP   MNTHHRS,=P'0'                                                    
+         ZAP   MNTHSHRS,=P'0'                                                   
+         LA    RF,MNTHINFO                                                      
+         LA    R0,MNTHINF#                                                      
+         ZAP   0(L'MNTHINFO,RF),=P'0'                                           
+         LA    RF,L'MNTHINFO(RF)                                                
+         BCT   R0,*-10                                                          
+         CLC   MNTHCODE,SALEND     REACH THE END DATE AND YOUR DONE             
+         BE    OKSETX                                                           
+         LA    R3,MNTHLNQ(R3)                                                   
+         BCT   R4,OKSET10                                                       
+         DC    H'0'                CANT BE MORE THAN MAX ENTRIES                
+*                                                                               
+OKSETX   B     EXIT                                                             
+         DROP  R3,RF                                                            
+         EJECT                                                                  
+***********************************************************************         
+*              READ METHOD RECORD  --BUILD PAY TYPE TABLE             *         
+***********************************************************************         
+*                                                                               
+METHOD   NTR1                                                                   
+         CLC   MYMET,SALMETHD      SAME METHOD AS LAST TIME?                    
+         BE    METHX               YES - NO NEED TO VERIFY OR REBUILD           
+*                                                                               
+         USING PYCODED,R5          R5 --> A(PAYROLL TYPE TABLE)                 
+         L     R5,APAYTAB                                                       
+         MVI   0(R5),X'FF'         MARK END OF TABLE                            
+*                                                                               
+         USING CAHRECD,R4          R4 --> A(COST ALLOCATION HISTORY)            
+         L     R4,AIO                                                           
+         MVC   CAHKEY,SPACES                                                    
+         MVI   CAHKTYP,CAHKTYPQ    X'3E'                                        
+         MVI   CAHKSUB,CAHKSUBQ    X'01'                                        
+         MVC   CAHKCPY,SALCMPY     COMPANY                                      
+         MVC   CAHKMTHD,SALMETHD   METHOD CODE                                  
+         XC    CAHKOFC,CAHKOFC                                                  
+         GOTO1 DATAMGR,DMCB,DMREAD,ACCDIR,AIO,AIO                               
+         CLI   DMCB+8,0                                                         
+         BE    *+12                                                             
+         OI    SALSTAT2,SALINVMT   INVALID METHOD CODE **ERROR**                
+         B     METHX                                                            
+         MVC   DA,CAHKDA           DISK ADDRESS                                 
+         GOTO1 DATAMGR,DMCB,GETREC,ACCMST,DA,AIO,DMWORK                         
+         BE    *+6                                                              
+         DC    H'0'                DISK ERROR                                   
+*                                                                               
+         MVI   ELCODE,PATELQ       X'85' ELEMENT                                
+         BAS   RE,GETEL                                                         
+         BE    *+12                                                             
+         OI    SALSTAT2,SALINV85   NO PAYROLL CODE ELEMENT                      
+         B     METHX                                                            
+*                                                                               
+         USING PATELD,R4                                                        
+         SR    R3,R3                                                            
+METH100  CLI   PATTYPE,SPACE       SAL TYPE DEFINED FOR METHOD?                 
+         BNH   METH200                                                          
+         MVC   PYNUM,PATNUM        PAYROLL CODE NUMBER                          
+         MVC   PYTYPE,PATTYPE      SALARY TYPE                                  
+         LA    R3,1(R3)            R3 = COUNTER FOR # TABLE ENTRIES             
+         CH    R3,=Y(PAYMAX)                                                    
+         BL    *+6                                                              
+         DC    H'0'                PYTABLE IS FULL                              
+         LA    R5,PYLNQ(R5)                                                     
+METH200  BAS   RE,NEXTEL                                                        
+         BE    METH100                                                          
+         STH   R3,PYTABLE#         SAVE # TABLE ENTRIES                         
+         MVC   MYMET,SALMETHD      SAVE METHOD                                  
+*                                                                               
+METHX    B     EXIT                                                             
+         EJECT                                                                  
+***********************************************************************         
+*              UPDATE MONTHLY HRS TABLE                               *         
+***********************************************************************         
+*                                                                               
+MTHHRS   NTR1                                                                   
+         L     R3,AMTHTAB                                                       
+         LA    R0,MNTHMAX          MAX NUMBER OF MONTHS                         
+         LA    R1,SALACTM1         ACTUAL MONTHLY HOURS                         
+         ZAP   ACTHOURS,=P'0'                                                   
+         USING MNTHD,R3                                                         
+MTHH02   ZAP   MNTHHRS,0(L'SALACTM1,R1)       INTO MONTHLY TABLE                
+         ZAP   MNTHSHRS,=P'0'                                                   
+         AP    ACTHOURS,MNTHHRS               ACCUMULATE YTD HOURS              
+         MVI   MNTHSTAT,0                                                       
+         LA    RF,MNTHINFO                                                      
+         LA    RE,MNTHINF#                                                      
+         ZAP   0(L'MNTHINFO,RF),=P'0'                                           
+         LA    RF,L'MNTHINFO(RF)                                                
+         BCT   RE,*-10                                                          
+         LA    R3,MNTHLNQ(R3)                                                   
+         LA    R1,L'SALACTM1(R1)                                                
+         BCT   R0,MTHH02                                                        
+MTHX     B     EXIT                                                             
+         DROP  R3                                                               
+         EJECT                                                                  
+***********************************************************************         
+*              PERSON RECORD                                          *         
+***********************************************************************         
+*                                                                               
+PERSON   NTR1                                                                   
+         BAS   RE,CALENDAR         BUILD OR REFRESH CALENDAR                    
+         USING PERRECD,R4          R4 --> A(PERSON RECORD)                      
+         L     R4,AIO                                                           
+         MVC   PERKEY,SPACES                                                    
+         MVI   PERKTYP,PERKTYPQ    X'0F'                                        
+         MVC   PERKCPY,SALCMPY     COMPANY                                      
+         MVC   PERKCODE,SALPRSN    PERSON                                       
+         GOTO1 DATAMGR,DMCB,DMREAD,ACCDIR,AIO,AIO                               
+         CLI   DMCB+8,0                                                         
+         BE    *+12                                                             
+         OI    SALSTAT2,SALINVPR   MISSING PERSON RECORD                        
+         B     PERSX                                                            
+         MVC   DA,PERKDA           DISK ADDRESS                                 
+         GOTO1 DATAMGR,DMCB,GETREC,ACCMST,DA,AIO,DMWORK                         
+         BE    *+6                                                              
+         DC    H'0'                DISK ERROR                                   
+*                                                                               
+         USING EMPELD,R4                                                        
+         XC    SVHIRE,SVHIRE                                                    
+         MVC   SVTERM,EFFS                                                      
+         MVI   ELCODE,EMPELQ       X'56' ELEMENT                                
+         BAS   RE,GETEL                                                         
+         BE    *+12                                                             
+         OI    SALSTAT2,SALINV56   NO EMPLOYEE HISTORY ELEMENT                  
+         B     PERSX                                                            
+         MVC   SVHIRE,EMPHIR       HIRE DATE                                    
+         MVC   SVTERM,EMPTRM       TERMINATION DATE                             
+         OC    SVTERM,SVTERM                                                    
+         BNZ   *+10                                                             
+         MVC   SVTERM,EFFS         RESET HIGH IF EL HAD NO TERM                 
+         DROP  R4                                                               
+*                                                                               
+         USING YTDD,R3                                                          
+         L     R3,AYTDTAB          R3 = A(YTD TABLE)                            
+         MVI   0(R3),X'FF'                                                      
+         SR    R2,R2               R2 AS COUNTER OF TABLE ENTRIES               
+*                                                                               
+         USING LOCELD,R4                                                        
+PERS100  MVI   ELCODE,LOCELQ       X'83' ELEMENT                                
+         BAS   RE,NEXTEL                                                        
+         BNE   PERSX                                                            
+*                                                                               
+         OC    LOCSALKD,LOCSALKD   IF SAL LOCK DATE USE AS LOC END              
+         BZ    *+10                SET END DATE TO SALEND                       
+         MVC   LOCEND,LOCSALKD                                                  
+         OC    LOCEND,LOCEND       IF CURRENTLY IN THIS O/D/S THEN              
+         BNZ   *+10                SET END DATE TO SALEND                       
+         MVC   LOCEND,SALEND                                                    
+         CLC   LOCEND(2),SALSTART                                               
+         BL    PERS100             SKIP THIS X'83' ELEM IF MOVED OUT OF         
+*                                  THIS O/D/S BEFORE RANGE START YYMM           
+         CLC   LOCSTART,SALEND     SKIP IF STARTED IN O/D/S AFTER END           
+         BH    PERS100                                                          
+         CLC   LOCEND,SALEND                                                    
+         BNH   *+10                IF LOCATION END IS HIGHER THAN               
+         MVC   LOCEND,SALEND       PERIOD END ,MAKE IT PERIOD END               
+*                                                                               
+*                                  IF YOU GET TO THIS POINT,SOME OF THE         
+*                                  MTHS OF THE LOCATION ARE IN THE              
+*                                  REQUESTED SALRY RANGE                        
+         MVC   WKDATE,LOCSTART                                                  
+         CLC   WKDATE(2),SALSTART  LOC START YYMM TO START OF RANGE             
+         BNL   PERS200             LOC START >OR= ADD MTH TO TABLE              
+         MVC   WKDATE(2),SALSTART  OTHERWISE START WITH SALARY START            
+PERS200  DS    0H                                                               
+         XC    YTDSTAT,YTDSTAT                                                  
+         MVC   YTDMONTH,WKDATE     MONTH                                        
+         MVC   YTDOFFC,LOCOFF      OFFICE                                       
+         MVC   YTDDEPT,LOCDEPT     DEPARTMENT                                   
+         MVC   YTDSDPT,LOCSUB      SUBDEPARTMENT                                
+         L     RF,AMTHTAB          TAB TO KEEP TRACK OF SPLIT MONTHS            
+         USING MNTHD,RF                                                         
+         LA    R0,MNTHMAX                                                       
+         CLC   MNTHCODE,YTDMONTH                                                
+         BE    *+14                                                             
+         LA    RF,MNTHLNQ(RF)                                                   
+         BCT   R0,*-14                                                          
+         DC    H'0'                MONTH MUST BE FOUND                          
+         CLC   YTDOFFC(L'YTDOFFC+L'YTDDEPT+L'YTDSDPT),SALOFFC                   
+         BE    PERS204                                                          
+         TM    SALSTAT1,SALDISTR   REDISTRIBUTE SALARY TO LOCATIONS             
+         BO    PERS210             BASED ON PCT OF TIME IN LOC FOR MTH          
+         BZ    PERS208             IN THE CASE OF MULTIPLE LOCS IN MTH          
+PERS204  OI    MNTHSTAT,MNTHNOW    MARK MNTH USED BY CURRENT 1R                 
+         USING CALNDRD,R5                                                       
+         L     R5,ACALTAB                                                       
+PERS205  CLI   0(R5),X'FF'                                                      
+         BE    PERS208                                                          
+         CLC   CALEND,SVHIRE                                                    
+         BL    PERS206                                                          
+         CLC   CALSTART,SVTERM                                                  
+         BH    PERS206                                                          
+         CLC   CALEND,LOCSTART                                                  
+         BL    PERS206                                                          
+         CLC   CALSTART,LOCEND                                                  
+         BH    PERS206                                                          
+         OI    CALNSTAT,CALINLOC   MARK PERIODS OF CAL WHERE ACTIVE             
+PERS206  LA    R5,CALLNQ(R5)                                                    
+         B     PERS205                                                          
+PERS208  XC    YTDD(YTDLNQ),YTDD   CLEAR YTD OTHER DEPT TABLE ENTRY             
+         MVI   0(R3),X'FF'         RE MARK AS NEW END OF TABLE                  
+         B     PERS240                                                          
+PERS210  OI    MNTHSTAT,MNTHOTHR   MARK USED BY OTHER THAN CURRENT 1R           
+         DROP  RF                                                               
+         LA    RF,YTDINFO          INITIALIZE ACCUMULATORS                      
+         LA    R0,YTDINFO#                                                      
+         ZAP   0(L'YTDINFO,RF),=P'0'                                            
+         LA    RF,L'YTDINFO(RF)                                                 
+         BCT   R0,*-10                                                          
+         LA    R3,YTDLNQ(R3)       BUMP TO NEXT AVAILABLE ENTRY                 
+         MVI   0(R3),X'FF'         MARK NEW END OF TABLE                        
+         LA    R2,1(R2)                                                         
+         CH    R2,=Y(YTDMAX)                                                    
+         BNH   *+6                                                              
+         DC    H'0'                YTD TABLE FULL                               
+*                                                                               
+PERS240  MVI   WKDATE+2,X'01'      BUMP TO NEXT LOCATION MONTH                  
+         GOTO1 DATCON,DMCB,(1,WKDATE),(0,TEMPDT1)                               
+         GOTO1 ADDAY,DMCB,TEMPDT1,TEMPDT2,F'31'                                 
+         GOTO1 DATCON,DMCB,(0,TEMPDT2),(1,WKDATE)                               
+         MVI   WKDATE+2,X'01'                                                   
+*                                                                               
+         CLC   WKDATE(2),LOCEND    HIGHER THAN LOCATION END?                    
+         BNH   PERS200             NO - THEN ADD MONTH TO TABLE                 
+         B     PERS100             YES - CHECK FOR NEXT LOCATION EL             
+PERSX    DS    0H                                                               
+         DROP  R3,R4                                                            
+         EJECT                                                                  
+***********************************************************************         
+*              FILL IN YTD STANDARD HOURS COLUMN                      *         
+***********************************************************************         
+*                                                                               
+STANDARD DS    0H                                                               
+         USING STDRECD,R4                                                       
+         LA    R4,SVKEY                                                         
+         MVC   STDKEY,SPACES                                                    
+         MVI   STDKTYP,STDKTYPQ            X'3E'                                
+         MVI   STDKSUB,STDKSUBQ            X'0D'                                
+         MVC   STDKCPY,SALCMPY                                                  
+         MVI   STDKSEQ,0                                                        
+         MVI   STDKYR,0                                                         
+         CLC   MYCPY,SALCMPY               SAME COMPANY                         
+         BE    STAND02                                                          
+         MVC   MYSAV(MYSAVLN),SPACES                                            
+         MVC   TABADDR,ASTDREC1                                                 
+         BAS   RE,STANDIT                  BUILD COMPACT RECORD                 
+         MVC   MYCPY,SALCMPY               SAVE COMPANY                         
+STAND02  MVC   STDKOFC,SALOFFC                                                  
+         CLC   MYOFC,SALOFFC               SAME OFFICE                          
+         BE    STAND04                                                          
+         MVC   MYOFC(L'MYOFC+L'MYDPT+L'MYSDT+L'MYPER),SPACES                    
+         MVC   TABADDR,ASTDREC2                                                 
+         BAS   RE,STANDIT                  BUILD COMPACT RECORD                 
+         MVC   MYOFC,SALOFFC               SAVE OFFICE                          
+STAND04  MVC   STDKDPT,SALDEPT                                                  
+         CLC   MYDPT,SALDEPT               SAME DEPT                            
+         BE    STAND06                                                          
+         MVC   MYDPT(L'MYDPT+L'MYSDT+L'MYPER),SPACES                            
+         MVC   TABADDR,ASTDREC3                                                 
+         BAS   RE,STANDIT                  BUILD COMPACT RECORD                 
+         MVC   MYDPT,SALDEPT               SAVE DEPT                            
+STAND06  MVC   STDKSBD,SALSDPT                                                  
+         CLC   MYSDT,SALSDPT               SAME SUBDEPT                         
+         BE    STAND08                                                          
+         MVC   MYSDT(L'MYSDT+L'MYPER),SPACES                                    
+         MVC   TABADDR,ASTDREC4                                                 
+         BAS   RE,STANDIT                  BUILD COMPACT RECORD                 
+         MVC   MYSDT,SALSDPT               SAVE SUBDEPT                         
+STAND08  MVC   STDKPER,SALPRSN                                                  
+         CLC   MYPER,SALPRSN               SAME PERSON                          
+         BE    STAND10                                                          
+         MVC   MYPER(L'MYPER),SPACES                                            
+         MVC   TABADDR,ASTDREC5                                                 
+         BAS   RE,STANDIT                  BUILD COMPACT RECORD                 
+         MVC   MYPER,SALPRSN               SAVE PERSON                          
+*                                                                               
+*                                          **USE THE BEST STANDARD**            
+STAND10  LA    R1,STDADDR                  ADDR OF 1ST STAND COMPACT            
+         LA    R0,STDADDR#                 NUMBER OF STANDARD RECS              
+STAND10A L     RF,0(0,R1)                                                       
+         USING STDD,RF                                                          
+         OC    STDNUM,STDNUM               STANDARD AT THIS LEVEL?              
+         BNZ   STAND12                                                          
+         LA    R1,4(R1)                    NEXT RECORD ADDR                     
+         BCT   R0,STAND10A                                                      
+         DC    H'0'                        MUST HAVE FOUND ONE                  
+STAND12  ST    RF,TABADDR                  SAVE THE ADDR                        
+         DROP  RF                                                               
+         EJECT                                                                  
+*                                                                               
+*        FILL IN CALENDAR TABLE BY PERIOD WITH STANDARD HOURS                   
+*                                                                               
+         USING CALNDRD,R5                                                       
+         USING STDD,RF                                                          
+         L     R5,ACALTAB          R5 = A(CALENDAR TABLE)                       
+         L     RF,TABADDR          RF = A(COMPACT STANDARD HRS RECORD)          
+STAND16  LH    R0,STDNUM           R0 = # OF ELEMENTS IN RECORD                 
+         LA    R3,STDSTART                                                      
+         USING STDSTART,R3                                                      
+         CLI   0(R5),X'FF'                                                      
+         BE    STAND20                                                          
+STAND16A CLC   CALSTART,STDSTART                                                
+         BL    STAND18                                                          
+         CLC   CALEND,STDEND                                                    
+         BH    STAND18                                                          
+         ZAP   CALSTHRS,STDHOURS   STANDARD HOURS FOR THIS PERIOD               
+         LA    R5,CALLNQ(R5)                                                    
+         B     STAND16                                                          
+STAND18  LA    R3,STDLNQ2(R3)      FOR THIS PERIOD                              
+         BCT   R0,STAND16A                                                      
+         DC    H'0'                STANDARD HAS TO FIT SOMEWHERE                
+*                                                                               
+*              APPLY STANDARD HOURS TO YTD TABLE                                
+*                                                                               
+         USING CALNDRD,R5                                                       
+         USING MNTHD,RF                                                         
+STAND20  L     RF,AMTHTAB          RF CURRENT 1R MONTHLY TABLE                  
+         LA    R0,MNTHMAX                                                       
+         ZAP   SALSTDHR,=P'0'      CLEAR YTD STANDARD HOUR ACCUM                
+STAND22  DS    0H                                                               
+         TM    MNTHSTAT,MNTHNOW    MONTH USED BY CURRENT 1R                     
+         BNO   STAND30             NO SKIP STD HRS FOR THAT MONTH               
+         L     R5,ACALTAB          R5 = A(CALENDAR TABLE)                       
+STAND24  CLI   0(R5),X'FF'                                                      
+         BE    STAND30                                                          
+         CLC   CALMTH,MNTHCODE     MONTH EQUAL ADD IN HRS                       
+         BL    STAND26                                                          
+         BH    STAND30             MONTH HIGHER, NEXT ENTRY                     
+         TM    CALNSTAT,CALINLOC   WORKED THIS PERIOD                           
+         BZ    STAND26                                                          
+         AP    MNTHSHRS,CALSTHRS   MONTHLY TOTAL                                
+         AP    SALSTDHR,CALSTHRS   YTD STANDARD HOURS                           
+STAND26  LA    R5,CALLNQ(R5)                                                    
+         B     STAND24                                                          
+STAND30  LA    RF,MNTHLNQ(RF)                                                   
+         BCT   R0,STAND22                                                       
+*                                                                               
+STAX     B     EXIT                                                             
+         DROP  R3,R4,R5,RF                                                      
+         EJECT                                                                  
+***********************************************************************         
+*              CALENDAR RECORD                                        *         
+***********************************************************************         
+*                                                                               
+         USING CASRECD,R4                                                       
+CALENDAR NTR1                                                                   
+         CLC   MYCPY,SALCMPY       SAME COMPANY?                                
+         BNE   *+14                                                             
+         CLC   MYOFC,SALOFFC       SAME OFFICE?                                 
+         BE    CAL350              THEN SAME CALENDAR.                          
+*                                                                               
+         L     R4,AIO                                                           
+         MVC   CASKEY,SPACES                                                    
+         MVI   CASKTYP,CASKTYPQ    X'3E'                                        
+         MVI   CASKSUB,CASKSUBQ    X'0B'                                        
+         MVC   CASKCPY,SALCMPY     COMPANY                                      
+         MVC   CASKEMOA,SALEND     PERIOD END                                   
+         XC    CASKSMOA,CASKSMOA                                                
+         MVC   CASKOFC,SPACES      OFFICE                                       
+         MVC   SVKEY,CASKEY                                                     
+         GOTO1 DATAMGR,DMCB,DMRDHI,ACCDIR,AIO,AIO                               
+         CLC   CASKEY(CASKEMOA-CASRECD),SVKEY                                   
+         BE    *+6                                                              
+         DC    H'0'                COMPANY  CALENDAR NOT FOUND                  
+         CLC   CASKEMOA,SALEND                                                  
+         BNL   *+6                                                              
+         DC    H'0'                DEFAULT NOT FOUND                            
+         CLC   CASKSMOA,SALSTART                                                
+         BNH   *+6                                                              
+         DC    H'0'                                                             
+         MVC   DA,CASKDA           SAVE DEFAULT DISK ADDRESS                    
+         MVI   CALSTAT,CALCOMP     SET STATUS TO REFLECT COMPANY TABLE          
+*                                  IF THERE IS A OFFICE RECORD IT WOULD         
+*                                  HAVE THE SAME DATES + THE OFFC CODE          
+         MVC   CASKOFC,SALOFFC     OFFICE                                       
+         MVC   SVKEY,CASKEY                                                     
+         GOTO1 DATAMGR,DMCB,DMREAD,ACCDIR,AIO,AIO                               
+         CLI   DMCB+8,X'10'        IF RECORD NOT FOUND USE DEFAULT              
+         BE    CAL050                                                           
+         CLI   DMCB+8,0                                                         
+         BE    *+6                                                              
+         DC    H'0'                DATAMGR ERROR                                
+         MVC   DA,CASKDA           SAVE DEFAULT DISK ADDRESS                    
+         MVI   CALSTAT,CALOFFC     SET STATUS TO REFLECT OFFICE TABLE           
+*                                                                               
+CAL050   DS    0H                                                               
+         GOTO1 DATAMGR,DMCB,GETREC,ACCMST,DA,AIO,DMWORK                         
+         BE    *+6                                                              
+         DC    H'0'                DISK ERROR                                   
+*                                                                               
+         USING CALNDRD,R5                                                       
+CAL100   L     R5,ACALTAB          R5 = A(CALENDAR TABLE)                       
+         MVI   0(R5),X'FF'                                                      
+         SR    R2,R2                                                            
+*                                                                               
+         LA    R4,CASRFST          BUMP TO FIRST ELEMENT                        
+         USING TMPELD,R4                                                        
+CAL200   CLI   TMPEL,0                                                          
+         BE    CAL300                                                           
+         CLI   TMPEL,TMPELQ                                                     
+         BE    CAL220                                                           
+CAL210   SR    R1,R1                                                            
+         IC    R1,TMPLN                                                         
+         AR    R4,R1                                                            
+         B     CAL200                                                           
+CAL220   CLC   TMPMTH,SALSTART     START AT REQUESTED START DATE                
+         BL    CAL210                                                           
+         CLC   TMPMTH,SALEND       STOP AT REQUESTED END DATE                   
+         BH    CAL300                                                           
+         MVC   CALMTH,TMPMTH       MONTH                                        
+         MVC   CALNUMB,TMPNUMB     PERIOD NUMBER                                
+         MVC   CALSTART,TMPSTART   PERIOD START DATE                            
+         MVC   CALEND,TMPEND       PERIOD END DATE                              
+         ZAP   CALSTHRS,=P'0'      STANDARD HOURS FOR PERIOD                    
+         MVI   CALNSTAT,0                                                       
+         LA    R5,CALLNQ(R5)       BUMP TO NEXT AVAILABLE ENTRY                 
+         MVI   0(R5),X'FF'         MARK NEW END OF TABLE                        
+         LA    R2,1(R2)                                                         
+         CH    R2,=Y(CALMAX)                                                    
+         BNH   *+6                                                              
+         DC    H'0'                CALENDAR TABLE FULL                          
+         B     CAL210                                                           
+*                                                                               
+CAL300   LTR   R2,R2                                                            
+         BP    CALX                                                             
+         DC    H'0'                CALENDAR RECORD SCREWED UP                   
+*                                                                               
+CAL350   L     R5,ACALTAB          R5 = A(CALENDAR TABLE)                       
+CAL355   CLI   0(R5),X'FF'                                                      
+         BE    CALX                                                             
+         ZAP   CALSTHRS,=P'0'      CLEAR STATUS AND ACCUM                       
+         MVI   CALNSTAT,0                                                       
+         LA    R5,CALLNQ(R5)                                                    
+         B     CAL355                                                           
+CALX     B     EXIT                                                             
+         DROP  R4,R5                                                            
+         EJECT                                                                  
+***********************************************************************         
+*              FILL IN STANDARD HOURS COMPACT RECORDS                 *         
+***********************************************************************         
+*                                                                               
+STANDIT  NTR1                                                                   
+         L     R5,TABADDR          ADDRESS OF COMPACT RECORD TO UPDATE          
+         USING STDD,R5                                                          
+         XC    STDNUM,STDNUM       CLEAR NUMBER OF EL'S IN RECORD               
+         SR    R2,R2               USE R2 TO COUNT ELEMENTS                     
+         LA    R3,STDSTART         1ST ELEMENT IN COMPACT RECORD                
+         USING STDSTART,R3                                                      
+         USING STDRECD,R4                                                       
+         L     R4,AIO                                                           
+         MVC   STDKEY,SVKEY                                                     
+         GOTO1 DATAMGR,DMCB,DMRDHI,ACCDIR,AIO,AIO                               
+         L     R4,AIO                                                           
+         CLC   STDKEY(STDKYR-STDRECD),SVKEY                                     
+         BE    STA300                                                           
+         CLC   TABADDR,ASTDREC1    ARE WE DOING COMPANY LEVEL?                  
+         BNE   EXIT                NO - JUST LEAVE                              
+         DC    H'0'                YES - MUST HAVE AT LEAST COMPANY STD         
+*                                                                               
+STA200   DS    0H                                                               
+         L     R4,AIO              RESET R4 TO RECORD                           
+         GOTO1 DATAMGR,DMCB,DMRSEQ,ACCDIR,AIO,AIO                               
+         CLC   STDKEY(STDKYR-STDRECD),SVKEY COMPARE UP TO PERSON                
+         BNE   EXIT                                                             
+STA300   CLC   STDKSTDT,SALEND     FILTER DIR WITHIN START/END                  
+         BH    STA200                                                           
+         CLC   STDKENDT,SALSTART                                                
+         BL    STA200                                                           
+         MVC   DA,STDKDA           SAVE DEFAULT DISK ADDRESS                    
+         GOTO1 DATAMGR,DMCB,GETREC,ACCMST,DA,AIO,DMWORK                         
+         BE    *+6                                                              
+         DC    H'0'                DISK ERROR                                   
+         L     R4,AIO              RESET R4 TO BEGINNING OF RECORD              
+         LA    R4,STDRFST          THEN TO FIRST ELEMENT                        
+         USING SHRELD,R4                                                        
+         CLI   SHREL,0                                                          
+         BNE   *+6                                                              
+         DC    H'0'                                                             
+STA310   CLI   SHREL,SHRELQ        X'89' STANDARD HRS ELEMENT                   
+         BNE   STA325                                                           
+*                                                                               
+STA320   CLC   SHRSTART,SALEND     FILTER ELS WITHIN START/END                  
+         BH    STA325                                                           
+         CLC   SHREND,SALSTART                                                  
+         BL    STA325                                                           
+*                                                                               
+         MVC   STDSTART,SHRSTART   BUILD COMPACT RECORD                         
+         MVC   STDEND,SHREND                                                    
+         ZAP   STDHOURS,SHRHOURS                                                
+         LA    R3,STDLNQ2(R3)                                                   
+         LA    R2,1(R2)            UPDATE COUNT OF ELEMENTS FOR PERIOD          
+STA325   SR    R1,R1                                                            
+         IC    R1,SHRLN            BUMP TO NEXT STANDARD ELEMENT                
+         AR    R4,R1                                                            
+         CLI   SHREL,0             END OF RECORD?                               
+         BNE   STA310              NO - CHECK NEXT ELEMENT                      
+         LTR   R2,R2               YES- DID WE FIND ANY MATCHES?                
+         BNP   STA200              IF NO MATCHING EL'S TRY NEXT REC             
+         STH   R2,STDNUM           STORE NUMBER OF ELEMENTS                     
+         B     EXIT                                                             
+         DROP  R3,R4,R5                                                         
+         EJECT                                                                  
+***********************************************************************         
+*              DECIDE IF SPLIT MONTHS OCCURRED                                  
+***********************************************************************         
+*                                                                               
+DECISION NTR1                                                                   
+         L     RF,AMTHTAB          TAB TO KEEP TRACK OF SPLIT MONTHS            
+         USING MNTHD,RF                                                         
+         LA    R0,MNTHMAX                                                       
+DECIS02  TM    MNTHSTAT,MNTHNOW+MNTHOTHR  SPLIT MONTH?                          
+         BO    DECISYES                                                         
+         LA    RF,MNTHLNQ(RF)                                                   
+         BCT   R0,DECIS02                                                       
+DECISNO  LTR   RB,RB               NO SPLIT MONTHS FOUND                        
+         B     EXIT                                                             
+DECISYES CR    RB,RB               SOME MONTHS SPLIT BETWEEN DEPTS              
+         B     EXIT                                                             
+         DROP  RF                                                               
+         EJECT                                                                  
+***********************************************************************         
+*              FILL IN YTD ACTUAL HOURS COLUMN                        *         
+***********************************************************************         
+*                                                                               
+ACTUAL   NTR1                                                                   
+         L     R5,AMTHTAB          TAB TO KEEP TRACK OF SPLIT MONTHS            
+         USING MNTHD,R5                                                         
+         LA    R2,MNTHMAX                                                       
+         TM    MNTHSTAT,MNTHNOW+MNTHOTHR    SPLIT MONTH                         
+         BO    ACT010                       YES - GO READ ACTUALS               
+ACT000   LA    R5,MNTHLNQ(R5)                                                   
+         BCT   R2,*-12                                                          
+         B     ACTX                                                             
+*                                                                               
+         USING YTDD,R3                                                          
+ACT010   L     R3,AYTDTAB          R3 = A(YTD TABLE)                            
+ACT100   CLI   0(R3),X'FF'                                                      
+         BE    ACT000                                                           
+         CLC   YTDMONTH,MNTHCODE   MATCH MONTH TO SPLIT MONTH                   
+         BNE   ACT300                                                           
+         OI    YTDSTAT,YTDSPLIT    MARK IT SO                                   
+*                                                                               
+         USING CHDRECD,R7                                                       
+         L     R7,AIO              BUILD 1R ACCOUNT                             
+         MVC   CHDKEY,SPACES                                                    
+         MVC   CHDKCPY,SALCMPY                                                  
+         MVC   CHDKULA(2),=C'1R'                                                
+         LA    RF,CHDKACT                                                       
+         SR    R1,R1                                                            
+         IC    R1,SALLEVA                                                       
+         SH    R1,=H'1'                                                         
+         EX    R1,*+4                                                           
+         MVC   0(0,RF),YTDOFFC     OFFICE                                       
+         LA    RF,1(R1,RF)                                                      
+*                                                                               
+         SR    R1,R1                                                            
+         IC    R1,SALLEVB                                                       
+         SH    R1,=H'1'                                                         
+         EX    R1,*+4                                                           
+         MVC   0(0,RF),YTDDEPT     DEPARTMENT                                   
+         LA    RF,1(R1,RF)                                                      
+*                                                                               
+         SR    R1,R1                                                            
+         IC    R1,SALLEVC                                                       
+         SH    R1,=H'1'                                                         
+         EX    R1,*+4                                                           
+         MVC   0(0,RF),YTDSDPT     SUBDEPARTMENT                                
+         LA    RF,1(R1,RF)                                                      
+*                                                                               
+         SR    R1,R1                                                            
+         IC    R1,SALLEVD                                                       
+         SH    R1,=H'1'                                                         
+         EX    R1,*+4                                                           
+         MVC   0(0,RF),SALPRSN     PERSON                                       
+         MVC   SVKEY,CHDKEY                                                     
+*                                                                               
+ACT200   GOTO1 DATAMGR,DMCB,DMRDHI,ACCDIR,AIO,AIO                               
+         B     ACT200B                                                          
+ACT200A  GOTO1 DATAMGR,DMCB,DMRSEQ,ACCDIR,AIO,AIO                               
+ACT200B  CLC   CHDKCULA,SVKEY                                                   
+         BNE   ACT300              DONE WHEN ACCOUNT CHANGES                    
+         CLI   CHDKBTYP,C'H'       ONLY TAKE HOURS BUCKETS                      
+         BNE   ACT200A                                                          
+         CLC   CHDKULC(2),=C'1C'   ONLY TAKE CLIENT TIME                        
+         BNE   ACT200A                                                          
+         MVC   DA,CHDKDA           DISK ADDRESS                                 
+         GOTO1 DATAMGR,DMCB,GETREC,ACCMST,DA,AIO,DMWORK                         
+         BE    *+6                                                              
+         DC    H'0'                DISK ERROR                                   
+         MVI   ELCODE,BUKELQ       X'45' ELEMENT                                
+         LR    R4,R7                                                            
+         BAS   RE,GETEL                                                         
+         B     *+8                                                              
+ACT210   BAS   RE,NEXTEL                                                        
+         BNE   ACT200A                                                          
+         USING BUKELD,R4                                                        
+         CLC   YTDMONTH,BUKMOS                                                  
+         BNE   ACT210                                                           
+         AP    YTDACHRS,BUKCR      ADD IN HOURS                                 
+*                                                                               
+*                                  BUMP TO NEXT CONTRA ACCOUNT                  
+         XC    WORK,WORK                                                        
+         MVC   WORK(L'CHDKCULA+L'CHDKOFF+L'CHDKCULC),CHDKEY                     
+         MVC   CHDKEY,WORK                                                      
+         SR    R1,R1                                                            
+         IC    R1,CHDKULC+L'CHDKULC-1                                           
+         AH    R1,=H'1'                                                         
+         STC   R1,CHDKULC+L'CHDKULC-1                                           
+         B     ACT200                                                           
+*                                                                               
+ACT300   LA    R3,YTDLNQ(R3)                                                    
+         B     ACT100                                                           
+*                                                                               
+ACTX     B     EXIT                                                             
+         DROP  R3,R4,R5,R7                                                      
+         EJECT                                                                  
+***********************************************************************         
+*              PAYROLL HISTORY RECORD FOR DUP LOCATIONS               *         
+***********************************************************************         
+*                                                                               
+         USING YTDD,R3                                                          
+HISTORY  NTR1                                                                   
+         L     R3,AYTDTAB          R3 = A(YTD TABLE)                            
+*                                                                               
+HIST01   CLI   0(R3),X'FF'                                                      
+         BE    HISTX                                                            
+         TM    YTDSTAT,YTDSPLIT    IS THIS A SPLIT MONTH?                       
+         BNO   HIST20              NO - THEN SKIP IT                            
+*                                                                               
+         USING PHIRECD,R4                                                       
+         L     R4,AIO                                                           
+         MVC   PHIKEY,SPACES                                                    
+         MVI   PHIKTYP,PHIKTYPQ    X'3E'                                        
+         MVI   PHIKSUB,PHIKSUBQ    X'05'                                        
+         MVC   PHIKCPY,SALCMPY                                                  
+         MVC   PHIKOFC,YTDOFFC                                                  
+         MVC   PHIKDPT,YTDDEPT                                                  
+         MVC   PHIKSBD,YTDSDPT                                                  
+         MVC   PHIKPER,SALPRSN                                                  
+         SR    R1,R1                                                            
+         ICM   R1,3,YTDMONTH       HIGHEST DATES COME FIRST ON FILE             
+         LNR   R1,R1               DATE STORED AS X'FFFF'-YYMM                  
+         STCM  R1,3,PHIKMOA                                                     
+         MVI   PHIKSEQ,0                                                        
+         MVC   SVKEY,PHIKEY                                                     
+         MVC   COMMAND,DMRDHI                                                   
+*                                                                               
+HIST04   GOTO1 DATAMGR,DMCB,COMMAND,ACCDIR,AIO,AIO                              
+         L     R4,AIO                                                           
+         CLC   PHIKEY(PHIKMOA-PHIKEY),SVKEY                                     
+         BNE   HIST16                                                           
+         MVC   COMMAND,DMRSEQ                                                   
+         SR    R1,R1                                                            
+         ICM   R1,3,PHIKMOA                                                     
+         LNR   R1,R1                                                            
+         MVC   HALF,YTDMONTH                                                    
+         CH    R1,HALF             STOP READING WHEN < START DATE               
+         BL    HIST16                                                           
+         MVC   DA,PHIKDA           DISK ADDRESS                                 
+         GOTO1 DATAMGR,DMCB,GETREC,ACCMST,DA,AIO,DMWORK                         
+         BE    *+6                                                              
+         DC    H'0'                DISK ERROR                                   
+*                                                                               
+         USING PDEELD,R4                                                        
+         MVI   ELCODE,PDEELQ       X'86' ELEMENT                                
+         BAS   RE,GETEL                                                         
+         BNE   HIST04                                                           
+         B     *+12                                                             
+*                                                                               
+HIST08   BAS   RE,NEXTEL                                                        
+         BNE   HIST04                                                           
+         CLC   YTDMONTH,PDEDTE                                                  
+         BNE   HIST08                                                           
+         ST    R4,ELADDRES                                                      
+         BAS   RE,CLASSIFY         CLASSIFY PAYCODE                             
+         BNE   HIST08                                                           
+*                                                                               
+*              ADD AMOUNT/ADJUSTMENT INTO CORRECT ACCUMULATOR                   
+*                                                                               
+         LA    RF,OFFSET                                                        
+         LA    R0,OFFSET#                                                       
+         CLC   TYPE,0(RF)                                                       
+         BE    *+12                                                             
+         LA    RF,OFFSETLN(RF)                                                  
+         BCT   R0,*-14                                                          
+         SR    R1,R1                                                            
+         IC    R1,1(RF)                                                         
+         LA    RF,YTDINFO(R1)                                                   
+         AP    0(L'YTDINFO,RF),AMOUNTA                                          
+         AP    0(L'YTDINFO,RF),ADJUSTA                                          
+         B     HIST08                                                           
+*                                                                               
+HIST16   DS    0H                  ADD UP TOTAL AMOUNT                          
+         AP    YTDTOTAL,YTDSALRY                                                
+         AP    YTDTOTAL,YTDBENFT                                                
+         AP    YTDTOTAL,YTDPENSN                                                
+         AP    YTDTOTAL,YTDINDIR                                                
+         AP    YTDTOTAL,YTDOTHER   DON'T ADD OTHER INTO TOTAL                   
+HIST20   LA    R3,YTDLNQ(R3)                                                    
+         B     HIST01                                                           
+*                                                                               
+HISTX    B     EXIT                                                             
+         DROP  R3,R4                                                            
+         EJECT                                                                  
+***********************************************************************         
+*              PAYROLL HISTORY RECORD                                 *         
+***********************************************************************         
+*                                                                               
+         USING PHIRECD,R4                                                       
+HISTORY2 NTR1                                                                   
+         L     R4,AIO                                                           
+         MVC   PHIKEY,SPACES                                                    
+         MVI   PHIKTYP,PHIKTYPQ    X'3E'                                        
+         MVI   PHIKSUB,PHIKSUBQ    X'05'                                        
+         MVC   PHIKCPY,SALCMPY                                                  
+         MVC   PHIKOFC,SALOFFC                                                  
+         MVC   PHIKDPT,SALDEPT                                                  
+         MVC   PHIKSBD,SALSDPT                                                  
+         MVC   PHIKPER,SALPRSN                                                  
+         SR    R1,R1                                                            
+         ICM   R1,3,SALEND         HIGHEST DATES COME FIRST ON FILE             
+         LNR   R1,R1               DATE STORED AS X'FFFF'-YYMM                  
+         STCM  R1,3,PHIKMOA                                                     
+         MVI   PHIKSEQ,0                                                        
+         MVC   SVKEY,PHIKEY                                                     
+         MVC   COMMAND,DMRDHI                                                   
+*                                                                               
+HIST210  GOTO1 DATAMGR,DMCB,COMMAND,ACCDIR,AIO,AIO                              
+         L     R4,AIO                                                           
+         CLC   PHIKEY(PHIKMOA-PHIKEY),SVKEY                                     
+         BNE   HIST225                                                          
+         MVC   COMMAND,DMRSEQ                                                   
+         SR    R1,R1                                                            
+         ICM   R1,3,PHIKMOA                                                     
+         LNR   R1,R1                                                            
+         MVC   HALF,SALSTART                                                    
+         CH    R1,HALF             STOP READING WHEN < START DATE               
+         BL    HIST225                                                          
+         MVC   DA,PHIKDA           DISK ADDRESS                                 
+         GOTO1 DATAMGR,DMCB,GETREC,ACCMST,DA,AIO,DMWORK                         
+         BE    *+6                                                              
+         DC    H'0'                DISK ERROR                                   
+*                                                                               
+         USING PDEELD,R4                                                        
+         MVI   ELCODE,PDEELQ       X'86' ELEMENT                                
+         BAS   RE,GETEL                                                         
+         BNE   HIST210                                                          
+         B     *+12                                                             
+*                                                                               
+HIST215  BAS   RE,NEXTEL                                                        
+         BNE   HIST210                                                          
+         CLC   PDEDTE,SALSTART                                                  
+         BL    HIST215                                                          
+         CLC   PDEDTE,SALEND                                                    
+         BH    HIST215                                                          
+         ST    R4,ELADDRES                                                      
+         BAS   RE,CLASSIFY         CLASSIFY PAYCODE                             
+         BNE   HIST215                                                          
+*                                                                               
+*              ADD AMOUNT/ADJUSTMENT INTO CORRECT ACCUMULATOR                   
+*                                                                               
+         LA    R2,OFFSET                                                        
+         LA    R0,OFFSET#                                                       
+         CLC   TYPE,0(R2)                                                       
+         BE    *+16                                                             
+         LA    R2,OFFSETLN(R2)                                                  
+         BCT   R0,*-14                                                          
+         LA    R2,OFFSETDF         IF YOU FALL THRU,MAKE DEFAULT                
+         SR    R1,R1                                                            
+         IC    R1,2(R2)                                                         
+         LA    R1,SALINFO(R1)                                                   
+         AP    0(L'SALINFO,R1),AMOUNTA                                          
+         AP    0(L'SALINFO,R1),ADJUSTA                                          
+         TM    SALSTAT1,SALSTAND   IS THIS A STANDARD HOURS CALL                
+         BNO   HIST215             NO - GET NEXT SALARY ELEMENT                 
+         L     RF,AMTHTAB          TAB TO KEEP TRACK OF SPLIT MONTHS            
+         USING MNTHD,RF                                                         
+         LA    R0,MNTHMAX          SAVE MONTHLY AMOUNTS                         
+         CLC   MNTHCODE,PDEDTE                                                  
+         BE    *+14                                                             
+         LA    RF,MNTHLNQ(RF)                                                   
+         BCT   R0,*-14                                                          
+         DC    H'0'                                                             
+         SR    R1,R1                                                            
+         IC    R1,3(R2)                                                         
+         LA    R1,MNTHINFO(R1)                                                  
+         AP    0(L'MNTHINFO,R1),AMOUNTA                                         
+         AP    0(L'MNTHINFO,R1),ADJUSTA                                         
+         B     HIST215             GET NEXT SALARY ELEMENT                      
+         DROP  RF                                                               
+*                                                                               
+HIST225  DS    0H                  ADD UP TOTAL AMOUNT                          
+         TM    SALSTAT1,SALSTAND   IS THIS A STANDARD HOURS CALL                
+         BNO   HIST230             NO - ADD UP TOTAL                            
+         BAS   RE,ADJUST           ADJUST $'S BASED ON ACT/STD HRS%             
+         ZAP   SALTOTAL,=P'0'                                                   
+*                                                                               
+HIST230  AP    SALTOTAL,SALSALRY                                                
+         AP    SALTOTAL,SALBENFT                                                
+         AP    SALTOTAL,SALPENSN                                                
+         AP    SALTOTAL,SALINDIR                                                
+         AP    SALTOTAL,SALOTHER                                                
+         B     EXIT                                                             
+         DROP  R4                                                               
+         EJECT                                                                  
+***********************************************************************         
+*              CLASSIFY PAY CODE AS HOURLY RATE AND FIGURE SALARY     *         
+***********************************************************************         
+*                                                                               
+CLASSIFY NTR1                                                                   
+         L     R4,ELADDRES                                                      
+         USING PDEELD,R4                                                        
+         OC    SALFILT,SALFILT     FILTER ON PAYROLL TYPE                       
+         BZ    *+14                                                             
+         CLC   SALFILT,PDENUM                                                   
+         BNE   CLASSNO                                                          
+*                                                                               
+         USING PYCODED,R5          R5 --> A(PAYROLL TYPE TABLE)                 
+         L     R5,APAYTAB          PUT PAYTYPE INTO 1 OF 5 CATEGORIES           
+         MVI   TYPE,PATTOTH        - 1. SALARY                                  
+         LH    R0,PYTABLE#         - 2. BENEFIT                                 
+         CLC   PYNUM,PDENUM        - 3. PENSION                                 
+         BNE   *+14                - 4. INDIRECT                                
+         MVC   TYPE,PYTYPE         - 5. OTHER                                   
+         B     *+12                                                             
+         LA    R5,PYLNQ(R5)                                                     
+         BCT   R0,*-24                                                          
+         ZAP   AMOUNTA,PDEAMT                                                   
+         ZAP   ADJUSTA,PDEADJ                                                   
+         MVC   WKDATE,PDEDTE                                                    
+         TM    PDESTAT2,PDESHRTE   IS THIS AN HOURLY RATE                       
+         BO    *+16                YES - DO WE WANT IT?                         
+         TM    SALSTAT1,SALHRRTO   DO WE ONLY WANT HRLY RATES?                  
+         BO    CLASSNO                                                          
+         B     CLASSYES                                                         
+         TM    SALSTAT1,SALHRRAT+SALHRRTO   ARE WE USING HRLY RATES?            
+         BZ    CLASSNO             NO - GET NEXT EL                             
+         BAS   RE,HRLYRATE         CALCULATE RATE X HRS FOR MONTH               
+CLASSYES CR    RB,RB                                                            
+         B     EXIT                                                             
+CLASSNO  LTR   RB,RB                                                            
+         B     EXIT                                                             
+         DROP  R4,R5                                                            
+         EJECT                                                                  
+***********************************************************************         
+*              HOURLY RATE X MONTHLY HOURS                            *         
+***********************************************************************         
+*                                                                               
+HRLYRATE NTR1                                                                   
+         L     RF,AMTHTAB          TAB TO KEEP TRACK OF SPLIT MONTHS            
+         USING MNTHD,RF                                                         
+         LA    R0,MNTHMAX          SAVE MONTHLY AMOUNTS                         
+         CLC   MNTHCODE,WKDATE                                                  
+         BE    *+14                                                             
+         LA    RF,MNTHLNQ(RF)                                                   
+         BCT   R0,*-14                                                          
+         DC    H'0'                                                             
+         ZAP   DUB,MNTHHRS                  USE ACTUAL HRS                      
+         TM    SALSTAT1,SALSTAND            A STANDARD HRS CALL?                
+         BZ    *+10                         NO -                                
+         ZAP   DUB,MNTHSHRS                 USE STANDARD HRS                    
+         ZAP   PACK16,DUB                   HRS FOR MONTH                       
+         MP    PACK16,AMOUNTA               HRLY RATE                           
+         SRP   PACK16,64-2,5                                                    
+         ZAP   AMOUNTA,PACK16+(L'PACK16-L'AMOUNTA)(L'AMOUNTA)                   
+         ZAP   PACK16,DUB                   HRS FOR MONTH                       
+         MP    PACK16,ADJUSTA               HRLY RATE                           
+         SRP   PACK16,64-2,5                                                    
+         ZAP   ADJUSTA,PACK16+(L'PACK16-L'ADJUSTA)(L'ADJUSTA)                   
+HRLX     B     EXIT                                                             
+         DROP  RF                                                               
+         EJECT                                                                  
+***********************************************************************         
+*              HANDLE MONTHLY SALARY SPLITS                           *         
+***********************************************************************         
+*                                                                               
+SPLITS   NTR1                                                                   
+         L     R4,AMTHTAB                 MONTH TABLE-CONTAINS CURRENT          
+         USING MNTHD,R4                   1R'S HOURS AND SAL INFO               
+         LA    R0,MNTHMAX                                                       
+         TM    MNTHSTAT,MNTHNOW+MNTHOTHR  SPLIT MONTH?                          
+         BO    SPL06                      YES - GO SPLIT UP SALARY              
+SPL04    LA    R4,MNTHLNQ(R4)             NO - BUMP TO NEXT MONTH               
+         BCT   R0,*-12                                                          
+         B     SPLX                       DONE                                  
+*                                                                               
+SPL06    DS    0H                                                               
+         MVC   MNTHWORK(MNTHLNQ),MNTHD    UPDATE WITH CURRENT 1R INFO           
+         LA    R2,MNTHWORK                                                      
+         USING YTDD,R3                                                          
+         L     R3,AYTDTAB                 TABLE OF OTHER DEPTS EMPLOYEE         
+*                                         WAS IN YTD                            
+SPL08    CLI   0(R3),X'FF'                                                      
+         BE    SPL20                                                            
+         CLC   YTDMONTH,MNTHCODE-MNTHD(R2)    MATCH MONTH IN OTHER DPT          
+         BNE   SPL10                                   NO- BUMP TO NEXT         
+         AP    MNTHHRS-MNTHD(L'MNTHHRS,R2),YTDACHRS    UPDATE TOTALS            
+         AP    MNTHSAL-MNTHD(L'MNTHSAL,R2),YTDSALRY    IN WORKAREA              
+         AP    MNTHBEN-MNTHD(L'MNTHBEN,R2),YTDBENFT                             
+         AP    MNTHPEN-MNTHD(L'MNTHPEN,R2),YTDPENSN                             
+         AP    MNTHIND-MNTHD(L'MNTHIND,R2),YTDINDIR                             
+         AP    MNTHOTH-MNTHD(L'MNTHOTH,R2),YTDOTHER                             
+         AP    MNTHTOT-MNTHD(L'MNTHTOT,R2),YTDTOTAL                             
+SPL10    LA    R3,YTDLNQ(R3)                                                    
+         B     SPL08                                                            
+*                                                                               
+SPL20    DS    0H                                                               
+         ZAP   PACK16,MNTHHRS               HRS IN CURRENT 1R OF/DP/SB          
+         SRP   PACK16,4,0                   SHIFT 4 POSITIONS TO LEFT           
+         ZAP   DUB,MNTHHRS-MNTHD(L'MNTHHRS,R2) DIVIDE BY                        
+*                                           TOT HRS ACROSS DPTS                 
+         CP    DUB,=P'0'                                                        
+         BE    SPL04                        (IF TOT ZERO SKIP MNTH)             
+         DP    PACK16,DUB                                                       
+         ZAP   WKPCNT,PACK16(L'PACK16-L'DUB) = PCT OF TIME IN CURRENT           
+         ZAP   SALDPTPC,WKPCNT+4(4)                                             
+         SRP   SALDPTPC,2,0                 FROM .4500 TO %45.00                
+*                                           PCT TO 4 DECIMAL PLACES             
+         LA    R1,MNTHINFO-MNTHD(R2)        R1 IS TOTAL ACROSS DPTS             
+         LA    R3,MNTHINFO                  R3 IS CURRENT 1R                    
+         LA    RF,MNTHINF#                                                      
+SPL24    ZAP   PACK16,0(L'MNTHINFO,R1)       MONTHLY TOT FOR SAL TYPE           
+         MP    PACK16,WKPCNT                 X PCT OF TIME IN CURRENT           
+         SRP   PACK16,64-4,5                                                    
+         ZAP   0(L'MNTHINFO,R3),PACK16       = CURRENT PORTION OF SAL           
+         LA    R1,L'MNTHINFO(R1)             BUMP TO NEXT ACCUM                 
+         LA    R3,L'MNTHINFO(R3)                                                
+         BCT   RF,SPL24                                                         
+         B     SPL04                                                            
+*                                                                               
+SPLX     DS    0H                                                               
+         DROP  R3,R4                                                            
+         EJECT                                                                  
+***********************************************************************         
+*              FINAL CALCULATIONS                                     *         
+***********************************************************************         
+*                                                                               
+FINAL    DS    0H                                                               
+         LA    RF,SALINFO                 REINITIALIZE I/O BLOCK ACCUMS         
+         LA    R0,SALINFO#                                                      
+         ZAP   0(L'SALINFO,RF),=P'0'                                            
+         LA    RF,L'SALINFO(RF)                                                 
+         BCT   R0,*-10                                                          
+         L     R4,AMTHTAB                 MONTH TABLE-CONTAINS CURRENT          
+         USING MNTHD,R4                   1R'S HOURS AND SAL INFO               
+         LA    R0,MNTHMAX                                                       
+FIN02    AP    SALSALRY,MNTHSAL                                                 
+         AP    SALBENFT,MNTHBEN                                                 
+         AP    SALPENSN,MNTHPEN                                                 
+         AP    SALINDIR,MNTHIND                                                 
+         AP    SALOTHER,MNTHOTH                                                 
+         AP    SALTOTAL,MNTHTOT                                                 
+         LA    R4,MNTHLNQ(R4)                                                   
+         BCT   R0,FIN02                                                         
+*                                                                               
+         BAS   RE,ADJUST           ADJUST $'S BASED ON ACT/STD HRS              
+FINX     B     EXIT                                                             
+         DROP  R4                                                               
+         EJECT                                                                  
+***********************************************************************         
+*              ADJUST SALARY FIGURES WITH ACTUAL TO STANDARD PCT      *         
+***********************************************************************         
+*                                                                               
+ADJUST   NTR1                                                                   
+         LA    RF,SALINFO           ANY DOLLARS TO ADJUST?                      
+         LA    R0,SALINFO#                                                      
+         CP    0(L'SALINFO,RF),=P'0'                                            
+         BNE   ADJ02                                                            
+         LA    RF,L'SALINFO(RF)                                                 
+         BCT   R0,*-14                                                          
+         B     ADJX                                                             
+*                                                                               
+ADJ02    ZAP   PACK16,ACTHOURS     ACTUAL HOURS YTD                             
+         SRP   PACK16,6,0          SHIFT 6 POSITIONS TO LEFT                    
+         ZAP   WKPCNT,=P'0'                                                     
+         ZAP   DUB,SALSTDHR                                                     
+         CP    DUB,=P'0'           FIND ANY STANDARD?                           
+         BZ    ADJ04               NO - THEN ADJUST SAL WITH 0 PCT              
+         DP    PACK16,DUB          DIVIDED BY STANDARD YTD                      
+         ZAP   WKPCNT,PACK16(L'PACK16-L'DUB)    = PCT OF SAL AJUST              
+ADJ04    ZAP   SALSTDPC,WKPCNT+4(4)                                             
+*                                                                               
+*                                  PCT TO 4 DECIMAL PLACES                      
+         LA    RF,SALINFO                                                       
+         LA    R0,SALINFO#                                                      
+ADJ06    ZAP   PACK16,0(L'SALINFO,RF)                                           
+         MP    PACK16,WKPCNT                                                    
+         SRP   PACK16,64-6,5                                                    
+         ZAP   0(L'SALINFO,RF),PACK16                                           
+         LA    RF,L'SALINFO(RF)                                                 
+         BCT   R0,ADJ06                                                         
+ADJX     B     EXIT                                                             
+         EJECT                                                                  
+***********************************************************************         
+*              LITERALS                                               *         
+***********************************************************************         
+*                                                                               
+EFFS     DC    12X'FF'                                                          
+ACCDIR   DC    CL8'ACCDIR  '                                                    
+ACCMST   DC    CL8'ACCMST  '                                                    
+GETREC   DC    CL8'GETREC  '                                                    
+*                                                                               
+         GETEL R4,FRSTEL,ELCODE                                                 
+*                                                                               
+         LTORG                                                                  
+         EJECT                                                                  
+*************************************************************                   
+*              CONSTANTS, TABLES                                                
+*************************************************************                   
+*                                                                               
+*                                                                               
+RELO     DS    A                                                                
+MINALLOC DC    F'10000'            MINIMUM BUFFER STORAGE ALLOCATION            
+FRSTEL   DC    H'56'                                                            
+SPACE    EQU   X'40'                                                            
+         EJECT                                                                  
+***********************************************************************         
+*              ACCUMULATOR OFFSET TABLE                               *         
+***********************************************************************         
+*                                                                               
+OFFSET   DS    0F                                                               
+         DC    AL1(PATTSAL),AL1(YTDSALRY-YTDINFO),AL1(SALSALRY-SALINFO)         
+         DC    AL1(MNTHSAL-MNTHINFO)                                            
+OFFSETLN EQU   *-OFFSET                                                         
+         DC    AL1(PATTBEN),AL1(YTDBENFT-YTDINFO),AL1(SALBENFT-SALINFO)         
+         DC    AL1(MNTHBEN-MNTHINFO)                                            
+         DC    AL1(PATTPEN),AL1(YTDPENSN-YTDINFO),AL1(SALPENSN-SALINFO)         
+         DC    AL1(MNTHPEN-MNTHINFO)                                            
+         DC    AL1(PATTIND),AL1(YTDINDIR-YTDINFO),AL1(SALINDIR-SALINFO)         
+         DC    AL1(MNTHIND-MNTHINFO)                                            
+OFFSETDF DC    AL1(PATTOTH),AL1(YTDOTHER-YTDINFO),AL1(SALOTHER-SALINFO)         
+         DC    AL1(MNTHOTH-MNTHINFO)                                            
+OFFSET#  EQU   (*-OFFSET)/OFFSETLN                                              
+         EJECT                                                                  
+***********************************************************************         
+*              CORE TABLE EQUATES                                     *         
+***********************************************************************         
+*                                                                               
+CORTABLE DS    0F                                                               
+         DC    C'**YTD***',A(YTDSIZE),Y(AYTDTAB-SALARYD)                        
+         DC    AL2(0)                                                           
+         DC    C'**CAL***',A(CALSIZE),Y(ACALTAB-SALARYD)                        
+         DC    AL2(0)                                                           
+         DC    C'**PAY***',A(PAYSIZE),Y(APAYTAB-SALARYD)                        
+         DC    AL2(0)                                                           
+         DC    C'**MTH***',A(MNTHSIZE),Y(AMTHTAB-SALARYD)                       
+         DC    AL2(0)                                                           
+         DC    C'**STD1**',A(STDSIZE),Y(ASTDREC1-SALARYD)                       
+         DC    AL2(0)                                                           
+         DC    C'**STD2**',A(STDSIZE),Y(ASTDREC2-SALARYD)                       
+         DC    AL2(0)                                                           
+         DC    C'**STD3**',A(STDSIZE),Y(ASTDREC3-SALARYD)                       
+         DC    AL2(0)                                                           
+         DC    C'**STD4**',A(STDSIZE),Y(ASTDREC4-SALARYD)                       
+         DC    AL2(0)                                                           
+         DC    C'**STD5**',A(STDSIZE),Y(ASTDREC5-SALARYD)                       
+         DC    AL2(0)                                                           
+CORNUMB  EQU   (*-CORTABLE)/CORLNQ                                              
+         EJECT                                                                  
+***********************************************************************         
+*              CORE TABLE DSECT                                       *         
+***********************************************************************         
+*                                                                               
+CORTABD  DSECT                                                                  
+CORIDEN  DS    CL8                 IDENTIFIER FOR DUMP                          
+CORSIZE  DS    A                   SIZE OF TABLE                                
+CORADDR  DS    Y                   DISP TO ADDR OF TABLE                        
+         DS    XL2                 CORE TABLE STATUS                            
+CORLNQ   EQU   *-CORTABD                                                        
+         EJECT                                                                  
+***********************************************************************         
+*              PAYROLL TYPE DSECT                                     *         
+***********************************************************************         
+*                                                                               
+PYCODED  DSECT                                                                  
+PYNUM    DS    CL1                 PAYROLL CODE NUMBER                          
+PYTYPE   DS    CL1                 PAYROLL TYPE (SAL,BEN,PEN..ETC)              
+PYLNQ    EQU   *-PYCODED                                                        
+PAYMAX   EQU   250                 MAX IN TABLE                                 
+PAYSIZE  EQU   (PAYMAX*PYLNQ)      LENGTH OF TABLE                              
+*                                                                               
+*                                                                               
+*                                                                               
+*                                                                               
+***********************************************************************         
+*              MONTHS OF REQUEST                                      *         
+***********************************************************************         
+*                                                                               
+MNTHD    DSECT                                                                  
+MNTHCODE DS    PL2                 MONTH YYMM                                   
+MNTHSTAT DS    XL1                                                              
+MNTHNOW  EQU   X'80'               OFFICE/DEPT SUB FOUND FOR MONTH              
+MNTHOTHR EQU   X'40'               ANOTHER OFF/DEPT/SUB FOR SAME MONTH          
+MNTHHRS  DS    PL(L'SALACTM1)      ACTUAL HOURS FOR THE MONTH                   
+MNTHSHRS DS    PL(L'SALACTM1)      STAND HOURS FOR THE MONTH                    
+MNTHINFO DS    0PL6                ACCUMULATORS                                 
+MNTHSAL  DS    PL(L'MNTHINFO)      SALARY                                       
+MNTHBEN  DS    PL(L'MNTHINFO)      BENEFIT                                      
+MNTHPEN  DS    PL(L'MNTHINFO)      PENSION                                      
+MNTHIND  DS    PL(L'MNTHINFO)      INDIRECT                                     
+MNTHOTH  DS    PL(L'MNTHINFO)      OTHER                                        
+MNTHTOT  DS    PL(L'MNTHINFO)      TOTAL FOR PERIOD                             
+MNTHINF# EQU   (*-MNTHINFO)/(L'MNTHINFO)  # ACCUMS                              
+MNTHLNQ  EQU   *-MNTHD                                                          
+MNTHMAX  EQU   12                  MAX IN TABLE                                 
+MNTHSIZE EQU   (MNTHMAX*MNTHLNQ)   LENGTH OF TABLE                              
+         EJECT                                                                  
+***********************************************************************         
+*              YEAR TO DATE TABLE                                     *         
+***********************************************************************         
+*                                                                               
+YTDD     DSECT                                                                  
+YTDMONTH DS    PL2                 YYMM                                         
+YTDOFFC  DS    CL2                 OFFICE                                       
+YTDDEPT  DS    CL3                 DEPARTMENT                                   
+YTDSDPT  DS    CL3                 SUBDEPT                                      
+YTDSTAT  DS    XL1                 STATUS                                       
+YTDSPLIT EQU   X'80'               SPLIT MONTH                                  
+YTDINFO  DS    0PL6                ACCUMULATORS                                 
+YTDACHRS DS    PL(L'YTDINFO)       ACTUAL HOURS FOR THIS O/D/S/P                
+*                                                                               
+YTDSALRY DS    PL(L'YTDINFO)       SALARY                                       
+YTDBENFT DS    PL(L'YTDINFO)       BENEFIT                                      
+YTDPENSN DS    PL(L'YTDINFO)       PENSION                                      
+YTDINDIR DS    PL(L'YTDINFO)       INDIRECT                                     
+YTDOTHER DS    PL(L'YTDINFO)       OTHER                                        
+YTDTOTAL DS    PL(L'YTDINFO)       TOTAL FOR PERIOD                             
+YTDINFO# EQU   (*-YTDINFO)/(L'YTDINFO)  # ACCUMS                                
+YTDLNQ   EQU   *-YTDD              LENGTH OF TABLE ENTRY                        
+YTDMAX   EQU   10                  MAX IN TABLE                                 
+YTDSIZE  EQU   (YTDMAX*YTDLNQ)     LENGTH OF TABLE                              
+         EJECT                                                                  
+***********************************************************************         
+*              STANARD HOURS COMPACT RECORD                           *         
+***********************************************************************         
+*                                                                               
+STDD     DSECT                                                                  
+STDNUM   DS    H                   NUMBER OF STD HRS MINI ELS                   
+STDSTART DS    PL3                 START DATE                                   
+STDEND   DS    PL3                 END DATE                                     
+STDHOURS DS    PL4                 STANDARD HOURS (2 DEC)                       
+STDLNQ   EQU   *-STDD                                                           
+STDLNQ2  EQU   *-STDSTART          LENGTH OF TABLE ENTRY                        
+STDMAX   EQU   53                  MAX IN TABLE                                 
+STDSIZE  EQU   (STDMAX*STDLNQ2+2)  LENGTH OF TABLE                              
+         EJECT                                                                  
+***********************************************************************         
+*              CALENDAR TABLE                                         *         
+***********************************************************************         
+*                                                                               
+CALNDRD  DSECT                                                                  
+CALMTH   DS    PL2                 MONTH                                        
+CALNUMB  DS    XL1                 PERIOD #                                     
+CALSTART DS    PL3                 PERIOD START                                 
+CALEND   DS    PL3                 PERIOD END                                   
+CALNSTAT DS    X                   STATUS                                       
+CALINLOC EQU   X'80'               IN LOCATION FOR CALENDAR PERIOD              
+CALSTHRS DS    PL4                 STANDARD HOURS FOR THIS PERIOD               
+CALLNQ   EQU   *-CALNDRD           LENGTH OF TABLE ENTRY                        
+CALMAX   EQU   78                  MAX IN TABLE                                 
+CALSIZE  EQU   (CALMAX*CALLNQ)     LENGTH OF TABLE                              
+         EJECT                                                                  
+***********************************************************************         
+*              ACSALARY WORKING STORAGE                               *         
+***********************************************************************         
+*                                                                               
+WORKD    DSECT                                                                  
+PARMS    DS    0F                  PARAMETER BLOCK                              
+PARM1    DS    A                                                                
+PARM2    DS    A                                                                
+PARM3    DS    A                                                                
+PARMQ    EQU   *-PARMS                                                          
+*                                                                               
+AIO      DS    A                   A(2000 BYTE IO AREA)                         
+ABLOCK   DS    A                   A(OUTPUT BLOCK)                              
+COVAIL   DS    A                                                                
+TABADDR  DS    A                                                                
+ELADDRES DS    A                                                                
+*                                                                               
+PACK16   DS    PL16                                                             
+SVHIRE   DS    PL3                 HIRE DATE                                    
+SVTERM   DS    PL3                 TERMINATION DATE                             
+SVKEY    DS    CL42                                                             
+*                                                                               
+WKDATE   DS    PL3                 TEMPORARY WORK DATE                          
+WKPCNT   DS    PL8                                                              
+ACTHOURS DS    PL6                 YTD ACTUAL HOURS FOR CURRENT 1R              
+AMOUNTA  DS    PL6                 PAY DETAIL AMOUNT WORK ACCUM                 
+ADJUSTA  DS    PL6                 PAY DETAIL ADJUSTMENT WORK ACCUM             
+*                                                                               
+TEMPDT1  DS    CL6                 TEMPORARY WORK DATE                          
+TEMPDT2  DS    CL6                 TEMPORARY WORK DATE                          
+LEVEL    DS    XL1                                                              
+*                                                                               
+ELCODE   DS    XL1                                                              
+TYPE     DS    XL1                                                              
+COMMAND  DS    CL8                                                              
+DA       DS    XL4                 DISK ADDRESS                                 
+MNTHWORK DS    CL(MNTHLNQ)         MONTH WORK AREA                              
+*                                                                               
+WORKDX   EQU   *                                                                
+         EJECT                                                                  
+***********************************************************************         
+*              ++INCLUDES                                             *         
+***********************************************************************         
+*                                                                               
+       ++INCLUDE ACSALHSTD                                                      
+         ORG   SALBLOCK                                                         
+SALSTORE DS    0C                  BEGINNING OF STORAGE                         
+SALFLAG  DS    CL8                 **SALB**                                     
+AOKBUFF  DS    A                   A(TABLE BUFFER AREA)                         
+BUFFLEN  DS    F                   LENGTH OF ACQUIRED BUFFER                    
+MYSAV    DS    0C                                                               
+MYCPY    DS    CL(L'SALCMPY)       COMPANY                                      
+MYMET    DS    CL(L'SALMETHD)      METHOD                                       
+MYOFC    DS    CL(L'SALOFFC)       OFFICE                                       
+MYDPT    DS    CL(L'SALDEPT)       DEPT                                         
+MYSDT    DS    CL(L'SALSDPT)       SUB DEPT                                     
+MYPER    DS    CL(L'SALPRSN)       PERSON                                       
+MYSAVLN  EQU   *-MYSAV                                                          
+ANYIO    DS    C                   I/O CHECKER                                  
+OKSTAT   DS    X                                                                
+AYTDTAB  DS    A                   A(YTD TABLE)                                 
+ACALTAB  DS    A                   A(CALENDAR TABLE)                            
+APAYTAB  DS    A                   A(PAY TYPE TABLE)                            
+AMTHTAB  DS    A                   A(MONTHS IN REQUEST TABLE)                   
+*                                                                               
+STDADDR  DS    0A                                                               
+ASTDREC5 DS    A                   A(STANDARD HRS COMPACT RECORD PERS)          
+ASTDREC4 DS    A                   A(STANDARD HRS COMPACT RECORD SUBD)          
+ASTDREC3 DS    A                   A(STANDARD HRS COMPACT RECORD DEPT)          
+ASTDREC2 DS    A                   A(STANDARD HRS COMPACT RECORD OFFC)          
+ASTDREC1 DS    A                   A(STANDARD HRS COMPACT RECORD COMP)          
+STDADDR# EQU   (*-STDADDR)/L'STDADDR # OF STANDARD COMPACT RECORDS              
+PYTABLE# DS    H                   NUMBER OF ENTRIES IN PAY TYPE TABLE          
+CALSTAT  DS    X                   STATUS OF CALANDAR TABLE                     
+CALCOMP  EQU   X'01'               CALANDAR IS FOR COMPANY                      
+CALOFFC  EQU   X'02'               CALANDAR IS FOR AN OFFICE                    
+SALSPARR EQU   (SALRESLN)-(*-SALBLOK) AMNT OF RESERVED LEFT IN SALBLOCK         
+         DS    CL(SALSPARR)        SPARE RESERVED REMAINING                     
+         EJECT                                                                  
+*        ACREPWORKD                                                             
+*        ACGENFILE                                                              
+*        DDMASTD                                                                
+         PRINT OFF                                                              
+       ++INCLUDE ACREPWORKD                                                     
+       ++INCLUDE ACGENFILE                                                      
+       ++INCLUDE DDMASTD                                                        
+         PRINT ON                                                               
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'008ACSALHST  05/27/03'                                      
+         END                                                                    

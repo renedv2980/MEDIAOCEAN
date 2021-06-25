@@ -1,0 +1,351 @@
+*          DATA SET DMPRTQO    AT LEVEL 007 AS OF 04/09/14                      
+*CATALP DMPRTQO                                                                 
+         TITLE 'DMPQOPEN - INITIALISE PRTQ FILES FOR ONLINE SYSTEM'             
+FAPQOPEN CSECT                     ONLINE ENTRY POINT                           
+         PRINT NOGEN                                                            
+         NMOD1 PQWORKX-PQWORKD,DMPQOPEN                                         
+         USING PQWORKD,RC                                                       
+         SAM24                                                                  
+*                                                                               
+         LR    R2,R1               R2=A(PARAM LIST)                             
+         XC    0(4,R2),0(R2)                                                    
+         L     RE,=V(DMISGENQ)       SET ADDR OF ISG ENQ/DEQ ROUTINE            
+         ST    RE,FIWENQ                                                        
+         L     RE,=A(CIREC-PQWORKD)                                             
+         LA    RE,PQWORKD(RE)                                                   
+         ST    RE,ACIREC                                                        
+                                                                                
+         MVI   MODE,0                                                           
+         ICM   RE,15,=V(SSB)       TEST ONLINE OR OFFLINE                       
+         BZ    PQOFF                                                            
+         USING SSBD,RE                                                          
+         OC    SSBCNTL,SSBCNTL                                                  
+         BNZ   PQONL                                                            
+                                                                                
+PQOFF    B     PQEXIT              OFFLINE - DO NOTHING HERE                    
+         EJECT                                                                  
+                                                                                
+***********************************************************************         
+*ONLINE - FIRST CALL TO V(DMPRTQUE) VIA GLIST WILL BUILD V(PRTQLST)   *         
+*SET ADDRESSES IN SSB                                                 *         
+***********************************************************************         
+PQONL    L     RA,=V(SYSFAC)       ONLINE - POINT TO SYSFACS                    
+         USING SYSFACD,RA                                                       
+         MVI   MODE,0                                                           
+*                                                                               
+         GOTO1 VSHMUSS,DMCB,ATTACH,MEMORY,0,0                                   
+         ICM   R1,15,DMCB+8                                                     
+         JZ    *+2                 DEATH - CANNOT ATTACH                        
+         ST    R1,FIWSHA                                                        
+*                                                                               
+         TM    SSBSTAT1,SSBSRSRT   TEST IF RESTART                              
+         BZ    *+8                                                              
+         MVI   MODE,RSTR                                                        
+         IC    RF,SSBSYSID         SET THIS SYSTEM ID                           
+         SLL   RF,4                                                             
+         STC   RF,SYSID                                                         
+*                                                                               
+         L     RF,ACIREC                                                        
+         GOTO1 VDATAMGR,DMCB,=C'GLIST',=C'PRTQU',UKEY,CXREC,(RF)                
+         MVC   APRTQLST,UKEY+UKUSRINF-UKRECD                                    
+         ICM   RE,15,=V(SSB)                                                    
+         BZ    PQ0                                                              
+         MVC   SSBPQLST,APRTQLST   SET A(PRTQLST) IN SSB                        
+         ICM   RF,15,=V(PRTQXPE)                                                
+         BZ    PQ0                                                              
+         ST    RF,SSBPQXPE         SET A(PRTQXPE) IN SSB                        
+         XC    0(2,RF),0(RF)       SET TO START AT FIRST INDEX PAGE             
+*                                                                               
+         DROP  RE                                                               
+         EJECT                                                                  
+                                                                                
+***********************************************************************         
+*FOR EACH PRTQ FILE READ INDEX RECORDS AND SET CIDATA IN DTF-40       *         
+*PURGE INDEX ENTRIES FOR TEMP REPORTS FOR THIS CPU/ASID               *         
+*FIX INDEX ENTRIES FOR REPORTS PRINTING IN THIS FACPAK                *         
+***********************************************************************         
+PQ0      L     RF,APRTQLST         BUMP TO NEXT PRTQ FILE IN LIST               
+         LA    RF,8(RF)                                                         
+         ST    RF,APRTQLST                                                      
+         CLI   0(RF),0             TEST END OF LIST                             
+         BE    PQX                                                              
+         MVI   APRTQDTF,0          SET A(PRTQ FILE DTF)                         
+         MVC   APRTQDTF+1(3),5(RF)                                              
+         MVC   CFPQINUM,0(RF)      SET PRTQ FILE INTERNAL NUMBER                
+         MVC   CFPQID,=C'PRTQU'                                                 
+         MVC   CFPQID+4(1),1(RF)   SET PRTQ FILE DMCB/ENQ NAME                  
+*                                                                               
+PQ1      XC    DMCBI(24),DMCBI     DMCBI FOR INDEX READS                        
+         LA    RE,DMREAD                                                        
+         ST    RE,DMCBI                                                         
+         MVI   DMCBI,X'80'         SET READ FOR UPDATE                          
+         LA    RE,CFPQID                                                        
+         ST    RE,DMCBI+4                                                       
+         LA    RE,CXADDR                                                        
+         ST    RE,DMCBI+8                                                       
+         LA    RE,CXREC                                                         
+         ST    RE,DMCBI+12                                                      
+*                                                                               
+         MVC   DMCBF(24),DMCBI     DMCBF FOR FILE READS                         
+         MVI   DMCBF,0                                                          
+         LA    RE,CIADDR                                                        
+         ST    RE,DMCBF+8                                                       
+         MVC   DMCBF+12(4),ACIREC                                               
+*                                                                               
+         MVI   FLAG,1              SET SEARCH TO PART1 INDEXES                  
+*                                                                               
+         GOTO1 VDATAMGR,DMCBI,BUFFER,CFPQID,UKEY,CXREC,ACIREC                   
+         BNE   PQERR                                                            
+         L     R5,ACIREC                                                        
+         MVC   CIDATA,12(R5)       FILE DATA FOR THIS PRTQ                      
+*                                                                               
+         SAM31                                                                  
+         MVC   FIWRES,SPACES                                                    
+         MVC   FIWRES(L'CFPQID),CFPQID  FILE NAME                               
+         BRAS  RE,FIRSET           SET VALUES FOR THIS RESOURCE                 
+         BNE   PQERR               DEATH: INVALID RESOURCE FILE                 
+         MVC   FIWNDA,FIWP1A       FIRST PART1 INDEX                            
+         B     PQ5                                                              
+*                                                                               
+         USING PQRECD,R5           R5=A(PRTQUE INDEX RECORD)                    
+PQ4      CLI   FLAG,2              ARE WE SCANNING THROUGH PART2S               
+         BE    PQ6                 YES                                          
+*                                                                               
+         BRAS  RE,FIRNSN           NEXT PART1 INDEX                             
+         BNE   PQO                 NO MORE PART1 INDEXES                        
+*                                                                               
+PQ5      L     R5,FIWNDA                                                        
+         LA    R5,SI1NDX-SI1PAR(R5) R5=A(PART1 INDEX)                           
+         B     PQ8                                                              
+*                                                                               
+PQ6      BRAS  RE,FIRNSN2          NEXT PART2 INDEX                             
+         BNE   PQO                 NO MORE PART2 INDEXES                        
+*                                                                               
+PQ7      L     R5,FIWNDA                                                        
+         LA    R5,SI2NDX-SI2PAR(R5) R5=(PART2 INDEX)                            
+*                                                                               
+PQ8      BRAS  RE,FIRNC            CONVERT A(INDEX NODE) TO A(CI)               
+         MVC   CIADDR,FIWCIA                                                    
+*                                                                               
+         CLI   PQAGERT,X'FF'       TEST IF CPU/ASID IN INDEX ENTRY              
+         BNE   PQ9                                                              
+         CLC   PQAGEDD(4),CIP3     TEST IF MY CPU/ASID                          
+         BNE   PQN                 NO - IGNORE                                  
+*KILLER  XC    PQINDEX,PQINDEX     PURGE MY INCOMPLETE INDEX ENTRYS             
+         B     PQN                                                              
+*                                                                               
+PQ9      CLI   PQAGERT,X'FE'       TEST IF SYSID/TRMNUM IN INDEX ENTRY          
+         BNE   PQN                 NO                                           
+         SR    RE,RE               PQAGEDD=B'IIIITTTTTTTTTTTT'                  
+         ICM   RE,3,PQAGEDD                                                     
+         SRDL  RE,12                                                            
+         SLL   RE,4                                                             
+         SRL   RF,20                                                            
+         STC   RE,FACID            RE=PRINTING FACPAK ID                        
+         STH   RF,TRMNUM           RF=PRINTING TERMINAL NUM                     
+         CLC   FACID,SYSID         TEST IF THIS FACPAK ID                       
+         BNE   PQN                 PRINTING BY SOME OTHER FACPAK                
+*                                                                               
+PQA      GOTO1 VDATAMGR,DMCBF                                                   
+         CLI   8(R1),0             TEST FOR ERROR                               
+         BNE   PQA1                                                             
+         L     RE,ACIREC           TEST INDEX KEY WITH FILE KEY                 
+         CLC   PQKEY,PQKEY-PQRECD(RE)                                           
+         BE    PQA2                                                             
+*                                                                               
+PQA1     MVI   PQAGERT,X'00'       SET INDEX RETN TIME IF ERROR                 
+         XC    PQAGEDD,PQAGEDD                                                  
+         NI    PQSTAT,255-PQSTAC                                                
+         OI    PQSTAT,PQSTHO       SET INDEX STATUS TO HOLD                     
+         B     PQAX                                                             
+PQA2     MVC   PQAGEDD(5),PQAGEDD-PQRECD(RE)                                    
+         TM    MODE,RSTR           TEST IF ONLINE RESTART                       
+         BZ    PQAX                NO                                           
+         BRAS  RE,CHKQUE           CHECK IF REPORT IN PRINTER QUEUE             
+PQAX     NI    PQSTAT,255-PQSTPG   TURN OFF ONLINE PRINTING FLAG                
+*                                                                               
+PQN      B     PQ4                 GET NEXT INDEX                               
+*                                                                               
+PQO      CLI   FLAG,1              FINISHED PART1S?                             
+         BNE   PQP                 NO: MUST BE FINISHED WITH 1S AND 2S          
+         MVI   FLAG,2              YES: LOOK AT PART2S                          
+         MVC   FIWNDA,FIWP2A       FIRST PART2 INDEX NODE                       
+         B     PQ7                                                              
+*                                                                               
+PQP      SAM24                                                                  
+         B     PQ0                 BACK FOR NEXT PRTQ FILE                      
+*                                                                               
+PQX      TM    MODE,RSTR           SET QUEUES IF ONLINE RESTART                 
+         BZ    PQEXIT                                                           
+         BRAS  RE,SETQUE                                                        
+         B     PQEXIT                                                           
+*                                                                               
+PQERR    MVC   0(1,R2),CFPQID+4    RETURN LAST CHR OF PRTQ FILE                 
+         B     PQEXIT              EXIT IF ERROR IN ANY PRTQ FILE               
+*                                                                               
+PQEXIT   GOTO1 FIWENQ,DMCB,C'TASK',0,0  CLEAN UP PRTQ ENQUEUES                  
+*                                                                               
+         CLI   0(R2),X'00'         SET CC TO NEQ ON ERROR                       
+         XMOD1 1                                                                
+         EJECT                                                                  
+                                                                                
+***********************************************************************         
+* FASTART HAS SET AUTO RESTART PENDING AND THE CIADDR/KEY OF REPORT   *         
+* FOR THOSE PRINTERS WHOSE CHECK POINT RECORD INDICATED THAT THE      *         
+* PRINTER WAS PRINTING BEFORE AN ONLINE RESTART WAS DONE.             *         
+*                                                                     *         
+* IF A PRINTER HAS AUTO RESTART PENDING AND THE NAMED REPORT IS FOUND *         
+* TO BE ALIVE AND WELL THIS ROUTINE WILL ALSO SET ON MANUAL RESTART   *         
+* PENDING BIT (THIS WILL BE TURNED OFF BY SETQUE).                    *         
+***********************************************************************         
+CHKQUE   NTR1                      CHECK IF REPORT IN PRINTER QUEUE             
+         L     R7,VPRQ                                                          
+         LH    R8,0(R7)                                                         
+         L     R9,2(R7)                                                         
+         LA    R7,6(R7)            R7=A(PRINTER QUEUE)                          
+         USING PRQD,R7                                                          
+*                                                                               
+CHKQ1    TM    PRSTAT1,PRS1ARS     TEST IF AUTO RESTART PENDING                 
+         BZ    CHKQ2               NO                                           
+         CLC   PR1CIFST,CIADDR     TEST IF SAME ADDR                            
+         BNE   CHKQ2               NO                                           
+         CLC   PR1KEY,PQKEY        TEST IF SAME KEY                             
+         BNE   CHKQ2               NO                                           
+         OI    PRSTAT1,PRS1MRS     REPORT MATCHES - SET MANUAL FLAG             
+*                                                                               
+CHKQ2    LA    R8,PRQDL            GET FIXED ENTRY LENGTH                       
+         CLC   PRENTRY,=X'FFFF'                                                 
+         BE    CHKQ2A                                                           
+         ZIC   RE,PRQNEMAX         BUMP TO NEXT PRINTER QUEUE                   
+         LA    RF,L'PRENTRY                                                     
+         MR    RE,RE                                                            
+         LA    R8,PRENTRY-PRQD(RF)                                              
+CHKQ2A   BXLE  R7,R8,CHKQ1                                                      
+*                                                                               
+CHKQX    XIT1                                                                   
+         EJECT                                                                  
+                                                                                
+***********************************************************************         
+* THIS ROUTINE WILL TURN OFF AUTO RESTART PENDING FOR ALL PRINTERS    *         
+* WHERE THE RESTART REPORT WAS NOT FOUND IN THE PRINT QUEUE.          *         
+***********************************************************************         
+SETQUE   NTR1                      SET RESTART FLAGS IN VALID QUEUES            
+         L     R7,VPRQ                                                          
+         LH    R8,0(R7)                                                         
+         L     R9,2(R7)                                                         
+         LA    R7,6(R7)            R7=A(PRINTER QUEUE)                          
+         USING PRQD,R7                                                          
+*                                                                               
+SETQ1    TM    PRSTAT1,PRS1ARS     TEST AUTO RESTART PENDING                    
+         BZ    SETQ2               NO                                           
+         TM    PRSTAT1,PRS1MRS     DID WE FIND THE REPORT OK                    
+         BZ    SETQ1A              NO                                           
+         NI    PRSTAT1,255-PRS1MRS YES LEAVE AUTO RESTART PENDING               
+         B     SETQ2                                                            
+SETQ1A   NI    PRSTAT1,255-PRS1ARS TURN OFF AUTO RESTART PENDING                
+         XC    PRHDR1,PRHDR1       CLEAR INFO FOR AUTO RESTART                  
+*                                                                               
+SETQ2    LA    R8,PRQDL            GET FIXED ENTRY LENGTH                       
+         CLC   PRENTRY,=X'FFFF'                                                 
+         BE    SETQ2A                                                           
+         ZIC   RE,PRQNEMAX         BUMP TO NEXT PRINTER QUEUE                   
+         LA    RF,L'PRENTRY                                                     
+         MR    RE,RE                                                            
+         LA    R8,PRENTRY-PRQD(RF)                                              
+SETQ2A   BXLE  R7,R8,SETQ1                                                      
+*                                                                               
+SETQX    XIT1                                                                   
+         EJECT                                                                  
+                                                                                
+***********************************************************************         
+* SHARED MEMORY ROUTINES                                                        
+***********************************************************************         
+       ++INCLUDE DDSHFIR                                                        
+         EJECT                                                                  
+                                                                                
+***********************************************************************         
+* CONSTANTS                                                                     
+***********************************************************************         
+VSHMUSS  DC    V(DMSHMUSS)                                                      
+DMREAD   DC    CL8'DMREAD'                                                      
+DMWRT    DC    CL8'DMWRT'                                                       
+DMUNLK   DC    CL8'DMUNLK'                                                      
+BUFFER   DC    CL8'BUFFER'                                                      
+ATTACH   DC    CL8'ATTACH'                                                      
+MEMORY   DC    CL8'PRTQ'                                                        
+SPACES   DC    CL16' '                                                          
+         LTORG                                                                  
+         EJECT                                                                  
+                                                                                
+***********************************************************************         
+* OFFLINE ENTRY POINT                                                           
+***********************************************************************         
+PQOPEN   CSECT                                                                  
+         BR    RE                                                               
+         EJECT                                                                  
+                                                                                
+***********************************************************************         
+* WORKING STORAGE                                                               
+***********************************************************************         
+PQWORKD  DSECT                                                                  
+DUB      DS    D                                                                
+APRTQLST DS    A                   A(NEXT ENTRY IN LIST OF PRTQ FILES)          
+APRTQDTF DS    A                   A(CURRENT PRTQ FILE DTF)                     
+ACIREC   DS    A                                                                
+PRVADDR  DS    F                                                                
+DMCB     DS    6F                                                               
+DMCBI    DS    6F                  DMCB FOR INDEX RECORDS I/O                   
+DMCBF    DS    6F                  DMCB FOR CI RECORDS I/O                      
+*                                                                               
+UKEY     DS    XL40                USER INDEX/KEY FOR PRTQUE                    
+         DS    XL16                                                             
+HALF     DS    H                                                                
+FLAG     DS    X                                                                
+MODE     DS    X                   MODE DEFINES RESTART                         
+RSTR     EQU   X'01'                                                            
+*                                                                               
+SYSID    DS    X                   THIS FACPAK SYSTEM ID                        
+FACID    DS    X                   PNTG FACPAK SYSTEM ID                        
+         DS    XL2                                                              
+TRMNUM   DS    H                   PNTG TERMINAL NUMBER                         
+         DS    H                                                                
+*                                                                               
+       ++INCLUDE DDSHFIW                                                        
+       ++INCLUDE DMPRTQW                                                        
+*                                                                               
+CXREC    DS    14336C                                                           
+CIREC    DS    14336C                                                           
+*                                                                               
+PQWORKX  DS    0C                                                               
+         EJECT                                                                  
+                                                                                
+***********************************************************************         
+* OTHER DSECTS                                                                  
+***********************************************************************         
+*DMPRTQD                                                                        
+       ++INCLUDE DMPRTQD                                                        
+         EJECT                                                                  
+*DMPRTQK                                                                        
+       ++INCLUDE DMPRTQK                                                        
+         EJECT                                                                  
+*DDSHFID                                                                        
+       ++INCLUDE DDSHFID                                                        
+         EJECT                                                                  
+*FAPRQ                                                                          
+       ++INCLUDE FAPRQ                                                          
+         EJECT                                                                  
+*FASSB                                                                          
+       ++INCLUDE FASSB                                                          
+         EJECT                                                                  
+*FAUTL                                                                          
+       ++INCLUDE FAUTL                                                          
+         EJECT                                                                  
+*FASYSFAC                                                                       
+       ++INCLUDE FASYSFAC                                                       
+         EJECT                                                                  
+*IHAASCB                                                                        
+         IHAASCB LIST=YES                                                       
+         EJECT                                                                  
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'007DMPRTQO   04/09/14'                                      
+         END                                                                    

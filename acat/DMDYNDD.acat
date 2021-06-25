@@ -1,0 +1,884 @@
+*          DATA SET DMDYNDD    AT LEVEL 037 AS OF 01/16/20                      
+*CATALP DMDYNDD                                                                 
+***********************************************************************         
+* Caller can pass in P1 an HLQ which will be set at the front of DSN            
+*                                                                               
+* P1     AL1(Length of prefix),AL3(Adr of prefix over-ride) or zero             
+* P2     A(DDNAME)                                                              
+* P3     A(DTF) or zero                                                         
+*                                                                               
+* Return CC - not equal then do not allocate                                    
+* P1     AL1(length of new DSN),AL3(Address of new DSN string)                  
+* P3     XL1=Allocation flags,AL3(Address of table entry)                       
+*        01=Flash copy allocate,02=Global allocate                              
+*                                                                               
+* Notes: Only supports 3 character over-rides for TST/CSC/FQA/FAC               
+*        DSPACE=A or P or SPACE no alterations to HLQ                           
+*        DSPACE=C will allocate CSC prefix, unless JCL over-ride                
+*        DSPACE=R has WRKF exception rules for now                              
+*        DSPACE=T will only allocate where indicator is on                      
+*        DSPACE=Q will only allocate where indicator is on                      
+***********************************************************************         
+         PRINT NOGEN                                                            
+DMDYNDD  CSECT                                                                  
+         NMOD1 WORKLNQ,**DYND**,CLEAR=YES                                       
+         USING WORKD,RC                                                         
+         SAM24                                                                  
+         MVC   PARMS,0(R1)         Save parameter list                          
+         ST    R1,APARMS                                                        
+         XC    0(4,R1),0(R1)       Clear return values                          
+         XC    8(4,R1),8(R1)                                                    
+         LM    R3,R5,P1                                                         
+         NILH  GR3,X'00FF'         R3=A(Optional over-ride)                     
+         NILH  GR4,X'00FF'         R4=A(DDNAME)                                 
+         NILH  GR5,X'00FF'         R5=A(DTF)                                    
+         USING DTFPHD,R5                                                        
+*                                                                               
+         USING SSBD,R6                                                          
+DYNAL02  ICM   R6,15,=V(SSB)       R6=A(SSB)                                    
+         BZ    DYNAL10                                                          
+         OC    SSBCNTL,SSBCNTL                                                  
+         BZ    DYNAL04                                                          
+         MVI   ONLINE,C'Y'         Save fields from online SSB                  
+         ST    R6,ASSB                                                          
+         MVC   AFACIDTL,SSBAFID                                                 
+         MVC   TOR_AOR,=C'.TOR '                                                
+         MVC   DSPACE,SSBDSPAC                                                  
+         MVC   SYSID,SSBSYSID                                                   
+         NI    SYSID,X'0F'         must be 0 - 15                               
+         TM    SSBSTAT4,SSBSAOR    AOR?                                         
+         BZ    DYNAL06                                                          
+         MVC   TOR_AOR,=C'.AOR '                                                
+         LLC   RF,SSBSYSIX         Get AOR+SYSID                                
+         SRL   RF,4                Remove SYSID                                 
+         LA    RF,X'C0'(RF)        AORB, AORC, AORD etc.                        
+         CHI   RF,C'A'                                                          
+         BE    DYNAL06                                                          
+         STC   RF,TOR_AOR+4        Move in letter                               
+         B     DYNAL06                                                          
+*                                                                               
+DYNAL04  CLI   SSOXTND,X'FF'       Save fields from offline SSB                 
+         BNE   DYNAL10                                                          
+         ST    R6,ASSB                                                          
+         MVC   DSPACE,SSODSPAC                                                  
+         MVC   SYSID,SSODSNID                                                   
+         MVC   FLASHFLG,SSOFLAG2   Flash active flags                           
+         MVC   FLASHIDC,SSOFLSHI   Flash character to use                       
+*                                                                               
+DYNAL06  TM    SSBSTAT2,SSBSGALO   Test global allocate                         
+         BZ    DYNAL10                                                          
+         LTR   R5,R5               Must pass A(DTF)                             
+         BZ    DYNAL10                                                          
+         TM    DTFFLAG,DTFGLOB     Test global file                             
+         BO    DYNAL60                                                          
+         EJECT                                                                  
+***********************************************************************         
+* Find file based on DDNAME passed in param list                      *         
+***********************************************************************         
+         USING DYNDD,R7                                                         
+DYNAL10  LARL  R7,DYNTABD          Point to table of DYNAMIC DD names           
+*                                                                               
+DYNAL11  CLI   0(R7),0             End of table?                                
+         BE    DYNALXNO            Yes, set CC not equal                        
+         CLI   DYNFAC#,0           Test generic entry?                          
+         BE    DYNAL12             Yes                                          
+         CLC   DYNFAC#,SYSID       Test specific FACPAK entry                   
+         BNE   DYNAL16                                                          
+DYNAL12  TM    DYNIND,DYNDSPDS     Specific DSPACE=                             
+         BZ    DYNALL14            No                                           
+         CLC   DSPACE,DYNDSPAC     Yes, so match                                
+         BNE   DYNAL16             No not the one we want                       
+                                                                                
+DYNALL14 LLC   R8,DYNDDLEN         RF=Length of compare                         
+         BCTR  R8,0                                                             
+         EX    R8,*+8                                                           
+         B     *+10                                                             
+         CLC   0(0,R4),DYNDDN      DDNAME vs table                              
+         BE    DYNAL18                                                          
+DYNAL16  LA    R7,DYNLNQ(,R7)                                                   
+         B     DYNAL11             Try again                                    
+*                                                                               
+DYNAL18  MVC   NEWDSN(L'DYNDSN),DYNDSN                                          
+         MVC   SVDYNIND,DYNIND                                                  
+         EJECT                                                                  
+***********************************************************************         
+* Test DSPACE to see which high level qualifier (HLQ) to use          *         
+***********************************************************************         
+DYNAL20  CLI   ONLINE,C'Y'         Test if offline production system            
+         BE    DYNAL30                                                          
+         CLI   DSPACE,C'A'         If DSPACE not set assume production          
+         BNH   DYNAL22                                                          
+         CLI   DSPACE,C'P'                                                      
+         BE    DYNAL22                                                          
+*&&US*&& CLI   DSPACE,C'R'                                                      
+*&&US*&& BE    DYNAL22                                                          
+         B     DYNAL30                                                          
+*                                                                               
+DYNAL22  TM    FLASHFLG,SSO2FLSH   Test if flash not active in SSB              
+         BZ    DYNAL30                                                          
+         BAS   RE,FLASHY           Test to use flash copy of file               
+         TM    FLAG,X'01'          Yes/No                                       
+         BZ    DYNAL30             No                                           
+         OI    DYNFLAG,X'01'       Set doing a flash copy allocate              
+         MVC   NEWDSN(L'DYNHLQ),=C'FLS'                                         
+         MVC   NEWDSN+L'DYNHLQ-1(1),FLASHIDC                                    
+         B     DYNAL40                                                          
+*                                                                               
+DYNAL30  EQU   *                   Test SSB DSPACE chr to find HLQ              
+*&&US                                                                           
+***********************************************************************         
+* Make CSC files all "CSC." unless                                              
+*      DYNDSPDS - specific file over-ride for CSC (On-line only)                
+*      DYNDSCSC - skip the over-ride no mater what                              
+***********************************************************************         
+DYNAL32  CLI   DSPACE,C'C'         CSC ?                                        
+         BNE   DYNAL34                                                          
+         TM    DYNIND,DYNDSCSC     Skip HLQ assignment for CSC?                 
+         BO    DYNAL40             Yes                                          
+         TM    DYNIND,DYNDSPDS     Specific file over-ride                      
+         BO    DYNAL40             Yes                                          
+                                                                                
+DYNAL33  MVC   NEWDSN(L'DYNHLQ),=C'CSC'                                         
+                                                                                
+***********************************************************************         
+* Check to see if on-line FACPAK file is set and build corrisponding            
+* file. i.e.  ADV1.FILENAME                                                     
+*             REPA.FILENAME.TOR                                                 
+*             ADV5.FILENAME.AORA                                                
+***********************************************************************         
+         USING FACITABD,RE                                                      
+DYNAL34  CLI   ONLINE,C'Y'         FACPAK HLQ type file                         
+         BNE   DYNAL36             Off-line then we don't know                  
+         TM    DYNIND,DYNFPHLQ     FACPAK HLQ type file                         
+         BZ    DYNAL36                                                          
+         XR    RF,RF                                                            
+         ICM   RF,1,SYSID                                                       
+         BNZ   *+6                                                              
+         DC    H'00'                                                            
+                                                                                
+         MHI   RF,L'FACITAB        Length of entry                              
+         L     RE,AFACIDTL         Point to correct entry                       
+         AR    RE,RF                                                            
+         MVC   NEWDSN(3),FACISN4   Over-write "FAC" HLQ                         
+         CLI   FACISN4+3,C' '      Check if 3 or 4 length                       
+         BE    DYNAL40             ?                                            
+         MVC   NEWDSN(4),FACISN4                                                
+         MVC   NEWDSN+4(L'DYNDSN-4),DYNDSN+3                                    
+         B     DYNAL40                                                          
+         DROP  RE                                                               
+                                                                                
+***********************************************************************         
+* DSPACE type file. Set HLQ based on DSPACE                                     
+*        DSPACE=R    prefix is "REP."                                           
+*        DSPACE=T    prefix is "TST."                                           
+*        DSPACE=Q    prefix is "FQA."                                           
+*        DYNDSPRE bit indicates to skip REP assignment                          
+*        DYNDSQ2T bit indicates to make QA HLQ TST instead                      
+*                                                                               
+***********************************************************************         
+DYNAL36  TM    DYNIND,DYNDSHLQ     DSPACE HLQ type file                         
+         BZ    DYNAL40             No                                           
+         CLI   DSPACE,C'A'                                                      
+         BNH   DYNAL40             Production or not set                        
+         CLI   DSPACE,C'C'                                                      
+         BNH   DYNAL40             CSC system                                   
+         CLI   DSPACE,C'P'                                                      
+         BE    DYNAL40             Production, leave as is                      
+         CLI   DSPACE,C'R'         REP?                                         
+         BNE   DYNAL38             No                                           
+         TM    DYNIND,DYNDSREP     Special to change HLQ to REP.                
+         BZ    DYNAL40             Leave as is                                  
+         MVC   NEWDSN(L'DYNHLQ),=C'REP'                                         
+         B     DYNAL40                                                          
+*                                                                               
+DYNAL38  MVC   NEWDSN(L'DYNHLQ),=C'TST'                                         
+         CLI   DSPACE,C'T'         TST/MEL Systen                               
+         BE    DYNAL40                                                          
+         TM    DYNIND,DYNDSQ2T     Assign FQA to TST system HLQ                 
+         BO    *+10                (See CONTROL files)                          
+         MVC   NEWDSN(L'DYNHLQ),=C'FQA'                                         
+         CLI   DSPACE,C'Q'         FQA System                                   
+         BE    DYNAL40                                                          
+         LA    RF,1                                                             
+         ABEND 990,DUMP            What DSPACE= is this?                        
+*&&                                                                             
+         EJECT                                                                  
+***********************************************************************         
+* Set substitution character in DSN                                   *         
+***********************************************************************         
+DYNAL40  LA    RE,1(R8,R4)         Point to substitution character              
+         LA    RF,NEWDSN           Point to start of DSN                        
+DYNAL42  CLI   0(RF),C'='                                                       
+         BNE   DYNAL44                                                          
+         MVC   0(1,RF),0(RE)       Substitute 1st character                     
+         CLI   1(RE),C' '                                                       
+         BNH   DYNAL44                                                          
+         MVC   1(1,RF),1(RE)       Substitute 2nd Character                     
+         LA    RF,1(RF)                                                         
+DYNAL44  CLI   0(RF),C' '          Test end of DSN                              
+         BNH   DYNAL50                                                          
+         LA    RF,1(RF)                                                         
+         B     DYNAL42                                                          
+                                                                                
+***********************************************************************         
+* Check to see if TOR or AOR specific and build corrisponding                   
+* file. i.e.  REPA.FILENAME.TOR                                                 
+*             ADV5.FILENAME.AORA                                                
+***********************************************************************         
+DYNAL50  TM    DYNIND,DYNFPAOR     TOR or AORx Suffix                           
+         BZ    DYNAL80             No                                           
+         MVC   0(5,RF),TOR_AOR     Set to ".TOR " or  ".AORx"                   
+         B     DYNAL80                                                          
+         DROP  R7                                                               
+         EJECT                                                                  
+***********************************************************************         
+* Global file allocate - Get DSN from value stored in data space      *         
+***********************************************************************         
+DYNAL60  LR    R7,R5               Set to leave A(DTF) in P3                    
+         OI    DYNFLAG,X'02'       Set doing a global allocate                  
+         XC    DUB,DUB             Enquire on system in data space              
+         OI    DUB,X'20'                                                        
+         MVC   DUB+3(1),DTFSNUM                                                 
+         ICM   RF,15,=V(LOCKSPC)                                                
+         BZ    DYNALXNO                                                         
+         GOTO1 (RF),DUB                                                         
+         ICM   R0,15,SSBALET-SSBD(R6)                                           
+         BZ    DYNALXNO            Exit if ALET not set in SSB                  
+         ST    R0,ALET                                                          
+*                                                                               
+DYNAL61  SR    R2,R2               R2=A(Copy of resource header)                
+         ICM   R2,7,DUB+5                                                       
+         USING DMSPACED,R2                                                      
+         ICM   R2,7,DSPTFRST+1     R2=Disp to systems header                    
+         USING DMSYSHDR,R2                                                      
+         SAC   512                                                              
+         LAM   AR2,AR2,ALET                                                     
+*                                                                               
+DYNAL62  SR    R1,R1               R1=Number of files                           
+         ICM   R1,3,DSYFILES                                                    
+         BZ    DYNAL70                                                          
+         LA    R2,DSYDATA          R2=Disp to system file list                  
+         USING DSFILHDR,R2                                                      
+*                                                                               
+DYNAL63  CLC   DTFXNUM,DSFILNUM    Match on external file num                   
+         BE    DYNAL64                                                          
+         LA    R2,32(,R2)                                                       
+         BCT   R1,DYNAL63                                                       
+         B     DYNAL70                                                          
+*                                                                               
+DYNAL64  TM    DSFILFLG,X'80'      Test if flash copy available                 
+         BZ    DYNAL65                                                          
+         OI    FLAG,X'01'          Set flag to use flash copy of file           
+*                                                                               
+DYNAL65  SR    R1,R1               Index into DSN in data space                 
+         ICM   R1,3,DSDSNX                                                      
+         BZ    DYNAL70                                                          
+         BCTR  R1,0                                                             
+         SLL   R1,5                                                             
+         SR    R2,R2                                                            
+         L     R2,DHADSN-DMDHDR(,R2)                                            
+         AR    R2,R1                                                            
+         MVC   NEWDSN(L'DYNDSN),0(R2)                                           
+         SAC   0                                                                
+*                                                                               
+DYNAL66  CLI   ONLINE,C'Y'         Test if want offline flash copy              
+         BE    DYNAL80                                                          
+         CLI   DSPACE,C'A'         If DSPACE not set assume production          
+         BNH   DYNAL67                                                          
+         CLI   DSPACE,C'P'                                                      
+         BE    DYNAL67                                                          
+*&&US*&& CLI   DSPACE,C'R'                                                      
+*&&US*&& BE    DYNAL67                                                          
+         B     DYNAL80                                                          
+*                                                                               
+DYNAL67  TM    DTFFLAG,DTFFLSH     Test if flash active in DTF                  
+         BZ    DYNAL80                                                          
+         TM    FLASHFLG,SSO2FLSH   Test if flash active in SSB                  
+         BZ    DYNAL80                                                          
+         TM    FLAG,X'01'          Test if flash copy available                 
+*&&US*&& BZ    DYNAL80                                                          
+*&&DO*&& BZ    FLASHERR                                                         
+*&&UK*&& OI    FLAG,X'01'          flash copy always available                  
+         OI    DYNFLAG,X'01'       Set doing a flash copy allocate              
+         MVC   NEWDSN(L'DYNHLQ),=C'FLS'                                         
+         MVC   NEWDSN+L'DYNHLQ-1(1),FLASHIDC                                    
+         B     DYNAL80                                                          
+*                                                                               
+DYNAL70  SAC   0                   Cant find file in data space                 
+         B     DYNALXNO                                                         
+         EJECT                                                                  
+***********************************************************************         
+* Set over-ride prefix if passed and find the length of the DSN       *         
+* Return values in param list                                         *         
+***********************************************************************         
+DYNAL80  LTR   R3,R3               Test if over-ride prefix wanted              
+         BZ    DYNAL82                                                          
+         SR    RF,RF                                                            
+         ICM   RF,1,P1             Prefix len must be 1 thru 8 chrs             
+         BNZ   *+6                                                              
+         DC    H'0'                                                             
+         CHI   RF,8                                                             
+         BNH   *+6                                                              
+         DC    H'0'                                                             
+         BCTR  RF,0                                                             
+         MVC   WORK,NEWDSN                                                      
+         MVC   NEWDSN(0),0(R3)     Move in prefix text                          
+         EX    RF,*-6                                                           
+         LA    RE,NEWDSN+1(RF)     Point to end                                 
+         MVI   0(RE),C'.'                                                       
+         MVC   1(L'NEWDSN,RE),WORK                                              
+*                                                                               
+DYNAL82  LA    RF,NEWDSN           Find the end of the DSN                      
+         LA    R0,L'NEWDSN                                                      
+DYNAL83  CLI   0(RF),C' '                                                       
+         BNH   DYNAL90                                                          
+         LA    RF,1(RF)                                                         
+         BCT   R0,DYNAL83                                                       
+*                                                                               
+DYNAL90  DS    0H                                                               
+*                                                                               
+         TM    SVDYNIND,DYNFPHLQ+DYNFPAOR                                       
+         BO    DYNAL98             Don't check these                            
+         CLC   =C'TST.',NEWDSN                                                  
+         BNE   DYNAL91                                                          
+         CLI   DSPACE,C'T'                                                      
+         BNE   DYNAL96                                                          
+*                                                                               
+DYNAL91  CLC   =C'CSC.',NEWDSN                                                  
+         BNE   DYNAL92                                                          
+         CLI   DSPACE,C'C'                                                      
+         BNE   DYNAL96                                                          
+*                                                                               
+DYNAL92  CLC   =C'FQA.',NEWDSN                                                  
+         BNE   DYNAL98                                                          
+         CLI   DSPACE,C'Q'                                                      
+         BE    DYNAL98                                                          
+*                                                                               
+DYNAL96  OI    DYNFLAG,X'04'       Cross system, potentially make r/o           
+*                                                                               
+DYNAL98  L     R1,APARMS           Return values in parameter list              
+         LA    RE,NEWDSN                                                        
+         SR    RF,RE                                                            
+         ST    RE,0(R1)            Return A(DSN)                                
+         STC   RF,0(R1)            Set length of DSN                            
+         ST    R7,8(R1)            Return A(table entry) or A(DTF)              
+         MVC   8(1,R1),DYNFLAG     Set dynamic allocation flags                 
+*                                                                               
+DYNALXIT SR    RE,RE               Exit with CC=zero if good allocate           
+DYNALXNO LTR   RE,RE                                                            
+         XIT1                                                                   
+         LTORG                                                                  
+         EJECT                                                                  
+***********************************************************************         
+* Handle flash file not active but requested - oper msg + U993 abend  *         
+* Could come from FLASHY s/rtn or above open code.                    *         
+***********************************************************************         
+*&&DO                                                                           
+FLASHERR SAC   0                                                                
+         XC    WORK,WORK                                                        
+         MVC   WORK(2),=AL2(22+8)                                               
+         MVC   WORK+2(22),=C'DMFLASH NOT SET FOR '                              
+         MVC   WORK+22(8),0(R4)    DD Name                                      
+         LA    R8,WORK                                                          
+         WTO   TEXT=(R8)                                                        
+         ABEND 993                 Flash copy must be available                 
+         LTORG                                                                  
+*&&                                                                             
+         EJECT                                                                  
+***********************************************************************         
+* Subroutine to see is a file is eligible for flash copy              *         
+* Only valid offline for production system files                      *         
+***********************************************************************         
+FLASHY   NTR1                                                                   
+         LTR   R5,R5               R5=A(DTF) if passed in param list            
+         BZ    FLASHX                                                           
+         ICM   R6,15,ASSB          R6=A(SSB) must be well defined               
+         BZ    FLASHX                                                           
+*                                                                               
+FLASH1   TM    DTFFLAG,DTFFLSH     Exit if flash not active in DTF              
+         BZ    FLASHX                                                           
+         CLI   DTFSNUM,0           File must have SENUM in DTF                  
+         BE    FLASHX                                                           
+         TM    FLASHFLG,SSO2FLSH   Exit if flash not active in SSB              
+         BZ    FLASHX                                                           
+*                                                                               
+FLASH2   XC    DUB,DUB             Enquire on system in data space              
+         OI    DUB,X'20'                                                        
+         MVC   DUB+3(1),DTFSNUM                                                 
+         ICM   RF,15,=V(LOCKSPC)                                                
+         BZ    FLASHX                                                           
+         GOTO1 (RF),DUB                                                         
+         ICM   R0,15,SSBALET-SSBD(R6)                                           
+         BZ    FLASHX              Exit if ALET not set in SSB                  
+         ST    R0,ALET                                                          
+*                                                                               
+FLASH3   SR    R2,R2               R2=A(Copy of resource header)                
+         ICM   R2,7,DUB+5                                                       
+         USING DMSPACED,R2                                                      
+         ICM   R2,7,DSPTFRST+1     R2=Disp to systems header                    
+         USING DMSYSHDR,R2                                                      
+         SAC   512                                                              
+         LAM   AR2,AR2,ALET                                                     
+*                                                                               
+FLASH4   SR    R1,R1               R1=Number of files                           
+         ICM   R1,3,DSYFILES                                                    
+         BZ    FLASH7                                                           
+         LA    R2,DSYDATA          R2=Disp to system file list                  
+         USING DSFILHDR,R2                                                      
+*                                                                               
+FLASH5   CLC   DTFXNUM,DSFILNUM    Match on external file num                   
+         BE    FLASH6                                                           
+         LA    R2,32(,R2)                                                       
+         BCT   R1,FLASH5                                                        
+         B     FLASH7                                                           
+*                                                                               
+FLASH6   TM    DSFILFLG,X'80'      Test if flash copy available                 
+*&&US*&& BZ    FLASH7                                                           
+*&&DO*&& BZ    FLASHERR                                                         
+         OI    FLAG,X'01'          Set flag to use flash copy of file           
+*                                                                               
+FLASH7   SAC   0                                                                
+*                                                                               
+FLASHX   XIT1                                                                   
+         DROP  R2,R5                                                            
+*                                                                               
+         LTORG                                                                  
+         EJECT                                                                  
+***********************************************************************         
+* Table of files that can be dynamically allocated                    *         
+* If there is an overide by facpak id the override must appear first  *         
+* XL1    Length of DTF file id compare                                *         
+* XL1    Facpak Id number if special override for that facpak         *         
+* XL1    Indicators 80=Use DSPACE Id                   DYNDSHLQ       *         
+*                   40=match on DSPACE                 DYNDSPDS       *         
+*                   20=CSC special                     DYNDSCSC       *         
+*                   08=HLQ based on FACPAKID           DYNFPHLQ       *         
+*                   04=Set .TOR or .AORx suffix        DYNFPAOR                 
+*                   02=FQA to TST HLQ                  DYNDSQ2T       *         
+*                   01=Set HLQ to REP. when DSPACE=R   DYNDSREP       *         
+* XL1    DSPACE value to match on                                     *         
+* CL8    DDNAME Replace = by corresponding DTF file id chr(s)         *         
+* CL20   DSN    Replace = by corresponding DTF file id chr(s)         *         
+***********************************************************************         
+DYNTABD  DS    0D                                                               
+         DC    X'06008000',C'DDSQDC  ',CL20'FAC.DDSQDC'                         
+         DC    X'06008100',C'DDSQDQ  ',CL20'FAC.DDSQDQ'                         
+         DC    X'05008100',C'PRTQ1=  ',CL20'FAC.PRTQ1='                         
+         DC    X'05008100',C'PRTQ2=  ',CL20'FAC.PRTQ2='                         
+         DC    X'05008100',C'PRTQ3=  ',CL20'FAC.PRTQ3='                         
+         DC    X'05008100',C'PRTQ4=  ',CL20'FAC.PRTQ4='                         
+         DC    X'05008100',C'PRTQ5=  ',CL20'FAC.PRTQ5='                         
+         DC    X'05008100',C'PRTQ6=  ',CL20'FAC.PRTQ6='                         
+         DC    X'05008100',C'PRTQ7=  ',CL20'FAC.PRTQ7='                         
+         DC    X'05008100',C'PRTQ8=  ',CL20'FAC.PRTQ8='                         
+         DC    X'05008100',C'PRTQ9=  ',CL20'FAC.PRTQ9='                         
+         DC    X'05008100',C'PRTQA=  ',CL20'FAC.PRTQA='                         
+         DC    X'05008100',C'PRTQB=  ',CL20'FAC.PRTQB='                         
+         DC    X'05008100',C'PRTQC=  ',CL20'FAC.PRTQC='                         
+         DC    X'05008100',C'PRTQD=  ',CL20'FAC.PRTQD='                         
+         DC    X'05008100',C'PRTQE=  ',CL20'FAC.PRTQE='                         
+         DC    X'05008100',C'PRTQF=  ',CL20'FAC.PRTQF='                         
+         DC    X'05008100',C'PRTQG=  ',CL20'FAC.PRTQG='                         
+         DC    X'05008000',C'WRKF1=  ',CL20'FAC.WRKF1='                         
+         DC    X'05008000',C'WRKF2=  ',CL20'FAC.WRKF2='                         
+         DC    X'05008000',C'WRKF3=  ',CL20'FAC.WRKF3='                         
+         DC    X'05008000',C'WRKF4=  ',CL20'FAC.WRKF4='                         
+         DC    X'05008000',C'WRKF5=  ',CL20'FAC.WRKF5='                         
+         DC    X'05008000',C'WRKF6=  ',CL20'FAC.WRKF6='                         
+         DC    X'05008000',C'WRKF7=  ',CL20'FAC.WRKF7='                         
+         DC    X'05008000',C'WRKF8=  ',CL20'FAC.WRKF8='                         
+         DC    X'05008000',C'WRKF9=  ',CL20'FAC.WRKF9='                         
+         DC    X'05008000',C'WRKFA=  ',CL20'FAC.WRKFA='                         
+         DC    X'05008000',C'WRKFB=  ',CL20'FAC.WRKFB='                         
+         DC    X'05008000',C'WRKFC=  ',CL20'FAC.WRKFC='                         
+         DC    X'05008000',C'WRKFD=  ',CL20'FAC.WRKFD='                         
+         DC    X'05008000',C'WRKFE=  ',CL20'FAC.WRKFE='                         
+         DC    X'05008000',C'WRKFF=  ',CL20'FAC.WRKFF='                         
+         DC    X'05008000',C'WRKFG=  ',CL20'FAC.WRKFG='                         
+*&&US                                                                           
+         DC    X'05008000',C'WRKZ1=  ',CL20'FAC.WRKZ1='                         
+         DC    X'05008000',C'WRKZ2=  ',CL20'FAC.WRKZ2='                         
+         DC    X'05008000',C'WRKZ3=  ',CL20'FAC.WRKZ3='                         
+         DC    X'05008000',C'WRKZ4=  ',CL20'FAC.WRKZ4='                         
+         DC    X'05008000',C'WRKZ5=  ',CL20'FAC.WRKZ5='                         
+         DC    X'05008000',C'WRKZ6=  ',CL20'FAC.WRKZ6='                         
+         DC    X'05008000',C'WRKZ7=  ',CL20'FAC.WRKZ7='                         
+         DC    X'05008000',C'WRKZ8=  ',CL20'FAC.WRKZ8='                         
+         DC    X'05008000',C'WRKZ9=  ',CL20'FAC.WRKZ9='                         
+         DC    X'05008000',C'WRKZA=  ',CL20'FAC.WRKZA='                         
+         DC    X'05008000',C'WRKZB=  ',CL20'FAC.WRKZB='                         
+         DC    X'05008000',C'WRKZC=  ',CL20'FAC.WRKZC='                         
+         DC    X'05008000',C'WRKZD=  ',CL20'FAC.WRKZD='                         
+         DC    X'05008000',C'WRKZE=  ',CL20'FAC.WRKZE='                         
+         DC    X'05008000',C'WRKZF=  ',CL20'FAC.WRKZF='                         
+*&&                                                                             
+         DC    X'06008000',C'WKFILE= ',CL20'FAC.WKFILE='                        
+         DC    X'06008010',C'FACWRK= ',CL20'FAC.FACWRK='                        
+         DC    X'05008000',C'PRGMS=  ',CL20'FAC.PRGMS='                         
+         DC    X'06000010',C'DMPFIL= ',CL20'FAC.DMPFIL='                        
+         DC    X'05008000',C'EDCTZ   ',CL20'FAC.EDICTZ'                         
+*                                                                               
+*&&UK*&& DC    X'05000000',C'EDCTA=  ',CL20'FAC.EDCTA='                         
+*&&UK*&& DC    X'05000000',C'EDCTR=  ',CL20'FAC.EDCTR='                         
+*&&UK*&& DC    X'06000000',C'TEMPST= ',CL20'FAC.TEMPST='                        
+*&&UK*&& DC    X'06000000',C'TEMPES= ',CL20'FAC.TEMPES='                        
+*&&UK*&& DC    X'06000000',C'ADRFIL= ',CL20'FAC.ADRFIL='                        
+*&&UK*&& DC    X'06000000',C'TSTRCV= ',CL20'FAC.TSTRCV='                        
+*&&UK*&& DC    X'06000000',C'KWXFIL= ',CL20'FAC.KWXFIL='                        
+*&&UK*&& DC    X'05000000',C'STATS=  ',CL20'FAC.STATS='                         
+*                                                                               
+*&&US*&& DC    X'050040',C'T',C'EDCTA   ',CL20'TST.EDICTA'                      
+*&&US*&& DC    X'050040',C'T',C'EDCTR   ',CL20'TST.EDICTR'                      
+*&&US*&& DC    X'050040',C'Q',C'EDCTA   ',CL20'FQA.EDICTA'                      
+*&&US*&& DC    X'050040',C'Q',C'EDCTR   ',CL20'FQA.EDICTR'                      
+*&&US*&& DC    X'050040',C'C',C'EDCTA   ',CL20'CSC.EDICTA'                      
+*&&US*&& DC    X'050040',C'C',C'EDCTR   ',CL20'CSC.EDICTR'                      
+*                                                                               
+*&&US*&& DC    X'05000000',C'EDCTA   ',CL20'FAC.EDICT2'                         
+*&&US*&& DC    X'05000000',C'EDCTR   ',CL20'FAC.EDICT4'                         
+*&&US*&& DC    X'06008000',C'EASIWK= ',CL20'FAC.EASIWK='                        
+*&&US*&& DC    X'07000800',C'TEMPSTR=',CL20'FAC.TEMPSTR='                       
+*&&US*&& DC    X'07000800',C'TEMPEST=',CL20'FAC.TEMPEST='                       
+*&&US*&& DC    X'07000C00',C'ADRFILE=',CL20'FAC.ADRFILE='                       
+*&&US*&& DC    X'07008000',C'KWXFILE=',CL20'FAC.KWXFILE='                       
+*&&US*&& DC    X'07000800',C'TSTRCVR=',CL20'FAC.TSTRCVR='                       
+*&&US*&& DC    X'05000800',C'STATS=  ',CL20'FAC.STATS='                         
+*&&UK                                                                           
+         DC    X'06000000',C'MPLDIR= ',CL20'MPL.MPLDIR='                        
+         DC    X'06000000',C'MPLFIL= ',CL20'MPL.MPLFIL='                        
+         DC    X'06000000',C'MPLREQ= ',CL20'MPL.MPLREQ='                        
+         DC    X'06000000',C'MPLRCV= ',CL20'MPL.MPLRCV='                        
+         DC    X'06000000',C'MPRDRB= ',CL20'MPL.MPRDRB='                        
+         DC    X'06000000',C'MPRFLB= ',CL20'MPL.MPRFLB='                        
+         DC    X'06630000',C'MPCDRC= ',CL20'MPL.MPCDRC2'                        
+         DC    X'06640000',C'MPCDRC= ',CL20'MPL.MPCDRC3'                        
+*NOP*    DC    X'06650000',C'MPCDRC= ',CL20'MPL.MPCDRC4'                        
+         DC    X'06000000',C'MPCDRC= ',CL20'MPL.MPCDRC='                        
+         DC    X'06630000',C'MPCFLC= ',CL20'MPL.MPCFLC2'                        
+         DC    X'06640000',C'MPCFLC= ',CL20'MPL.MPCFLC3'                        
+*NOP*    DC    X'06650000',C'MPCFLC= ',CL20'MPL.MPCFLC4'                        
+         DC    X'06000000',C'MPCFLC= ',CL20'MPL.MPCFLC='                        
+*                                                                               
+         DC    X'06630000',C'MPCDRS= ',CL20'MPL.MPCDRS2'                        
+         DC    X'06640000',C'MPCDRS= ',CL20'MPL.MPCDRS3'                        
+*NOP*    DC    X'06650000',C'MPCDRS= ',CL20'MPL.MPCDRS4'                        
+         DC    X'06000000',C'MPCDRS= ',CL20'MPL.MPCDRS='                        
+         DC    X'06630000',C'MPCFLS= ',CL20'MPL.MPCFLS2'                        
+         DC    X'06640000',C'MPCFLS= ',CL20'MPL.MPCFLS3'                        
+*NOP*    DC    X'06650000',C'MPCFLS= ',CL20'MPL.MPCFLS4'                        
+         DC    X'06000000',C'MPCFLS= ',CL20'MPL.MPCFLS='                        
+*&&                                                                             
+*&&US*&& DC    X'06000000',C'BUDDIR= ',CL20'BUD.BUDDIR='                        
+*&&US*&& DC    X'06000000',C'BUDFIL= ',CL20'BUD.BUDFIL='                        
+***********************                                                         
+*      CONTROL        *                                                         
+***********************                                                         
+*&&UK                                                                           
+         DC    X'06000000',C'CTFILE= ',CL20'CON.CTFILE='                        
+         DC    X'06000000',C'CTRCVR= ',CL20'CON.CTRCVR='                        
+         DC    X'05000000',C'CTREQ=  ',CL20'CON.CTREQ='                         
+         DC    X'06000000',C'GENDIR= ',CL20'CON.GENDIR='                        
+         DC    X'06000000',C'GENFIL= ',CL20'CON.GENFIL='                        
+*&&                                                                             
+*&&US                                                                           
+         DC    X'06008000',C'CTFILE= ',CL20'CON.CTFILE='                        
+         DC    X'06008000',C'CTRCVR= ',CL20'CON.CTRCVR='                        
+         DC    X'05008000',C'CTREQ=  ',CL20'CON.CTREQ='                         
+         DC    X'06008000',C'GENDIR= ',CL20'CON.GENDIR='                        
+         DC    X'06008000',C'GENFIL= ',CL20'CON.GENFIL='                        
+***********************                                                         
+*       ACCOUNT       *                                                         
+***********************                                                         
+         DC    X'06008000',C'ACCFIL= ',CL20'ACC.ACCFIL='                        
+         DC    X'06008000',C'ACCREQ= ',CL20'ACC.ACCREQ='                        
+         DC    X'06008000',C'ACCRCV= ',CL20'ACC.ACCRCV='                        
+         DC    X'06008000',C'ACCDAY= ',CL20'ACC.ACCDAY='                        
+         DC    X'06008000',C'ACCWRK= ',CL20'ACC.ACCWRK='                        
+         DC    X'06008000',C'ACCDIR= ',CL20'ACC.ACCDIR='                        
+         DC    X'06008000',C'ACCMST= ',CL20'ACC.ACCMST='                        
+         DC    X'06008000',C'ACCARC= ',CL20'ACC.ACCARC='                        
+         DC    X'06008000',C'ACCHST= ',CL20'ACC.ACCHST='                        
+*&&UK                                                                           
+***********************                                                         
+*        MBA          *                                                         
+***********************                                                         
+         DC    X'06000000',C'MBADIR= ',CL20'MBA.MBADIR='                        
+         DC    X'06000000',C'MBAFIL= ',CL20'MBA.MBAFIL='                        
+         DC    X'06000000',C'MBAREQ= ',CL20'MBA.MBAREQ='                        
+         DC    X'06000000',C'MBARCV= ',CL20'MBA.MBARCV='                        
+         DC    X'06000000',C'MBANDX= ',CL20'MBA.MBANDX='                        
+         DC    X'06000000',C'MBUDIR= ',CL20'MBA.MBUDIR='                        
+         DC    X'06000000',C'MBUFIL= ',CL20'MBA.MBUFIL='                        
+*&&                                                                             
+         DC    X'06008000',C'PERDIR= ',CL20'PER.PERDIR='                        
+         DC    X'06008000',C'PERFIL= ',CL20'PER.PERFIL='                        
+         DC    X'06008000',C'PERREQ= ',CL20'PER.PERREQ='                        
+         DC    X'06008000',C'PERRCV= ',CL20'PER.PERRCV='                        
+         DC    X'06008000',C'PERWRK= ',CL20'PER.PERWRK='                        
+*&&US                                                                           
+***********************                                                         
+*      SPOT0 CSC      *                                                         
+***********************                                                         
+         DC    X'070040',C'C',C'SPTDIR0 ',CL20'TST.SPTDIR0'                     
+         DC    X'070040',C'C',C'XSPDIR0 ',CL20'TST.XSPDIR0'                     
+         DC    X'070040',C'C',C'STAFIL0 ',CL20'TST.STAFIL0'                     
+         DC    X'070040',C'C',C'XSPFIL0 ',CL20'TST.XSPFIL0'                     
+         DC    X'070040',C'C',C'SPTFIL0 ',CL20'TST.SPTFIL0'                     
+         DC    X'050040',C'C',C'RECV0   ',CL20'TST.RECV0'                       
+         DC    X'040040',C'C',C'REQ0    ',CL20'TST.REQ0'                        
+         DC    X'070040',C'C',C'STRFDR0 ',CL20'TST.TRFDIR0'                     
+         DC    X'070040',C'C',C'STRFFL0 ',CL20'TST.TRFFIL0'                     
+***********************                                                         
+*       NET           *                                                         
+***********************                                                         
+         DC    X'06008000',C'UNTDIR= ',CL20'NET.UNTDIR='                        
+         DC    X'06008000',C'UNTFIL= ',CL20'NET.UNTFIL='                        
+***********************                                                         
+*       SPOT          *                                                         
+***********************                                                         
+         DC    X'06008000',C'SPTDIR= ',CL20'SPT.SPTDIR='                        
+         DC    X'06008000',C'XSPDIR= ',CL20'SPT.XSPDIR='                        
+         DC    X'06008000',C'STAFIL= ',CL20'SPT.STAFIL='                        
+         DC    X'06008000',C'SPTFIL= ',CL20'SPT.SPTFIL='                        
+         DC    X'06008000',C'XSPFIL= ',CL20'SPT.XSPFIL='                        
+         DC    X'04008000',C'RECV=   ',CL20'SPT.RECV='                          
+         DC    X'03008000',C'REQ=    ',CL20'SPT.REQ='                           
+         DC    X'06008000',C'STRFDR= ',CL20'SPT.TRFDIR='                        
+         DC    X'06008000',C'STRFFL= ',CL20'SPT.TRFFIL='                        
+***********************                                                         
+*       STR0 CSC      *                                                         
+***********************                                                         
+         DC    X'070040',C'C',C'TRFDIR0 ',CL20'TST.TRFDIR0'                     
+         DC    X'070040',C'C',C'TRFFIL0 ',CL20'TST.TRFFIL0'                     
+         DC    X'070040',C'C',C'TRFRCV0 ',CL20'TST.TRFRCV0'                     
+         DC    X'070040',C'C',C'TRFREQ0 ',CL20'TST.TRFREQ0'                     
+***********************                                                         
+*       TRAFFIC       *                                                         
+***********************                                                         
+         DC    X'06008000',C'TRFDIR= ',CL20'SPT.TRFDIR='                        
+         DC    X'06008000',C'TRFFIL= ',CL20'SPT.TRFFIL='                        
+         DC    X'06008000',C'TRFRCV= ',CL20'SPT.TRFRCV='                        
+         DC    X'06008000',C'TRFREQ= ',CL20'SPT.TRFREQ='                        
+***********************                                                         
+*       TAL           *                                                         
+***********************                                                         
+         DC    X'06008000',C'TALDIR= ',CL20'TAL.TALDIR='                        
+         DC    X'06008000',C'TALFIL= ',CL20'TAL.TALFIL='                        
+         DC    X'06008000',C'CHKDIR= ',CL20'TAL.CHKDIR='                        
+         DC    X'06008000',C'CHKFIL= ',CL20'TAL.CHKFIL='                        
+         DC    X'06008000',C'TALREQ= ',CL20'TAL.TALREQ='                        
+         DC    X'06008000',C'TALRCV= ',CL20'TAL.TALRCV='                        
+***********************                                                         
+*       REPK CSC      *                                                         
+***********************                                                         
+         DC    X'070040',C'C',C'REPDIRK ',CL20'TST.REPDIRK'                     
+         DC    X'070040',C'C',C'REPFILK ',CL20'TST.REPFILK'                     
+         DC    X'070040',C'C',C'REPRCVK ',CL20'TST.REPRCVK'                     
+         DC    X'070040',C'C',C'REPWRKK ',CL20'TST.REPWRKK'                     
+         DC    X'050040',C'C',C'RREQK   ',CL20'TST.RREQK'                       
+         DC    X'070040',C'C',C'ROIDIRK ',CL20'TST.ROIDIRK'                     
+         DC    X'070040',C'C',C'ROIFILK ',CL20'TST.ROIFILK'                     
+         DC    X'070040',C'C',C'RRGNEWK ',CL20'TST.RRGONK'                      
+         DC    X'070040',C'C',C'REVIEWK ',CL20'TST.REVIEWK'                     
+***********************                                                         
+*        REP          *                                                         
+***********************                                                         
+         DC    X'06008000',C'REPDIR= ',CL20'REP.REPDIR='                        
+         DC    X'06008000',C'REPFIL= ',CL20'REP.REPFIL='                        
+         DC    X'06008000',C'REPRCV= ',CL20'REP.REPRCV='                        
+         DC    X'06008000',C'REPWRK= ',CL20'REP.REPWRK='                        
+         DC    X'04008000',C'RREQ=   ',CL20'REP.RREQ='                          
+         DC    X'06008000',C'ROIDIR= ',CL20'REP.ROIDIR='                        
+         DC    X'06008000',C'ROIFIL= ',CL20'REP.ROIFIL='                        
+         DC    X'06008000',C'RRGNEW= ',CL20'REP.RRGON='                         
+         DC    X'06008000',C'REVIEW= ',CL20'REP.REVIEW='                        
+***********************                                                         
+*      PRINT          *                                                         
+***********************                                                         
+         DC    X'06008000',C'PRTDIR= ',CL20'PRT.PRTDIR='                        
+         DC    X'06008000',C'PUBDIR= ',CL20'PRT.PUBDIR='                        
+         DC    X'06008000',C'PRTFIL= ',CL20'PRT.PRTFIL='                        
+         DC    X'06008000',C'PUBFIL= ',CL20'PRT.PUBFIL='                        
+         DC    X'05008000',C'PRECV=  ',CL20'PRT.PRECV='                         
+         DC    X'04008000',C'PREQ=   ',CL20'PRT.PREQ='                          
+*&&                                                                             
+*&&UK                                                                           
+***********************                                                         
+*        CPP          *                                                         
+***********************                                                         
+         DC    X'06000000',C'CPFILE= ',CL20'CPP.CPFILE='                        
+         DC    X'06000000',C'CPRCVR= ',CL20'CPP.CPRCVR='                        
+         DC    X'05000000',C'CPREQ=  ',CL20'CPP.CPREQ='                         
+*&&                                                                             
+*&&US                                                                           
+***********************                                                         
+*    DEMO DANDX       *                                                         
+***********************                                                         
+         DC    X'070040',C'T',C'DEMDIRN ',CL20'TST.DEMDIRM'                     
+         DC    X'070040',C'T',C'DEMDIRR ',CL20'TST.DEMDIRR'                     
+         DC    X'070040',C'T',C'DEMDIRA ',CL20'TST.DEMDIRA'                     
+         DC    X'060040',C'T',C'PAVDIR  ',CL20'TST.PURDIR '                     
+         DC    X'060040',C'T',C'NTIDIR  ',CL20'TST.NTIDIRM'                     
+*                                                                               
+         DC    X'060040',C'T',C'DEMFLT= ',CL20'TST.DEMFLT='                     
+         DC    X'060040',C'T',C'PAVFLT= ',CL20'TST.PURFLT='                     
+         DC    X'060040',C'T',C'NTIFLT= ',CL20'TST.NTIFLT='                     
+*                                                                               
+         DC    X'070040',C'Q',C'DEMDIRN ',CL20'TST.DEMDIRM'                     
+         DC    X'070040',C'Q',C'DEMDIRR ',CL20'TST.DEMDIRR'                     
+         DC    X'070040',C'Q',C'DEMDIRA ',CL20'TST.DEMDIRA'                     
+         DC    X'060040',C'Q',C'PAVDIR  ',CL20'TST.PURDIR '                     
+         DC    X'060040',C'Q',C'NTIDIR  ',CL20'TST.NTIDIRM'                     
+*                                                                               
+         DC    X'060040',C'Q',C'DEMFLT= ',CL20'TST.DEMFLT='                     
+         DC    X'060040',C'Q',C'PAVFLT= ',CL20'TST.PURFLT='                     
+         DC    X'060040',C'Q',C'NTIFLT= ',CL20'TST.NTIFLT='                     
+*                                                                               
+         DC    X'07002000',C'DEMDIRA ',CL20'DEM.DEMDIRA'                        
+         DC    X'07002000',C'DEMDIRN ',CL20'DEM.DEMDIRM'                        
+         DC    X'07002000',C'DEMDIRR ',CL20'DEM.DEMDIRR'                        
+         DC    X'06002000',C'DEMFIL= ',CL20'DEM.DEMFIL='                        
+         DC    X'06002000',C'DEMFLA= ',CL20'DEM.DEMFLA='                        
+         DC    X'06002000',C'DEMFLN= ',CL20'DEM.DEMFLN='                        
+         DC    X'06002000',C'DEMFLR= ',CL20'DEM.DEMFLR='                        
+         DC    X'06002000',C'DEMFLT= ',CL20'DEM.DEMFLT='                        
+*                                                                               
+         DC    X'06002000',C'PAVDIR  ',CL20'DEM.PURDIR '                        
+         DC    X'06002000',C'PAVFIL= ',CL20'DEM.PURFIL='                        
+         DC    X'06002000',C'PAVFLT= ',CL20'DEM.PURFLT='                        
+*                                                                               
+         DC    X'06002000',C'NTIDIR  ',CL20'DEM.NTIDIRM'                        
+         DC    X'06002000',C'NTIFIL= ',CL20'DEM.NTIFIL='                        
+         DC    X'06002000',C'NTIFLT= ',CL20'DEM.NTIFLT='                        
+***********************                                                         
+*      VSAM DEMO      *                                                         
+***********************                                                         
+*        DC    X'060040',C'T',C'DEMVSM= ',CL20'TST.DEMVSM='                     
+*        DC    X'060040',C'T',C'PAVVSM  ',CL20'TST.PAVVSM '                     
+*        DC    X'060040',C'T',C'NTIVSM  ',CL20'TST.NTIVSM '                     
+*                                                                               
+*        DC    X'060040',C'Q',C'DEMVSM= ',CL20'TST.DEMVSM='                     
+*        DC    X'060040',C'Q',C'PAVVSM  ',CL20'TST.PAVVSM '                     
+*        DC    X'060040',C'Q',C'NTIVSM  ',CL20'TST.NTIVSM '                     
+*                                                                               
+*        DC    X'060040',C'C',C'DEMVSM= ',CL20'TST.DEMVSM='                     
+*        DC    X'060040',C'C',C'PAVVSM  ',CL20'TST.PAVVSM '                     
+*        DC    X'060040',C'C',C'NTIVSM  ',CL20'TST.NTIVSM '                     
+*                                                                               
+* Allocate xxxVSMx as DEM.xxxVSMx regardless of DSPACE                          
+*                                                                               
+         DC    X'06002000',C'DEMVSM= ',CL20'DEM.DEMVSM='                        
+         DC    X'06002000',C'PAVVSM  ',CL20'DEM.PAVVSM '                        
+         DC    X'06002000',C'NTIVSM  ',CL20'DEM.NTIVSM '                        
+*                                                                               
+* Allocate xxxVSTx as ddd.xxxVSMx where ddd is TST, CSC or FQA.                 
+* These are for DMVSDEM dynamic merge. Never used in production.                
+*                                                                               
+         DC    X'06008000',C'DEMVST= ',CL20'XXX.DEMVSM='                        
+         DC    X'06008000',C'PAVVST  ',CL20'XXX.PAVVSM '                        
+         DC    X'06008000',C'NTIVST  ',CL20'XXX.NTIVSM '                        
+*&&                                                                             
+*&&UK                                                                           
+         DC    X'06000000',C'MEDDIR= ',CL20'MED.MEDDIR='                        
+         DC    X'06000000',C'MEDFIL= ',CL20'MED.MEDFIL='                        
+         DC    X'06000000',C'MEDREQ= ',CL20'MED.MEDREQ='                        
+         DC    X'06000000',C'MEDRCV= ',CL20'MED.MEDRCV='                        
+         DC    X'06000000',C'MEDWRK= ',CL20'MED.MEDWRK='                        
+         DC    X'06000000',C'DMGDIR= ',CL20'MED.DMGDIR='                        
+         DC    X'06000000',C'DMGFIL= ',CL20'MED.DMGFIL='                        
+         DC    X'06000000',C'DMNDIR= ',CL20'MED.DMNDIR='                        
+         DC    X'06000000',C'DMNNEW= ',CL20'MED.DMNNEW='                        
+         DC    X'06000000',C'DMNOLD= ',CL20'MED.DMNOLD='                        
+         DC    X'06000000',C'DMODIR= ',CL20'MED.DMODIR='                        
+         DC    X'06000000',C'DMO1FL= ',CL20'MED.DMO1FL='                        
+         DC    X'06000000',C'DMO2FL= ',CL20'MED.DMO2FL='                        
+         DC    X'06000000',C'DMO3FL= ',CL20'MED.DMO3FL='                        
+         DC    X'06000000',C'DMO4FL= ',CL20'MED.DMO4FL='                        
+         DC    X'06000000',C'CRADIR= ',CL20'MED.CRADIR='                        
+         DC    X'06000000',C'CRAFIL= ',CL20'MED.CRAFIL='                        
+*                                                                               
+         DC    X'06000000',C'FEEDIR= ',CL20'FEE.FEEDIR='                        
+         DC    X'06000000',C'FEEFIL= ',CL20'FEE.FEEFIL='                        
+         DC    X'06000000',C'FEEREQ= ',CL20'FEE.FEEREQ='                        
+         DC    X'06000000',C'FEERCV= ',CL20'FEE.FEERCV='                        
+*&&                                                                             
+         DC    X'0000'                                                          
+         EJECT                                                                  
+***********************************************************************         
+* FACPAK Table id information                                         *         
+***********************************************************************         
+* This has been used for online only.                                           
+* In fact, we can get the table address from SSB, SSBAFID.                      
+* So, no need to include this any more, 1/11/13, YYUN.                          
+*      ++INCLUDE FACIDTAB        (new table is FACIDTABL)                       
+*        EJECT                                                                  
+***********************************************************************         
+* WORKD - local storage                                               *         
+***********************************************************************         
+WORKD    DSECT                                                                  
+DUB      DS    D                                                                
+FULL     DS    F                                                                
+ASSB     DS    A                   A(online or offline extended SSB)            
+APARMS   DS    A                                                                
+*                                                                               
+PARMS    DS    0XL12               Parameter list                               
+P1       DS    F                                                                
+P2       DS    F                                                                
+P3       DS    F                                                                
+*                                                                               
+ALET     DS    A                   Values saved from SSB                        
+AFACIDTL DS    A                   A(FACIDTAB)                                  
+SYSID    DS    XL1                                                              
+DSPACE   DS    CL1                                                              
+FLASHFLG DS    XL1                                                              
+FLASHIDC DS    CL1                                                              
+*                                                                               
+TOR_AOR  DS    CL5                 Set to either .TOR or .AORx                  
+ONLINE   DS    CL1                 C'Y' =Online                                 
+DYNFLAG  DS    XL1                 X'01'=Flash,X'02'=Global,X'04'=R/O           
+SVDYNIND DS    XL1                 Save indication to test upon exit            
+FLAG     DS    XL1                                                              
+         DS    XL1                                                              
+NEWDSN   DS    CL36                                                             
+WORK     DS    CL36                                                             
+WORKLNQ  EQU   *-WORKD                                                          
+         EJECT                                                                  
+***********************************************************************         
+* Other DSECTS                                                        *         
+***********************************************************************         
+* DMDYNDDD                                                                      
+         PRINT OFF                                                              
+       ++INCLUDE DMDYNDDD                                                       
+         PRINT ON                                                               
+* FASSB                                                                         
+         PRINT OFF                                                              
+       ++INCLUDE FASSB                                                          
+         PRINT ON                                                               
+* FASSBOFF                                                                      
+         ORG   SSBD                                                             
+         PRINT OFF                                                              
+       ++INCLUDE FASSBOFF                                                       
+         PRINT ON                                                               
+* FACIDTABD                                                                     
+         PRINT OFF                                                              
+       ++INCLUDE FACIDTABD                                                      
+         PRINT ON                                                               
+* DMDTFPH                                                                       
+         PRINT OFF                                                              
+       ++INCLUDE DMDTFPH                                                        
+         PRINT ON                                                               
+* DMSPACED                                                                      
+         PRINT OFF                                                              
+       ++INCLUDE DMSPACED                                                       
+         PRINT ON                                                               
+* DMDSHDR                                                                       
+         PRINT OFF                                                              
+       ++INCLUDE DMDSHDR                                                        
+         PRINT ON                                                               
+* DMDSYSHDR                                                                     
+         PRINT OFF                                                              
+       ++INCLUDE DMDSYSHDR                                                      
+         PRINT ON                                                               
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'037DMDYNDD   01/16/20'                                      
+         END                                                                    

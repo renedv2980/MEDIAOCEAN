@@ -1,0 +1,326 @@
+*          DATA SET DMDABUFF   AT LEVEL 001 AS OF 08/09/99                      
+*CATALP DMDABUFFA                                                               
+         TITLE 'DMDABUFF - OFFLINE BLOCKED D/A FILE READ BUFFERING'             
+DMDABUFF CSECT                                                                  
+         PRINT NOGEN                                                            
+         NMOD1 WORKL,DMDABUFF                                                   
+         USING WORKD,RC            RC=A(W/S)                                    
+         ST    R1,APARM            SAVE A(CALLERS PLIST)                        
+         MVC   PARMS,0(R1)                                                      
+         L     R2,PDMCB                                                         
+         LA    R2,0(R2)                                                         
+         USING DMCBD,R2            RA=A(DMOD000/DADDS PARM LIST)                
+*                                                                               
+         CLI   PACTN,PACTINIT      TEST INITIALIZATION CALL                     
+         BE    INIT                                                             
+         CLI   PACTN,PACTREAD      TEST READ CALL                               
+         BE    READ                                                             
+         DC    H'0',C'INVALID ACTION'                                           
+         EJECT                                                                  
+***********************************************************************         
+* ACQUIRE AND INITALISE BUFFER SPACE                                  *         
+***********************************************************************         
+         SPACE 1                                                                
+INIT     BRAS  RE,ON31             GET INTO XA                                  
+*                                                                               
+         XR    RF,RF                                                            
+         ICM   RF,1,PMINI          MINIMUM N'BUFFERS REQUIRED                   
+         BNZ   *+8                                                              
+         LHI   RF,MINIBUFF         DEFAULT MINIMUM ENTRIES=10                   
+         STH   RF,BUFFMIN                                                       
+*                                                                               
+         ICM   RF,7,PMAXI          MAXIMUM N'BUFFERS REQUIRED                   
+         BNZ   *+8                                                              
+         LH    RF,BUFFMIN          DEFAULT MAXIMUM ENTRIES=MINUMUM              
+         STH   RF,BUFFMAX                                                       
+         STH   RF,BUFFNOW          SET ASKING FOR MAXIMUM                       
+*                                                                               
+         XR    R1,R1                                                            
+         XR    RE,RE                                                            
+         ICM   RE,7,DADTF                                                       
+         ICM   R1,3,DBLKSZ-DTFPHD(RE)                                           
+         STH   R1,BUFFBLKS         GET BLOCK SIZE FROM DTF                      
+         BNZ   *+6                                                              
+         DC    H'0'                                                             
+         NI    BUFFBLKS,X'7F'      BLOCK SIZE IN DTF MAY HAVE THIS SET          
+*                                                                               
+INIT02   LH    R0,BUFFNOW          CALCULATE TABLE LENGTH                       
+         AHI   R0,1                                                             
+         MHI   R0,NBUFFDL          R0=TABLE LENGTH                              
+         AHI   R0,NHDRDL                                                        
+         AHI   R0,L'EYECATCH                                                    
+         LH    R3,BUFFNOW                                                       
+         AHI   R3,1                                                             
+         MH    R3,BUFFBLKS         R3=TOTAL LENGTH OF BLOCKS                    
+         AR    R3,R0                                                            
+         AHI   R3,4095                                                          
+         SRL   R3,12                                                            
+         SLL   R3,12               ROUND TO NEAREST (HIGH) 4K                   
+*                                                                               
+         GETMAIN RC,LV=(3),LOC=(ANY,ANY),BNDRY=PAGE                             
+         LTR   RF,RF               TEST STORAGE AVAILABLE                       
+         BZ    INIT04                                                           
+*                                                                               
+         LH    RF,BUFFNOW          DIDN'T WORK - DECREMENT BUFFER COUNT         
+         AHI   RF,-1                                                            
+         CH    RF,BUFFMIN                                                       
+         STH   RF,BUFFMIN                                                       
+         BNL   INIT02                                                           
+         XC    PBUFF,PBUFF         YES - CLEAR BUFFER ADDRESS                   
+         B     INITX                                                            
+*                                                                               
+INIT04   MVC   0(L'EYECATCH,R1),EYECATCH                                        
+         AHI   R1,L'EYECATCH                                                    
+         AHI   R0,-L'EYECATCH                                                   
+         ST    R1,PBUFF            SET BUFFER ADDRESS IN PLIST                  
+         LR    RE,R1                                                            
+         LR    RF,R0               R0=LENGTH OF BUFFER (FROM GETMAIN)           
+         XR    R1,R1                                                            
+         MVCL  RE,R0               CLEAR BUFFER                                 
+*                                                                               
+         L     R3,PBUFF            SET BUFFER HEADER DETAILS                    
+         USING NHDRD,R3                                                         
+         MVC   NHNTRYS,BUFFNOW     SET NUMBER OF BUFFERS                        
+         MVC   NHBLKSZ,BUFFBLKS    SET BLOCK SIZE                               
+         LA    RF,NHDRDL(R3)                                                    
+         STCM  RF,15,NHLIST        SET A(LIST OF BLOCKS)                        
+         LH    R0,NHNTRYS                                                       
+         MHI   R0,NBUFFDL                                                       
+         AR    R0,RF                                                            
+         BCTR  R0,0                                                             
+         STCM  R0,15,NHLISTX       SET A(LAST IN LIST-1)                        
+         AHI   R0,1                                                             
+         STCM  R0,15,NHDATA        SET A(FIRST DATA BLOCK)                      
+         ZAP   NHIONUM,PZERO                                                    
+         ZAP   NHIONUMR,PZERO                                                   
+*                                                                               
+         ICM   R1,15,NHLIST        INITIALISE LIST                              
+         USING NBUFFD,R1                                                        
+         LHI   RE,NBUFFDL                                                       
+         ICM   RF,15,NHLISTX                                                    
+         ICM   R0,15,NHDATA                                                     
+*                                                                               
+INIT06   ZAP   NBIONUM,PZERO       SET INITIAL I/O NUMBER                       
+         STCM  R0,15,NBADDR        SET A(DATA BLOCK)                            
+         AH    R0,NHBLKSZ                                                       
+         BXLE  R1,RE,INIT06                                                     
+*                                                                               
+INITX    BRAS  RE,OFF31                                                         
+         L     R1,APARM            RETURN CALLERS PLIST                         
+         MVC   0(L'PARMS,R1),PARMS                                              
+         B     EXIT                                                             
+         DROP  R1                                                               
+         EJECT                                                                  
+***********************************************************************         
+* LOCATE A BLOCK IN BUFFER & IF NOT FOUND CALL I/O RTN TO READ BLOCK  *         
+***********************************************************************         
+         SPACE 1                                                                
+READ     ICM   R3,15,PBUFF         TEST A(BUFFER GIVEN)                         
+         BZ    READ18                                                           
+         USING NHDRD,R3            R3=A(BUFFER HEADER)                          
+*                                                                               
+         BRAS  RE,ON31             GET INTO XA                                  
+         AP    NHIONUM,PONE        INCREMENT NUMBER OF BLOCK I/OS               
+                                                                                
+         XR    RF,RF                                                            
+         ICM   RF,7,DADTF          CHECK BLOCK SIZE IS SAME                     
+         MVC   BUFFBLKS,DBLKSZ-DTFPHD(RF)                                       
+         NI    BUFFBLKS,X'7F'      BLOCK SIZE IN DTF MAY HAVE THIS SET          
+         CLC   NHBLKSZ,BUFFBLKS                                                 
+         BL    READ18              BIGGER - CANNOT USE BUFFER                   
+*                                                                               
+         MVC   BUFFDIND,DIND-DTFPHD(RF)                                         
+         L     RF,DADAD                                                         
+         MVC   BUFFDA,0(RF)        EXTRACT BLOCK D/A REQUESTED                  
+*                                                                               
+         TM    BUFFDIND,DINDNDX    TEST D/A INDEXED DTF                         
+         BO    READ02              YES                                          
+         CLI   BUFFDA+3,0          TEST BLOCKED REQUEST                         
+         BE    READ18              YES                                          
+*                                                                               
+READ02   ICM   R4,15,NHLIST        LOOK FOR THIS BLOCK IN LIST                  
+         USING NBUFFD,R4                                                        
+         LHI   RE,NBUFFDL                                                       
+         ICM   RF,15,NHLISTX                                                    
+         LR    R5,R4                                                            
+OLDEST   USING NBUFFD,R5                                                        
+         OC    OLDEST.NBFILE,OLDEST.NBFILE                                      
+         BZ    READ14              FIRST SLOT EMPTY                             
+*                                                                               
+READ04   CLC   NBFILE,DAFLNO       SAME FILE?                                   
+         BNE   READ06                                                           
+         CLC   NBDA(3),BUFFDA      SAME D/A BLOCK?                              
+         BNE   READ06                                                           
+         TM    BUFFDIND,DINDNDX    TEST D/A INDEXED DTF                         
+         BZ    READ10                                                           
+         CLC   NBDA,BUFFDA                                                      
+         BE    READ10                                                           
+*                                                                               
+READ06   OC    NBFILE,NBFILE       THIS SLOT EMPTY?                             
+         BNZ   *+10                                                             
+         LR    R5,R4               YES - GO FILL IT                             
+         B     READ14                                                           
+*                                                                               
+         CP    NBIONUM,OLDEST.NBIONUM                                           
+         BH    *+6                                                              
+         LR    R5,R4               SAVE OLDEST SLOT                             
+*                                                                               
+         BXLE  R4,RE,READ04                                                     
+         B     READ14                                                           
+         EJECT                                                                  
+***********************************************************************         
+* BLOCK FOUND - MOVE TO USER I/O AREA                                 *         
+***********************************************************************         
+         SPACE 1                                                                
+READ10   TM    BUFFDIND,DINDNDX    TEST D/A INDEXED DTF                         
+         BZ    READ12                                                           
+         ZAP   NBIONUM,NHIONUM     MAKE THIS MOST RECENT                        
+         ICM   R0,15,NBADDR                                                     
+         LH    R1,BUFFBLKS                                                      
+         L     RE,DIOAR            RE=A(USER I/O AREA)                          
+         LR    RF,R1                                                            
+         MVCL  RE,R0               COPY IT TO USER AREA                         
+         XC    DERRS,DERRS         CLEAR ERROR BYTES                            
+         B     EXIT                                                             
+*                                                                               
+READ12   DC    H'0'                NORMAL BLOCKED FILES NEVER SUPPORTED         
+         DROP  R4                                                               
+         EJECT                                                                  
+***********************************************************************         
+* BLOCK NOT FOUND - ISSUE I/O                                         *         
+***********************************************************************         
+         SPACE 1                                                                
+READ14   AP    NHIONUMR,PONE       INCREMENT REAL I/O COUNT                     
+         GOTO1 PROUT,DMCBD         CALL I/O MODULE WITH USER PLIST              
+         ORG   *-2                                                              
+         BASSM RE,RF                                                            
+*                                                                               
+         OC    DERRS,DERRS         EXIT ON ERROR                                
+         BNZ   EXIT                                                             
+*                                                                               
+         BRAS  RE,ON31                                                          
+         TM    BUFFDIND,DINDNDX    TEST D/A INDEXED DTF                         
+         BZ    READ16                                                           
+         MVC   OLDEST.NBFILE,DAFLNO                                             
+         MVC   OLDEST.NBDA,BUFFDA                                               
+         ZAP   OLDEST.NBIONUM,NHIONUM                                           
+         ICM   R0,15,OLDEST.NBADDR                                              
+         LH    R1,NHBLKSZ                                                       
+         L     RE,DIOAR                                                         
+         LR    RF,R1                                                            
+         MVCL  R0,RE               COPY BLOCK INTO CORE BUFFER                  
+         B     EXIT                                                             
+*                                                                               
+READ16   DC    H'0'                NEVER SUPPORTED                              
+         DROP  R3,OLDEST                                                        
+         EJECT                                                                  
+***********************************************************************         
+* NON-BUFFERED I/O CALL                                               *         
+***********************************************************************         
+         SPACE 1                                                                
+READ18   GOTO1 PROUT,DMCBD                                                      
+         ORG   *-2                                                              
+         BASSM RE,RF                                                            
+         B     EXIT                                                             
+         EJECT                                                                  
+***********************************************************************         
+* EXIT POINTS AND USEFUL ROUTINES                                     *         
+***********************************************************************         
+         SPACE 1                                                                
+ON31     O     RE,=XL4'80000000'                                                
+         BSM   0,RE                                                             
+*                                                                               
+OFF31    N     RE,=XL4'7FFFFFFF'                                                
+         BSM   0,RE                                                             
+*                                                                               
+EXIT     XIT1  ,                                                                
+         ORG   *-2                                                              
+         BSM   0,RE                RETURN TO CALLER IN HIS ADDRESS MODE         
+         EJECT                                                                  
+***********************************************************************         
+* LITERALS AND CONSTANTS                                              *         
+***********************************************************************         
+         SPACE 1                                                                
+         LTORG                                                                  
+*                                                                               
+MINIBUFF EQU   20                  DEFAULT MINIMUM NUMBER OF BUFFERS            
+PZERO    DC    P'0'                                                             
+PONE     DC    P'1'                                                             
+EYECATCH DC    CL16'DMDABUFFDMDABUFF'                                           
+         EJECT                                                                  
+***********************************************************************         
+* DSECT TO COVER WORKING STORAGE                                      *         
+***********************************************************************         
+         SPACE 1                                                                
+WORKD    DSECT                                                                  
+APARM    DS    A                   A(CALLED PARAMETER LIST)                     
+*                                                                               
+PARMS    DS    0XL12               CALLERS PARAMETER LIST                       
+PACTN    DS    0CL1                                                             
+PACTINIT EQU   C'I'                INITIALIZATION CALL                          
+PACTREAD EQU   C'R'                READ DATA BLOCK & BUFFER                     
+PDMCB    DS    A                   A(DADDS/DMOD000 PARAMETER LIST)              
+PMINI    DS    X                   MINIMUM NUMBER OF BUFFERS REQUIRED           
+PMAXI    DS    XL3                 MAXIMUM NUMBER OF BUFFERS REQUIRED           
+         ORG   PMINI                                                            
+PBUFF    DS    A                   A(BUFFER) GIVEN OR RETURNED                  
+PROUT    DS    A                   A(I/O ROUTINE) (DADDS OR DMOD000)            
+*                                                                               
+BUFFDA   DS    F                   DISK ADDRESS REQUESTED                       
+BUFFMIN  DS    H                   MINIMUM NUMBER OF BUFFERS ALLOWED            
+BUFFMAX  DS    H                   MAXIMUM NUMBER OF BUFFERS ALLOWED            
+BUFFNOW  DS    H                   NUMBER OF BUFFERS OBTAINED                   
+BUFFBLKS DS    H                   BLOCK SIZE OF BUFFER                         
+BUFFDIND DS    X                   SAVED DIND                                   
+WORKL    EQU   *-WORKD                                                          
+         EJECT                                                                  
+***********************************************************************         
+* DSECT TO COVER DADDS/DMOD000 PARAMETER LIST                         *         
+***********************************************************************         
+         SPACE 1                                                                
+DMCBD    DSECT                                                                  
+DROUT    DS    A                   A(SPECIFIC DADDS/DMOD000 ROUTINE)            
+DIOAR    DS    A                   A(I/O AREA)                                  
+DERRS    DS    XL2                 DADDS/DMOD000 ERROR RETURN BYTES             
+DRLEN    DS    XL2                 RECORD LENGTH                                
+DAFLNO   DS    X                   FILE NUMBER                                  
+DADTF    DS    XL3                 A(DTF)                                       
+DADAD    DS    A                   A(DISK ADDRESS)                              
+DOTHR    DS    F                   DEPENDS ON DROUT                             
+         EJECT                                                                  
+***********************************************************************         
+* DSECT TO COVER BUFFER HEADER                                        *         
+***********************************************************************         
+         SPACE 1                                                                
+NHDRD    DSECT                                                                  
+NHNTRYS  DS    H                   NUMBER OF ENTRIES                            
+NHBLKSZ  DS    H                   BLOCK SIZE                                   
+NHLIST   DS    A                   A(START OF BLOCK LIST)                       
+NHLISTX  DS    A                   A(END-1 OF BLOCK LIST)                       
+NHDATA   DS    A                   A(FIRST DATA BLOCK)                          
+NHIONUM  DS    PL8                 CORE I/O COUNT                               
+NHIONUMR DS    PL8                 REAL I/O COUNT                               
+NHDRDL   EQU   *-NHDRD                                                          
+         EJECT                                                                  
+***********************************************************************         
+* DSECT TO COVER BUFFER CONTENTS                                      *         
+***********************************************************************         
+         SPACE 1                                                                
+NBUFFD   DSECT                                                                  
+NBFILE   DS    X                   FILE NUMBER                                  
+         DS    XL3                 N/D                                          
+NBADDR   DS    AL4                 A(BUFFER IN CORE)                            
+NBDA     DS    AL4                 DISK ADDRESS OF BLOCK                        
+NBIONUM  DS    PL8                 I/O COUNT FOR THIS BUFFER                    
+NBUFFDL  EQU   *-NBUFFD                                                         
+         EJECT                                                                  
+***********************************************************************         
+* OTHER INCLUDED DSECTS                                               *         
+***********************************************************************         
+         SPACE 1                                                                
+* DMDTFPH                                                                       
+       ++INCLUDE DMDTFPH                                                        
+         SPACE 1                                                                
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'001DMDABUFF  08/09/99'                                      
+         END                                                                    

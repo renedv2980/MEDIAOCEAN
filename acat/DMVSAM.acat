@@ -1,0 +1,818 @@
+*          DATA SET DMVSAM     AT LEVEL 003 AS OF 12/28/18                      
+*CATALP DMVSAM                                                                  
+***********************************************************************         
+* VSAM EQUIVALENT OF DMISDDS20                                        *         
+*                                                                     *         
+* FOR NOW, CONTAINS ONLY OPEN AND CLOSE CODE.                         *         
+*                                                                     *         
+* NOTE - THIS IS THE 31 BIT ADDRESSING VERSION - HOWEVER...           *         
+*                                                                     *         
+* 2) IN THE DTF, THE FIELD ISFADCB IS ONLY 3 BYTES LONG. AS A RESULT, *         
+*    THE DTF ITSELF MUST BE BELOW THE LINE                            *         
+*                                                                     *         
+* 3) BECAUSE HOB OF USER IO ADDRESS MAY NOT BE CLEAR IT IS ASSUMED    *         
+*    USER IS RUNNING IN 24-BIT MODE. WE REQUIRE AN INPUT PARAMETER    *         
+*    FROM A 31-BIT USER                                               *         
+*                                                                     *         
+* IN THE MEANWHILE, HIGH ORDER BYTES OF INPUT PARMS ARE CLEARED       *         
+*                                                                     *         
+***********************************************************************         
+         EJECT                                                                  
+DMVSAM   TITLE 'VSAM ACCESS METHOD - 31 BIT MODE'                               
+         PRINT NOGEN                                                            
+         ENTRY VSREAD              01                                           
+         ENTRY VSRDSEQ             02                                           
+         ENTRY VSADD               03                                           
+         ENTRY VSERASE             04                                           
+         ENTRY VSWRITE             05                                           
+         ENTRY VSCPUID             06                                           
+         ENTRY VSFNDEOF            07                                           
+         ENTRY VSOPEN              08                                           
+         ENTRY VSCLOSE             09                                           
+         ENTRY VSOPOLD             0A                                           
+         ENTRY VSRDFLS             0B                                           
+         ENTRY VSRSFLS             0C                                           
+         ENTRY VSCLEAR             0D                                           
+                                                                                
+***********************************************************************         
+* P1     A(ROUTINE) OR X'0000000X' WHERE 0X IS HEX RTN ID             *         
+*        IF  X'80' ON IN HOB THEN CHECK P7 FOR LOCKER                 *         
+* P2     A(I/O AREA)                                                  *         
+* P3     BYTES 0-1=RETURN ERROR FLAGS,BYTES 2-3=NOT USED              *         
+* P4     A(VSAM DTF)                                                  *         
+* P5     A(KEYARG)                                                    *         
+* P6     DEPENDS ON P1                                                *         
+* P7     A(0) OR A(PLIST FOR LOCKER - ONLY NEEDS D/A TO CHECK)        *         
+*        ONLY TO BE TESTED IF HOB FOR P1 IS X'80'                     *         
+*                                                                     *         
+* ROUNTINE NUMBERS AND NAMES AS FOLLOWS:                              *         
+*                                                                     *         
+* 01 VSREAD    RANDOM READ HIGH/EQUAL FOR KEY AT P5 - LOGICAL NOT     *         
+*              FOUND CAN NOT OCCUR.                                   *         
+*                                                                     *         
+* 0B VSRDFLS   READ HIGH/EQUAL WITH FLUSH OF BUFFER.                  *         
+*                                                                     *         
+* 02 VSRDSEQ   SEQUENTIAL READ. ONLY VALID AFTER VSREAD OR VSWRITE.   *         
+*              P5 IS IGNORED. LAST I/O GOVERNS RECORD READ.           *         
+*              IF P6(1)=FF THEN P6+1(3) IS A(FULL TRACK BUFFER)       *         
+*                                                                     *         
+* 0C VSRSFLS   READ SEQUENTIAL WITH FLUSH OF BUFFER.                  *         
+*                                                                     *         
+* 03 VSADD     ADD A RECORD. KEY IS IN RECORD AT P2. P5 IS IGNORED.   *         
+*              DESTROYS SEQUENTIAL READ SEQUENCE.                     *         
+*                                                                     *         
+* 04 VSERASE   ERASE LAST RECORD READ. P5 IS IGNORED.                 *         
+*              DESTROYS SEQUENTIAL READ SEQUENCE.                     *         
+*                                                                     *         
+* 05 VSWRITE   WRITE LAST REC READ. P5 IS IGNORED. KEY MUST NOT CHANGE*         
+*                                                                     *         
+* 06 VSCPUID   CHECK CPU ID IN RECORD ZERO OF TRACK ONE.              *         
+*                                                                     *         
+* 07 VSFNDEOF  RESET DISK ADDRESS OF LAST OVERFLOW RECORD.            *         
+*                                                                     *         
+* 08 VSOPEN    OPEN FILE AND BUILD EXTENT MATRIX.                     *         
+*              IF P6(2)=CI/MI THEN P6+2(2)=L'NDX AND P2=A(NDX)        *         
+*                                                                     *         
+* 09 VSCLOSE   CLOSE FILE.                                            *         
+*                                                                     *         
+* 0A VSOPOLD   OPEN FILE (DISP=OLD) AND BUILD EXTENT MATRIX.          *         
+*              IF P6(2)=CI/MI THEN P6+2(2)=L'NDX AND P2=A(NDX)        *         
+*                                                                     *         
+* 0D VSCLEAR   CLEAR ALL BUFFER CONTENTS TO FORCE NEW I/OS NEXT TIME  *         
+*                                                                     *         
+* 0E VSGETPD   GET PD D/A AND PASS IT BACK (DON'T ISSUE I/O)          *         
+*              FOR DMGR LOCKING SO WE CAN LOCK THEN READ              *         
+*                                                                     *         
+* ERROR BYTE INDICATORS - RETURNED IN P3(2)                           *         
+*                                                                     *         
+* BYTE 0 X'80' UNRECOVERABLE ERROR                                    *         
+*        X'40'                                                        *         
+*        X'20' DUPLICATE KEY ON ADD                                   *         
+*        X'10'                                                        *         
+*        X'08'                                                        *         
+*        X'04'                                                        *         
+*        X'02'                                                        *         
+*        X'01'                                                        *         
+*                                                                     *         
+* BYTE 1 X'80' INVALID CPU ID                                         *         
+*        X'40'                                                        *         
+*        X'20'                                                        *         
+*        X'10'                                                        *         
+*        X'08' NO RECORD FOUND                                        *         
+*        X'04' END OF FILE                                            *         
+*        X'02'                                                        *         
+*        X'01'                                                        *         
+***********************************************************************         
+DMVSAM   CSECT                                                                  
+         ENTRY DMVSAME                                                          
+         NMOD1 WORKL,*DMVSAM*,RA,CLEAR=YES                                      
+         USING WORKD,RC                                                         
+         ST    R1,SAVER1                                                        
+         MVC   PARAMS,0(R1)                                                     
+*                                                                               
+         MVI   P2,0                CLEAR HIGH ORDER BYTES OF PARMS              
+         MVI   P4,0                                                             
+         MVI   P5,0                                                             
+*                                                                               
+         B     VSAM                                                             
+*                                                                               
+DMVSAME  STM   RE,RC,12(RD)        ENTRY POINT IF CALLED FROM V(ISDDS)          
+         LARL  RB,DMVSAM                                                        
+         LA    RC,72(RD)                                                        
+         ST    RD,4(RC)                                                         
+         ST    RC,8(RD)                                                         
+         MVC   0(4,RD),24(RB)                                                   
+         LR    RD,RC                                                            
+         LR    RC,R1               R1=A(ISDDS'S WORKING STORAGE)                
+*                                                                               
+VSAM     ST    RD,SAVERD           SAVED FOR FAST EXIT                          
+         SAM31 ,                   SWITCH INTO XA                               
+*                                                                               
+         L     R2,P4               R2=A(DTF)                                    
+         USING ISDTF,R2            VSAM USES IS DTF                             
+         MVI   READTYPE,0                                                       
+         XC    P6,P6               FULL TRACK NOT SUPPORTED FOR VSAM            
+*                                                                               
+         TM    P1,X'80'            CHECK WANT TO DO INTERNAL LOCKER             
+         BZ    *+12                                                             
+         OI    READTYPE,DOLOCKER                                                
+         NI    P1,X'7F'                                                         
+*                                                                               
+VSAM1    OC    P1+1(2),P1+1        TEST PASSED ROUTINE NUMBER                   
+         BZ    VSAM1A                                                           
+         L     RF,P1               PASSED ADDRESS OF ROUTINE                    
+         B     VSAM1B                                                           
+*                                                                               
+VSAM1A   LLC   RF,P1+3             CONVERT ROUTINE NUMBER TO ADDRESS            
+         SLL   RF,2                                                             
+         LARL  RE,VSROUTS                                                       
+         AR    RE,RF                                                            
+         L     RF,0(RE)                                                         
+VSAM1B   ST    RF,ISROUTA          SAVE ADDRESS OF ROUTINE                      
+*                                                                               
+         OC    ISCILAST,ISCILAST   INITIALISE ON FIRST CALL                     
+         BZ    INIT                                                             
+*                                                                               
+VSAM2    XC    P3(2),P3            CLEAR ERROR IND                              
+         L     R3,P5               POINT TO KEYARG                              
+         MVI   ISSWAPSW,0          RESET SWAP SWITCH                            
+         L     RF,ISROUTA                                                       
+         BR    RF                  GO TO REQUIRED IS ROUTINE                    
+*                                                                               
+EXIT     L     R1,SAVER1                                                        
+         MVC   8(4,R1),P3                                                       
+EXITX    XMOD1 1                   XMOD1 WILL RESTORE CALLERS MODE              
+*                                                                               
+RTNXIT   XIT1  ,                   JUMP TO POINT FOR SUBROUTINE EXITS           
+         EJECT                                                                  
+***********************************************************************         
+* VSREAD - READ RANDOM                                                *         
+***********************************************************************         
+VSRDFLS  OI    READTYPE,FLUSH      READ REQUIRES BLK TO BE READ                 
+         B     VSRD2                                                            
+*                                                                               
+VSREAD   MVI   BUFFOK,X'80'        SET BUFFER OK FLAG TO SAY VSREAD             
+VSRD2    J     *+2                 NOT YET SUPPORTED                            
+         B     EXIT                                                             
+         EJECT                                                                  
+***********************************************************************         
+* VSRDSEQ - READ SEQUENTIAL                                           *         
+***********************************************************************         
+VSRSFLS  OI    READTYPE,FLUSH      SET FLUSH TYPE READING                       
+*                                                                               
+VSRDSEQ  OC    ISPDDA,ISPDDA       TEST BUFFER CONTENTS VALID                   
+         JZ    *+2                 DIE=ZERO ISPDDA                              
+*                                                                               
+         J     *+2                 NOT YET SUPPORTED                            
+         EJECT                                                                  
+***********************************************************************         
+* VSWRITE - WRITE LAST RECORD READ                                    *         
+***********************************************************************         
+VSWRITE  OC    ISPDDA,ISPDDA       TEST BUFFER CONTENTS VALID                   
+         JZ    *+2                 DIE=ZERO ISPDDA                              
+*                                                                               
+         J     *+2                 NOT YET SUPPORTED                            
+         EJECT                                                                  
+***********************************************************************         
+* ROUTINE TO WRITE BLOCK                                              *         
+***********************************************************************         
+VSWRTPD  J     *+2                 NOT YET SUPPORTED                            
+         EJECT                                                                  
+***********************************************************************         
+* VSADD - ADD A RECORD                                                *         
+***********************************************************************         
+VSADD    J     *+2                 NOT YET SUPPORTED                            
+         EJECT                                                                  
+***********************************************************************         
+* VSERASE - ERASE RECORD IN ISPDKEY                                   *         
+***********************************************************************         
+VSERASE  OC    ISPDDA,ISPDDA       TEST BUFFER CONTENTS VALID                   
+         JZ    *+2                 DIE=ZERO ISPDDA                              
+         J     *+2                 NOT YET SUPPORTED                            
+         EJECT                                                                  
+***********************************************************************         
+* GET CPU ID                                                          *         
+***********************************************************************         
+VSCPUID  J     EXIT                NOT SURE WHAT TO DO HERE...                  
+         EJECT                                                                  
+***********************************************************************         
+* FIND EOF (NO SUCH THING ON VSAM FILE, DO NOTHING)                   *         
+***********************************************************************         
+VSFNDEOF J     EXIT                                                             
+         EJECT                                                                  
+***********************************************************************         
+* FILE INITIALIZATION ROUTINES                                        *         
+*                                                                     *         
+* OFFLINE: ACQUIRE PRIME DATA BUFFERS AND SAVE AREAS FOR KEYS         *         
+*                                                                     *         
+* ONLINE : DATA BUFFERS ARE ACQUIRED BY TASK, NOT BY FILE SO CANT BE  *         
+*          DONE HERE                                                  *         
+*                                                                     *         
+* BOTH   : GETMAIN AN AREA AND BUILD INDEX. WHEN ALL CI RECORDS READ, *         
+*          SAVE TTBR OF LAST IN ISCILAST.                             *         
+*          THEN FIND LAST OVERFLOW RECORD AND SET ISOVLAST            *         
+***********************************************************************         
+INIT     LA    RF,VSOPEN           CHECK FOR SPECIAL COMMANDS                   
+         C     RF,ISROUTA                                                       
+         BE    VSAM2                                                            
+*                                                                               
+         LA    RF,VSCLOSE                                                       
+         C     RF,ISROUTA                                                       
+         BE    VSAM2                                                            
+*                                                                               
+         LA    RF,VSCPUID                                                       
+         C     RF,ISROUTA                                                       
+         BE    VSAM2                                                            
+*                                                                               
+         LA    RF,VSOPOLD                                                       
+         C     RF,ISROUTA                                                       
+         BE    VSAM2                                                            
+*                                                                               
+         TM    ISFOPEN,ISFOOPN                                                  
+         JZ    *+2                 DIE=FILE NOT OPEN                            
+*        OC    12(2,R1),12(R1)                                                  
+*        JNZ   *+2                 DIE=ALREADY INIT                             
+*                                                                               
+         MVC   DUB(4),=C'SSET'     SUSPEND TIMER DURING INITIALISATION          
+         BAS   RE,GOTICTOC                                                      
+*                                                                               
+INITX    XC    ISPDDA(12),ISPDDA   SET BUFFER CONTENTS NOT VALID                
+         MVC   DUB(4),=C'RSET'     RESTART TIMER AT END OF INITIALISE           
+         BAS   RE,GOTICTOC                                                      
+         B     VSAM2                                                            
+*                                                                               
+INITERR1 XC    ISCILAST,ISCILAST   SET NOT INITIALISED                          
+         MVC   DUB(4),=C'RSET'     RESTART TIMER AT END OF INITIALISE           
+         BAS   RE,GOTICTOC                                                      
+         DC    H'0'                DIE                                          
+                                                                                
+***********************************************************************         
+* TIC TOC TIMER POP                                                             
+***********************************************************************         
+GOTICTOC ICM   RF,15,VTICTOC                                                    
+         BZR   RE                  NOT INCLUDED SO RETURN                       
+         LR    R0,RE               SAVE RETURN ADDRESS                          
+         LA    R1,DUB              TYPE OF CALL                                 
+         BASSM RE,RF               CALL TICTOC IN APPROPRIATE MODE              
+         LR    RE,R0               RESTORE                                      
+         SAM31 ,                   BACK TO 31 BIT MODE                          
+         BR    RE                  RETURN TO CALLER                             
+         EJECT                                                                  
+***********************************************************************         
+* OPEN A FILE                                                         *         
+***********************************************************************         
+VSOPOLD  MVI   BYTE,1              FLAG OPEN DISP=OLD                           
+         B     *+8                                                              
+VSOPEN   MVI   BYTE,0                                                           
+*                                  CALL VSOPEN AT INDIRECT ADDRESS              
+         BRAS  RE,AVSOPEN                                                       
+         B     EXIT                                                             
+                                                                                
+***********************************************************************         
+* CLOSE A FILE                                                        *         
+***********************************************************************         
+VSCLOSE  BRAS  RE,AVSCLOSE         CALL VSCLOSE AT INDIRECT ADDRESS             
+         B     EXIT                                                             
+         EJECT                                                                  
+***********************************************************************         
+* LITERALS / EQUATES (ENSURE WITHIN 2ND BASE).                        *         
+* ORG ADDS 4096-* IF WITHIN FIRST BASE, ADDS NOTHING IF WITHIN 2ND    *         
+* BASE AND GOES WRONG IF BEYOND 2ND BASE.                             *         
+***********************************************************************         
+         ORG   *+((1-((*-DMVSAM)/4096))*((DMVSAM+4096)-*))                      
+*                                                                               
+         LTORG                                                                  
+VSSB     DC    V(SSB)                                                           
+VTICTOC  DC    V(TICTOC)                                                        
+VADWAIT  DC    V(ADWAIT)                                                        
+ONLINE   DC    C' '                SET TO C'Y' IF ONLINE                        
+         DC    X'00'               N/D                                          
+         EJECT                                                                  
+***********************************************************************         
+* IBM RECOMENDED CODE (EXECUTED INSTRUCTIONS OUT OF PIPELINE          *         
+***********************************************************************         
+         EJECT                                                                  
+***********************************************************************         
+* INDEX SEQUENTIAL ROUTINES TABLE                                     *         
+***********************************************************************         
+VSROUTS  DC    A(0)                00                                           
+         DC    A(VSREAD)           01                                           
+         DC    A(VSRDSEQ)          02                                           
+         DC    A(VSADD)            03                                           
+         DC    A(VSERASE)          04                                           
+         DC    A(VSWRITE)          05                                           
+         DC    A(VSCPUID)          06                                           
+         DC    A(VSFNDEOF)         07                                           
+         DC    A(VSOPEN)           08                                           
+         DC    A(VSCLOSE)          09                                           
+         DC    A(VSOPOLD)          0A                                           
+         DC    A(VSRDFLS)          0B                                           
+         DC    A(VSRSFLS)          0C                                           
+         DC    A(VSCLEAR)          0D                                           
+         DC    9A(0)               0E-??                                        
+***********************************************************************         
+* VSCLEAR - CLEAR BUFFER CONTENTS TO FORCE I/OS NEXT TIME             *         
+***********************************************************************         
+VSCLEAR  XC    ISPDDA(12),ISPDDA   CLEAR INFO IN DTF                            
+*                                                                               
+VSCLRX   J     EXIT                                                             
+         EJECT                                                                  
+         LTORG                                                                  
+         EJECT                                                                  
+***********************************************************************         
+* VSOPEN INDIRECT ADDRESS ROUTINE                                     *         
+***********************************************************************         
+AVSOPEN  NTR1  BASE=*                                                           
+         TM    ISFOPEN,ISFOOPN     ALREADY OPEN?                                
+         BO    VSOPENX                                                          
+*                                                                               
+         USING IFGACB,R4                                                        
+VSOPEN10 SR    R4,R4               OPEN FIRST OR ONLY ACB                       
+         ICM   R4,7,ISFADCB+1      PICK UP 3 BYTE ADDRESS OF ACB                
+         LR    R3,R4               SAVE A(MAIN ACB)                             
+         MVC   ACBDDNM,ISFDD       SET FILE ID IN ACB DDNAME                    
+*                                                                               
+         BRAS  RE,ALLOC            ALLOCATE DD CARD                             
+*                                                                               
+         MVC   ACBSTRNO,ISFBUFFS   OFFLINE, 1 SET OF STRINGS                    
+         ICM   RE,15,=V(SSB)       TEST OFFLINE WITH EXTENDED SSB               
+         BZ    VSOPEN16                                                         
+         OC    0(2,RE),0(RE)                                                    
+         BZ    VSOPEN12                                                         
+         LLC   R1,ISFBUFFS         ONLINE 1 SET OF STRINGS PER TASK             
+         LLC   RF,SSBTASKS-SSBD(RE)                                             
+         XR    R0,R0                                                            
+         MR    R0,RF                                                            
+         STC   R1,ACBSTRNO         SET NUMBER OF STRINGS.                       
+         CHI   R1,255              ENSURE TASKS*STRINGS NOT TOO HIGH            
+         BNH   VSOPEN12                                                         
+         ABEND 991,DUMP            ABEND FOR OPEN FAILURE                       
+*                                                                               
+VSOPEN12 CLI   SSOXTND-SSOOFF(RE),X'FF'                                         
+         BNE   VSOPEN16                                                         
+         TM    SSOMTIND-SSOOFF(RE),SSOWRTN TEST WRITE=N INPUT                   
+         BZ    VSOPEN14                                                         
+         C     R2,=V(SYS1FLEW)     IGNORE IF SY1 FILES                          
+         BL    VSOPEN16                                                         
+         OI    ISFOPEN,ISFORO      SET READ-ONLY FILE                           
+         B     VSOPEN16                                                         
+*                                                                               
+VSOPEN14 TM    ISFOPEN,ISFORO      TEST READ-ONLY FILE                          
+         BZ    VSOPEN16                                                         
+**       TM    ISCMPRSW,X'40'      DEFINED WITH ADD=NO IN DMIS MACRO            
+**       BO    VSOPEN16            NOT RELEVANT FOR VSAM                        
+         TM    SSOMTIND-SSOOFF(RE),SSOMRKY TEST IF MARKER=Y INPUT               
+         BZ    VSOPEN16                                                         
+         C     R2,=V(SYS1FLEW)     IGNORE IF SY1 FILES                          
+         BL    VSOPEN16                                                         
+         NI    ISFOPEN,255-ISFORO  TURN OFF READ-ONLY BIT                       
+         OI    ISFFLAG,ISROWRN     SET FLAG TO ISSUE READ-ONLY WARNING          
+*                                                                               
+VSOPEN16 TM    ISFOPEN,ISFORO      TEST READ-ONLY FILE                          
+*        BZ    VSOPEN18                                                         
+*        OI    ??(R4),X'??'        FORCE ACB TO READ-ONLY                       
+*                                                                               
+VSOPEN18 STAM  ARE,AR1,ARSSAVER    OPEN FILE (ACB DEFINES IN/OUT)               
+         OPEN  ((4))               OPEN OPTIONS IGNORED FOR VSAM                
+         LAM   ARE,AR1,ARSSAVER                                                 
+*                                                                               
+         TM    ACBOFLGS,ACBOPEN    TEST VALID OPEN                              
+         BO    VSOPEN1X                                                         
+         ABEND 991,DUMP            ABEND FOR OPEN FAILURE                       
+*                                                                               
+VSOPEN1X OI    ISFOPEN,ISFOOPN     NOW IT'S OPEN                                
+*                                                                               
+VSOPEN20 SR    R4,R4               OPEN SECOND ACB IF PRESENT                   
+         ICM   R4,7,ISACB2+1       PICK UP 3 BYTE ADDRESS OF 2ND ACB            
+         BZ    VSOPENX             EXIT IF NOT PRESENT                          
+         CLI   ISACB2ST,0          MAKE SURE ITS STATUS IS NOT SET              
+         JNE   *+2                 SHOULD NOT OCCUR                             
+*                                                                               
+         BRAS  RE,ALLOC            ALLOCATE DD CARD                             
+         CLC   RBLKERR,=X'1708'    DID WE GET CATALOG ERROR                     
+         BE    VSOPEN29            YES, NO POINT IN OPENING                     
+*                                                                               
+         MVC   ACBSTRNO,ACBSTRNO-IFGACB(R3) COPY STRNO FROM FIRST ACB           
+         ICM   RE,15,=V(SSB)       TEST OFFLINE WITH EXTENDED SSB               
+         BZ    VSOPEN26                                                         
+*                                                                               
+VSOPEN22 CLI   SSOXTND-SSOOFF(RE),X'FF'                                         
+         BNE   VSOPEN26                                                         
+         TM    SSOMTIND-SSOOFF(RE),SSOWRTN TEST WRITE=N INPUT                   
+         BZ    VSOPEN24                                                         
+         C     R2,=V(SYS1FLEW)     IGNORE IF SY1 FILES                          
+         BL    VSOPEN26                                                         
+         OI    ISFOPEN,ISFORO      SET READ-ONLY FILE                           
+         B     VSOPEN26                                                         
+*                                                                               
+VSOPEN24 TM    ISFOPEN,ISFORO      TEST READ-ONLY FILE                          
+         BZ    VSOPEN26                                                         
+**       TM    ISCMPRSW,X'40'      DEFINED WITH ADD=NO IN DMIS MACRO            
+**       BO    VSOPEN26            NOT RELEVANT FOR VSAM                        
+         TM    SSOMTIND-SSOOFF(RE),SSOMRKY TEST IF MARKER=Y INPUT               
+         BZ    VSOPEN26                                                         
+         C     R2,=V(SYS1FLEW)     IGNORE IF SY1 FILES                          
+         BL    VSOPEN26                                                         
+         NI    ISFOPEN,255-ISFORO  TURN OFF READ-ONLY BIT                       
+         OI    ISFFLAG,ISROWRN     SET FLAG TO ISSUE READ-ONLY WARNING          
+*                                                                               
+VSOPEN26 TM    ISFOPEN,ISFORO      TEST READ-ONLY FILE                          
+*        BZ    VSOPEN28                                                         
+*        OI    ??(R4),X'??'        FORCE ACB TO READ-ONLY                       
+*                                                                               
+VSOPEN28 STAM  ARE,AR1,ARSSAVER    OPEN FILE (ACB DEFINES IN/OUT)               
+         OPEN  ((4))               OPEN OPTIONS IGNORED FOR VSAM                
+         LAM   ARE,AR1,ARSSAVER                                                 
+*                                                                               
+         MVI   ISACB2ST,ISACB2OP   POSIT OPENED OK                              
+         TM    ACBOFLGS,ACBOPEN    TEST VALID OPEN                              
+         BO    VSOPENX             YES, EXIT                                    
+VSOPEN29 MVI   ISACB2ST,ISACB2NO   OPEN FAILED, MARK FILE IS INACTIVE           
+*                                  BUT DON'T ABEND                              
+VSOPENX  J     RTNXIT                                                           
+         DROP  R4                                                               
+*                                                                               
+         LTORG                                                                  
+         EJECT                                                                  
+***********************************************************************         
+* VSCLOSE INDIRECT ADDRESS ROUTINE                                    *         
+***********************************************************************         
+AVSCLOSE NTR1  BASE=*                                                           
+         SR    R4,R4                                                            
+         ICM   R4,7,ISFADCB+1      CLOSE FILE                                   
+         USING IFGACB,R4                                                        
+         CLOSE ((4))                                                            
+         NI    ISFOPEN,255-ISFOOPN TURN OFF OPEN FLAG                           
+         MVI   ISFAVAIL,X'00'      SET DTF AVAIL (X'80'=BUSY)                   
+         OI    ISFDEVF,X'40'                                                    
+         XC    ISPDKEY,ISPDKEY                                                  
+         XC    ISPDPRKY,ISPDPRKY                                                
+         XC    ISTIHIKY,ISTIHIKY                                                
+*                                                                               
+         SR    R4,R4                                                            
+         ICM   R4,7,ISACB2+1       PICK UP 3 BYTE ADDRESS OF 2ND ACB            
+         BZ    VSCLOSEX            EXIT IF NOT PRESENT                          
+         TM    ISACB2ST,ISACB2OP   IS IT OPEN                                   
+         BZ    VSCLOSE2                                                         
+         CLOSE ((4))               YES, CLOSE IT TOO                            
+VSCLOSE2 MVI   ISACB2ST,0          CLEAR STATUS                                 
+*                                                                               
+VSCLOSEX J     RTNXIT                                                           
+         DROP  R4                                                               
+*                                                                               
+         LTORG                                                                  
+         EJECT                                                                  
+***********************************************************************         
+* ROUTINE TO DYNAMICALLY ALLOCATE A DD CARD FOR FILE                  *         
+***********************************************************************         
+         USING ISDTF,R2                                                         
+         USING IFGACB,R4                                                        
+ALLOC    NTR1  BASE=*                                                           
+*                                                                               
+ALLOC1   ICM   RE,15,=V(SSB)       EXTRACT FACPAK ID IF ONLINE                  
+         BZ    ALLOC3                                                           
+         USING SSOOFF,RE                                                        
+         OC    SSOCNTL,SSOCNTL     TEST ONLINE                                  
+         BNZ   ALLOC3                                                           
+*                                                                               
+ALLOC2   CLI   SSOXTND,X'FF'       TEST IF OFFLINE EXTENDED SSB                 
+         BNE   ALLOC3                                                           
+         TM    SSOFLAG2,SSO2DYNO   EXIT IF DYNAMIC ALLOCATION INACTIVE          
+         BO    ALLOCXIT                                                         
+         DROP  RE                                                               
+         OI    BYTE,X'80'          SET OFFLINE/EXTENDED SSB FLAG                
+*                                                                               
+ALLOC3   LA    R1,RBLK             SET UP REQ BLK POINTER                       
+         ST    R1,ARBLK                                                         
+         OI    ARBLK,X'80'                                                      
+         MVI   RBLKLEN,20          SET UP REQ BLK LEN                           
+         MVI   RBLKVERB,1          SET ALLOCATE BY DSN VERB CODE                
+         LA    R1,ATXT                                                          
+         ST    R1,RBLKATXT         SET POINTER TO TEXT POINTER LIST             
+*                                                                               
+ALLOC4   LA    R1,TXTDD            SET UP POINTER TO DDNAME TEXT                
+         ST    R1,ATXTDD                                                        
+         MVC   0(2,R1),=X'0001'    SET DDNAME TEXT CODE                         
+         MVC   2(2,R1),=X'0001'                                                 
+         MVC   6(8,R1),ACBDDNM     SET DDNAME VALUE TO ACB VALUE                
+         LA    RF,6(R1)            FIND LEN OF DD NAME                          
+         LA    R0,8                                                             
+         CLI   0(RF),C' '                                                       
+         BE    *+12                                                             
+         LA    RF,1(RF)                                                         
+         BCT   R0,*-12                                                          
+         LA    RE,6(R1)                                                         
+         SR    RF,RE                                                            
+         STH   RF,4(R1)            SET LEN IN DDNAME TEXT HEADER                
+*                                                                               
+ALLOC5   LA    R1,TXTDSN           SET UP POINTER TO DSN TEXT                   
+         ST    R1,ATXTDSN                                                       
+         MVC   TXTDSN(2),=X'0002'  SET DSN TEXT CODE                            
+         MVC   TXTDSN+2(2),=X'0001'                                             
+         ICM   RF,15,=V(DMDYNDD)   CALL DMDYNDD TO GET DSN TEXT                 
+         BZ    ALLOCXIT                                                         
+         GOTO1 (RF),MYWORK,0,ACBDDNM,(R2)                                       
+         BNE   ALLOCXIT                                                         
+         TM    8(R1),X'02'         TEST IF DID GLOBAL ALLOCATE                  
+         BZ    *+8                                                              
+         OI    BYTE,X'20'                                                       
+         TM    8(R1),X'01'         TEST IF ALLOCATED FLASH COPY                 
+         BZ    ALLOC5A                                                          
+         OI    BYTE,X'10'                                                       
+         OI    ISFOPEN,ISFORO      SET FLASH COPY FILE READ-ONLY                
+         TM    BYTE,X'80'                                                       
+         B     ALLOC5A             *NOP* BZ DONT SET WRITE=N OFFLINE            
+         ICM   RE,15,=V(SSB)       GET A(OFFLINE SSB)                           
+         USING SSOOFF,RE                                                        
+         OI    SSOMTIND,SSOWRTN    SET WRITE=N IF FLASH COPY FILE               
+         DROP  RE                                                               
+*                                                                               
+ALLOC5A  ICM   RE,15,0(R1)         P1=AL1(LENGTH OF DSN),AL3(NEW DSN)           
+         JZ    *+2                 DIE=INV DSN LEN                              
+         NILH  GRE,X'00FF'                                                      
+         MVC   TXTDSN+6(20),0(RE)                                               
+         LLC   RF,0(R1)                                                         
+         STH   RF,TXTDSN+4         SET LEN IN DSN TEXT HEADER                   
+*                                                                               
+         LA    R1,TXTDISP          SET UP POINTER TO DISP TEXT                  
+         ST    R1,ATXTDISP                                                      
+         MVC   0(2,R1),=X'0004'    SET DISP TEXT CODE                           
+         MVC   2(2,R1),=X'0001'                                                 
+         MVC   4(2,R1),=X'0001'                                                 
+         MVI   6(R1),X'08'         SET DISP=SHR CODE                            
+*                                                                               
+         TM    BYTE,X'01'          IS THIS A VSOPOLD                            
+         BZ    *+8                                                              
+         MVI   6(R1),X'01'         SET DISP=OLD CODE                            
+*                                                                               
+         LA    R1,TXTUNAL          SET UP POINTER TO UNALLOCATE TEXT            
+         ST    R1,ATXTUNAL                                                      
+         MVC   0(2,R1),=X'001C'    SET UNALLOCATE TEXT CODE                     
+         XC    2(4,R1),2(R1)                                                    
+*                                                                               
+         OI    ATXTLAST,X'80'      SET END OF TEXT POINTER LIST                 
+         LA    R1,ARBLK                                                         
+         LR    R5,R1               R5=A(REQ BLK IN DUMP)                        
+         DYNALLOC                                                               
+         LR    R6,RF               R6=RETURN CODE IN DUMP                       
+         L     R7,RBLKERR          R7=RBLKERR/RBLKINFO IN DUMP                  
+         LTR   RF,RF               TEST FOR ERRORS                              
+         BZ    ALLOC10             NO                                           
+         TM    BYTE,X'20'          YES  - TEST IF DID GLOBAL ALLOCATE           
+         BO    ALLOC8                                                           
+*                                                                               
+ALLOC7   CLC   RBLKERR,=X'0410'    NORMAL - TEST IF DD CARD EXISTS              
+         BE    ALLOCXIT            YES                                          
+         CR    R3,R4               IS THIS FIRST ACB?                           
+         JE    ALLOC7A                                                          
+         CLC   RBLKERR,=X'1708'    NO, SECOND. DID WE GET CATALOG ERROR         
+         BE    ALLOCXIT            YES, 2ND FILE PROBABLY DOESN'T EXIST         
+ALLOC7A  XC    MYWORK,MYWORK                                                    
+         MVC   MYWORK,=X'0033'                                                  
+         MVC   MYWORK+2(32),=C'DISP=OLD ALLOCATION FAILURE FOR '                
+         MVC   MYWORK+34(20),TXTDSN+6                                           
+         TM    BYTE,X'01'                                                       
+         BO    *+10                                                             
+         MVC   MYWORK+7(3),=C'SHR'                                              
+         LA    R8,MYWORK                                                        
+         WTO   TEXT=(R8)                                                        
+         TM    BYTE,X'01'          ASK OPERATOR IF DISP=OLD ALLOCATION          
+         BZ    ALLOC9                                                           
+         XC    ECBAD,ECBAD                                                      
+         WTOR  'RETRY OR CANCEL',REPLY,1,ECBAD,ROUTCDE=(1)                      
+         WAIT  ECB=ECBAD                                                        
+         CLI   REPLY,C'R'                                                       
+         BE    ALLOC1                                                           
+         ABEND 990                 FILE IS IN USE - ABEND WITHOUT DUMP          
+*                                                                               
+ALLOC8   CLC   RBLKERR,=X'0410'    GLOBAL - TEST IF DD CARD EXISTS              
+         BNE   ALLOC9                                                           
+         XC    MYWORK,MYWORK       YES - OUTPUT DD OVERRIDE MESSAGE             
+         MVC   MYWORK(2),=X'001E'                                               
+         MVC   MYWORK+2(21),=C'DD OVERRIDE USED FOR '                           
+         MVC   MYWORK+23(8),TXTDD+6                                             
+         LA    R4,MYWORK                                                        
+         WTO   TEXT=(R4)                                                        
+         B     ALLOCXIT            ALLOW DD OVERRIDE                            
+*                                                                               
+ALLOC9   ABEND 990,DUMP            ALLOCATION FAILURE ABEND                     
+*                                                                               
+ALLOC10  CR    R3,R4               IS THIS FIRST ACB?                           
+         JNE   ALLOCXIT            NO EXIT                                      
+         OI    ISFOPEN,ISFODYN     SET DD CARD DYNAMICALLY GENERATED            
+*                                                                               
+ALLOCXIT J     RTNXIT                                                           
+         DROP  R2,R4                                                            
+*                                                                               
+ECBAD    DC    F'0'                WTOR FIELDS                                  
+REPLY    DC    CL4' '                                                           
+*                                                                               
+         LTORG                                                                  
+         EJECT                                                                  
+***********************************************************************         
+* ROUTINE TO LOCK DTF                                                 *         
+***********************************************************************         
+LOCKDTF  NTR1  BASE=*                                                           
+         ICM   R4,15,=V(SSB)                                                    
+         BZ    LOCKDTFX                                                         
+         USING SSBD,R4                                                          
+         L     R3,P4               R3=A(DTF)                                    
+         USING ISDTF,R3                                                         
+*                                                                               
+LKD020   CLI   ISFSNUM,0           IGNORE LOCK IF NO SYSTEM                     
+         BE    LOCKDTFX                                                         
+         TM    ISFFLAG,ISFGLOB     TEST GLOBAL RESOURCE                         
+         BZ    LKD100              NOT GLOBAL - DO LOCAL LOCK                   
+         XC    DUB,DUB                                                          
+         MVC   DUB+3(1),ISFSNUM                                                 
+*                                                                               
+         GOTO1 =V(LOCKSPC),DUB     LOCK THE SYSTEM                              
+         MVI   LOCKFLG,C'Y'                                                     
+*                                                                               
+         L     R2,4(R1)            SET FULL TO A(SYSTEM)                        
+         USING DMSPACED,R2                                                      
+         MVC   FULL,DSPECB                                                      
+         SAC   512                                                              
+         LAM   AR2,AR2,SSBALET                                                  
+         L     R2,FULL                                                          
+         USING DMSYSHDR,R2                                                      
+         LH    R1,DSYFILES         R1=NUMBER OF FILES                           
+         LA    R2,DSYDATA          R2=A(FILES)                                  
+         USING DSFILHDR,R2                                                      
+*                                                                               
+LKD030   CLC   ISFXNUM,DSFILNUM    TEST FILE NUMBER                             
+         BE    LKD050                                                           
+         LA    R2,32(,R2)                                                       
+         BCT   R1,LKD030                                                        
+         DC    H'0'                DIE=INV FILE NUM                             
+*                                                                               
+LKD050   OC    DSEOF1,DSEOF1       TEST DSPACE NOT ZERO                         
+         BZ    LKDERR                                                           
+         CLC   ISOVLAST,DSEOF1     TEST OUR EOF NOT GREATER                     
+         BH    LKDERR                                                           
+         MVC   ISOVLAST,DSEOF1                                                  
+         MVC   ISPDLAST,DSEOF2                                                  
+         CR    RB,RB                                                            
+         B     LKD999                                                           
+*                                                                               
+LKD100   ICM   RF,15,=V(ADWAIT)                                                 
+         BZ    LOCKDTFX                                                         
+         TS    ISFAVAIL            DTF+2 =X'80' MEANS BUSY                      
+         BNZ   LKD102              BUSY - GO WAIT                               
+         NI    ISDTF,X'BF'         TURN OFF POST BIT (ISFAVAIL=X'FF')           
+         B     LOCKDTFX                                                         
+*                                                                               
+LKD102   LA    R1,ISDTF            POINT TO DTF                                 
+         OILH  GR1,X'FF00'         SET 'DO NOT WAIT ON THIS ECB'                
+         BASSM RE,RF               BRANCH AND SET 24-BIT MODE                   
+         LA    RE,LKD100                                                        
+         SAM31 ,                   BACK TO 31 BIT MODE                          
+         BR    RE                  TRY AGAIN                                    
+*                                                                               
+LKDERR   LTR   RB,RB               FORCE EOF SEARCH                             
+*                                                                               
+LKD999   SAC   0                                                                
+*                                                                               
+LOCKDTFX J     RTNXIT                                                           
+*                                                                               
+         LTORG                                                                  
+         DROP  R2,R3,R4                                                         
+         EJECT                                                                  
+***********************************************************************         
+* ROUTINE TO UNLOCK SYSTEM                                            *         
+***********************************************************************         
+FREEDTF  NTR1  BASE=*                                                           
+         ICM   R4,15,=V(SSB)                                                    
+         BZ    FREEDTFX                                                         
+         USING SSBD,R4                                                          
+         L     R3,P4               R3=A(DTF)                                    
+         USING ISDTF,R3                                                         
+*                                                                               
+FRE020   CLI   ISFSNUM,0           IGNORE LOCK IF NO SYSTEM                     
+         BE    FREEDTFX                                                         
+         TM    ISFFLAG,ISFGLOB     TEST GLOBAL RESOURCE                         
+         BZ    FRE100              NO                                           
+         XC    DUB,DUB                                                          
+         OI    DUB,X'20'                                                        
+         MVC   DUB+3(1),ISFSNUM                                                 
+*                                                                               
+         GOTO1 =V(LOCKSPC),DUB     ENQUIRE ON SYSTEM                            
+*                                                                               
+         L     R2,4(R1)            SET FULL TO A(SYSTEM)                        
+         USING DMSPACED,R2                                                      
+         MVC   FULL,DSPECB                                                      
+         NI    FULL,X'3F'                                                       
+         SAC   512                                                              
+         LAM   AR2,AR2,SSBALET                                                  
+         L     R2,FULL                                                          
+         USING DMSYSHDR,R2                                                      
+         LH    R1,DSYFILES         R1=NUMBER OF FILES                           
+         LA    R2,DSYDATA          R2 POINTS TO FILES                           
+         USING DSFILHDR,R2                                                      
+*                                                                               
+FRE030   CLC   ISFXNUM,DSFILNUM    TEST FILE NUMBER                             
+         BE    FRE050                                                           
+         LA    R2,32(,R2)                                                       
+         BCT   R1,FRE030                                                        
+         DC    H'0'                DIE=INV FILE NUM                             
+*                                                                               
+FRE050   MVC   DSEOF1,ISOVLAST     SET NEW VALUES                               
+         MVC   DSEOF2,ISPDLAST                                                  
+*                                                                               
+         SAC   0                                                                
+         MVI   DUB,X'10'                                                        
+         MVC   DUB+3(1),ISFSNUM                                                 
+         GOTO1 =V(LOCKSPC),DUB     FREE THE SYSTEM                              
+         B     FREEDTFX                                                         
+*                                                                               
+FRE100   MVI   ISFAVAIL,0          FREE LOCK FLAG                               
+         OI    ISDTF,X'40'         POST ECB COMPLETE                            
+*                                                                               
+FREEDTFX J     RTNXIT                                                           
+*                                                                               
+         LTORG                                                                  
+         EJECT                                                                  
+***********************************************************************         
+* ROUTINE TO LOCK PD DATA RECORD                                      *         
+***********************************************************************         
+LOCKBLK  NTR1  BASE=*,LABEL=*                                                   
+         TM    READTYPE,DOLOCKER                                                
+         BZ    LOCKBLKX                                                         
+*                                                                               
+LOCKBLK0 LT    RF,VSSB             TEST TO CALL DMLOCKER OFFLINE                
+         BZ    LOCKBLKX                                                         
+         OC    0(2,RF),0(RF)                                                    
+         BNZ   LOCKBLK1                                                         
+         TM    SSOSTAT2-SSOOFF(RF),SSOSLOCK                                     
+         BZ    LOCKBLKX                                                         
+*                                                                               
+LOCKBLK1 JZ    *+2                 NOT SUPPORTED YET                            
+*                                                                               
+LOCKBLKX XIT1                                                                   
+         LTORG                                                                  
+         EJECT                                                                  
+***********************************************************************         
+* VSAM ACB DSECT                                                      *         
+***********************************************************************         
+         IFGACB AM=VSAM                                                         
+***********************************************************************         
+* WORKING STORAGE DSECT                                               *         
+***********************************************************************         
+       ++INCLUDE DMISDDSWRK                                                     
+*                                                                               
+***********************************************************************         
+* OTHER INCLUDED DSECTS                                               *         
+***********************************************************************         
+*FASSB                                                                          
+         PRINT OFF                                                              
+       ++INCLUDE FASSB                                                          
+         PRINT ON                                                               
+*FASSBOFF                                                                       
+SSBOFFD  DSECT                                                                  
+         PRINT OFF                                                              
+       ++INCLUDE FASSBOFF                                                       
+         PRINT ON                                                               
+*FATCB                                                                          
+         PRINT OFF                                                              
+       ++INCLUDE FATCB                                                          
+         PRINT ON                                                               
+*DMDYNDDD                                                                       
+         PRINT OFF                                                              
+       ++INCLUDE DMDYNDDD                                                       
+         PRINT ON                                                               
+*DMXTNTD                                                                        
+         PRINT OFF                                                              
+       ++INCLUDE DMXTNTD                                                        
+         PRINT ON                                                               
+*DMSPACED                                                                       
+         PRINT OFF                                                              
+       ++INCLUDE DMSPACED                                                       
+         PRINT ON                                                               
+*DMDSYSHDR                                                                      
+         PRINT OFF                                                              
+       ++INCLUDE DMDSYSHDR                                                      
+       ++INCLUDE DMDSHDR                                                        
+         PRINT ON                                                               
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'003DMVSAM    12/28/18'                                      
+         END                                                                    

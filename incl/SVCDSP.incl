@@ -1,0 +1,783 @@
+*          DATA SET SVCDSP     AT LEVEL 001 AS OF 04/08/08                      
+*          DATA SET DDSVCAN    AT LEVEL 044 AS OF 09/06/07                      
+         COPY  PARMLIST                                                         
+         ACONTROL COMPAT(NOCASE)                                                
+FWRDSPC1 CSECT                                                                  
+FWRDSPC1 AMODE 31                                                               
+FWRDSPC1 RMODE ANY                                                              
+         ENTRY FWRDSPC1                                                         
+************************************************************                    
+***  THIS MODULE HAS SPECIAL LINKING/BINDING CONSIDERATIONS                     
+***  SEE PAN MEMBER DDSVCALNK                                                   
+************************************************************                    
+**                                                                              
+**    THIS ROUTINE IS PART OF SVC 247.  IT PROVIDES CROSS ADDRESS               
+**    SPACE DATASPACE SERVICES AS FOLLOWS:                                      
+**     1.  FOR THE CREATE FUNCTION IT WILL CREATE A SCOPE=ALL                   
+**         DATASPACE ON BEHALF OF THE CALLER PROVIDED ONE DOESN'T               
+**         ALREADY EXIST FOR THIS "ID".  IT THEN RECORDS THE                    
+**         EXISTANCE OF THIS DATASPACE & IT'S ID.                               
+**                                                                              
+**                                                                              
+         USING *,RF                                                             
+         BAKR  RE,0             SAVE REGS                                       
+         LAM   R0,RF,=16F'0'  CLEAR ALL THE AR'S FOR OUR USE                    
+         SAC   512                                                              
+         SYSSTATE ASCENV=AR   TELL MACROS THAT AS MODE IS AR                    
+         B     START                                                            
+         DC    C'&SYSDATE &SYSTIME'                                             
+         DC    C'PAN NAME=DDSVCAN, FROE LIB'                                    
+START    LAE   RC,0(RF,0)                                                       
+         DROP  RF                                                               
+         USING FWRDSPC1,RC                                                      
+         LR    R7,R1          SAVE INPUT PARM VALUE                             
+*NOP     B     CHECKESA       COULD BE XA UP TO NOW, IF SO ABEND                
+*                             AS ESA INSTRUCTIONS WILL NOW BE USED              
+ESAMAIN  L     R0,SIZE                                                          
+         STORAGE OBTAIN,LENGTH=(0)                                              
+         LR    RA,R1                                                            
+         USING DATA,RA                                                          
+         SAC   0              SWITCH TO PRIMARY MODE                            
+         SYSSTATE ASCENV=P    TELL MACROS THAT AS MODE IS PRIMARY               
+         ST    RD,SAVE+4      SAVE CALLERS SAVE AREA IN MINE                    
+         LA    R3,SAVE                                                          
+         ST    R3,8(RD)       STORE MY SAVE AREA IN HIS                         
+         LR    RD,R3          SET R13 TO MY SAVE AREA                           
+         ST    R7,CALLRPRM    PRESERVE CALLER'S PARM VALUE                      
+*                                                                               
+         L     R5,PSATOLD-PSA   GET CURRENT TCB                                 
+         USING TCB,R5                                                           
+         MODESET EXTKEY=TCB,WORKREG=8   SWITCH TO USER'S KEY                    
+         DROP  R5                                                               
+         L     R7,CALLRPRM                                                      
+         USING PARMLIST,R7                                                      
+         ICM   R5,15,ACTION   ACCESS USER'S ACTION CODE IN HIS KEY              
+         MODESET EXTKEY=ZERO,WORKREG=R8  GO BACK TO KEY 0                       
+         STCM  R5,15,ACTNCPY  CREATE OUR LOCAL COPY OF ACTION CODE              
+         BAS   RE,GETSSCT     GO GET OUR SUBSYSTEM CVT                          
+         LTR   RF,RF                                                            
+         BNZ   ERR1                                                             
+         LR    R3,R1                                                            
+         ST    R3,SSCTPTR     SAVE FOR LATER USE                                
+         USING SSCT,R3        ADDRESSIBILITY ON SSCT                            
+         CLC   ACTNCPY,=C'RSET'   RESET THE POINTER IN THE SSCT                 
+         BE    RESET                                                            
+         L     R6,SSCTSUSE    GET SUBSYSTEM OWNED FIELD                         
+         USING DDSVT,R6                                                         
+         LTR   R6,R6          HAVE WE INITIALIZED ALREADY?                      
+         BNZ   DSPC3          YES, SKIP INITIALIZATION                          
+         DROP  R3             DONE WITH SSCT                                    
+*DEBUG   WTO   MF=(E,MSG1)                                                      
+         BAS   RE,DDSVTINI    GO INITIALIZE MASTER TABLE                        
+         LR    R6,R1                                                            
+DSPC3    EQU   *                                                                
+         MVC   MSG1+12(20),DDSVTID  DISPLAY HEADER                              
+*DEBUG   WTO   MF=(E,MSG1)                                                      
+** NOW PROCESS USER'S REQUEST BY FIRST FINDING THE MATCHING                     
+** ID ENTRY IN THE ENTRY TABLE ARRAY                                            
+         L     R2,DDSETRYA         GET POINTER TO ARRAY                         
+         USING ETRY,R2                                                          
+         DROP  R6                                                               
+NXTENTRY CLI   ETRYID,X'FF'        ARE WE AT END OF TABLE                       
+         BE    IDUNKWN             YES, ID IS NOT IN THE TABLE                  
+         CLC   ETRYID(4),DDSID     DO WE HAVE A MATCH?                          
+         BE    DOACT1                                                           
+         LA    R2,ETRYLEN(R2)      BUMP PTR TO NEXT ENTRY                       
+         B     NXTENTRY            GO CHECK NEXT ENTRY                          
+IDUNKWN  EQU   *                                                                
+         DC    H'0'                                                             
+         LA    R9,RTCDEIDU                                                      
+         B     EXIT                                                             
+         SPACE 2                                                                
+DOACT1   CLC   ACTNCPY,=C'GETA'   GET ACCESS TO EXISTING DATASPACE              
+         BE    GETACCES                                                         
+         CLC   ACTNCPY,=C'MAKE'   CREATE DATASPACE                              
+         BE    MAKEDSPC                                                         
+         CLC   ACTNCPY,=C'DEL '   DELETE/DISABLE ENTRY                          
+         BE    DELETE1                                                          
+         CLC   ACTNCPY,=C'DISP'   INITIALIZE &/OR DISPLAY ENTRYS                
+         BE    DISP1                                                            
+         CLC   ACTNCPY,=C'PALE'   GET ACCESS2                                   
+         BE    ALESERV2                                                         
+         CLC   ACTNCPY,=C'GET3'   GET ACCESS3                                   
+         BE    ALESERV3                                                         
+         CLC   ACTNCPY,=C'PDEL'   DELETE ALET TO ADDRESS SPACE                  
+         BE    ALESERVD                                                         
+         CLC   ACTNCPY,=C'LOAD'   LOAD IN THIS MODULE                           
+         BE    LOADIT                                                           
+         CLC   ACTNCPY,=C'FIX1'   CHECK/FIX UP TROUBLE SPOTS                    
+         BE    FIXUP                                                            
+         MVC   MSGBADA+10(4),ACTNCPY                                            
+         WTO   MF=(E,MSGBADA)                                                   
+         DC    H'0'       ACTION VALUE UNKNOWN                                  
+         LTORG                                                                  
+MSGBADA  WTO   ' BAD ACTION CODE ',MF=L                                         
+         DROP  R7                                                               
+*                                                                               
+EXIT     DS    0H                                                               
+*                              FREEMAIN OF MY SAVE AREA                         
+         SAC   0               EXIT AR MODE                                     
+         SYSSTATE ASCENV=P                                                      
+         L     R0,SIZE                                                          
+         LR    R1,RA                                                            
+         STORAGE RELEASE,LENGTH=(0),ADDR=(1)                                    
+         LR    RF,R9           SET RETURN CODE                                  
+         LR    R0,R7           SET REASON CODE    12/5/97                       
+         PR                    RETURN TO CALLER                                 
+RTCDENF  EQU   12                                                               
+RTCDECNG EQU   16          CREATE FAILED                                        
+RTCDEIDU EQU   20          ID UNKOWN/NOT DEFINED                                
+RTCDEEXS EQU   24          REQUEST TO CREATE ALREADY EXISTING D.S.              
+RTCDEANG EQU   28                                                               
+         SPACE 3                                                                
+ERR1     STCM  RF,15,MSG2+16                                                    
+         WTO   MF=(E,MSG2)                                                      
+         B     EXIT                                                             
+*NOP     PR                    RETURN TO CALLER                                 
+         EJECT                                                                  
+         L      R5,16          GET CVT  FROM 10 HEX                             
+         USING  CVTMAP,R5                                                       
+         L      R5,CVTSMCA       GET SMCA                                       
+         DROP   R5                                                              
+*        MVC    SMFSID,SMCASID-SMCABASE(R5)  SMF SYSTEM ID                      
+BADTYPE  LH     R2,ABEND3F7                                                     
+         ABEND  (R2),DUMP,STEP,SYSTEM                                           
+**                                                                              
+ABEND3F7 DC     XL2'03F7'                                                       
+         EJECT                                                                  
+*** CREATE DATASPACE & GET SET FOR ADDRESSIBLITY                                
+MAKEDSPC EQU   *                                                                
+**               CREATE A SHARABLE DATASPACE FOR THE USER                       
+**               MAKING SURE ONE DOES NOT ALREADY EXIST                         
+**  INPUT, REG 7 HAS ADDRESS OF USER PARMS                                      
+**         REG 2 HAS ADDRESS OF ENTRY TABLE ARRAY ITEM                          
+         MVC   LFDSPSRV,DSPAREA        PRIME LIST FORM PARAMETER LIST           
+         USING PARMLIST,R7                                                      
+         USING ETRY,R2                                                          
+         TM    ETRYFLGS,ETRYCRTD   DOES D. S. ALREADY EXIST?                    
+         BO    EXISTS              YES, ERROR - RETURN                          
+         MVC   ETRYNAME(8),DSPNAME     GET USER'S DESIRED NAME                  
+         MVC   ETRYBLKS(4),DSPBLCKS    GET USER'S DESIRED NO OF BLKS            
+         DSPSERV CREATE,STOKEN=ETRYSTKN,NAME=ETRYNAME,SCOPE=ALL,       X        
+               BLOCKS=(ETRYBLKS),ORIGIN=ETRYORGN,KEY=EIGHT,            X        
+               MF=(E,LFDSPSRV)      ADDED 6/13/07 FOR REENTRANCY                
+         LTR   RF,RF                                                            
+         BNZ   CREATENG                                                         
+         MVC   ETRYID(4),DDSID     REGISTER                                     
+         TIME  BIN             R0=TIME R1=DATE                                  
+         STCM  R0,15,ETRYTIME                                                   
+         STCM  R1,15,ETRYDATE                                                   
+         L     R5,PSATOLD-PSA   GET CURRENT TCB                                 
+         USING TCB,R5                                                           
+         L     R6,TCBTIO        GET ADDRESS OF TIOT                             
+         DROP  R5                                                               
+         USING TIOT1,R6                                                         
+         MVC   ETRYJBNM,TIOCNJOB GET THE JOBNAME FROM TIOT                      
+         LA    R3,ASIDFLD                                                       
+         EXTRACT (R3),'S',FIELDS=(ASID),MF=(E,LFXTRACT)   REENT                 
+         L     R1,ASIDFLD                                                       
+         L     R9,0(,R1)                                                        
+         LOCASCB ASID=(R9)                                                      
+         DROP  R6                                                               
+*NOP     MVC   DSTOKEN(8),ETRYSTKN     RETURN STOKEN TO USER                    
+         MVC   DSORIGIN(4),ETRYORGN    RETURN ORIGIN TO USER                    
+         OI    ETRYFLGS,ETRYCRTD   INDICATED D.S  CREATED                       
+         DROP  R2,R7                                                            
+         SR    R9,R9               SET ZERO RETURN CODE -- ALL OK               
+         SR    R7,R7               CLEAR REASON CODE                            
+         B     EXIT                                                             
+CREATENG EQU   *                                                                
+         LA    R9,RTCDECNG                                                      
+         LR    R7,RF               SAVE CREATE RETURN CODE                      
+         B     EXIT                                                             
+EXISTS   EQU   *                                                                
+         LA    R9,RTCDEEXS                                                      
+         SR    R7,R7               CLEAR REASON CODE                            
+         B     EXIT                                                             
+         DC    H'0'                                                             
+ANUM     DC    F'6000'                                                          
+         EJECT                                                                  
+GETACCES DS    0H                                                               
+**               GET ACCESS TO A SHARED DATASPACE FOR THE USER                  
+**                                                                              
+**  INPUT, REG 7 HAS ADDRESS OF USER PARMS                                      
+**         REG 2 HAS ADDRESS OF DDS ENTRY TABLE ITEM                            
+**                                                                              
+         USING PARMLIST,R7                                                      
+         USING ETRY,R2                                                          
+         TM    ETRYFLGS,ETRYCRTD   DOES D.S. EXIST?                             
+         BNO   NOTFND              NO,ERROR - RETURN                            
+         MVC   EXFORM(ALEAREAL),ALEAREA   COPY EX PARAMETER LIST                
+         SAC   512                                                              
+         SR    R1,R1                                                            
+         SAR   R2,R1               MAKE SURE AR 2 IS ZERO                       
+         ALESERV ADD,STOKEN=ETRYSTKN,ALET=MYALET,AL=WORKUNIT,          X        
+               MF=(E,EXFORM)                                                    
+         SAC   0                                                                
+         SYSSTATE ASCENV=P                                                      
+         LTR   RF,RF                                                            
+         BNZ   ADDNG                                                            
+**  THE TARGETS OF THE FOLLOWING MOVES ARE IN THE CALLER'S STORAGE KEY          
+         MVC   DSALET,MYALET                                                    
+         MVC   DSORIGIN(4),ETRYORGN    RETURN ORIGIN TO USER                    
+         MVC   DSTOKEN(8),ETRYSTKN     RETURN STOKEN TO USER                    
+         SR    R9,R9                   CLEAR RETURN CODE REGISTER               
+*DEBUG   WTO   MF=(E,MSG1)                                                      
+         B     EXIT                                                             
+NOTFND   LA    R9,RTCDENF                                                       
+         SAC   0                                                                
+         SR    R7,R7                    CLEAR REASON CODE                       
+         MVC   MSG1(WTONIMV),WTONIW     COPY TEMPLATE                           
+         MVC   MSG1+29(14),ETRY         DISPLAY ENTRY IN TABLE                  
+         MVC   WTOLF(WTO1LFL),WTO1F                                             
+         WTO   TEXT=MSG1,MF=(E,WTOLF)                                           
+         B     EXIT                                                             
+ADDNG    MVC   MSG1(MSGACTMV),MSGACTW   COPY TEMPLATE                           
+         LR    R7,RF                    SAVE ACTUAL RETURN CODE                 
+         MVC   MSG1+15(4),ACTNCPY                                               
+         MVC   MSG1+27(4),DDSID                                                 
+         MVC   WTOLF(WTO1LFL),WTO1F                                             
+         SAC   0                                                                
+         WTO   TEXT=MSG1,MF=(E,WTOLF)                                           
+         DROP  R2,R7                                                            
+         LA    R9,RTCDEANG            ADD IS NO GOOD                            
+         B     EXIT                                                             
+MSGACTW  DC    AL2(L'MSGACT)                                                    
+MSGACT   DC    C' ACTION CODE=XXXX FOR ID XXXX FAILED'                          
+MSGACTMV EQU   *-MSGACTW                                                        
+*                                                                               
+WTONIW   DC    AL2(L'WTONI)                                                     
+WTONI    DC    C'DATASPACE NOT INITIALIZED: XXXXXXXXXXXXXX'                     
+WTONIMV  EQU   *-WTONIW                                                         
+*                                                                               
+DELETEW  DC    AL2(L'DELETEM)                                                   
+DELETEM  DC    C'#DDS ID XXXX DS HAS BEEN DELETED'                              
+DELETEMV EQU   *-DELETEW                                                        
+*                                                                               
+MSG2     WTO   'ERROR LOCATING #DDS SUBSYSTEM',ROUTCDE=(2),MF=L                 
+MSGSSCT  WTO   'WE HAVE SSCT      ',ROUTCDE=(2),MF=L                            
+         EJECT                                                                  
+ALESERV3 DS    0H                                                               
+**               GET ACCESS TO A SHARED DATASPACE FOR THE USER                  
+**               USE THE PASN ACCESS LIST                                       
+**                                                                              
+**  INPUT, REG 7 HAS ADDRESS OF USER PARMS                                      
+**         REG 2 HAS ADDRESS OF DDS ENTRY TABLE ITEM                            
+**                                                                              
+         USING PARMLIST,R7                                                      
+         USING ETRY,R2                                                          
+         TM    ETRYFLGS,ETRYCRTD   DOES D.S. EXIST?                             
+         BNO   NOTFND3             NO,ERROR - RETURN                            
+         MVC   EXFORM(ALEAREAL),ALEAREA   COPY EX PARAMETER LIST                
+         SAC   512                                                              
+         SR    R1,R1                                                            
+         SAR   R2,R1               MAKE SURE AR 2 IS ZERO                       
+         ALESERV ADD,STOKEN=ETRYSTKN,ALET=MYALET,AL=PASN,MF=(E,EXFORM)          
+         LTR   RF,RF                                                            
+         BNZ   ADDNG                                                            
+         SAC   0                                                                
+**  THE TARGETS OF THE FOLLOWING MOVES ARE IN THE CALLER'S STORAGE KEY          
+         MVC   DSALET,MYALET                                                    
+         MVC   DSORIGIN(4),ETRYORGN    RETURN ORIGIN TO USER                    
+         MVC   DSTOKEN(8),ETRYSTKN     RETURN STOKEN TO USER                    
+         SR    R9,R9                   CLEAR RETURN CODE REGISTER               
+*DEBUG   WTO   MF=(E,MSG1)                                                      
+         B     EXIT                                                             
+NOTFND3  LA    R9,RTCDENF                                                       
+         SR    R7,R7                   CLEAR REASON CODE                        
+         MVC   MSG1(WTONIMV),WTONIW     COPY TEMPLATE                           
+         MVC   MSG1+29(14),ETRY         DISPLAY ENTRY IN TABLE                  
+         MVC   WTOLF(WTO1LFL),WTO1F                                             
+         WTO   TEXT=MSG1,MF=(E,WTOLF)                                           
+         B     EXIT                                                             
+ADDNG3   MVC   MSGACT+17(4),ACTNCPY                                             
+         MVC   MSGACT+29(4),DDSID                                               
+         SAC   0                                                                
+         DROP  R2,R7                                                            
+         LR    R7,RF                  SAVE ACTUAL RETURN CODE                   
+         WTO   MF=(E,MSGACT)                                                    
+         LA    R9,RTCDEANG            ADD IS NO GOOD                            
+         B     EXIT                                                             
+         EJECT                                                                  
+ALESERV2 DS    0H                                                               
+**               GET ACCESS TO A SHARED **ADDRESS** SPACE                       
+**                                                                              
+**  INPUT, REG 7 HAS ADDRESS OF USER PARMS                                      
+**               IN THIS CASE THE USER PROVIDES AN STOKEN                       
+**                                                                              
+         USING PARMLIST,R7                                                      
+         MVC   EXFORM(ALEAREAL),ALEAREA   COPY EX PARAMETER LIST                
+         SAC   512                                                              
+         ALESERV ADD,STOKEN=DSTOKEN,ALET=MYALET,AL=WORKUNIT,           X        
+               ACCESS=PUBLIC,CHKEAX=NO,                                X        
+               MF=(E,EXFORM)                                                    
+**             MF=(E,ALEAREA)                                                   
+         LTR   RF,RF                                                            
+         BNZ   ADDNG                                                            
+         SAC   0                                                                
+**  THE TARGETS OF THE FOLLOWING MOVES ARE IN THE CALLER'S STORAGE KEY          
+         MVC   DSALET,MYALET           RETURN ALET GOTTEN                       
+         DROP  R7                                                               
+         SR    R9,R9                   CLEAR RETURN CODE REGISTER               
+**NOP    WTO   MF=(E,MSG1)                                                      
+         B     EXIT                                                             
+         EJECT                                                                  
+ALESERVD DS    0H                                                               
+**               DELETE ACCESS TO AN **ADDRESS** SPACE                          
+**                                                                              
+**  INPUT, REG 7 HAS ADDRESS OF USER PARMS                                      
+**               IN THIS CASE THE USER PROVIDES AN ALET                         
+**                                                                              
+         USING PARMLIST,R7                                                      
+         MVC   EXFORM(ALEAREAL),ALEAREA   COPY EX PARAMETER LIST                
+         SAC   512                                                              
+         MVC   MYALET,DSALET                                                    
+         ALESERV DELETE,ALET=MYALET,CHKEAX=NO,                         X        
+               MF=(E,EXFORM)                                                    
+***            MF=(E,ALEAREA)                                                   
+         LTR   R9,RF                                                            
+         BNZ   DELNG                                                            
+         SAC   0                                                                
+         DROP  R7                                                               
+         SR    R9,R9                   CLEAR RETURN CODE REGISTER               
+         B     EXIT                                                             
+DELNG    DC    H'0'                                                             
+         EJECT                                                                  
+DISP1    DS    0H                                                               
+**             DISPLAY THE DDS VECTOR TABLE                                     
+**                                                                              
+**  INPUT, REG 7 HAS ADDRESS OF USER PARMS                                      
+**         REG 6 HAS ADDRESS OF DDS VECTOR TABLE                                
+**                                                                              
+         MVC   WTOLF(WTO1LFL),WTO1F                                             
+         USING DDSVT,R6                                                         
+         MVC   MSG1INS(44),DDSVTID  DISPLAY HEADER                              
+         MVC   MSG1C,=CL7'DDSVT=>'                                              
+         MVC   MSG1(2),=H'54'                                                   
+         WTO   TEXT=MSG1,MF=(E,WTOLF)                                           
+         L     R2,DDSETRYA             GET POINTER TO ARRAY                     
+         USING ETRY,R2                                                          
+DISP1EOT CLI   ETRYID,X'FF'            IS IT END OF TABLE?                      
+         BE    DISP1EXT                                                         
+         MVC   MSG1INS(ETRYLEN),ETRYID   DISPLAY AN ENTRY                       
+         WTO   TEXT=MSG1,MF=(E,WTOLF)                                           
+         LA    R2,ETRYLEN(R2)          ADVANCE TO NEXT ENTRY                    
+         B     DISP1EOT                                                         
+DISP1EXT SR    R9,R9                                                            
+         DROP  R2,R6                                                            
+         B     EXIT                                                             
+         EJECT                                                                  
+         PRINT GEN                                                              
+WTO1F    WTO   TEXT=(R0),,ROUTCDE=(22),MF=L     THIS IS A MODEL                 
+WTO1LFL  EQU   *-WTO1F                                                          
+         PRINT NOGEN                                                            
+DELETE1  DS    0H                                                               
+**      DELETE FUNCTIONS                                                        
+**        IF THIS USER/JOB IS THE DATASPACE CREATOR DELETE IT                   
+**        OTHERWISE JUST DELETE THE ALET                                        
+**                                                                              
+**  INPUT, REG 7 HAS ADDRESS OF USER PARMS                                      
+**         REG 2 HAS ADDRESS OF DDS ENTRY TABLE ITEM                            
+         USING ETRY,R2                                                          
+         TM    ETRYFLGS,ETRYCRTD   DOES D. S. ALREADY EXIST?                    
+         BNO   NOTFND                  NO, FAIL                                 
+         SAC   0                                                                
+         NI    ETRYFLGS,X'7F'      TURN OFF FLAG FOR NOW                        
+         MVC   MSG1(DELETEMV),DELETEW   COPY TEMPLATE                           
+         MVC   MSG1+10(4),ETRYID        FILL IN NAME/ID                         
+         MVC   WTOLF(WTO1LFL),WTO1F                                             
+         WTO   TEXT=MSG1,MF=(E,WTOLF)                                           
+** LATER ON MAKE SURE USER IS CREATOR AND ACTUALLY DELETE THE DSP               
+         DROP  R2                                                               
+         SR    R9,R9                                                            
+         B     EXIT                                                             
+         SPACE 2                                                                
+RESET    L     R3,SSCTPTR     GET PTR TO THE SSCT                               
+         USING SSCT,R3        ADDRESSIBILITY ON SSCT                            
+         MODESET EXTKEY=ZERO,SAVEKEY=(2),WORKREG=(R9)                           
+         MVC   SSCTSUS2,SSCTSUSE       SAVE COPY BEFORE RESETTING               
+         XC    SSCTSUSE,SSCTSUSE                                                
+         MODESET KEYADDR=(2),WORKREG=(R9)                                       
+         DROP  R3                                                               
+         SR    R9,R9                                                            
+         B     EXIT                                                             
+         EJECT                                                                  
+FIXUP    DC    H'0'                                                             
+         EJECT                                                                  
+LOADIT   DS    0H                                                               
+**             LOAD THIS MODULE INTO COMMON STORAGE AND RECORD IT'S             
+**             ADDRESS IN THE DDSVT FOR USAGE BY SVC2XX                         
+**                                                                              
+**  INPUT, REG 7 HAS ADDRESS OF USER PARMS                                      
+**         REG 6 HAS ADDRESS OF DDS VECTOR TABLE                                
+**                                                                              
+         USING DDSVT,R6                                                         
+         USING PARMLIST,R7                                                      
+         L     R1,DSPBLCKS   GET ADDRESS TO STORE                               
+         ST    R1,DDSRTN1    SAVE THE ADDRESS IN THE VECTOR TABLE               
+         SR    R9,R9                                                            
+         B     EXIT                                                             
+         SPACE 4                                                                
+         MODESET MF=(E,PROBSTAT)   GO TO PROBLEM STATE                          
+         STORAGE OBTAIN,LENGTH=4096                                             
+         LR    R8,R1                                                            
+         USING LOADAREA,R8                                                      
+         MVC   RELODCB(DCBLEN),LOADDCB                                          
+         MVC   RELOOPEN(OPENLEN),OPENMFL                                        
+         LA    R2,RELODCB                                                       
+         LA    R3,RELOOPEN                                                      
+         USING IHADCB,R2                                                        
+         OPEN  ((R2),INPUT),MF=(E,(R3))                                         
+         TM    DCBOFLGS,X'10'    IS DCB OPEN?                                   
+         BZ    NOTOPEN           ERROR IF NOT                                   
+         BLDL  (R2),BUILDL                                                      
+         LTR   RF,RF                                                            
+         BNZ   BLDLERR                                                          
+         LOAD  DE=DATASPC,DCB=(R2)                                              
+         LTR   RF,RF                                                            
+         BNZ   LOADERR                                                          
+         LR    R4,R1           GET AUTHCODE AND LENGTH                          
+         MODESET MF=(E,SUPSTATE)   GO TO SUPERVISOR STATE                       
+         STORAGE OBTAIN,LENGTH=(R4),SP=241                                      
+         LR    R3,R1                                                            
+         LA    R9,SFLOAD                 GET PTR TO PARM LIST                   
+         LOAD  DE=DATASPC,ADDR=(R3),DCB=(R2),                          X        
+               SF=(E,(R9)),ERRET=LOADERR                                        
+         LR    R5,R0         PRESERVE LOAD RESULTS                              
+         ST    R1,DDSRTN1    SAVE THE ADDRESS IN THE VECTOR TABLE               
+         SR    R9,R9                                                            
+         B     EXIT                                                             
+         DROP  R6,R8                                                            
+         SPACE 2                                                                
+NOTOPEN  DC    H'0'                                                             
+BLDLERR  LA    R1,BLDLABD                                                       
+         B     ABENDDMP                                                         
+BLDLABD  EQU   1                                                                
+LOADABD  EQU   2                                                                
+ABENDDMP ABEND (R1),DUMP,, SER                                                  
+ABEND    ABEND (R1),,,USER                                                      
+          SPACE 3                                                               
+*                     LOAD FUNCTION FAILED - TELL USER                          
+*                                                                               
+LOADERR  LA    R1,LOADABD                                                       
+         B     ABENDDMP                                                         
+SFLOAD   LOAD  SF=L                                                             
+LOADLNG  EQU   *-SFLOAD    CALCULATE LENGTH FOR LIST FORM AREA                  
+*                                                                               
+OPENMFL  OPEN  (,,),MF=L                                                        
+OPENLEN  EQU   *-OPENMFL                                                        
+SUPSTATE MODESET KEY=ZERO,MODE=SUP,MF=L                                         
+PROBSTAT MODESET KEY=NZERO,MODE=PROB,MF=L                                       
+LOADDCB  DCB   DSORG=PO,MACRF=(R),DDNAME=LOADLIB                                
+DCBLEN   EQU   *-LOADDCB                                                        
+BUILDL   DS    0F                                                               
+         DC    H'01'        NUMBER OF ENTRIES                                   
+         DC    H'60'        LENGTH OF EACH ENTRY                                
+DATASPC  DC    CL8'FWRDSPC1'                                                    
+         DC    XL52'00'                                                         
+         EJECT                                                                  
+CHECKESA L     R2,CVTPTR       GET CVT POINTER                                  
+         USING CVTMAP,R2                                                        
+         L     R3,CVTDCB                                                        
+         TM    CVTDCB,CVTOSEXT  IS CVT-OS-LVL AREA PRESENT?                     
+         BNO   NOOSLVL          BRANCH IF NOT                                   
+         TM    CVTOSLVL,CVTXAX  IS EXA/370 SUPPORTED ?                          
+         BNO   NOTESA                                                           
+         B     ESAMAIN                                                          
+         DROP  R2                                                               
+NOTESA   EQU   *                                                                
+NOOSLVL  EQU   *                                                                
+         ABEND 1                                                                
+GETSSCT  DS    0H                                                               
+         ST    RE,SUBSAVE                                                       
+         STM   R2,RB,SUBSAVE+4  SAVE REGS                                       
+         LA    R7,SSIBAREA      GET ADDRESS OF SSIBAREA                         
+         XC    SSIBAREA,SSIBAREA                                                
+         USING SSIB,R7                                                          
+         MVC   SSIBID,MYSSIBID  INSERT SSIB IDENT                               
+         LH    R8,SIZESSIB      GET SSIB LENGTH                                 
+         STH   R8,SSIBLEN       SET SSIB LENGTH INTO SSIB                       
+         MVC   SSIBSSNM,MSTRID  INDENTIFY MASTER SUBSYSTEM                      
+         MVC   SSIBJBID,DDSSSI  STORE DDS SUBSYSTEM NAME                        
+*                                                                               
+         LA    R5,SSOBAREA     GET ADDRESS OF SSOB STORAGE                      
+         USING SSOB,R5                                                          
+         XC    SSOBAREA,SSOBAREA          ZERO OUT SSOB & SSOBVS                
+         LA    R8,SSVSSIZS(0)  GET SSVS LENGTH - SHORT FORM                     
+         STH   R8,SSVSLEN      SET SSVS LENGTH INTO SSOB                        
+         SPACE                                                                  
+         MVC   SSOBID,MYSSOBID                                                  
+         LA    R8,SSOBHSIZ(0)                                                   
+         STH   R8,SSOBLEN      SET SSOB LENGTH                                  
+         LH    R8,VERFYFNC                                                      
+         STH   R8,SSOBFUNC                                                      
+         LA    R8,SSVSBGN                                                       
+         ST    R8,SSOBINDV     POINT TO SSVS                                    
+         ST    R7,SSOBSSIB     POINT TO SSIB                                    
+         ST    R5,SSOBPTR      POINT TO SSOB                                    
+         LA    R1,SSOBPTR      GET ADDRESS OF SSOB POINTER                      
+         PRINT GEN                                                              
+         IEFSSREQ               ISSUE SSI REQUEST                               
+         DROP  R7               DONE WITH SSIB                                  
+         SPACE                                                                  
+         PRINT NOGEN                                                            
+         LTR   RF,RF            TEST SSI RETURN CODE                            
+         BZ    CKSSVS                                                           
+*NOP     LA    RF,16                                                            
+         DC    H'0'                                                             
+         B     VSSIEXIT                                                         
+CKSSVS   LA    R1,SSVSSNAM(0,0) GET SUCCESSFUL RETURN CODE                      
+         C     R1,SSOBRETN      IS IT A SUBSYSTEM?                              
+         BE    LOADSSCT         YES, GET THE SSCT ADDRESS                       
+         LA    RF,12                                                            
+         DC    H'0'             FOR DEIS ASMIDF PROBLEM                         
+         B     VSSIEXIT                                                         
+LOADSSCT L     R1,SSVSSCTP      GET SSCT ADDRESS                                
+VSSIEXIT EQU   *                                                                
+         LM    R2,RB,SUBSAVE+4  RESTORE REGS                                    
+         L     RE,SUBSAVE                                                       
+         BR    RE               RETURN TO CALLER                                
+         EJECT                                                                  
+DDSVTINI DS    0H                                                               
+         ST    RE,SUBSAVE                                                       
+         STM   R2,RB,SUBSAVE+4  SAVE REGS                                       
+LOADTBL  LOAD  EP=FWRDSPTB,ERRET=TABERROR                                       
+         LR    R3,R0            GET ADDRESS OF ID TABLE                         
+         ST    R3,IDTAB                                                         
+         SR    R4,R4                                                            
+TESTEND  CLI   0(R3),X'FF'      ARE WE AT THE END OF THE TABLE?                 
+         BE    EOFTAB           YES, GO CONTINUE                                
+         LA    R4,1(0,R4)       ADD 1 TO COUNT                                  
+         LA    R3,4(0,R3)       ADVANCE TO NEXT ENTRY                           
+         B     TESTEND          GO CHECK NEXT ENTRY                             
+EOFTAB   LA    R5,ETRYLEN(,0)   GET LENGTH OF ENTRY                             
+         STH   R5,HALFWRK                                                       
+         MH    R4,HALFWRK       GET TOTAL SIZE OF ARRAY                         
+         AH    R4,=H'100'       ALLOW FOR OVERHEAD                              
+         CH    R4,PAGE          DOES SIZE EXCEED 1 PAGE                         
+         BH    TOOBIG           YES, DIE                                        
+         STORAGE OBTAIN,LENGTH=(4),SP=241                                       
+         LR    R3,R1            REALLY NEED TO SERIALIZE UPDATES                
+         USING DDSVT,R3                                                         
+         XC    DDSVT(256),DDSVT CLEAR IT OUT                                    
+         MVC   DDSVTID,=C'DDSV'                                                 
+         ST    R4,DDSVTSIZ      RECORD HOW BIG THIS AREA IS                     
+         L     R5,PSATOLD-PSA   GET CURRENT TCB                                 
+         USING TCB,R5                                                           
+         L     R6,TCBTIO        GET ADDRESS OF TIOT                             
+         L     R4,TCBJSCB       GET JSCB ADDRESS                                
+         DROP  R5                                                               
+         USING TIOT1,R6                                                         
+         MVC   DDSJOBNM,TIOCNJOB GET THE JOBNAME FROM TIOT                      
+         DROP  R6                                                               
+         USING IEZJSCB,R4                                                       
+         L     R4,JSCBACT                                                       
+         L     R5,JSCBSSIB                                                      
+         USING SSIB,R5                                                          
+         MVC   DDSJOBID,SSIBJBID     GET JES JOB NO.                            
+         STCM  R4,15,MSG1+12                                                    
+         MVC   MSG1INS(20),DDSVTID  DISPLAY HEADER                              
+         WTO   MF=(E,MSG1)                                                      
+         L     R6,IDTAB         GET ADDRESS OF ID TABLE                         
+         LA    R5,DDSARRAY                                                      
+         ST    R5,DDSETRYA      STORE POINTER TO ARRAY                          
+         USING ETRY,R5                                                          
+TESTEND2 CLI   0(R6),X'FF'      ARE WE AT THE END OF THE TABLE?                 
+         BE    EOFTAB2          YES, GO CONTINUE                                
+         XC    ETRY(ETRYLEN),ETRY CLEAR OUT ENTRY                               
+         MVC   ETRYID,0(R6)     COPY ID FROM TABLE                              
+         LA    R6,4(R6)         BUMP PTR TO NEXT ENTRY IN ID TABLE              
+         LA    R5,ETRYLEN(R5)   BUMP PTR TO NEXT ENTRY                          
+         B     TESTEND2         GO CHECK NEXT ENTRY                             
+EOFTAB2  DS    0H                                                               
+         MVC   ETRYID,=XL4'FFFFFFFF'  MARK END OF TABLE                         
+         DROP  R5                                                               
+         L     R6,SSCTPTR                                                       
+         USING SSCT,R6          ADDRESSIBILITY ON SSCT                          
+         CLC   SSCTID,=C'SSCT'  DOUBLE CHECK IT IS SSCT                         
+         BNE   SSCTPTNG         AVOID KEY 0 UPDATE                              
+         ST    R3,SSCTSUSE      KEY 0 UPDATE SUBSYSTEM OWNED FIELD              
+         LR    R1,R3            RETURN DDSVT ADDRESS TO CALLER                  
+         LM    R2,RB,SUBSAVE+4  RESTORE REGS                                    
+         L     RE,SUBSAVE                                                       
+         DROP  R4,R3,R6                                                         
+         BR    RE               RETURN TO CALLER                                
+TOOBIG   DC    F'0'                                                             
+SSCTPTNG DC    H'0'                                                             
+TABERROR LA    R2,1                                                             
+ASKOP    XC    ECB,ECB                                                          
+         LA    6,LOADFMSG     POINT TO MESSAGE TEXT                             
+         LA    5,OPANSWR                                                        
+         LA    R9,ECB                                                           
+         MVC   WTOLF(WTORLL),WTORL                                              
+         PRINT GEN                                                              
+**       WTOR  TEXT=((6),(5),4,ECB),MF=(E,WTORL)                                
+         WTOR  TEXT=((6),(5),4,(9)),                                   C        
+               MF=(E,WTOLF)                                                     
+**             ROUTCDE=11,DESC=12,                                              
+*   TEXT ADDR, REPLY ADDR, REPLY LENGTH, ECB ADDR)                              
+*                                                                               
+WAIT     WAIT  ECB=(9)                                                          
+         CLI   OPANSWR,C'R'    WAS REPLY RETRY?                                 
+         BE    LOADTBL                                                          
+         LA    R2,1                                                             
+         CLI   OPANSWR,C'E'    WAS REPLY END?                                   
+         BE    ABENDXIT                                                         
+         B     ASKOP           ASK AGAIN                                        
+WTORL    WTOR  TEXT=(,,,),ROUTCDE=11,DESC=12,MF=L     LIST FORM                 
+WTORLL   EQU   *-WTORL                                                          
+         PRINT NOGEN                                                            
+LOADFMSG DC    AL2(LOADFLEN)                                                    
+         DC    AL2(0)                                                           
+         DC   C'LOAD FAILED FOR FWRDSPTB (D.S. ID TABLE) REPLY R OR E'          
+LOADFLEN EQU   *-LOADFMSG                                                       
+PREFIX   DS    H                LENGTH TO GO WITH BUFFER                        
+ABENDXIT ABEND (R2),,,USER                                                      
+         USING SSVT,R5                                                          
+         EJECT                                                                  
+DDSVT    DSECT                                                                  
+DDSVTID  DS    CL4                                                              
+DDSJOBNM DS    CL8                                                              
+DDSJOBID DS    CL8                                                              
+DDSCDATE DS    F           DATE OF CREATION                                     
+DDSCTIME DS    F           TIME OF CREATION                                     
+DDSVTSIZ DS    F           SIZE OF THIS AREA                                    
+DDSETRYA DS    A           ADDRESS OF DATASPACE ENTRIES                         
+DDSRTN1  DS    A           ADDRESS OF PRELOADED COPY OF THIS MODULE             
+         DS    A           EXPANSION 2                                          
+DDSVTLEN EQU   *-DDSVT                                                          
+DDSARRAY DS    X                                                                
+ETRY     DSECT                                                                  
+ETRYID   DS    CL4         DDS MNEMONIC ID                                      
+ETRYFLGS DS    XL2                                                              
+ETRYCRTD EQU   X'80'       DATASPACE CREATED                                    
+ETRYJBNM DS    CL8         CREATOR/OWNER JOB NAME                               
+ETRYNAME DS    CL8         DATASPACE NAME                                       
+ETRYSTKN DS    CL8         STOKEN OF DATASPACE                                  
+ETRYBLKS DS    XL4         NUMBER OF BLOCKS FOR CREATION                        
+ETRYORGN DS    A           ORIGIN                                               
+ETRYASID DS    XL4         ASID OF OWNER                                        
+ETRYDATE DS    XL4         DATE OF DATA SPACE CREATION                          
+ETRYTIME DS    XL4         TIME OF DATA SPACE CREATION                          
+ETRYLEN  EQU   *-ETRYID                                                         
+*  OWNED DATA SPACE TABLE  SWITCH KEY, FETCH PROTECT?                           
+*                                                                               
+*  ASID OF OWNER, JOB NAME, JOB NUMBER, DATE/TIME OF CREATION                   
+*  'ID'                                                                         
+*  STOKEN                                                                       
+*                                                                               
+*                                                                               
+*        COPY  PARMLIST   * NOW DONE VIA ++INCLUDE                              
+LOADAREA DSECT                                                                  
+RELODCB  DS    XL(DCBLEN)                                                       
+RELOOPEN DS    XL(OPENLEN)                                                      
+RELOLOAD DS    XL(LOADLNG)                                                      
+DATA     DSECT                                                                  
+         DS    0D                                                               
+SAVE     DS    20F                                                              
+SUBSAVE  DS    20F                                                              
+BUFFER   DS    F                                                                
+CALLRPRM DS    A                                                                
+MYALET   DS    F                                                                
+COMPTR   DS    F                                                                
+ASIDFLD  DS    F                                                                
+SADDR    DS    F               SNAPX  STARTING ADDRESS                          
+EADDR    DS    F               SNAPX  ENDING ADDRESS                            
+SSOBPTR  DS    A                PTR TO SSOB                                     
+SSCTPTR  DS    A                PTR TO SSCT                                     
+ECB      DS    F                                                                
+IDTAB    DS    A                DATASPACE ID TABLE                              
+HALFWRK  DS    H                HALFWORD WORK AREA                              
+ACTNCPY  DS    CL4              COPY OF USER'S ACTION CODE                      
+OPANSWR  DS    CL6              AREA WHERE WTOR WILL PUT OPERATOR REPLY         
+SSOBAREA DS    XL60             SSOBLN1A SHOULD BE THE EQUATE USED.             
+**OBVS   DS    XL'SSOBVS'       VERFIY SSI EXTENSION AREA                       
+SSIBAREA DS    XL24            SSIB AREA                                        
+LOADGM   DS    XL10                                                             
+EXFORM   DS    XL(ALEAREAL)                                                     
+LFDSPSRV DS    XL(DSPAREAL)                                                     
+LFXTRACT DS    XL(XTRACAL)                                                      
+WTOLF    DS    XL(WTO1LFL)      SPACE FOR LIST FORM OF WTO                      
+MSG1     DS    XL2              LENGTH OF WTO MESSAGE                           
+MSG1C    DS    CL7                                                              
+MSG1INS  DS    CL44                                                             
+         DS    C                                                                
+FWRDSPC1 CSECT                                                                  
+SIZE     DC    F'800'    REMEMBER THE DOUBLE WORD ALIGNMENT OF GETMAIN          
+ECBWAIT  DC    F'0'                                                             
+*IDTAB    DC    V(FWRDSPTB)       DATASPACE ID TABLE                            
+PAGE     DC    H'4096'                                                          
+OVERHEAD DC    AL2(DDSVTLEN)                                                    
+SIZESSIB DC    AL2(SSIBSIZE)                                                    
+SIZESSOB DC    AL2(SSOBHSIZ)     SIZE OF SSOB HEADER ALONE                      
+SIZESSVS DC    AL2(SSVSSIZE)                                                    
+VERFYFNC DC    AL2(SSOBVERS)     VERIFY FUNCTION CODE VALUSE                    
+MYSSIBID DC    C'SSIB'                                                          
+MYSSOBID DC    C'SSOB'                                                          
+MSTRID   DC    C'MSTR'                                                          
+DDSSSI   DC    C'#DDS    '     NAME OF DDS SUBSYSTEM                            
+#DDS     DC    CL4'#DDS'                                                        
+F1SA     DC    C'F1SA'                                                          
+OFFHIBIT DC    X'7FFFFFFF'                                                      
+EIGHT    DC    X'88'                                                            
+ALEAREA  ALESERV MF=L          ALESERV PARM AREA                                
+ALEAREAL EQU   *-ALEAREA                                                        
+DSPAREA  DSPSERV MF=(L,XYZ)   DSPSERV PARM AREA - MODEL                         
+DSPAREAL EQU   *-DSPAREA                                                        
+*                                                                               
+EXTRAREA EXTRACT MF=L                                                           
+XTRACAL  EQU   *-EXTRAREA                                                       
+         DS    0F                                                               
+LOGSNAP  DCB   DDNAME=LOGSNAP,RECFM=VBA,LRECL=125,BLKSIZE=882,MACRF=W, X        
+               DSORG=PS                                                         
+TYPE1    EQU    1                                                               
+TYPE2    EQU    2                                                               
+R0       EQU    00                                                              
+R1       EQU    01                                                              
+R2       EQU    02                                                              
+R3       EQU    03                                                              
+R4       EQU    04                                                              
+R5       EQU    05                                                              
+R6       EQU    06                                                              
+R7       EQU    07                                                              
+R8       EQU    08                                                              
+R9       EQU    09                                                              
+RA       EQU    10                                                              
+RB       EQU    11                                                              
+RC       EQU    12                                                              
+RD       EQU    13                                                              
+RE       EQU    14                                                              
+RF       EQU    15                                                              
+         BAKR  R14,0              SAVE STATUS                                   
+         SAC   512                SWITCH TO AR MODE                             
+         SYSSTATE ASCENV=AR       TELL MACROS THAT AR MODE IS ACTIVE            
+         LAE   R12,0(R15,0)       SET UP BASE REG                               
+         SAC   512              SWITCH TO A/R MODE                              
+         SYSSTATE ASCENV=AR     TELL MACROS THAT AS MODE IS ACC REG             
+*NOP     ALESERV DELETE,ALET=DSPALET                                            
+*        BNZ   ABEND                                                            
+*NOP     DSPSERV DELETE,STOKEN=DSTOKEN                                          
+*        BNZ   ABEND                                                            
+         B     EXIT                                                             
+         EJECT                                                                  
+***                                                                             
+R12      EQU    12                                                              
+R14      EQU    14                                                              
+R15      EQU    15                                                              
+         CVT    DSECT=YES                                                       
+         IEESMCA                                                                
+         IEFJESCT               JES CT                                          
+         IEFJSSIB               SSIB                                            
+         PRINT  GEN                                                             
+         IEFJSCVT               SSCT                                            
+         IEFJSSOB (VS,EN)                                                       
+         IEFJSSVT               SUB SYSTEM VECTOR TABLE                         
+         PRINT  NOGEN                                                           
+         IEFTIOT1       TCBTIO  TIOT1 IN USING                                  
+         IEZJSCB                IEZJSCB                                         
+         IHAPSA                                                                 
+         IKJTCB                 TCB                                             
+         DCBD  DSORG=PS,DEVD=DA                                                 
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'001SVCDSP    04/08/08'                                      
+         END                                                                    

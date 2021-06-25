@@ -1,0 +1,221 @@
+*          DATA SET EZPARSE    AT LEVEL 001 AS OF 07/23/09                      
+*CATALP EZPARSE                                                                 
+***********************************************************************         
+* EZPARSE - SEPARATES SEMICOLON-DELIMITED RECORD INTO FIELDS                    
+*                                                                               
+* ON ENTRY: P1 - A(RECORD)                                                      
+*           P1 - HOB 'W' = WORKER FILE 31 RECORD                                
+*           P2 - RECORD LENGTH (NOT NEEDED IF 'W' IS PASSED IN P1)              
+*           P3 - A(FLDTAB AREA)                                                 
+*           P3 - HOB = MAX NUMBER OF 5-BYTE FIELDS (SEE EZFLDTAB)               
+*                                                                               
+* ON EXIT:  FLDTAB FILLED IN, EQUAL CONDITION CODE                              
+*           UNEQUAL CONDITION CODE IN CASE OF ERRORS                            
+*           P3 = A(FIELD IN ERROR)                                              
+*           P3 HOB = ERROR CODE                                                 
+*                    01 - EMPTY RECORD                                          
+*                    02 - FIELD TABLE TOO SMALL                                 
+***********************************************************************         
+*                                                                               
+         TITLE 'EZPARSE - EASI RECORD PARSER'                                   
+*                                                                               
+EZPARSE  CSECT                                                                  
+         PRINT NOGEN                                                            
+         NMOD1 EZPRWKLQ,**EZP**,RR=R2,CLEAR=YES                                 
+         USING EZPRWKD,RC                                                       
+*                                                                               
+         LR    R7,R1               SAVE R1                                      
+*                                                                               
+* P1                                                                            
+         MVC   RTYPE,0(R1)         W OR X'00'                                   
+*                                                                               
+         L     RF,0(R1)            A(RECORD)                                    
+         LA    RF,0(RF)            CLEAR HOB                                    
+         CLI   RTYPE,C'W'                                                       
+         BNE   *+8                                                              
+         LA    RF,4(RF)                                                         
+         ST    RF,AREC                                                          
+* P2                                                                            
+         MVC   LREC,4(R1)                                                       
+         CLI   RTYPE,C'W'                                                       
+         BNE   *+20                                                             
+         L     RF,0(R1)            A(RECORD)                                    
+         LH    RF,0(RF)            REC LEN                                      
+         AHI   RF,-4                                                            
+         ST    RF,LREC                                                          
+* P3                                                                            
+         ICM   RF,15,8(R1)         A(FLDTAB)                                    
+         LA    RF,0(RF)            CLEAR HOB                                    
+         ST    RF,AFLDTAB                                                       
+*                                                                               
+         LLC   RF,8(R1)            MAX NUM OF LINES                             
+         MHI   RF,FTLENQ                                                        
+         ST    RF,LFLDTAB                                                       
+*                                                                               
+         B     PARSE                                                            
+*                                                                               
+EQXIT    CR    RB,RB                                                            
+         J     XIT                                                              
+NEQXIT   LTR   RB,RB                                                            
+XIT      XIT1                                                                   
+*                                                                               
+*                                                                               
+*                                                                               
+PARSE    DS    0H                                                               
+* CLEAR FIELD TABLE                                                             
+         L     RE,AFLDTAB                                                       
+         L     RF,LFLDTAB          L'FLDTAB                                     
+         XCEFL                                                                  
+*                                                                               
+         L     RF,AREC             A(RECORD)                                    
+         CLC   =C'31',0(RF)        INVOICE HEADER?                              
+         BNE   PARSE03                                                          
+*                                                                               
+         CLI   RTYPE,C'W'                                                       
+         BNE   PARSE03                                                          
+         OI    FLAGS,X'20'         INDICATE WORKER FILE 31 RECORD               
+*                                                                               
+* FIND END OF DATA                                                              
+*                                                                               
+PARSE03  DS    0H                                                               
+         L     R1,AREC             A(RECORD)                                    
+         L     R2,LREC             L'RECORD                                     
+         AR    R2,R1                                                            
+         BCTR  R2,0                R2 = A(LAST CHAR IN THE RECORD)              
+*                                                                               
+* EXAMINE BYTES, BACKING UP FROM END OF THE RECORD,                             
+* UNTIL >X'40' CHARACTER IS FOUND                                               
+*                                                                               
+PARSE05  DS    0H                                                               
+         MVI   ERROR,X'01'                                                      
+         CR    R2,R1               WENT PAST START OF RECORD?                   
+         BL    PARSENQX            EMPTY RECORD                                 
+*                                                                               
+         CLI   0(R2),C' '                                                       
+         BH    *+8                                                              
+         BCT   R2,PARSE05                                                       
+*                                                                               
+* LAST HIGHER-THAN-SPACE CHARACTER FOUND                                        
+* IT COULD BE A SEMICOLON, OR LAST CHARACTER OF A DATA FIELD                    
+* MAKE SURE R2 POINTS ONE BYTE PAST THE LAST DATA CHARACTER                     
+*                                                                               
+         CLI   0(R2),X'5E'         SEMICOLON?                                   
+         BE    *+8                                                              
+* R2 -> LAST FIELD'S DELIMITER, COULD BE X'00',15,40,5E                         
+         LA    R2,1(R2)                                                         
+*                                                                               
+* NOW GO THROUGH THE RECORD BYTE-BY-BYTE FROM THE START                         
+* SAVING FIELD START ADDRESSES AND FIELD LENGTHS IN FLDTAB                      
+*                                                                               
+PARSE08  DS    0H                                                               
+         L     R5,AFLDTAB          A(FLDTAB)                                    
+         L     R6,LFLDTAB          L'FLDTAB                                     
+         AR    R6,R5                                                            
+         USING FLDTABD,R5                                                       
+*                                                                               
+         L     R1,AREC             A(RECORD)                                    
+         SR    R4,R4               FIELD COUNTER                                
+*                                                                               
+PARSE10  DS    0H                  START OF A NEW FIELD HERE                    
+         LR    R3,R1               R3 = A(START OF THE FIELD)                   
+         STCM  R3,15,FTFLDADR      SAVE A(FIELD) IN FLDTAB                      
+         AHI   R4,1                INCREMENT FIELD COUNTER                      
+*                                                                               
+* IF WE HAVE A WORKER FILE RECORD                                               
+* PROCESS SPECIAL SAVE FIELDS - 2 AND 36                                        
+*                                                                               
+         TM    FLAGS,X'20'         WORKER FILE RECORD?                          
+         BZ    PARSE11                                                          
+*                                                                               
+         CHI   R4,2                                                             
+         BE    *+12                                                             
+         CHI   R4,37                                                            
+         BNE   PARSE11                                                          
+*                                                                               
+         LA    R1,12(R1)                                                        
+*                                                                               
+PARSE11  DS    0H                                                               
+         CR    R1,R2               EOR?                                         
+         BNL   PARSE15             YES                                          
+*                                                                               
+         CLI   0(R1),X'5E'         EOF?                                         
+         BE    PARSE20             YES                                          
+         BNE   PARSE30             NO - A DATA CHARACTER                        
+*                                                                               
+PARSE15  DS    0H                  REACHED EOR                                  
+         OI    FLAGS,X'80'         SET EOR FLAG                                 
+*                                                                               
+PARSE20  DS    0H                  REACHED EOF                                  
+         OI    FLAGS,X'40'         SET EOF FLAG                                 
+         LR    RF,R1               CURRENT CHARACTER                            
+         SR    RF,R3               MINUS START OF THE FIELD                     
+         STC   RF,FTFLDLEN         LENGTH OF FIELD - SAVE IT                    
+*                                                                               
+         TM    FLAGS,X'80'         ARE WE DONE WITH THIS RECORD?                
+         BO    PARSEQX             YES - EXIT                                   
+*                                                                               
+PARSE30  DS    0H                  ADVANCE TO NEXT CHARACTER                    
+         LA    R1,1(R1)                                                         
+         TM    FLAGS,X'40'         ARE WE STARTING NEW FIELD?                   
+         BZ    PARSE11             NO - JUST PROCESS ANOTHER CHARACTER          
+*                                                                               
+         LA    R5,FTLENQ(R5)       YES - NEW LINE IN FIELD TABLE                
+         CR    R5,R6               TABLE FULL?                                  
+         BL    *+12                                                             
+         MVI   ERROR,X'02'                                                      
+         B     PARSENQX                                                         
+*                                                                               
+         NI    FLAGS,X'FF'-X'40'   TURN OFF EOF FLAG                            
+         B     PARSE10                                                          
+*                                                                               
+PARSEQX  DS    0H                                                               
+         MVI   8(R7),X'00'                                                      
+         B     EQXIT                                                            
+*                                                                               
+PARSENQX DS    0H                                                               
+         MVC   8(1,R7),ERROR                                                    
+         B     NEQXIT                                                           
+*                                                                               
+         LTORG                                                                  
+*                                                                               
+         DROP                                                                   
+*                                                                               
+EZPROCX  DS    0D                  END OF CSECT                                 
+*                                                                               
+*                                                                               
+*                                                                               
+* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *         
+* WORKING STORAGE                                                               
+* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *         
+EZPRWKD  DSECT                                                                  
+         DS    0D                                                               
+*                                                                               
+DUB      DS    D                                                                
+FULL     DS    F                                                                
+* INPUT PARAMETERS                                                              
+AREC     DS    F                                                                
+LREC     DS    F                                                                
+AFLDTAB  DS    F                                                                
+LFLDTAB  DS    F                                                                
+*                                                                               
+HALF     DS    H                                                                
+BYTE     DS    X                                                                
+WORK     DS    XL64                                                             
+*                                                                               
+RTYPE    DS    C                   INPUT PARAMETER, RECORD TYPE                 
+FLAGS    DS    X                                                                
+*                                  X'80' = EOR                                  
+*                                  X'40' = EOF                                  
+*                                  X'20' = WORKER FILE 31 RECORD                
+ERROR    DS    X                                                                
+*                                                                               
+*                                                                               
+EZPRWKLQ EQU   *-EZPRWKD                                                        
+*                                                                               
+*                                                                               
+*                                                                               
+       ++INCLUDE EZFLDTAB                                                       
+*                                                                               
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'001EZPARSE   07/23/09'                                      
+         END                                                                    

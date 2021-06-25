@@ -1,0 +1,426 @@
+*          DATA SET PPGETSIZ   AT LEVEL 002 AS OF 03/04/99                      
+*CATALP PPGETSIZ                                                                
+         TITLE 'PPGETSIZ - MODULE TO HANDLE SIZING DATA RETRIEVAL'              
+*                                                                               
+*      ****  NOTE THAT THIS MODULE MAY READ THE PRINT  ****                     
+*      ****    FILE AND DESTROY SEQUENTIAL READING     ****                     
+*                                                                               
+*      THIS PROGRAM WILL SEARCH FOR AND RETRIEVE (IF PRESENT) DATA              
+*      NEEDED FOR AD SIZING. SEE PARAMETER LIST BELOW FOR DETAILS.              
+*                                                                               
+*                                                                               
+*        CHANGE LOG                                                             
+*                                                                               
+*                                                                               
+*        PARAMETER LIST                                                         
+*                                                                               
+*        INPUT                                                                  
+*                                                                               
+*   PARAM1   BYTE  0    X'01' = OK TO SEARCH SRDS IN GENFIL VIA                 
+*                               PUB-SRDS PASSIVE POINTER LINK IF                
+*                               NOTHING FOUND IN PUBZREC IN PUBFILE             
+*                                                                               
+*            BYTES 1-3  A(PUBREC)                                               
+*                                                                               
+*   PARAM2   BYTE  0    C'B'  = RETRIEVE BLEED AND SAFETY DIMENSIONS            
+*                       ELSE    RETRIEVE DIME (NON-BLEED) AND TRIM              
+*                                 DIMENSIONS                                    
+*                                                                               
+*            BYTES 1-3  A(3-BYTE SIZECODE)                                      
+*                                                                               
+*   PARAM3              A(DATAMGR)                                              
+*                                                                               
+*   PARAM4              A(UTL)       FOR SWITCHING SYSTEMS                      
+*                                                                               
+*        OUTPUT                                                                 
+*                                                                               
+*   PARAM1   BYTE  0    X'FF' IF ERROR                                          
+*                       X'00' IF NO SIZE DATA FOUND                             
+*                       C'P'  IF DATA FROM PUBZREC  (PUBFILE)                   
+*                       C'S'  IF DATA FROM SRDSREC  (GENFIL)                    
+*                                                                               
+*            BYTES 1-3  A(AREA FOR FOUND DATA)                                  
+*            *****  SEE PGSIZD DSECT FOR DETAILED CONTENT DESCRIPTION           
+*                                                                               
+PPGETSIZ CSECT                                                                  
+         PRINT NOGEN                                                            
+         NMOD1 WORKX-WORKD,PPGETSIZ,CLEAR=YES                                   
+         USING WORKD,RC                                                         
+         OC    1(3,R1),1(R1)       PUBREC ADDRESS GIVEN ?                       
+         BZ    PGSERR              NO - ERROR                                   
+         OC    5(3,R1),5(R1)       SIZECODE ADDRESS GIVEN ?                     
+         BZ    PGSERR              NO - ERROR                                   
+         OC    8(4,R1),8(R1)       DATAMGR ADDRESS GIVEN ?                      
+         BZ    PGSERR              NO - ERROR                                   
+         OC    12(4,R1),12(R1)     UTL ADDRESS GIVEN ?                          
+         BZ    PGSERR              NO - ERROR                                   
+*                                                                               
+         LR    R8,R1               R8=A(PARAMETER LIST)                         
+         L     R9,0(R8)            R9=A(PUBREC)                                 
+         L     R7,4(R8)            R7=A(SIZE CODE)                              
+         MVC   SIZETST,0(R7)       STORE 3-BYTE SIZE CODE                       
+*                                                                               
+         CLI   SIZETST,C'J'        JUNIOR SIZE CODE ?                           
+         BE    PGVALNUM                                                         
+         CLI   SIZETST,C'T'        TABLOID SIZE CODE ?                          
+         BE    PGVALNUM                                                         
+         CLI   SIZETST,C'S'        STANDARD SIZE CODE ?                         
+         BNE   PGSERR              NO - SIZE CODE ERROR                         
+PGVALNUM MVC   WORK(2),=2X'F0'                                                  
+         MVZ   WORK(2),SIZETST+1                                                
+         CLC   WORK(2),=2X'F0'     NUMERIC ?                                    
+         BNE   PGSERR              NO - SIZE CODE ERROR                         
+         CLC   SIZETST+1(2),=C'01'  NUMBER GE 1                                 
+         BL    PGSERR               NO - SIZE CODE ERROR                        
+         CLC   SIZETST+1(2),=C'53'  NUMBER LE 53                                
+         BH    PGSERR               NO - SIZE CODE ERROR                        
+*                                                                               
+         MVC   DATAMGR,8(R8)       V(DATAMGR)                                   
+*                                                                               
+         MVC   UTL,12(R8)          V(UTL)    *****  TESTING  *****              
+*                                                                               
+         MVC   SRDSOK(1),0(R8)     STORE "SRDS LOOK ?" BYTE                     
+         MVC   SIZETYP(1),4(R8)    STORE "BLEED OR NON-BLEED ?" BYTE            
+*                                                                               
+         LA    R7,SIZDATA              R7=A(RETURN DATA)                        
+         XC    0(L'SIZDATA,R7),0(R7)   CLEAR RETURN DATA AREA                   
+         ST    R7,0(R8)                ADDRESS OF DATA TO RETURN                
+         MVI   0(R8),0                 CLEAR PARAM1 BYTE 0                      
+*                                                                               
+         USING PGSIZD,R7                                                        
+         USING PUBRECD,R9                                                       
+*                                                                               
+         MVC   PGSCODE,SIZETST     REQUESTED SIZE-CODE TO OUTPUT                
+*                                                                               
+**********************************************************************          
+**********         LOOK FIRST FOR PUB SIZE RECORDS          **********          
+**********************************************************************          
+*                                                                               
+         LA    R4,KEY                                                           
+         USING PUBZREC,R4                                                       
+         XC    KEY,KEY                                                          
+         MVC   PUBZKEY(PUBZKCOD-PUBZKEY),PUBKEY   MED THRU AGY CODE             
+         MVI   PUBZKCOD,X'83'      RECORD CODE                                  
+*                                                                               
+         MVC   KEYSAVE,KEY                                                      
+         GOTO1 DATAMGR,DMCB,(0,DMRDHI),PUBDIR,KEY,KEY                           
+         CLI   DMCB+8,0                                                         
+         BE    *+6                                                              
+         DC    H'0'                                                             
+*                                                                               
+         CLC   PUBZKEY(10),KEYSAVE   ANY PUB SIZE RECORDS ?                     
+         BNE   PGSRSIZ             NO - GO CHECK FOR SRDS SEARCHING             
+*                                                                               
+         DS    0H                  GET THE PUB SIZE RECORD                      
+         GOTO1 DATAMGR,DMCB,(0,GETREC),PUBFIL,KEY+27,IO,DMWORK                  
+         CLI   DMCB+8,0                                                         
+         BE    *+6                                                              
+         DC    H'0'                                                             
+         DROP  R4                                                               
+*                                                                               
+         CLI   SIZETYP,C'B'        LOOKING FOR BLEED SIZE ?                     
+         BNE   PGPNBL              NO - GO SEARCH FOR NON-BLEED                 
+*                                                                               
+         LA    R2,IO+33                                                         
+         USING PPPUBBD,R2          BLEED AD DIMENSION ELEMENT                   
+         MVI   ELCODE,PPPUBBEQ     (X'30')                                      
+*                                                                               
+         CLI   PPPUBBEL,PPPUBBEQ   BLEED ELEMENT FOUND ?                        
+         BE    PGPBTST             YES - SEE IF WANTED                          
+PGPBLUP  BAS   RE,NEXTEL                                                        
+         BNE   PGPSRTN             NO BLEED - LOOK FOR SAFETY ELEMS             
+PGPBTST  CLC   PPPUBBCD,SIZETST    SIZE CODE WANTED ?                           
+         BNE   PGPBLUP             NO - LOOK FOR ANOTHER                        
+*                                                                               
+         MVC   PSIZDD,PPPUBBUI     MOVE DIMENS. DATA TO OUTPUT AREA             
+         MVI   0(R8),C'P'          INDICATE FROM PUBZREC                        
+*****    B     PGPSRTN             LOOK FOR SAFETY ELEMENTS                     
+*                                                                               
+         DROP  R2                                                               
+*                                                                               
+PGPSRTN  DS    0H                  LOOK FOR SAFETY ELEMENTS                     
+         LA    R2,IO+33                                                         
+         USING PPPUBSD,R2          SAFETY ELEMENT                               
+         MVI   ELCODE,PPPUBSEQ     (X'15')                                      
+*                                                                               
+         LA    R6,PSIZSD1          POINT TO SAFETY CODE AREA 1                  
+         CLI   PPPUBSEL,PPPUBSEQ   SAFETY ELEMENT FOUND ?                       
+         BE    PGPSOUT             YES - MOVE TO OUTPUT                         
+PGPSLUP  BAS   RE,NEXTEL                                                        
+         BNE   PGPSEND             NO MORE SAFETY ELEMENTS                      
+PGPSOUT  DS    0H                                                               
+         MVI   0(R8),C'P'                 INDICATE FROM PUBZREC                 
+         MVC   0(L'PSIZSD1,R6),PPPUBSCD   MOVE SAFETY DATA TO OUTPUT            
+         LA    R6,L'PSIZSD1(R6)           BUMP TO NEXT SAFETY CODE AREA         
+         B     PGPSLUP                    LOOK FOR MORE SAFETY ELEM'S           
+*                                                                               
+PGPSEND  DS    0H                                                               
+         CLI   0(R8),C' '          ANYTHING FOUND ?                             
+         BNH   PGSRSIZ             NO - SEE IF SRDS FILE TO BE SEARCHED         
+         B     PGSXIT              FINISHED - RETURN                            
+*                                                                               
+         DROP  R2                                                               
+*                                                                               
+**********************************************************************          
+PGPNBL   DS    0H               ****  LOOK FOR NON-BLEED DATA  *******          
+         LA    R2,IO+33                                                         
+         USING PPPUBAD,R2          AD DIMENSION ELEMENT                         
+         MVI   ELCODE,PPPUBAEQ     (X'20')                                      
+*                                                                               
+         CLI   PPPUBAEL,PPPUBAEQ   ELEMENT FOUND ?                              
+         BE    PGPNTST             YES - SEE IF WANTED                          
+PGPNLUP  BAS   RE,NEXTEL                                                        
+         BNE   PGPTRTN             NOTHING FOUND - LOOK FOR TRIM ELEM           
+PGPNTST  CLC   PPPUBACD,SIZETST    SIZE CODE WANTED ?                           
+         BNE   PGPNLUP             NO - LOOK FOR ANOTHER                        
+*                                                                               
+         MVC   PSIZDD,PPPUBAUI     MOVE DIMENS. DATA TO OUTPUT AREA             
+         MVI   0(R8),C'P'          INDICATE FROM PUBZREC                        
+         B     PGPTRTN             LOOK FOR TRIM ELEMENT                        
+*                                                                               
+         DROP  R2                                                               
+*                                                                               
+PGPTRTN  DS    0H                  LOOK FOR TRIM ELEMENT                        
+         LA    R2,IO+33                                                         
+         USING PPPUBTD,R2          TRIM ELEMENT                                 
+         MVI   ELCODE,PPPUBTEQ     (X'10')                                      
+*                                                                               
+         CLI   PPPUBTEL,PPPUBTEQ   TRIM ELEMENT ?                               
+         BE    PGPTOUT             YES - MOVE TO OUTPUT                         
+PGPTLUP  BAS   RE,NEXTEL                                                        
+         BNE   PGPTEND             NO TRIM ELEMENT                              
+PGPTOUT  DS    0H                                                               
+*                                                                               
+         MVC   PSIZTD,PPPUBTUI     MOVE TRIM DATA TO OUTPUT AREA                
+         MVI   0(R8),C'P'          INDICATE FROM PUBZREC                        
+*                                                                               
+PGPTEND  DS    0H                                                               
+         CLI   0(R8),C' '          ANYTHING FOUND ?                             
+         BNH   PGSRSIZ             NO - SEE IF SRDS FILE TO BE SEARCHED         
+         B     PGSXIT              FINISHED - RETURN                            
+         DROP  R2                                                               
+*                                                                               
+         EJECT                                                                  
+*                                                                               
+**********************************************************************          
+**********      LOOK FOR SIZING ELEMENTS IN GENFIL SRDS     **********          
+**********       RECORDS IF PUB SIZE RECORD NOT FOUND       **********          
+**********************************************************************          
+*                                                                               
+PGSRSIZ  DS    0H                                                               
+         CLI   SRDSOK,1            ALLOW SRDS FILE SEARCH ?                     
+         BNE   PGSXIT              NO - EXIT "NOTHING FOUND"                    
+*                                                                               
+         LA    R4,KEY                                                           
+         USING PPSRKD,R4           PUB-SRDS PASSIVE POINTER                     
+         XC    KEY,KEY                                                          
+         MVC   PPSRKAGY,PUBKAGY    AGENCY                                       
+         MVI   PPSRKMED,C'Z'       MEDIA - ALWAYS C'Z'                          
+         MVI   PPSRKRCD,PPSRKIDQ   RECORD ID - X'E4'                            
+         MVC   PPSRKPMD(PPSRKPCL-PPSRKPMD),PUBKEY   PUBREC MED & PUB #          
+*                                                                               
+         MVC   KEYSAVE,KEY                                                      
+         GOTO1 DATAMGR,DMCB,(0,DMRDHI),PRTDIR,KEY,KEY                           
+         CLI   DMCB+8,0                                                         
+         BE    *+6                                                              
+         DC    H'0'                                                             
+*                                                                               
+         CLC   PPSRKEY(PPSRKPCL-PPSRKEY),KEYSAVE      POINTER FOUND ?           
+         BNE   PGSXIT              NO - EXIT "NOTHING FOUND"                    
+*                                                                               
+         DROP  R4                                                               
+*                                                                               
+*        *****  PASSIVE POINTER FOUND - LOOK FOR THE SRDS RECORD                
+*                                                                               
+*                                  SWITCH TO CONTROL SYSTEM                     
+         L     RF,UTL                                                           
+         MVC   SVSYS,4(RF)         SAVE CURRENT SYSTEM                          
+         MVI   4(RF),X'0A'         SET FOR CONTROL SYSTEM                       
+*                                                                               
+*     OPEN CONTROL SYSTEM FILES (PROBABLY SHOULD BE ONLY FOR OFF-LINE)          
+*                                                                               
+*NOP*    GOTO1 DATAMGR,DMCB,=C'DMOPEN',=C'CONTROL',CONFILES,DMWORK              
+         B     PGSREAD                                                          
+*                                                                               
+CONFILES DS    0D                  CONTROL SYSTEM FILE LIST                     
+         DC    CL8' GENDIR'                                                     
+         DC    CL8' GENFIL'                                                     
+         DC    CL8'X'              END OF LIST                                  
+*                                                                               
+PGSREAD  DS    0H                                                               
+         MVC   KEYSAVE,KEY         SAVE FOUND POINTER                           
+         LA    R5,KEYSAVE                                                       
+         USING PPSRKD,R5           PUB-SRDS PASSIVE POINTER                     
+*                                                                               
+         LA    R4,KEY                                                           
+         USING GPUBKEYD,R4         SRDS RECORD                                  
+         XC    KEY,KEY                                                          
+         MVI   GPUBREC,GPUBRECQ    RECORD CODE - X'00'                          
+         MVI   GPUBTYP,GPUBTYPQ    RECORD TYPE CODE - X'80'                     
+         MVC   GPUBPUBT,PPSRKTYP   SRDS PUB TYPE                                
+         MVC   GPUBPUB,PPSRKSRD    SRDS PUB NUMBER (MID)                        
+         MVC   GPUBAGY,=C'ZZ'      SRDS AGENCY ID                               
+*                                                                               
+         MVC   KEYSAVE,KEY                                                      
+         GOTO1 DATAMGR,DMCB,(0,DMRDHI),GENDIR,KEY,KEY                           
+         CLI   DMCB+8,0                                                         
+         BE    *+6                                                              
+         DC    H'0'                                                             
+*                                                                               
+         CLC   GPUBKEY(GPUBSEQ-GPUBKEY),KEYSAVE    SRDS RECORD FOUND ?          
+         BNE   PGSREST             NO - EXIT "NOTHING FOUND"                    
+*                                                                               
+         DS    0H                  GET THE SRDS SIZE RECORD                     
+         GOTO1 DATAMGR,DMCB,(0,GETREC),GENFIL,KEY+36,IO,DMWORK                  
+         CLI   DMCB+8,0                                                         
+         BE    *+6                                                              
+         DC    H'0'                                                             
+*                                                                               
+         DROP  R4,R5                                                            
+*                                                                               
+         CLI   SIZETYP,C'B'        LOOKING FOR BLEED SIZE ?                     
+         BNE   PGSNBL              NO - GO SEARCH FOR NON-BLEED                 
+*                                                                               
+         LA    R2,IO+42                                                         
+         USING GPUBBD,R2           BLEED AD DIMENSION ELEMENT                   
+         MVI   ELCODE,GPUBBEQU     (X'30')                                      
+*                                                                               
+         CLI   GPUBBEL,GPUBBEQU    BLEED ELEMENT FOUND ?                        
+         BE    PGSBTST             YES - SEE IF WANTED                          
+PGSBLUP  BAS   RE,NEXTEL                                                        
+         BNE   PGSSRTN             NO BLEED - LOOK FOR SAFETY ELEMS             
+PGSBTST  CLC   GPUBBCD,SIZETST     SIZE CODE WANTED ?                           
+         BNE   PGSBLUP             NO - LOOK FOR ANOTHER                        
+*                                                                               
+         MVC   PSIZDD,GPUBBUI      MOVE DIMENS. DATA TO OUTPUT AREA             
+*****    B     PGSSRTN             LOOK FOR SAFETY ELEMENTS                     
+*                                                                               
+         DROP  R2                                                               
+*                                                                               
+PGSSRTN  DS    0H                  LOOK FOR SAFETY ELEMENTS                     
+         LA    R2,IO+42                                                         
+         USING GPUBFD,R2           SAFETY ELEMENT                               
+         MVI   ELCODE,GPUBFEQU     (X'42')                                      
+*                                                                               
+         LA    R6,PSIZSD1          POINT TO SAFETY CODE AREA 1                  
+         CLI   GPUBFEL,GPUBFEQU    SAFETY ELEMENT FOUND ?                       
+         BE    PGSSOUT             YES - MOVE TO OUTPUT                         
+PGSSLUP  BAS   RE,NEXTEL                                                        
+         BNE   PGSSEND             NO MORE SAFETY ELEMENTS                      
+PGSSOUT  DS    0H                                                               
+         MVI   0(R8),C'S'                INDICATE FROM SRDSREC                  
+         MVC   0(L'PSIZSD1,R6),GPUBFCD   MOVE SAFETY DATA TO OUTPUT             
+         LA    R6,L'PSIZSD1(R6)          BUMP TO NEXT SAFETY CODE AREA          
+         B     PGSSLUP                   LOOK FOR MORE SAFETY ELEMENTS          
+*                                                                               
+PGSSEND  DS    0H                                                               
+         B     PGSREST             FINISHED - RETURN                            
+         DROP  R2                                                               
+*                                                                               
+***********************************************************************         
+PGSNBL   DS    0H               ****  LOOK FOR NON-BLEED DATA  ********         
+         LA    R2,IO+42                                                         
+         USING GPUBAD,R2           AD DIMENSION ELEMENT                         
+         MVI   ELCODE,GPUBAEQU     (X'20')                                      
+*                                                                               
+         CLI   GPUBAEL,GPUBAEQU    ELEMENT FOUND ?                              
+         BE    PGSNTST             YES - SEE IF WANTED                          
+PGSNLUP  BAS   RE,NEXTEL                                                        
+         BNE   PGSTRTN             NOTHING FOUND - LOOK FOR TRIM ELEM           
+PGSNTST  CLC   GPUBACD,SIZETST     SIZE CODE WANTED ?                           
+         BNE   PGSNLUP             NO - LOOK FOR ANOTHER                        
+*                                                                               
+         MVC   PSIZDD,GPUBAUI      MOVE DIMENS. DATA TO OUTPUT AREA             
+         MVI   0(R8),C'S'          INDICATE FROM SRDSREC                        
+*****    B     PGSTRTN             LOOK FOR TRIM ELEMENT                        
+*                                                                               
+         DROP  R2                                                               
+*                                                                               
+PGSTRTN  DS    0H           LOOK FOR TRIM DATA IN MECHANICALS ELEMENT           
+         LA    R2,IO+42                                                         
+         USING GPUBMD,R2           MECHANICALS ELEMENT                          
+         MVI   ELCODE,GPUBMEQU     (X'40')                                      
+*                                                                               
+         CLI   GPUBMEL,GPUBMEQU    MECHANICALS ELEMENT ?                        
+         BE    PGSTOUT             YES - MOVE TO OUTPUT                         
+PGSTLUP  BAS   RE,NEXTEL                                                        
+         BNE   PGSTEND             NO MECHANICALS ELEMENT                       
+PGSTOUT  DS    0H                                                               
+         MVI   0(R8),C'S'          INDICATE FROM SRDSREC                        
+         MVC   PSIZTD,GPUBMTUI     MOVE TRIM DATA TO OUTPUT AREA                
+*                                                                               
+PGSTEND  DS    0H                                                               
+         B     PGSREST             FINISHED - RETURN                            
+         DROP  R2                                                               
+*                                                                               
+         EJECT                                                                  
+*                                                                               
+PGSERR   DS    0H                                                               
+         MVI   0(R8),X'FF'         ERROR IN CALL                                
+         B     PGSXIT                                                           
+*                                                                               
+PGSREST  DS    0H                  SWITCH BACK TO SYSTEM IN USE BEFORE          
+         L     RF,UTL              THE SWITCH TO THE CONTROL SYSTEM             
+         MVC   4(1,RF),SVSYS       RESET SYSTEM                                 
+*****    B     PGSXIT                                                           
+*                                                                               
+PGSXIT   DS    0H                                                               
+         MVC   PGSSRCE,0(R8)       REPEAT PARAM1 BYTE 0 IN O/P AREA             
+         XIT1                                                                   
+         SPACE 2                                                                
+NEXTEL   DS    0H                                                               
+         SR    R0,R0                                                            
+         IC    R0,1(R2)                                                         
+         AR    R2,R0                                                            
+         CLC   ELCODE,0(R2)                                                     
+         BER   RE                                                               
+         CLI   0(R2),0                                                          
+         BNE   NEXTEL+2                                                         
+         LTR   RE,RE                                                            
+         BR    RE                                                               
+         SPACE 2                                                                
+         LTORG                                                                  
+         SPACE 1                                                                
+DMRDHI   DC    C'DMRDHI  '                                                      
+DMRSEQ   DC    C'DMRSEQ  '                                                      
+GETREC   DC    C'GETREC  '                                                      
+PRTDIR   DC    C'PRTDIR  '                                                      
+PRTFIL   DC    C'PRTFILE '                                                      
+PUBDIR   DC    C'PUBDIR  '                                                      
+PUBFIL   DC    C'PUBFILE '                                                      
+GENDIR   DC    C'GENDIR  '                                                      
+GENFIL   DC    C'GENFIL  '                                                      
+         EJECT                                                                  
+WORKD    DSECT                     ** WORKING STORAGE **                        
+WORK     DS    CL64                                                             
+DMCB     DS    6F                                                               
+DATAMGR  DS    V                                                                
+UTL      DS    V                                                                
+DMWORK   DS    12D                                                              
+DUB      DS    D                                                                
+FULL     DS    F                                                                
+ELCODE   DS    CL1                                                              
+SVSYS    DS    CL1                 SYSTEM IN USE WHEN PROGRAM CALLED            
+SIZETST  DS    CL3                 SIZE CODE TO SEARCH FOR                      
+SIZETYP  DS    CL1                 "B" FOR BLEED, ELSE NON-BLEED                
+SRDSOK   DS    XL1                 X'01' = OK TO SEARCH GENFIL                  
+*                                                                               
+KEY      DS    CL42                                                             
+KEYSAVE  DS    CL42                                                             
+SIZDATA  DS    CL(PGSIZL)          FOR SIZING INFORMATION RETURN                
+IO       DS    CL2000              GENFIL REC CAN BE 2000 BYTES                 
+WORKX    EQU   *                                                                
+         EJECT                                                                  
+       ++INCLUDE PPGETSZD                                                       
+         EJECT                                                                  
+       ++INCLUDE PPUBZREC                                                       
+         EJECT                                                                  
+       ++INCLUDE PPPUBSRDPP                                                     
+         EJECT                                                                  
+       ++INCLUDE CTGENPUBS                                                      
+         PRINT OFF                                                              
+PUBRECD  DSECT                                                                  
+       ++INCLUDE PUBREC                                                         
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'002PPGETSIZ  03/04/99'                                      
+         END                                                                    

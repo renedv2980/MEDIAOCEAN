@@ -1,0 +1,1698 @@
+*          DATA SET ACJOBMNT   AT LEVEL 102 AS OF 08/06/19                      
+*CATALP ACJOBMNT                                                                
+         SPACE 2                                                                
+************************************************************                    
+*                                                          *                    
+* ACJOBMNT - DELETES,RESTORES, OPENS OR CLOSES A JOB       *                    
+*                                                          *                    
+* ON ENTRY, P1  BYTE  0   = ACTION (D,R,O,C)               *                    
+*                     1-3 = A(JOB KEY)                     *                    
+*           P2  BYTE  0   = DRAFT (Y,N)                    *                    
+*                     1-3 = A(COMFACS)                     *                    
+*           P3  BYTE  0-3 = A(REQUESTOR)                   *                    
+*           P4  BYTE  0-3 = A(GETOPT)  FOR JOB CLOSE       *                    
+*                                                          *                    
+* ON EXIT,  P2  BYTE  0   = ERROR CODE                     *                    
+*                           X'00' = NO ERROR               *                    
+*                           DATAMGR ERROR                  *                    
+*                           X'FF' = ERROR (NON DATAMGR)    *                    
+*               BYTE  1   = SPECIFIC ERROR CODE            *                    
+*                                                          *                    
+* THIS MODULE IS INCLUDED IN:                              *                    
+*              ACREP9802                                   *                    
+*              ACREP9702                                   *                    
+*              ACPROGEN                                    *                    
+************************************************************                    
+         EJECT                                                                  
+************************************************************                    
+* HISTORY                                                                       
+************************************************************                    
+* 5/20/94 L51 - DO NOT ALLOW DELETE FOR AN AGENCY JOB LINKED TO A               
+*               STUDIO JOB. - JK                                                
+*                                                                               
+* 9/16/94 L55 - CALL PRORATA IN TRANSACTION LOOP FOR JOB CLOSE                  
+*               DO DIRECTORY READS IN TRANSACTION LOOP - JK                     
+*                                                                               
+* 10/05/94 L63- BUILD RAP POINTERS ON OPEN, CLOSE, DELETE AND RESTORE.          
+*               JK                                                              
+* 6/10/19 L101 - DSRD-22480 - ADDED LOGIC TO DELETE/RESTORE ESTIMATE            
+*                AUDIT RECORD                                                   
+************************************************************                    
+         EJECT                                                                  
+         TITLE 'ACJOBMNT - JOB MAINTENANCE - DELETE, RESTORE, CLOSE'            
+ACJOBMNT CSECT                                                                  
+         PRINT NOGEN                                                            
+         NMOD1 WORKX-WORKD,**JBMT**,RA,RR=RE,CLEAR=YES                          
+         USING WORKD,RC                                                         
+         ST    RE,RELO                                                          
+         ST    R1,APARM                                                         
+         MVC   MPARM(MPARML),0(R1)                                              
+         ST    RD,SAVERD             FOR ERROR EXIT                             
+*                                                                               
+         USING COMFACSD,RF                                                      
+         L     RF,MCOMFACS         GET ADDRESSES FROM COMFACS                   
+         MVC   DATAMGR,CDATAMGR                                                 
+         MVC   HELLO,CHELLO                                                     
+         MVC   DATCON,CDATCON                                                   
+         DROP  RF                                                               
+*                                                                               
+         MVI   ERROR,0             CLEAR RETURN CODE                            
+         MVI   ERR2,0              CLEAR SPECIFIC ERROR CODE                    
+         MVC   KEY,SPACES          CLEAR KEY AREA                               
+*                                                                               
+INIT     LA    R1,EXTTAB           SET EXTENDED STORAGE ADCONS                  
+         LA    R0,NEXTTAB                                                       
+INIT10   LM    RE,RF,0(R1)         EXTENDED ADCONS                              
+         LA    RE,WORKD(RE)                                                     
+         LA    RF,WORKD(RF)                                                     
+         ST    RE,0(RF)                                                         
+         LA    R1,L'EXTTAB(R1)                                                  
+         BCT   R0,INIT10                                                        
+*                                                                               
+         GOTO1 DATCON,DMCB,(5,0),(1,TODAY3)                                     
+         EJECT                                                                  
+         L     RF,MJOB             GET READY TO READ JOB                        
+         MVC   KEY,SPACES                                                       
+         MVC   KEY(L'ACKEYACC),0(RF)                                            
+         MVC   JOBKEY,KEY          SAVE KEY FOR LATER                           
+         MVC   JMCUL,KEY           SAVE COMPANY, UNIT,LEDGER                    
+*                                                                               
+         GOTO1 JMSETHEI                                                         
+*                                                                               
+         MVC   KEY,JOBKEY          RESET THE KEY                                
+*                                                                               
+         CLI   MACTION,C'R'        RESTORE A JOB ?                              
+         BE    RESTIT              YES                                          
+         CLI   MACTION,C'C'        CLOSE A JOB ?                                
+         BE    CLOSEIT             YES                                          
+         CLI   MACTION,C'O'        OPEN A JOB ?                                 
+         BE    OPENIT              YES                                          
+         CLI   MACTION,C'D'        DELETE A JOB ?                               
+         BNE   JOBERROR            NO, INDICATE AN ERROR                        
+*                                                                               
+DELETIT  OI    DMINBTS,X'08'       READ DELETED RECORDS                         
+         GOTO1 READ                READ THE RECORD FIRST                        
+         MVC   SAVEKEY,KEYSAVE                                                  
+         L     R6,AIO                                                           
+         MVC   JOBCULA,0(R6)                                                    
+*                                                                               
+*        GOTO1 CHKMOD                                                           
+*        BNE   JOBERROR                                                         
+*                                                                               
+DELE005  L     R6,AIO                                                           
+         AH    R6,DATADISP                                                      
+         SR    R3,R3                                                            
+*                                                                               
+DELE010  CLI   0(R6),ACBLELQ       MUST HAVE BALANCE ELEMENT                    
+         BE    DELE020                                                          
+         CLI   0(R6),0                                                          
+         BNE   *+6                                                              
+         DC    H'0'                DUMP - DELETING WRONG RECORD                 
+         IC    R3,1(R6)                                                         
+         AR    R6,R3                                                            
+         B     DELE010                                                          
+*                                                                               
+         USING ACBALD,R6                                                        
+DELE020  CP    ACBLFRWD,=P'0'      ANY BALANCE BROUGHT FORWARD,                 
+         BNE   BALERROR             DEBITS OR CREDITS- CAN'T DELETE             
+         CP    ACBLDR,=P'0'                                                     
+         BNE   BALERROR                                                         
+         CP    ACBLCR,=P'0'                                                     
+         BNE   BALERROR                                                         
+*                                                                               
+         L     R6,AIO                                                           
+         AH    R6,DATADISP                                                      
+         SR    R3,R3                                                            
+*                                                                               
+DELE040  CLI   0(R6),X'62'         SCHEME ELEMENT                               
+         BE    DELE080                                                          
+         CLI   0(R6),X'0D'         JOB FUNDING ELEMENT                          
+         BE    DELE070                                                          
+         CLI   0(R6),X'26'         JOB ELEMENT                                  
+         BE    DELE090                                                          
+         CLI   0(R6),0                                                          
+         BE    DELE100             END OF RECORD                                
+*                                                                               
+DELE060  IC    R3,1(R6)            GET NEXT ELEMENT                             
+         AR    R6,R3                                                            
+         B     DELE040                                                          
+*                                                                               
+DELE070  MVI   ERR2,CANTDFUN       INDICATE JOB FUNDED                          
+         B     JOBERROR                                                         
+*                                                                               
+         USING ACDISTD,R6                                                       
+DELE080  CP    ACDIVAL,=P'0'       ANY SCHEME DISTRIBUTION UNITS ?              
+         BNE   JOBERROR            YES, CAN'T DELETE                            
+         B     DELE060                                                          
+*                                                                               
+         USING JOBELD,R6                                                        
+DELE090  GOTO1 DATCON,DMCB,(1,JOBCDATE),(2,SVDTINCL)                            
+         CLI   JOBLN,JOBLN2Q                                                    
+         BL    DELE060                                                          
+         GOTO1 DATCON,DMCB,(1,JOBODATE),(2,SVDTINOP)                            
+         B     DELE060                                                          
+*                                                                               
+DELE100  BAS   RE,CHKLINK          CHECK STUDIO JOB LINK                        
+         BNE   JOBERROR                                                         
+*                                                                               
+*----------------------------------------------------------------------         
+* LOOK FOR TRANSACTIONS                                                         
+*----------------------------------------------------------------------         
+         USING ACKEYD,R6                                                        
+         MVC   KEY,JOBKEY          RESET THE KEY                                
+         GOTO1 HIGH                LOOK FOR TRANSACTIONS                        
+         L     R6,AIO                                                           
+*                                                                               
+DELE110  CLC   KEY(ACKEYWRK-ACKEYD),KEYSAVE                                     
+         BNE   DELE120             NO MORE RECORDS                              
+         CLI   ACRECORD,X'44'      FOUND ONE, CAN'T DELETE                      
+         BE    POSERROR                                                         
+         GOTO1 SEQ                                                              
+         B     DELE110                                                          
+*                                                                               
+DELE120  CLI   MDRAFT,C'Y'         JUST A DRAFT ?                               
+         BE    DELEX               YES, EXIT                                    
+*                                                                               
+         USING ACKEYD,R6                                                        
+DELE130  LA    R6,KEY              RE-READ JOB AND DELETE                       
+         MVC   KEY,SPACES                                                       
+         MVC   KEY,JOBKEY                                                       
+         OI    DMINBTS,X'80'       READ FOR UPDATE                              
+         GOTO1 READ                                                             
+         OI    ACSTATUS,X'80'                                                   
+         GOTO1 JMPERSIN                                                         
+         BAS   RE,PRERAP           ADD RAP ELEMENT, IF NEEDED                   
+         GOTO1 WRITE                                                            
+         BAS   RE,POSTRAP          ADD RAP POINTER, IF NEEDED                   
+         GOTO1 MANJDTP                                                          
+*                                                                               
+         USING ACOPKEY,R6                                                       
+         LA    R6,KEY              DELETE OPTION RECORD                         
+         XC    ACOPKEY,ACOPKEY                                                  
+         MVI   ACOPRTYP,ACOPEQU                                                 
+         MVI   ACOPSREC,ACOPSEQU                                                
+         MVC   ACOPCUL,JMCUL                                                    
+         MVC   ACOPCLI(18),SPACES                                               
+         GOTO1 MVCCLI,ACOPCLI                                                   
+         GOTO1 MVCPRO,ACOPPRO                                                   
+         GOTO1 MVCJOB,ACOPJOB                                                   
+         OI    DMINBTS,X'80'       READ FOR UPDATE                              
+         GOTO1 HIGH                                                             
+*                                                                               
+DELE140  CLC   KEY(ACOPMG-ACOPKEY),KEYSAVE                                      
+         BNE   DELE160                                                          
+         USING ACKEYD,R6                                                        
+         OI    ACSTATUS,X'80'                                                   
+         GOTO1 WRITE                                                            
+         GOTO1 SEQ                                                              
+         B     DELE140                                                          
+*                                                                               
+         USING ACTXKEY,R6                                                       
+DELE160  LA    R6,KEY              DELETE RELATED TEXT RECORDS                  
+         XC    ACTXKEY,ACTXKEY                                                  
+         MVI   ACTXRTYP,ACTXEQU                                                 
+         MVI   ACTXSREC,ACTXSEQU                                                
+         MVC   ACTXCUL,JMCUL                                                    
+         MVC   ACTXCLI(18),SPACES                                               
+         GOTO1 MVCCLI,ACTXCLI                                                   
+         GOTO1 MVCPRO,ACTXPROD                                                  
+         GOTO1 MVCJOB,ACTXJOB                                                   
+         GOTO1 HIGH                                                             
+*                                                                               
+DELE180  CLC   KEY(ACTXMG-ACTXKEY),KEYSAVE                                      
+         BNE   DELE200                                                          
+         USING ACKEYD,R6                                                        
+         OI    ACSTATUS,X'80'                                                   
+         GOTO1 WRITE                                                            
+         GOTO1 SEQ                                                              
+         B     DELE180                                                          
+*                                                                               
+         USING ACUFKEY,R6                                                       
+DELE200  LA    R6,KEY              DELETE RELATED USER RECORDS                  
+         XC    ACUFKEY,ACUFKEY                                                  
+         MVI   ACUFRTYP,ACUFEQU                                                 
+         MVI   ACUFSREC,ACUFSEQU                                                
+         MVC   ACUFCUL,JMCUL                                                    
+         MVC   ACUFCLI(12),SPACES                                               
+         GOTO1 MVCCLI,ACUFCLI                                                   
+         GOTO1 MVCPRO,ACUFPRO                                                   
+         MVC   ACUFJOB,SPACES                                                   
+         GOTO1 MVCJOB,ACUFJOB                                                   
+         GOTO1 HIGH                                                             
+*                                                                               
+DELE220  CLC   KEY(ACUFJOB-ACUFKEY+6),KEYSAVE                                   
+         BNE   DELE240                                                          
+         USING ACKEYD,R6                                                        
+         OI    ACSTATUS,X'80'                                                   
+         GOTO1 WRITE                                                            
+         GOTO1 SEQ                                                              
+         B     DELE220                                                          
+*                                                                               
+         USING ACEVKEY,R6                                                       
+DELE240  LA    R6,KEY                                                           
+         MVC   ACEVKEY,SPACES      DELETE RELATED ESTIMATE RECORDS              
+         MVI   ACEVRTYP,ACEVEQU                                                 
+         MVI   ACEVSREC,ACEVSEQU                                                
+         MVC   ACEVCUL,JMCUL                                                    
+         MVC   ACEVCLI(18),SPACES                                               
+         GOTO1 MVCCLI,ACEVCLI                                                   
+         GOTO1 MVCPRO,ACEVPROD                                                  
+         GOTO1 MVCJOB,ACEVJOB                                                   
+         NI    DMINBTS,X'FF'-X'08' DON'T READ DELETED RECORDS                   
+         GOTO1 HIGH                                                             
+*                                                                               
+DELE260  CLC   KEY(ACEVTYPE-ACEVKEY),KEYSAVE                                    
+         BNE   DELE280             DELET BRO ESTIMATES                          
+         USING ACKEYD,R6                                                        
+         OI    ACSTATUS,X'80'                                                   
+         GOTO1 WRITE                                                            
+         GOTO1 SEQ                                                              
+         B     DELE260                                                          
+*                                                                               
+DELE280  MVI   SESTLNO,0                                                        
+         MVI   ESTINDS,0                                                        
+*                                                                               
+         USING ESTRECD,R6                                                       
+         LA    R6,KEY                                                           
+         XC    ESTKEY,ESTKEY      DELETE RELATED BRO ESTIMATES                  
+         MVI   ESTKTYP,ESTKTYPQ                                                 
+         MVI   ESTKSUB,ESTKSUBQ                                                 
+         MVC   ESTKCPY,JMCUL                                                    
+         GOTO1 MVCCLI,ESTKCLI                                                   
+         GOTO1 MVCPRO,ESTKPRO                                                   
+         GOTO1 MVCJOB,ESTKJOB                                                   
+         MVC   IOKEY,KEY           SAVE OFF KEY FOR LATER                       
+         NI    DMINBTS,X'FF'-X'08' DON'T READ DELETED RECORDS                   
+         GOTO1 HIGH                                                             
+         B     DELE300                                                          
+*                                                                               
+DELE290  MVC   KEY,IOKEY           RESTORE KEY                                  
+         OI    DMINBTS,X'08'       READ JUST DELETED RECORD                     
+         GOTO1 HIGH                                                             
+         NI    DMINBTS,X'FF'-X'08' DON'T READ DELETED RECORDS                   
+DELE295  GOTO1 SEQ                                                              
+*                                                                               
+DELE300  CLC   KEY(ESTKLNO-ESTRECD),KEYSAVE                                     
+         BE    DELE302             DELETE ESTIMATES                             
+         OI    ESTINDS,ESTLAST     SET LAST ESTIMATE FOR JOB                    
+         B     DELE307             DELETE AUDIT RECORD LAST ESTIMATE            
+*                                                                               
+DELE302  CLC   KEY(ESTKSEQ-ESTRECD),IOKEY ESTIMATE CHANGED?                     
+         BNE   DELE307             YES,DELETE AUDIT RECORD FOR PREV EST         
+         B     DELE304             NO                                           
+*                                                                               
+DELE303  MVC   KEY,IOKEY                                                        
+         GOTO1 READ                                                             
+*                                                                               
+DELE304  MVC   IOKEY,KEY           SAVE OFF KEY FOR LATER                       
+         MVC   SESTLNO,ESTKLNO     STOTE ESTIMATE LOCAL NUMBER                  
+         OI    ESTRSTA1,X'80'                                                   
+         GOTO1 WRITE                                                            
+         CLI   ESTKSEQ,ESTKSMQ                                                  
+         BNE   DELE290             UPDATE STATUS ON MAIN RECORD ONLY            
+*                                                                               
+         OI    ESTINDS,ESTAUDIT                                                 
+         LR    R3,R6                                                            
+         AH    R3,DATADISP                                                      
+         USING EMDELD,R3                                                        
+         SR    R0,R0                                                            
+DELE305  CLI   EMDEL,0                                                          
+         BNE   *+6                                                              
+         DC    H'0'                EMDELQ IS MISSING                            
+         CLI   EMDEL,EMDELQ        ESTIMATE MAIN DATA ELEMENT                   
+         BE    *+14                                                             
+         IC    R0,EMDLN                                                         
+         AR    R3,R0                                                            
+         B     DELE305                                                          
+*                                                                               
+         USING EGNPASD,R6                                                       
+         LA    R6,KEY                                                           
+         XC    EGNPAS,EGNPAS       UPDATE STATUS ON ESTIMATE PASSIVE            
+         MVI   EGNPTYP,EGNPTYPQ                                                 
+         MVI   EGNPSUB,EGNPSUBQ                                                 
+         MVC   EGNPCPY,JMCUL                                                    
+         MVC   EGNPNUM,EMDGNO                                                   
+         GOTO1 MVCCLI,EGNPCLI                                                   
+         GOTO1 MVCPRO,EGNPPRO                                                   
+         GOTO1 MVCJOB,EGNPJOB                                                   
+         MVC   EGNPLNO,SESTLNO                                                  
+         DROP  R3                                                               
+*                                                                               
+         GOTO1 READD                                                            
+         BE    *+6                                                              
+         DC    H'0'                                                             
+                                                                                
+         OI    EGNPSTA1,EGNPDELT                                                
+         GOTO1 DATAMGR,DMCB,=C'DMWRT',=C'ACCDIR',KEY,KEY,0                      
+         B     DELE290                                                          
+         DROP  R6                                                               
+*                                                                               
+         USING AUDRECD,R6          DELETE AUDIT ESTIMATE RECORDS                
+DELE307  MVC   IOKEY,KEY                                                        
+         TM    ESTINDS,ESTAUDIT    AUDIT RECORD PRESENT?                        
+         BO    DELE308             YES, DELETE                                  
+         TM    ESTINDS,ESTLAST     LAST ESTIMATE RECORD FOR JOB                 
+         BZ    DELE303             NO                                           
+         B     DELE320             YES                                          
+*                                                                               
+* AUDIT RECORD DELETED AFTER THE LAST ESTIMATE SEQUENTIAL RECORD                
+DELE308  NI    ESTINDS,X'FF'-ESTAUDIT                                           
+         LA    R6,KEY                                                           
+         XC    AUDKEY,AUDKEY                                                    
+         MVI   AUDKTYP,AUDKTYPQ                                                 
+         MVI   AUDKSUB,AUDKSUBQ                                                 
+         MVC   AUDKCPY,JMCUL                                                    
+         MVI   AUDKAUDT,AUDKEST                                                 
+         GOTO1 MVCCLI,AUDKECPJ                                                  
+         GOTO1 MVCPRO,AUDKECPJ+3                                                
+         GOTO1 MVCJOB,AUDKECPJ+6                                                
+         MVC   AUDKELNO,SESTLNO    CURRENT ESTIMATE LOCAL NUMBER                
+         GOTO1 READD                                                            
+         BE    *+6                                                              
+         DC    H'0'                                                             
+*                                                                               
+DELE310  CLC   KEY(AUDKSEQ-AUDRECD),KEYSAVE                                     
+         BE    DELE315                                                          
+*                                                                               
+         TM    ESTINDS,ESTLAST     LAST ESTIMATE RECORD FOR JOB                 
+         BZ    DELE303             NO                                           
+         B     DELE320             YES                                          
+*                                                                               
+DELE315  MVC   DISKDA,AUDKDA                                                    
+         XC    DMCB(24),DMCB                                                    
+         L     R3,AIO2                                                          
+         GOTO1 DATAMGR,DMCB,(X'88',=C'GETREC'),=C'ACCMST',DISKDA,(R3), +        
+               DMWORK                                                           
+         CLI   DMCB+8,0                                                         
+         JNE   *+2                                                              
+         OI    AUDRSTA-AUDRECD(R3),AUDSDELT                                     
+         GOTO1 DATAMGR,DMCB,=C'PUTREC',=C'ACCMST',DISKDA,(R3),DMWORK            
+         CLI   DMCB+8,0                                                         
+         JNE   *+2                                                              
+         OI    AUDKSTA,AUDSDELT    DELETE THE AUDIT RECORD                      
+         GOTO1 DATAMGR,DMCB,=C'DMWRT',=C'ACCDIR',KEY,KEY,0                      
+         GOTO1 SEQD                                                             
+         B     DELE310                                                          
+         DROP  R6                                                               
+*                                                                               
+         USING TSLRECD,R6                                                       
+DELE320  LA    R6,KEY              DELETE RELATED TIMESHEET LIST RECS           
+         XC    TSLKEY,TSLKEY                                                    
+         MVI   TSLKTYP,TSLKTYPQ                                                 
+         MVI   TSLKSUB,TSLKSUBQ                                                 
+         MVC   TSLKCULA,SAVEKEY                                                 
+         GOTO1 HIGH                                                             
+         CLC   KEY(L'TSLKEY),KEYSAVE                                            
+         BNE   DELEX                                                            
+         L     R6,AIO                                                           
+         OI    ACCOSTAT(R6),X'80'  MARK DELETED                                 
+         GOTO1 WRITE                                                            
+         BE    *+6                                                              
+         DC    H'0'                                                             
+                                                                                
+DELEX    B     MODEXIT             END OF DELETE                                
+         DROP  R6                                                               
+         EJECT                                                                  
+RESTIT   OI    DMINBTS,X'08'       READ DELETED RECORDS                         
+         OI    DMINBTS,X'80'       READ FOR UPDATE                              
+         GOTO1 READ                READ THE RECORD FIRST                        
+         L     R6,AIO                                                           
+         USING ACKEYD,R6                                                        
+         TM    ACSTATUS,X'80'      IS RECORD DELETED ?                          
+         BZ    JOBERROR            NO                                           
+         CLI   MDRAFT,C'Y'         JUST A DRAFT ?                               
+         BE    RESTX               YES, EXIT                                    
+*                                                                               
+         AH    R6,DATADISP                                                      
+         XR    R0,R0                                                            
+         XC    SVDATES,SVDATES                                                  
+*                                                                               
+         USING RSTELD,R6                                                        
+REST002  CLI   RSTEL,0                                                          
+         BE    REST008                                                          
+         CLI   RSTEL,JOBELQ                                                     
+         BE    REST006                                                          
+*                                                                               
+REST004  IC    R0,RSTLN                                                         
+         AR    R6,R0                                                            
+         B     REST002                                                          
+*                                                                               
+         USING JOBELD,R6                                                        
+REST006  DS    0H                                                               
+         GOTO1 DATCON,DMCB,(1,JOBCDATE),(2,SVDTOUCL)                            
+         CLI   JOBLN,JOBLN1Q                                                    
+         BNH   REST004                                                          
+         GOTO1 DATCON,DMCB,(1,JOBODATE),(2,SVDTOUOP)                            
+         B     REST004                                                          
+*                                                                               
+         USING ACKEYD,R6                                                        
+REST008  L     R6,AIO                                                           
+         NI    ACSTATUS,X'FF'-X'80'                                             
+         GOTO1 JMPERSIN                                                         
+         BAS   RE,PRERAP           ADD RAP ELEMENT, IF NEEDED                   
+         GOTO1 WRITE                                                            
+         BAS   RE,POSTRAP          ADD RAP POINTER, IF NEEDED                   
+         GOTO1 MANJDTP                                                          
+*                                                                               
+         MVI   SESTLNO,0                                                        
+         MVI   ESTINDS,0                                                        
+*                                                                               
+         USING ESTRECD,R6                                                       
+         LA    R6,KEY                                                           
+         XC    ESTKEY,ESTKEY      UNDELETE RELATED BRO ESTIMATES                
+         MVI   ESTKTYP,ESTKTYPQ                                                 
+         MVI   ESTKSUB,ESTKSUBQ                                                 
+         MVC   ESTKCPY,JMCUL                                                    
+         GOTO1 MVCCLI,ESTKCLI                                                   
+         GOTO1 MVCPRO,ESTKPRO                                                   
+         GOTO1 MVCJOB,ESTKJOB                                                   
+         MVC   IOKEY,KEY           SAVE OFF KEY FOR LATER                       
+         GOTO1 HIGH                                                             
+         B     REST014                                                          
+*                                                                               
+REST010  MVC   KEY,IOKEY           RESTORE KEY                                  
+         GOTO1 HIGH                READ JUST RESTORED RECORD                    
+REST012  GOTO1 SEQ                                                              
+*                                                                               
+REST014  CLC   KEY(ESTKLNO-ESTRECD),KEYSAVE                                     
+         BE    REST014A            UNDELETE ESTIMATES                           
+         OI    ESTINDS,ESTLAST     SET LAST ESTIMATE FOR JOB                    
+         B     REST017             RESTORE AUDIT RECORD LAST ESTIMATE           
+*                                                                               
+REST014A CLC   KEY(ESTKSEQ-ESTRECD),IOKEY ESTIMATE CHANGED?                     
+         BNE   REST017             YES,RESTOTE AUDIT RECORD FOR PRV EST         
+         B     REST014C            NO                                           
+*                                                                               
+REST014B MVC   KEY,IOKEY                                                        
+         GOTO1 READ                                                             
+*                                                                               
+REST014C MVC   IOKEY,KEY           SAVE OFF KEY FOR LATER                       
+         MVC   SESTLNO,ESTKLNO                                                  
+         NI    ESTRSTA1,X'FF'-X'80'                                             
+         GOTO1 WRITE                                                            
+         CLI   ESTKSEQ,ESTKSMQ                                                  
+         BNE   REST010             UPDATE STATUS ON MAIN RECORD ONLY            
+*                                                                               
+         OI    ESTINDS,ESTAUDIT                                                 
+         LR    R3,R6                                                            
+         AH    R3,DATADISP                                                      
+         USING EMDELD,R3                                                        
+         SR    R0,R0                                                            
+REST016  CLI   EMDEL,0                                                          
+         BNE   *+6                                                              
+         DC    H'0'                EMDELQ IS MISSING                            
+         CLI   EMDEL,EMDELQ        ESTIMATE MAIN DATA ELEMENT                   
+         BE    *+14                                                             
+         IC    R0,EMDLN                                                         
+         AR    R3,R0                                                            
+         B     REST016                                                          
+*                                                                               
+         USING EGNPASD,R6                                                       
+         LA    R6,KEY                                                           
+         XC    EGNPAS,EGNPAS       UPDATE STATUS ON ESTIMATE PASSIVE            
+         MVI   EGNPTYP,EGNPTYPQ                                                 
+         MVI   EGNPSUB,EGNPSUBQ                                                 
+         MVC   EGNPCPY,JMCUL                                                    
+         MVC   EGNPNUM,EMDGNO                                                   
+         GOTO1 MVCCLI,EGNPCLI                                                   
+         GOTO1 MVCPRO,EGNPPRO                                                   
+         GOTO1 MVCJOB,EGNPJOB                                                   
+         MVC   EGNPLNO,SESTLNO                                                  
+         DROP  R3                                                               
+*                                                                               
+         GOTO1 READD                                                            
+         NI    EGNPSTA1,X'FF'-EGNPDELT                                          
+         GOTO1 DATAMGR,DMCB,=C'DMWRT',=C'ACCDIR',KEY,KEY,0                      
+         B     REST010                                                          
+         DROP  R6                                                               
+*                                                                               
+         USING AUDRECD,R6          RESTORE AUDIT ESTIMATE RECORDS               
+REST017  MVC   IOKEY,KEY                                                        
+         TM    ESTINDS,ESTAUDIT    AUDIT RECORD PRESENT?                        
+         BO    REST017A            YES, RESTORE                                 
+         TM    ESTINDS,ESTLAST     LAST ESTIMATE RECORD FOR JOB                 
+         BZ    REST014B            NO                                           
+         B     REST018             YES                                          
+*                                                                               
+* AUDIT RECORD RESTORED AFTER THE LAST ESTIMATE SEQUENTIAL RECORD               
+REST017A NI    ESTINDS,X'FF'-ESTAUDIT                                           
+         LA    R6,KEY                                                           
+         XC    AUDKEY,AUDKEY                                                    
+         MVI   AUDKTYP,AUDKTYPQ                                                 
+         MVI   AUDKSUB,AUDKSUBQ                                                 
+         MVC   AUDKCPY,JMCUL                                                    
+         MVI   AUDKAUDT,AUDKEST                                                 
+         GOTO1 MVCCLI,AUDKECPJ                                                  
+         GOTO1 MVCPRO,AUDKECPJ+3                                                
+         GOTO1 MVCJOB,AUDKECPJ+6                                                
+         MVC   AUDKELNO,SESTLNO    CURRENT ESTIMATE LOCAL NUMBER                
+         GOTO1 READD                                                            
+*                                                                               
+REST017C CLC   KEY(AUDKSEQ-AUDRECD),KEYSAVE                                     
+         BE    REST017D                                                         
+*                                                                               
+         TM    ESTINDS,ESTLAST     LAST ESTIMATE RECORD FOR JOB                 
+         BZ    REST014B            NO                                           
+         B     REST018             YES                                          
+*                                                                               
+REST017D MVC   DISKDA,AUDKDA                                                    
+         XC    DMCB(24),DMCB                                                    
+         L     R3,AIO2                                                          
+         GOTO1 DATAMGR,DMCB,(X'88',=C'GETREC'),=C'ACCMST',DISKDA,(R3), +        
+               DMWORK                                                           
+         CLI   DMCB+8,0                                                         
+         JNE   *+2                                                              
+         NI    AUDRSTA-AUDRECD(R3),X'FF'-AUDSDELT                               
+         GOTO1 DATAMGR,DMCB,=C'PUTREC',=C'ACCMST',DISKDA,(R3),DMWORK            
+         CLI   DMCB+8,0                                                         
+         JNE   *+2                                                              
+         NI    AUDKSTA,X'FF'-AUDSDELT                                           
+         GOTO1 DATAMGR,DMCB,=C'DMWRT',=C'ACCDIR',KEY,KEY,0                      
+         GOTO1 SEQD                                                             
+         B     REST017C                                                         
+         DROP  R6                                                               
+*                                                                               
+         USING ACOPKEY,R6                                                       
+REST018  LA    R6,KEY              RESTORE OPTION RECORD                        
+         XC    ACOPKEY,ACOPKEY                                                  
+         MVI   ACOPRTYP,ACOPEQU                                                 
+         MVI   ACOPSREC,ACOPSEQU                                                
+         MVC   ACOPCUL,JMCUL                                                    
+         MVC   ACOPCLI(18),SPACES                                               
+         GOTO1 MVCCLI,ACOPCLI                                                   
+         GOTO1 MVCPRO,ACOPPRO                                                   
+         GOTO1 MVCJOB,ACOPJOB                                                   
+         GOTO1 HIGH                                                             
+*                                                                               
+REST020  CLC   KEY(ACOPMG-ACOPKEY),KEYSAVE                                      
+         BNE   REST040                                                          
+         USING ACKEYD,R6                                                        
+         NI    ACSTATUS,X'FF'-X'80'                                             
+         GOTO1 WRITE                                                            
+         GOTO1 SEQ                                                              
+         B     REST020                                                          
+*                                                                               
+         USING ACTXKEY,R6                                                       
+REST040  LA    R6,KEY              RESTORE RELATED TEXT RECORDS                 
+         XC    ACTXKEY,ACTXKEY                                                  
+         MVI   ACTXRTYP,ACTXEQU                                                 
+         MVI   ACTXSREC,ACTXSEQU                                                
+         MVC   ACTXCUL,JMCUL                                                    
+         MVC   ACTXCLI(18),SPACES                                               
+         GOTO1 MVCCLI,ACTXCLI                                                   
+         GOTO1 MVCPRO,ACTXPROD                                                  
+         GOTO1 MVCJOB,ACTXJOB                                                   
+         GOTO1 HIGH                                                             
+*                                                                               
+REST060  CLC   KEY(ACTXMG-ACTXKEY),KEYSAVE                                      
+         BNE   REST080                                                          
+         USING ACKEYD,R6                                                        
+         NI    ACSTATUS,X'FF'-X'80'                                             
+         GOTO1 WRITE                                                            
+         GOTO1 SEQ                                                              
+         B     REST060                                                          
+*                                                                               
+         USING ACEVKEY,R6                                                       
+REST080  LA    R6,KEY              RESTORE RELATED ESTIMATE RECORDS             
+         MVC   ACEVKEY,SPACES                                                   
+         MVI   ACEVRTYP,ACEVEQU                                                 
+         MVI   ACEVSREC,ACEVSEQU                                                
+         MVC   ACEVCUL,JMCUL                                                    
+         MVC   ACEVCLI(18),SPACES                                               
+         GOTO1 MVCCLI,ACEVCLI                                                   
+         GOTO1 MVCPRO,ACEVPROD                                                  
+         GOTO1 MVCJOB,ACEVJOB                                                   
+         GOTO1 HIGH                                                             
+*                                                                               
+REST100  CLC   KEY(ACEVTYPE-ACEVKEY),KEYSAVE                                    
+         BNE   REST120                                                          
+         USING ACKEYD,R6                                                        
+         NI    ACSTATUS,X'FF'-X'80'                                             
+         GOTO1 WRITE                                                            
+         GOTO1 SEQ                                                              
+         B     REST100                                                          
+*                                                                               
+         USING ACUFKEY,R6                                                       
+REST120  LA    R6,KEY              RESTORE RELATED USER RECORDS                 
+         XC    ACUFKEY,ACUFKEY                                                  
+         MVI   ACUFRTYP,ACUFEQU                                                 
+         MVI   ACUFSREC,ACUFSEQU                                                
+         MVC   ACUFCUL,JMCUL                                                    
+         MVC   ACUFCLI(12),SPACES                                               
+         GOTO1 MVCCLI,ACUFCLI                                                   
+         GOTO1 MVCPRO,ACUFPRO                                                   
+         MVC   ACUFJOB,SPACES                                                   
+         GOTO1 MVCJOB,ACUFJOB                                                   
+         GOTO1 HIGH                                                             
+*                                                                               
+REST140  CLC   KEY(ACEVTYPE-ACEVKEY),KEYSAVE                                    
+         BNE   RESTX                                                            
+         USING ACKEYD,R6                                                        
+         NI    ACSTATUS,X'FF'-X'80'                                             
+         GOTO1 WRITE                                                            
+         GOTO1 SEQ                                                              
+         B     REST140                                                          
+*                                                                               
+RESTX    B     MODEXIT                                                          
+         DROP  R6                                                               
+         EJECT                                                                  
+***********************************************************************         
+*                         DO CLOSING                                  *         
+***********************************************************************         
+*                                                                               
+CLOSEIT  GOTO1 READ                READ THE RECORD FIRST                        
+         MVC   SAVEKEY,KEYSAVE                                                  
+         L     R6,AIO                                                           
+         MVC   JOBCULA,0(R6)                                                    
+                                                                                
+*        GOTO1 CHKMOD                                                           
+*        BNE   JOBERROR                                                         
+*                                                                               
+CLOS005  LA    RF,L'GOBLOCK        CLEAR GOBLOCK                                
+         LA    RE,GOBLOCK                                                       
+         XR    R1,R1                                                            
+         MVCL  RE,R0                                                            
+*                                                                               
+         MVC   GOADM,DATAMGR        CALL GETOPT                                 
+         MVC   GOSELCUL,JMCUL                                                   
+         MVC   GOSELCLI,SPACES                                                  
+         GOTO1 MVCCLI,GOSELCLI                                                  
+         MVC   GOSELPRO,SPACES                                                  
+         GOTO1 MVCPRO,GOSELPRO                                                  
+         MVC   GOSELJOB,SPACES                                                  
+         GOTO1 MVCJOB,GOSELJOB                                                  
+         MVC   GOAJOB,AIO                                                       
+         LA    R1,GOXBLOCK                                                      
+         ST    R1,GOAEXT                                                        
+*                                                                               
+         GOTO1 MGETOPT,DMCB,GOBLOCK                                             
+*                                                                               
+         L     R6,AIO                                                           
+         AH    R6,DATADISP                                                      
+         SR    R3,R3                                                            
+*                                                                               
+CLOS020  MVI   ELCODE,ACBLELQ      CHECK JOB BALANCE                            
+         BAS   RE,GETELIO                                                       
+         BNE   CLOS120                                                          
+*                        1                                                      
+         USING ACBALD,R6                                                        
+         CP    ACBLDR,ACBLCR                                                    
+         BE    CLOS120                                                          
+         MVI   ERR2,NOTZERO                                                     
+         B     JOBERROR                                                         
+CLOS120  BAS   RE,CHKLINK          CHECK STUDIO JOB LINK                        
+         BNE   JOBERROR                                                         
+*                                                                               
+*                                                                               
+*        READ JOB TRANSACTIONS, LOOK FOR PROBLEMS IN CLOSING                    
+*                                                                               
+         USING TRNRECD,R3                                                       
+         LA    R3,BIGKEY                                                        
+         MVC   TRNKEY,SPACES                                                    
+         MVC   TRNKCULA,JOBKEY                                                  
+         BAS   RE,DIRHIGH                                                       
+*                                                                               
+CLOS140  GOTO1 DIRSEQ                                                           
+         LA    R3,BIGKEY                                                        
+         CLC   TRNKCULA,KEYSAVE    STILL SAME ACCOUNT?                          
+         BNE   CLOS240             NO, ALL DONE                                 
+*                                                                               
+         CLI   TRNKCCPY,C' '       IS THERE A CONTRA ACCOUNT                    
+         BNH   CLOS140             NO                                           
+         CLC   TRNKDATE,SPACES     IS THIS A TRANSACTION                        
+         BE    CLOS140             NO                                           
+*                                                                               
+         CLC   TRNKWORK,=C'99'     BILLING                                      
+         BE    CLOS140             GET NEXT                                     
+*                                                                               
+         CLC   TRNKWORK,=C'**'     PURCHASE ORDER?                              
+         BNE   CLOS160             NO PROCESS REGULAR TRAN BELOW                
+*                                                                               
+*                                  CONFIRM THAT PO IS ON FILE                   
+         MVC   SAVEBGKY,BIGKEY     SAVE CURRENT TRANSACTION KEY                 
+*                                                                               
+         USING ORDRECD,R6                                                       
+         LA    R6,BIGKEY                                                        
+         LA    RE,SAVEBGKY                                                      
+         XC    ORDKEY,ORDKEY                                                    
+         MVI   ORDKTYP,ORDKTYPQ                                                 
+         MVC   ORDKCPY,JMCUL                                                    
+         MVC   ORDKORD,TRNKREF-TRNKEY(RE)  PO NUMBER FROM JOB TRANS             
+         BAS   RE,DIRHIGH                                                       
+         CLC   ORDKEY,KEYSAVE                                                   
+         BNE   CLOS145                                                          
+         TM    ORDKSTAT,ORDSLDEL+ORDSFMCH   DELETED OR FULLY MAYCHED            
+         BZ    CLOS150                                                          
+         MVC   KEY,SAVEBGKY        DELETE THE SJ POSTING                        
+         OI    DMINBTS,X'80'                                                    
+         GOTO1 READ                                                             
+         NI    DMINBTS,X'FF'-(X'80')                                            
+         L     R6,AIO                                                           
+         USING ACKEYD,R6                                                        
+         OI    ACSTATUS,X'80'                                                   
+         GOTO1 WRITE                                                            
+*                                                                               
+CLOS145  MVC   BIGKEY,SAVEBGKY                                                  
+         MVC   KEY,SAVEBGKY        REREAD FOR SEQUENTIAL                        
+         GOTO1 READ                                                             
+         B     CLOS140                                                          
+         DROP  R6                                                               
+*                                                                               
+CLOS150  MVI   ERR2,OPENPOS                                                     
+         B     JOBERROR                                                         
+*                                                                               
+         USING TRNRECD,R3                                                       
+CLOS160  LA    R3,BIGKEY                                                        
+         MVI   ERR2,DRFTRNS                                                     
+         TM    TRNKSTAT,TRNSDRFT   IS THIS A DRAFT TRANSACTION ?                
+         BO    JOBERROR            YES, CAN'T CLOSE THEN                        
+*                                                                               
+         BAS   RE,GETREC                                                        
+         L     R3,AIO                                                           
+*                                                                               
+         USING TRNELD,R6                                                        
+         LA    R6,TRNRFST          PROCESS A REGULAR TRANSACTION                
+         CLI   TRNEL,TRNELQ        MAKE SURE ITS A TRAN                         
+         BNE   CLOS140                                                          
+*                                                                               
+         MVI   ERR2,HOLDIT                                                      
+         TM    TRNSTAT,TRNSHOLD                                                 
+         BO    JOBERROR                                                         
+*                                                                               
+         L     RF,MPRORATA                                                      
+         A     RF,RELO                                                          
+         GOTO1 (RF),DMCB,AIO,0,MCOMFACS,0,PROBLOCK,0                            
+*                                                                               
+         TM    PG$STAT3,PG$FULUT   FULLY UTILIZED?                              
+         BO    CLOS140             YES                                          
+*                                                                               
+         TM    TRNSTAT,X'20'         NO, IS IT A REVERSAL ?                     
+         BO    CLOS140               YES, SKIP IT                               
+*                                                                               
+         CLI   GOBILTYP,C'C'       IS THIS CLIENT BILLING ?                     
+         BNE   *+12                NO                                           
+*                                                                               
+CLOS180  MVI   ERR2,UNBILLED       ALL CHARGES MUST BE FULLY UTILIZED           
+         B     JOBERROR            OR REVERSED                                  
+*                                                                               
+* PROCESS NON CLIENT BILLTYPE                                                   
+*                                                                               
+         MVI   ERR2,OPENSKS                                                     
+         CLC   TRNKCUNT(2),=C'SK'    IS THE CONTRA SK                           
+         BE    CLOS222               YES, SEE IF ACDTUSED SET                   
+*                                                                               
+         L     R6,AIO                                                           
+         LA    R6,ACTRFST-ACTRECD(R6) GET TO FIRST ELEMENT                      
+         SR    R0,R0                                                            
+*                                                                               
+CLOS200  CLI   0(R6),0             END OF RECORD?                               
+         BE    CLOS230             YES, OK, GET NEXT                            
+         CLI   0(R6),X'4C'         SUBSIDIARY ELEMENT?                          
+         BE    CLOS220             YES                                          
+         IC    R0,1(R6)                                                         
+         AR    R6,R0                                                            
+         B     CLOS200                                                          
+*                                                                               
+         USING TRSDESCD,R6                                                      
+CLOS220  CLC   TRSDACCS(2),=C'SK'                                               
+         BNE   CLOS230             NOT SK, CHECK FOR INTERNAL INCOME            
+*                                                                               
+CLOS222  TM    TRNRSTA2,TRNSUSED   IS THIS TRANSACTION USED?                    
+         BNO   JOBERROR            NO                                           
+         B     CLOS140             YES, SKIP IT                                 
+*                                                                               
+CLOS230  OC    GOINCCR,GOINCCR     SEE IF INTERNAL INCOME ACCOUNT               
+         BNZ   CLOS180             YES, ERROR                                   
+         MVI   ERR2,0              CLEAR ERROR CODE                             
+         B     CLOS140             READ NEXT                                    
+*                                                                               
+CLOS240  MVI   ERR2,0              NO ERRORS ON JOB                             
+         CLI   MDRAFT,C'Y'         DRAFT RUN                                    
+         BE    CLOSEX              YES, JUST RETURN NO ERRORS                   
+*                                                                               
+         L     RF,MJOB             RE-READ JOB                                  
+         MVC   KEY,SPACES                                                       
+         MVC   KEY(L'ACKEYACC),0(RF)                                            
+         OI    DMINBTS,X'80'       READ FOR UPDATE                              
+         GOTO1 READ                                                             
+*                                                                               
+         USING ACSTATD,R6                                                       
+         MVI   ELCODE,ACSTELQ      MARK JOB AS CLOSED                           
+         BAS   RE,GETELIO                                                       
+         BE    *+6                                                              
+         DC    H'0'                                                             
+         OI    ACSTSTAT,X'40'      INDICATE CLOSED                              
+*                                                                               
+         USING ACJOBD,R6                                                        
+         MVI   ELCODE,ACJBELQ      SET CLOSED DATE                              
+         BAS   RE,GETELIO                                                       
+         BE    *+6                                                              
+         DC    H'0'                                                             
+         GOTO1 DATCON,DMCB,(5,0),(1,ACJBCLOS)                                   
+*                                                                               
+         GOTO1 JMPERSIN            UPDATE PERSON ELEMENT                        
+*                                                                               
+         BAS   RE,PRERAP           ADD RAP ELEMENT, IF NEEDED                   
+         GOTO1 WRITE                                                            
+         BAS   RE,POSTRAP          ADD RAP POINTER, IF NEEDED                   
+         GOTO1 MANJDTP                                                          
+*                                                                               
+CLOSEX   B     MODEXIT                                                          
+         EJECT                                                                  
+***********************************************************************         
+*                         DO OPENING                                  *         
+***********************************************************************         
+*                                                                               
+OPENIT   GOTO1 READ                READ THE RECORD FIRST                        
+*                                                                               
+         L     R6,AIO                                                           
+         AH    R6,DATADISP                                                      
+         SR    R3,R3                                                            
+*                                                                               
+OPEN020  MVI   ELCODE,ACSTELQ      GET STATUS ELEMENT                           
+         BAS   RE,GETELIO                                                       
+         BE    *+6                                                              
+         DC    H'0'                MUST HAVE A STATUS ELEMENT                   
+*                                                                               
+         USING ACSTATD,R6                                                       
+         TM    ACSTSTAT,X'40'      IS IT CLOSED?                                
+         BO    OPEN040             YES                                          
+         MVI   ERR2,NOTCLOSE       NO, GIVE ERROR MESSAGE                       
+         B     JOBERROR                                                         
+*                                                                               
+OPEN040  MVI   ERR2,0              NO ERROR                                     
+         CLI   MDRAFT,C'Y'         DRAFT RUN?                                   
+         BE    OPENX               YES, JUST RETURN                             
+*                                                                               
+         L     RF,MJOB             RE-READ JOB                                  
+         MVC   KEY,SPACES                                                       
+         MVC   KEY(L'ACKEYACC),0(RF)                                            
+         OI    DMINBTS,X'80'       READ FOR UPDATE                              
+         GOTO1 READ                                                             
+*                                                                               
+         USING ACSTATD,R6                                                       
+         MVI   ELCODE,ACSTELQ      MARK JOB AS OPEN                             
+         BAS   RE,GETELIO                                                       
+         BE    *+6                                                              
+         DC    H'0'                                                             
+         NI    ACSTSTAT,X'BF'      INDICATE OPEN                                
+         GOTO1 JMPERSIN            UPDATE PERSON ELEMENT                        
+         BAS   RE,PRERAP           ADD RAP ELEMENT, IF NEEDED                   
+         GOTO1 WRITE                                                            
+         BAS   RE,POSTRAP          ADD RAP POINTER, IF NEEDED                   
+         GOTO1 MANJDTP                                                          
+*                                                                               
+OPENX    B     MODEXIT                                                          
+         EJECT                                                                  
+*                                                                               
+* SEE IF JOB IS LINKED TO ANY STUDIO JOBS, THEY MUST HAVE BEEN DELETED          
+*                                                                               
+CHKLINK  NTR1                                                                   
+         USING SACRECD,R3                                                       
+         LA    R3,BIGKEY                                                        
+         XC    SACKEY,SACKEY                                                    
+         MVI   SACKTYP,SACKTYPQ                                                 
+         MVI   SACKSUB,SACKSUBQ                                                 
+         L     RF,MJOB                                                          
+         MVC   SACKCPY,0(RF)       EXTRACT COMPANY CODE                         
+         MVC   SACKAJB,3(RF)       EXTRACT 12 BYTE JOB CODE                     
+                                                                                
+CL10     BAS   RE,DIRHIGH                                                       
+         CLC   KEYSAVE((SACKAJB-SACKEY)+L'SACKAJB),BIGKEY                       
+         BNE   CLOK                '                                            
+         CLI   MACTION,C'D'        ARE WE DELETEING                             
+         BNE   CL15                NO                                           
+         MVI   ERR2,HASLNKD        FLAG AGENCY JOB HAS STUDIO LINK              
+         B     CLNG                                                             
+                                                                                
+CL15     OC    SACKPO,SACKPO       IS THIS AN ORDER                             
+         BNZ   CL80                YES, CANT GET STUDIOJOB (EASILY)             
+         MVC   SAVEBGKY,BIGKEY     SAVE STUDIO JOB POINTER                      
+         BAS   RE,DIRREAD                                                       
+         BAS   RE,GETREC           GET STUDIO JOB RECORD                        
+         USING ACTRECD,R6                                                       
+         L     R6,AIO                                                           
+CL20     CLI   MACTION,C'C'        ARE WE CLOSING                               
+         BNE   CLOK                NO                                           
+         MVI   ERR2,HASLNK                                                      
+         MVI   ELCODE,RSTELQ       SEE OF JOB IS CLOSED                         
+         LA    R6,ACTRFST          ADDRESS FIRST ELEMENT                        
+         CLI   0(R6),RSTELQ        IS IT THE FIRST ELEMENT                      
+         BE    CL30                                                             
+                                                                                
+         USING RSTELD,R6                                                        
+         BAS   RE,NEXTEL                                                        
+         BE    *+6                                                              
+         DC    H'0'                                                             
+                                                                                
+CL30     TM    RSTSTAT,RSTSACIC    IS IT CLOSED                                 
+         BNO   CLNG                NO, RETURN ERROR                             
+*                                  FALL THRU TO READ NEXT POINTER               
+         USING SACRECD,R3                                                       
+CL50     LA    R3,BIGKEY                                                        
+         MVC   BIGKEY,SAVEBGKY     RESTORE POINTER                              
+                                                                                
+CL80     MVI   SACKPO,X'FF'        BUMP TO NEXT STUDIO JOB                      
+         B     CL10                                                             
+                                                                                
+CLOK     CR    RB,RB                                                            
+         B     CLX                                                              
+CLNG     CR    R1,RB                                                            
+CLX      XIT1                                                                   
+         EJECT                                                                  
+***********************************************************************         
+*              MANAGE JDTPASD PASSIVES                                *         
+***********************************************************************         
+*                                                                               
+         USING ACKEYD,R6                                                        
+MANJDTP  NTR1                                                                   
+         L     R6,AIO                                                           
+         XC    FULL,FULL                                                        
+                                                                                
+         OC    SVDTINOP,SVDTINOP  ANY 'IN' OPEN DATE?                           
+         JZ    MANJDTP2                                                         
+         GOTOR MJEXTJB            GET JOB RECORD DETAILS                        
+         GOTOR MJBLDPA,INOPENQ    BUILD IN/OPEN PASSIVE                         
+         LHI   R1,DELETEQ         DELETE THIS POINTER IF EXISTING               
+         CLC   SVDTINOP,SVDTOUOP  ... OR ...                                    
+         JNE   MANJDTP1                                                         
+         LHI   R1,STATUSQ         CHECK FOR STATUS CHANGE AND UPDATE            
+                                                                                
+MANJDTP1 GOTOR MJIOPAS                                                          
+                                                                                
+MANJDTP2 OC    SVDTOUOP,SVDTOUOP  ANY 'OUT' OPEN DATE?                          
+         JZ    MANJDTP3                                                         
+         CLC   SVDTINOP,SVDTOUOP  STATUS CHANGE HANDLED ABOVE                   
+         JE    MANJDTP3                                                         
+         GOTOR MJEXTJB            GET JOB RECORD DETAILS                        
+         GOTOR MJBLDPA,OUOPENQ    BUILD OUT/OPEN PASSIVE                        
+         GOTOR MJIOPAS,UPDATEQ    ADD/CHANGE RECORD                             
+                                                                                
+MANJDTP3 OC    SVDTINCL,SVDTINCL  ANY 'IN' CLOSE DATE?                          
+         JZ    MANJDTP5                                                         
+         GOTOR MJEXTJB            GET JOB RECORD DETAILS                        
+         GOTOR MJBLDPA,INCLONQ    BUILD IN/CLOSE PASSIVE                        
+         LHI   R1,DELETEQ         DELETE THIS POINTER IF EXISTING               
+         CLC   SVDTINCL,SVDTOUCL  ... OR ...                                    
+         JNE   MANJDTP4                                                         
+         LHI   R1,STATUSQ         CHECK FOR STATUS CHANGE AND UPDATE            
+                                                                                
+MANJDTP4 GOTOR MJIOPAS                                                          
+                                                                                
+MANJDTP5 OC    SVDTOUCL,SVDTOUCL  ANY 'OUT' CLOSE DATE?                         
+         JZ    MANJDTP6                                                         
+         CLC   SVDTINCL,SVDTOUCL  STATUS CHANGE HANDLED ABOVE                   
+         JE    MANJDTP6                                                         
+         GOTOR MJEXTJB            GET JOB RECORD DETAILS                        
+         GOTOR MJBLDPA,OUCLONQ    BUILD OUT/CLOSE PASSIVE                       
+         GOTOR MJIOPAS,UPDATEQ    ADD/CHANGE RECORD                             
+                                                                                
+MANJDTP6 MVC   SVDTINOP,SVDTOUOP  SWAP OUT TO IN AND CLEAR OUT ...              
+         XC    SVDTOUOP,SVDTOUOP                                                
+         MVC   SVDTINCL,SVDTOUCL                                                
+         XC    SVDTOUCL,SVDTOUCL                                                
+*                                                                               
+MANJDTPX MVI   DUB,1                                                            
+         CLI   DUB,1                                                            
+         XIT1                                                                   
+                                                                                
+MJEXTJB  DS    0H                 EXTRACT JOB RECORD DETAILS                    
+                                                                                
+         OC    FULL,FULL          ALREADY DONE?                                 
+         BNZR  RE                                                               
+         ST    RE,SAVERE                                                        
+                                                                                
+         USING ACTRECD,R2                                                       
+         L     R2,AIO2            READ ACCDIR FOR D/A AND STATUS                
+         MVC   0(L'ACTKEY,R2),0(R6)                                             
+         GOTO1 DATAMGR,DMCB,(X'08',=C'DMREAD'),=C'ACCDIR',(R2),(R2),0           
+         JE    MJEXTJB1                                                         
+         CLI   8(R1),X'02'        RECORD IS DELETED                             
+         JE    MJEXTJB1                                                         
+         DC    H'0'               RECORD NOT THERE                              
+                                                                                
+MJEXTJB1 MVC   FULL,ACTKDA        DSAVE DETAILS                                 
+         MVC   DUB,ACTKSTA                                                      
+         DROP  R2                                                               
+                                                                                
+         L     RE,SAVERE                                                        
+         BR    RE                                                               
+                                                                                
+         USING JDTPASD,R2                                                       
+MJBLDPA  DS    0H                  BUILD PASSIVE KEY                            
+                                                                                
+         ST    RE,SAVERE                                                        
+         STC   R1,BYTE                                                          
+         LA    RF,SVDTINOP                                                      
+         CHI   R1,INOPENQ                                                       
+         JE    MJBLDPA1                                                         
+         LA    RF,SVDTOUOP                                                      
+         CHI   R1,OUOPENQ                                                       
+         JE    MJBLDPA1                                                         
+         LA    RF,SVDTINCL                                                      
+         CHI   R1,INCLONQ                                                       
+         JE    MJBLDPA1                                                         
+         LA    RF,SVDTOUCL                                                      
+         CHI   R1,OUCLONQ                                                       
+         JE    MJBLDPA1                                                         
+         DC    H'0'                                                             
+                                                                                
+MJBLDPA1 L     R2,AIO2                                                          
+         XC    JDTPASD(ACCKLEN),JDTPASD                                         
+         MVI   JDTPTYP,JDTPTYPQ                                                 
+         MVI   JDTPSUB,JDTPSUBQ                                                 
+         MVC   JDTPCPY,ACTKCPY-ACTRECD(R6)                                      
+         MVI   JDTPDTYP,JDTPDTCQ                                                
+         MVC   JDTPDATE,0(RF)                                                   
+         MVC   JDTPOFFC,OFFCDE                                                  
+         MVC   JDTPJACT,ACTKACT-ACTRECD(R6)                                     
+         MVC   JDTPDA,FULL                                                      
+         MVC   JDTPSTA,DUB                                                      
+                                                                                
+         L     RE,SAVERE                                                        
+         BR    RE                                                               
+         DROP  R2                                                               
+                                                                                
+         USING JDTPASD,R2                                                       
+MJIOPAS  DS    0H                  IO HANDLING                                  
+                                                                                
+         ST    RE,SAVERE                                                        
+         STC   R1,BYTE                                                          
+         L     R2,AIO2                                                          
+         MVC   ELEMENT(ACCKLEN),JDTPASD  SAVE OFF KEY                           
+                                                                                
+         MVI   OPTION2,1           RECORD UNDELETED                             
+         GOTO1 DATAMGR,DMCB,(X'88',=C'DMREAD'),=C'ACCDIR',(R2),(R2),0           
+         JE    MJIOP002                                                         
+         MVI   OPTION2,2                                                        
+         CLI   8(R1),X'02'         RECORD DELETED                               
+         JE    MJIOP002                                                         
+         MVI   OPTION2,3           RECORD NOT THERE                             
+                                                                                
+MJIOP002 LLC   R1,BYTE                                                          
+         CHI   R1,STATUSQ          PUT ON STATUS CHANGE                         
+         JE    MJIOP100                                                         
+         CHI   R1,UPDATEQ          PUT OR ADD                                   
+         JE    MJIOP200                                                         
+         CHI   R1,DELETEQ          DELETE                                       
+         JE    MJIOP300                                                         
+         DC    H'0'                                                             
+                                                                                
+MJIOP100 DS    0H                  (STATUSQ)                                    
+         CLI   OPTION2,3           IF NOT THERE NO ACTION REQUIRED              
+         JE    MJIOPASX                                                         
+         CLC   FULL,JDTPDA         SAME D/A - ???                               
+         JNE   *+2                                                              
+         CLC   DUB,JDTPSTA         SAME STATUS NO ACTION REQUIRED               
+         JE    MJIOPASX                                                         
+                                                                                
+         MVC   JDTPAS,ELEMENT      RESTORE KEY, STATUS, D/A                     
+         MVC   JDTPSTA,DUB                                                      
+         MVC   JDTPDA,FULL                                                      
+         GOTO1 DATAMGR,DMCB,=C'DMWRT',=C'ACCDIR',JDTPASD,JDTPASD,0              
+         JE    MJIOPASX                                                         
+         DC    H'0'                                                             
+                                                                                
+MJIOP200 DS    0H                  (UPDATEQ)                                    
+         MVC   JDTPAS,ELEMENT      RESTORE KEY, STATUS, D/A                     
+         MVC   JDTPSTA,DUB                                                      
+         MVC   JDTPDA,FULL                                                      
+         CLI   OPTION2,3           ADD IT ELSE PUT IT                           
+         JE    MJIOP202                                                         
+                                                                                
+         GOTO1 DATAMGR,DMCB,=C'DMWRT',=C'ACCDIR',JDTPASD,JDTPASD,0              
+         JE    MJIOPASX                                                         
+         DC    H'0'                                                             
+                                                                                
+MJIOP202 GOTO1 DATAMGR,DMCB,=C'DMADD',=C'ACCDIR',JDTPASD,JDTPASD,0              
+         JE    MJIOPASX                                                         
+         DC    H'0'                                                             
+                                                                                
+MJIOP300 DS    0H                  (DELETEQ)                                    
+         CLI   OPTION2,1           ONLY IF UNDELETED EXISTS                     
+         JNE   MJIOPASX                                                         
+         MVC   JDTPAS,ELEMENT      RESTORE KEY, STATUS, D/A                     
+         MVC   JDTPSTA,DUB                                                      
+         MVC   JDTPDA,FULL                                                      
+         OI    JDTPSTA,ACTSDELT    AND SET DELETED                              
+                                                                                
+         GOTO1 DATAMGR,DMCB,=C'DMWRT',=C'ACCDIR',JDTPASD,JDTPASD,0              
+         JE    MJIOPASX                                                         
+         DC    H'0'                                                             
+                                                                                
+MJIOPASX L     RE,SAVERE                                                        
+         BR    RE                                                               
+         DROP  R2                                                               
+                                                                                
+INOPENQ  EQU   1                                                                
+OUOPENQ  EQU   2                                                                
+INCLONQ  EQU   3                                                                
+OUCLONQ  EQU   4                                                                
+STATUSQ  EQU   1                                                                
+UPDATEQ  EQU   2                                                                
+DELETEQ  EQU   3                                                                
+         DROP  R6                                                               
+*----------------------------------------------------------------------         
+* LOOK FOR TIME                                                                 
+*----------------------------------------------------------------------         
+*                                                                               
+         USING TSJPASD,R5          CHECK IF THERE ARE UNAPPROVED                
+CHKMOD   NTR1                                                                   
+         LA    R5,BIGKEY           TIMESHEETS                                   
+         XC    TSJPAS,TSJPAS                                                    
+         MVC   TSJPCPY,JMCUL       READ TIME PASSIVE                            
+         MVI   TSJPTYP,TSJPTYPQ                                                 
+         MVI   TSJPSUB,TSJPSUBQ                                                 
+         MVI   TSJPVIEW,TSJPSJAQ   OFFICE/CLIENT/PRODUCT/JOB                    
+         MVC   TSJPCOFF,OFFCDE                                                  
+         MVC   TSJPACT,SAVEKEY+(ACTKACT-ACTRECD)                                
+         BAS   RE,DIRHIGH                                                       
+         B     CHKMOD04                                                         
+*                                                                               
+CHKMOD02 BAS   RE,DIRSEQ                                                        
+*                                                                               
+CHKMOD04 CLI   TSJPTYP,TSJPTYPQ                                                 
+         BNE   CHKMOD06            FINISHED READING?                            
+         CLI   TSJPSUB,TSJPSUBQ                                                 
+         BNE   CHKMOD06                                                         
+         CLC   TSJPCPY,JMCUL                                                    
+         BNE   CHKMOD06                                                         
+         CLC   TSJPACT,SAVEKEY+(ACTKACT-ACTRECD) TEST THIS CLI/PRO/JOB          
+         BNE   CHKMOD06            DONE                                         
+         TM    TSJPSTAT,TIMSDELT                                                
+         BNZ   CHKMOD02                                                         
+         CLI   TSJPSTAT,0          SAVED STATUS                                 
+         BE    *+12                                                             
+         TM    TSJPSTAT,TIMSAWAP+TIMSSUBM+TIMSREJE                              
+         BZ    CHKMOD02            TEST AWAITING APPROVAL                       
+         B     CHKMTERR                                                         
+*                                                                               
+***********************************************************************         
+*  CLOSE/DELETE OF EXPENSES                                           *         
+***********************************************************************         
+*                                                                               
+         USING EXJPASD,R5                                                       
+CHKMOD06 XC    EXJPAS,EXJPAS                                                    
+         MVC   EXJPCPY,JMCUL                                                    
+         MVI   EXJPTYP,EXJPTYPQ                                                 
+         MVI   EXJPSUB,EXJPSUBQ                                                 
+         MVI   DMINBTS,0                                                        
+         CLI   MACTION,C'D'        CAN'T DELETE IF DELETED EXPENSE CLM          
+         BNE   *+8                                                              
+         MVI   DMINBTS,X'08'                                                    
+         BAS   RE,DIRHIGH                                                       
+         B     CHKMOD10                                                         
+*                                                                               
+CHKMOD08 BAS   RE,DIRSEQ                                                        
+*                                                                               
+CHKMOD10 CLI   EXJPTYP,EXJPTYPQ   STILL READING EXPENSE PASSIVES FOR            
+         BNE   CHKMOD12           SAME COMPANY                                  
+         CLI   EXJPSUB,EXJPSUBQ                                                 
+         BNE   CHKMOD12                                                         
+         CLC   EXJPCPY,JMCUL                                                    
+         BNE   CHKMOD12                                                         
+         CLI   EXJPVIEW,EXJPMBL1   SKIP ANY MEDIA ONES                          
+         BH    CHKMOD08                                                         
+         CLI   EXJPVIEW,EXJPCLI1                                                
+         BE    CHKMOD11                                                         
+         CLI   EXJPVIEW,EXJPCLI2                                                
+         BE    CHKMOD11                                                         
+         CLI   EXJPVIEW,EXJPCBL1   SKIP ANY MEDIA ONES                          
+         BL    CHKMOD08                                                         
+*                                                                               
+CHKMOD11 CLC   EXJPCPJ,JOBCULA+(ACTKACT-ACTRECD) TEST THIS CLI/PRO/JOB          
+         BNE   CHKMOD08                                                         
+*                                                                               
+         TM    EXJPSTAT,EXCSDELT   IGNORE IF DELETED                            
+         BNZ   CHKMOD08                                                         
+*                                                                               
+         CLI   EXJPSTAT,0          CAN'T DELETE OR CLOSE IF IN PROGRESS         
+         BE    CHKMEERR                                                         
+*                                                                               
+         TM    EXJPSTAT,EXCSSUBM+EXCSPAPP+EXCSFNTA                              
+         BNZ   CHKMEERR            OR IF ANY OF THESE                           
+*                                                                               
+         CLI   MACTION,C'D'        CAN'T DELETE IF DELETED CLAIM                
+         BNE   *+12                                                             
+         TM    EXJPSTAT,EXCSCOMP+EXCSREJE                                       
+         BNZ   CHKMEERR                                                         
+         B     CHKMOD08                                                         
+*                                                                               
+***********************************************************************         
+*  CLOSE/DELETE OF ORDERS                                             *         
+***********************************************************************         
+*                                                                               
+         USING OSJPASD,R5                                                       
+CHKMOD12 XC    OSJPAS,OSJPAS                                                    
+         MVC   OSJPCPY,JMCUL                                                    
+         MVI   OSJPTYP,OSJPTYPQ                                                 
+         MVI   OSJPSUB,OSJPSUBQ                                                 
+         MVI   DMINBTS,0                                                        
+         CLI   MACTION,C'D'        CAN'T DELETE IF DELETED ORDER                
+         BNE   *+8                                                              
+         MVI   DMINBTS,X'08'                                                    
+         BAS   RE,DIRHIGH                                                       
+         B     CHKMOD16                                                         
+*                                                                               
+CHKMOD14 BAS   RE,DIRSEQ                                                        
+*                                                                               
+CHKMOD16 CLI   OSJPTYP,OSJPTYPQ    STILL READING ORDER PASSIVE FOR SAME         
+         BNE   CHKMODY             COMPANY                                      
+         CLI   OSJPSUB,OSJPSUBQ                                                 
+         BNE   CHKMODY                                                          
+         CLC   OSJPCPY,JMCUL                                                    
+         BNE   CHKMODY                                                          
+         CLC   OSJPACT,JOBCULA+(ACTKACT-ACTRECD) TEST THIS CLI/PRO/JOB          
+         BNE   CHKMOD14                                                         
+*                                                                               
+         TM    OSJPSTA,ORDSDEL+ORDSFMCH+ORDSLDEL                                
+         BNZ   CHKMOD14            IGNORE IF DELETED OR COMPLETE                
+*                                                                               
+         TM    OSJPSTA2,ORDSDRFT   CAN'T DO ANYTHING IF IN PROGRESS             
+         BNZ   CHKMOERR                                                         
+*                                                                               
+         TM    OSJPSTA,ORDGDRCV    OR RECEIVED                                  
+         BNZ   CHKMOERR                                                         
+*                                                                               
+         TM    OSJPSTA2,ORDSSUBM+ORDSPAPP+ORDSAPPR                              
+         BNZ   CHKMOERR            OR ANY OF THESE                              
+*                                                                               
+         CLI   MACTION,C'D'        CAN'T DELETE IF REJECTED ORDER               
+         BNE   *+12                                                             
+         TM    OSJPSTA2,ORDSOREJ                                                
+         BNZ   CHKMOERR                                                         
+         B     CHKMOD14                                                         
+*                                                                               
+CHKMTERR MVI   ERR2,TIMDATA                                                     
+         B     CHKMERR                                                          
+*                                                                               
+CHKMEERR MVI   ERR2,EXPDATA                                                     
+         B     CHKMERR                                                          
+*                                                                               
+CHKMOERR MVI   ERR2,ORDDATA                                                     
+*                                                                               
+CHKMERR  CR    R1,RB                                                            
+         B     CHKMODX                                                          
+*                                                                               
+CHKMODY  CR    RB,RB                                                            
+CHKMODX  XIT1                                                                   
+*                                                                               
+BALERROR MVI   ERR2,NOTZERO        BALANCE MUST BE ZERO                         
+         B     JOBERROR                                                         
+*                                                                               
+POSERROR MVI   ERR2,POSTNGS        INDICATE POSTINGS ON FILE                    
+*                                                                               
+JOBERROR MVI   ERROR,X'FF'         INDICATE SOMETHING IS WRONG                  
+         B     MODEXIT                                                          
+*                                                                               
+DMGERROR MVC   ERROR,DMCB+8        SAVE DATAMGR RETURN CODE                     
+*                                                                               
+MODEXIT  L     R1,APARM                                                         
+         MVC   4(1,R1),ERROR                                                    
+         MVC   5(1,R1),ERR2        SPECIFIC ERROR CODE (IF ANY)                 
+         L     RD,SAVERD           EXIT BACK TO CALLER                          
+         XMOD1 1                                                                
+         EJECT                                                                  
+* AT ENTRY, R1=A(CLIENT/PRODUCT/JOB) AND JOBKEY=JOB KEY                         
+*           R3=NEXT POSITION IN JOBKEY FOR PRODUCT AND JOB CALLS                
+*                                                                               
+MVCCLI   LA    R3,JOBKEY+3         RE=A(CLIENT)                                 
+         ZIC   RF,JMLCLI                                                        
+         BCTR  RF,0                                                             
+         EX    RF,*+8                                                           
+         B     *+10                                                             
+         MVC   0(0,R1),0(R3)                                                    
+         LA    R1,6(R1)            POINT TO PRODUCT                             
+         LA    R3,1(RF,R3)         ADVANCE IN KEY                               
+         BR    RE                                                               
+*                                                                               
+MVCPRO   ZIC   RF,JMLPRO                                                        
+         BCTR  RF,0                                                             
+         EX    RF,*+8                                                           
+         B     *+10                                                             
+         MVC   0(0,R1),0(R3)                                                    
+         LA    R1,6(R1)            POINT TO JOB                                 
+         LA    R3,1(RF,R3)         ADVANCE IN JOB KEY                           
+         BR    RE                                                               
+*                                                                               
+MVCJOB   ZIC   RF,JMLJOB                                                        
+         BCTR  RF,0                                                             
+         EX    RF,*+8                                                           
+         B     *+10                                                             
+         MVC   0(0,R1),0(R3)                                                    
+         BR    RE                                                               
+         EJECT                                                                  
+         USING ACKEYD,R4                                                        
+JMSETHEI NTR1                                                                   
+         LA    R4,KEY                                                           
+         MVC   KEY,SPACES                                                       
+         MVC   KEY(3),JMCUL                                                     
+         GOTO1 HIGH                                                             
+         CLC   KEY,KEYSAVE                                                      
+         BE    *+6                                                              
+         DC    H'0'                MUST HAVE LEDGER RECORD BY NOW               
+*                                                                               
+         MVI   ELCODE,ACHRELQ      GET HEIRARCHY ELEMENT                        
+         BAS   RE,GETELIO                                                       
+         BE    *+6                                                              
+         DC    H'0'                                                             
+*                                                                               
+         USING ACHEIRD,R6                                                       
+         MVC   JMLCLI,ACHRLEVA     L'CLIENT                                     
+*                                                                               
+         ZIC   R1,ACHRLEVB         L'CLIENT + PRODUCT                           
+         ZIC   R0,ACHRLEVA         LESS L'CLIENT                                
+         SR    R1,R0               EQUALS L'PRODUCT                             
+         STC   R1,JMLPRO                                                        
+*                                                                               
+         IC    R1,ACHRLEVC         L'CLIENT + PRODUCT + JOB                     
+         IC    R0,ACHRLEVB         LESS L'CLIENT + PRODUCT                      
+         SR    R1,R0               EQUALS L'JOB                                 
+         STC   R1,JMLJOB                                                        
+         DROP  R4                                                               
+*                                                                               
+         USING ACTRECD,R4          READ THE CLIENT FOR OFFICE                   
+         LA    R4,KEY                                                           
+         MVC   ACTKEY,SPACES                                                    
+         MVC   ACTKCPY(3),JMCUL                                                 
+         GOTO1 MVCCLI,ACTKACT                                                   
+         GOTO1 HIGH                                                             
+         CLC   ACTKEY(ACTKEND),KEYSAVE                                          
+         BE    *+6                                                              
+         DC    H'0'                                                             
+*                                                                               
+         MVI   ELCODE,PPRELQ       GET PROFILE ELEMET                           
+         BAS   RE,GETELIO                                                       
+         BE    *+6                                                              
+         DC    H'0'                                                             
+*                                                                               
+         USING PPRELD,R6                                                        
+         MVC   OFFCDE,PPRGAOFF     SAVE THE OFFICE CODE                         
+*                                                                               
+         USING ACTRECD,R4          READ THE PRODUCT FOR OFFICE                  
+         LA    R4,KEY                                                           
+         MVC   ACTKEY,SPACES                                                    
+         MVC   ACTKCPY(3),JMCUL                                                 
+         GOTO1 MVCCLI,ACTKACT                                                   
+         GOTO1 MVCPRO,ACTKACT+3                                                 
+         GOTO1 HIGH                                                             
+         CLC   ACTKEY(ACTKEND),KEYSAVE                                          
+         BE    *+6                                                              
+         DC    H'0'                                                             
+*                                                                               
+         MVI   ELCODE,PPRELQ       GET PROFILE ELEMET                           
+         BAS   RE,GETELIO                                                       
+         BE    *+6                                                              
+         DC    H'0'                                                             
+*                                                                               
+         USING PPRELD,R6                                                        
+         CLC   PPRGAOFF,SPACES                                                  
+         BNH   JMSHX                                                            
+         MVC   OFFCDE,PPRGAOFF                                                  
+*                                                                               
+JMSHX    XIT1                                                                   
+         DROP  R4,R6                                                            
+         EJECT                                                                  
+READ     NTR1                                                                   
+         MVC   KEYSAVE,KEY                                                      
+         GOTO1 DATAMGR,DMCB,(DMINBTS,=C'DMREAD'),=C'ACCOUNT',KEY,AIO            
+         CLI   DMCB+8,0            ANY ERRORS ?                                 
+         BE    READX               NO                                           
+         CLI   DMCB+8,X'10'        YES, NOT FOUND ?                             
+         BE    DMGERROR            YES                                          
+         CLI   DMCB+8,X'02'        RECORD IS DELETED ?                          
+         BE    READX               YES, THAT'S OK                               
+         DC    H'0'                DIE FOR OTHER CAUSES                         
+READX    XIT1                                                                   
+*                                                                               
+READD    NTR1                                                                   
+         MVC   KEYSAVE,KEY                                                      
+         GOTO1 DATAMGR,DMCB,(DMINBTS,=C'DMREAD'),=C'ACCDIR ',KEY,KEY            
+         CLI   DMCB+8,0            ANY ERRORS ?                                 
+         BE    READDX              NO                                           
+         CLI   DMCB+8,X'10'        YES, NOT FOUND ?                             
+         BE    DMGERROR            YES                                          
+         CLI   DMCB+8,X'02'        RECORD IS DELETED ?                          
+         BE    READX               YES, THAT'S OK                               
+         DC    H'0'                DIE FOR OTHER CAUSES                         
+READDX   XIT1                                                                   
+*                                                                               
+HIGH     NTR1                                                                   
+         MVC   KEYSAVE,KEY                                                      
+         GOTO1 DATAMGR,DMCB,(DMINBTS,=C'DMRDHI'),=C'ACCOUNT',KEY,AIO            
+         CLI   DMCB+8,0            ANY ERRORS ?                                 
+         BE    HIGHX               NO, OK                                       
+         CLI   DMCB+8,2            YES, IS RECORD DELETED ?                     
+         BNE   DMGERROR            NO, MUST BE BAD ERROR                        
+HIGHX    XIT1                                                                   
+*                                                                               
+SEQ      NTR1                                                                   
+         GOTO1 DATAMGR,DMCB,(DMINBTS,=C'DMRSEQ'),=C'ACCOUNT',AIO,AIO            
+         CLI   DMCB+8,0            ANY ERRORS ?                                 
+         BE    SEQX                NO, OK                                       
+         CLI   DMCB+8,2            YES, IS RECORD DELETED ?                     
+         BNE   DMGERROR            NO, MUST BE BAD ERROR                        
+SEQX     XIT1                                                                   
+*                                                                               
+SEQD     NTR1                                                                   
+         GOTO1 DATAMGR,DMCB,(DMINBTS,=C'DMRSEQ'),=C'ACCDIR ',KEY,KEY            
+         CLI   DMCB+8,0            ANY ERRORS ?                                 
+         BE    SEQDX               NO, OK                                       
+         CLI   DMCB+8,2            YES, IS RECORD DELETED ?                     
+         BNE   DMGERROR            NO, MUST BE BAD ERROR                        
+SEQDX    XIT1                                                                   
+*                                                                               
+WRITE    NTR1                                                                   
+         GOTO1 DATAMGR,DMCB,(DMINBTS,=C'DMWRT'),=C'ACCOUNT',AIO,AIO             
+         CLI   DMCB+8,0                                                         
+         BNE   DMGERROR                                                         
+WRITEX   XIT1                                                                   
+*                                                                               
+DIRHIGH  NTR1                                                                   
+         MVC   KEYSAVE,BIGKEY                                                   
+         GOTO1 DATAMGR,DMCB,(DMINBTS,=C'DMRDHI'),=C'ACCDIR ',          X        
+               BIGKEY,BIGKEY                                                    
+         CLI   DMCB+8,0            ANY ERRORS ?                                 
+         BE    DIRHX               NO, OK                                       
+         CLI   DMCB+8,2            YES, IS RECORD DELETED ?                     
+         BNE   DMGERROR            NO, MUST BE BAD ERROR                        
+DIRHX    XIT1                                                                   
+*                                                                               
+DIRSEQ   NTR1                                                                   
+         GOTO1 DATAMGR,DMCB,(DMINBTS,=C'DMRSEQ'),=C'ACCDIR ',          X        
+               BIGKEY,BIGKEY                                                    
+         CLI   DMCB+8,0            ANY ERRORS ?                                 
+         BE    DIRSX               NO, OK                                       
+         CLI   DMCB+8,2            YES, IS RECORD DELETED ?                     
+         BNE   DMGERROR            NO, MUST BE BAD ERROR                        
+DIRSX    XIT1                                                                   
+*                                                                               
+DIRREAD  NTR1                                                                   
+         GOTO1 DATAMGR,DMCB,(DMINBTS,=C'DMREAD'),=C'ACCDIR ',          X        
+               BIGKEY,AIO                                                       
+         CLI   DMCB+8,0            ANY ERRORS ?                                 
+         BE    DIRRX               NO, OK                                       
+         CLI   DMCB+8,2            YES, IS RECORD DELETED ?                     
+         BNE   DMGERROR            NO, MUST BE BAD ERROR                        
+DIRRX    XIT1                                                                   
+*                                                                               
+GETREC   NTR1  WORK=(R2,12)                                                     
+         USING ACTRECD,R3                                                       
+         LA    R3,BIGKEY                                                        
+         LA    R3,ACTKDA                                                        
+         GOTO1 DATAMGR,DMCB,(DMINBTS,=C'GETREC '),=C'ACCMST ',         X        
+               (R3),AIO,(R2)                                                    
+         CLI   DMCB+8,0            ANY ERRORS ?                                 
+         BE    GETRX               NO, OK                                       
+         CLI   DMCB+8,2            YES, IS RECORD DELETED ?                     
+         BNE   DMGERROR            NO, MUST BE BAD ERROR                        
+GETRX    XIT1                                                                   
+*                                                                               
+         DROP  R3                                                               
+         EJECT                                                                  
+JMPERSIN NTR1                                                                   
+         OC    MPERSON,MPERSON     ADD PERSON ID ELEMENT                        
+         BZ    JMPIX                                                            
+         MVI   ELCODE,ACPIELQ                                                   
+         GOTO1 REMELEM                                                          
+*                                                                               
+         USING ACPID,R6                                                         
+         L     R3,MPERSON                                                       
+         LA    R6,ELEMENT                                                       
+         XC    ELEMENT(16),ELEMENT                                              
+         MVI   ACPIEL,ACPIELQ                                                   
+         MVI   ACPILEN,X'10'                                                    
+         MVC   ACPIPERS,0(R3)                                                   
+         MVC   ACPIDATE,TODAY3                                                  
+         GOTO1 ADDELEM                                                          
+*                                                                               
+JMPIX    XIT1                                                                   
+         DROP  R6                                                               
+         EJECT                                                                  
+REMELEM  NTR1                                                                   
+         L     R6,AIO                                                           
+         XC    ELEMENT,ELEMENT                                                  
+         BAS   RE,GETELIO                                                       
+         BNE   REMELEMX                                                         
+         ZIC   R1,1(R6)                                                         
+         BCTR  R1,0                                                             
+         EX    R1,*+8                                                           
+         B     *+10                                                             
+         MVC   ELEMENT(0),0(R6)                                                 
+         GOTO1 HELLO,DMCB,(C'D',=C'ACCFIL '),(ELCODE,AIO),0                     
+*                                                                               
+REMELEMX XIT1                                                                   
+*                                                                               
+ADDELEM  NTR1                                                                   
+         CLI   ELEMENT,0                                                        
+         BE    ADDELEMX                                                         
+         GOTO1 HELLO,DMCB,(C'P',=C'ACCFIL '),AIO,ELEMENT,0                      
+         CLI   DMCB+12,0                                                        
+         BE    ADDELEMX                                                         
+         CLI   DMCB+12,5           RECORD GET TOO LONG ?                        
+         BNE   ADDELEMX                                                         
+         MVC   ERROR,DMCB+12       SAVE DATAMGR RETURN CODE                     
+         B     MODEXIT                                                          
+*                                                                               
+ADDELEMX XIT1                                                                   
+         EJECT                                                                  
+GETELIO  L     R6,AIO                                                           
+         GETEL (R6),DATADISP,ELCODE                                             
+*                                                                               
+DATADISP DC    H'49'                                                            
+SPACES   DC    256C' '                                                          
+         EJECT                                                                  
+*                                                                               
+* ADD A RECORD ACTIVITY ELEMENT TO THE RECORD                                   
+*                                                                               
+PRERAP   ICM   RF,15,MRAPPER                                                    
+         BZR   RE                                                               
+         NTR1                                                                   
+         XC    RAPBLK(RAPBLKL),RAPBLK                                           
+         MVI   RAPACTN,RAPAELEM                                                 
+         MVC   RAPCPY,JMCUL                                                     
+         MVI   RAPRTYP,RAPKRJOB    RECORD=JOB                                   
+         MVI   RAPEMU,C'Y'                                                      
+         MVC   RAPACOM,MCOMFACS                                                 
+         L     RE,AIO                                                           
+         ST    RE,RAPAREC                                                       
+*                                                                               
+         A     RF,RELO                                                          
+         GOTO1 (RF),RAPBLK                                                      
+         BE    XIT                                                              
+         DC    H'0'                                                             
+*                                                                               
+* CREATE A RECORD ACTIVITY POINTER                                              
+*                                                                               
+POSTRAP  ICM   RF,15,MRAPPER       DOES CALLER WANT ME TO DO THIS               
+         BZR   RE                  NO                                           
+         NTR1                                                                   
+         MVI   RAPACTN,RAPAPTR                                                  
+         A     RF,RELO                                                          
+         GOTO1 (RF),RAPBLK                                                      
+         BE    XIT                                                              
+         DC    H'0'                                                             
+*                                                                               
+XIT      XIT1                                                                   
+         EJECT                                                                  
+EXTTAB   DS    0D                                                               
+         DC    AL4(BUFF-WORKD),AL4(AIO-WORKD)                                   
+         DC    AL4(BUFF2-WORKD),AL4(AIO2-WORKD)                                 
+NEXTTAB  EQU   (*-EXTTAB)/L'EXTTAB                                              
+         LTORG                                                                  
+         EJECT                                                                  
+*                                                                               
+WORKD    DSECT                                                                  
+DUB      DS    D                                                                
+RELO     DS    A                                                                
+APARM    DS    A                                                                
+AIO      DS    A                                                                
+AIO2     DS    A                                                                
+DMCB     DS    6F                                                               
+SAVERD   DS    A                   TO EXIT BACK TO CALLER                       
+FULL     DS    F                                                                
+BYTE     DS    CL1                                                              
+SAVERE   DS    A                                                                
+OPTION2  DS    CL1                                                              
+*                                                                               
+DATCON   DS    A                                                                
+DATAMGR  DS    A                                                                
+HELLO    DS    A                                                                
+*                                                                               
+ERROR    DS    C                   ERROR FLAG, OR DATAMGR ERROR CODE            
+ERR2     DS    C                   SPECIFIC ERROR CODE                          
+TODAY3   DS    XL3                                                              
+JMCUL    DS    CL3                                                              
+KEYSAVE  DS    CL42                SAVE KEY BEFORE DATAMGR CALL                 
+SAVEKEY  DS    CL42                SAVE KEY BEFORE ORDER READ                   
+SAVEBGKY DS    CL42                SAVE BIGKEY BEFORE GETTEC                    
+JOBKEY   DS    CL42                JOB RECORD                                   
+IOKEY    DS    CL42                SAVED ARE FOR IO KEY FOR DELETES             
+DISKDA   DS    XL4                                                              
+DMWORK   DC    XL96'00'            FOR GETREC/PUTREC                            
+*                                                                               
+JMLCLI   DS    X                   L'CLIENT CODE                                
+JMLPRO   DS    X                   L'PRODUCT CODE                               
+JMLJOB   DS    X                   L'JOB CODE                                   
+JOBCULA  DS    XL15                                                             
+*                                                                               
+ELCODE   DS    X                   ELEMENT CODE                                 
+ELEMENT  DS    CL256               PERSON ELEMENT                               
+*                                                                               
+AMOUNT   DS    PL6                 FOR AMOUNT CALCULATIONS                      
+*                                                                               
+DMINBTS  DS    X                   DATAMGR INTERFACE BYTE                       
+XTCPTRBK DS    XL128               USED FOR PADDLE CPTRBLK CALLS                
+*                                                                               
+OFFCDE   DS    CL2                 CLIENT/PRODUCT OFFICE                        
+SESTLNO  DS    XL1                 SAVED ESTIMATE LOCAL NUMBER                  
+ESTINDS  DS    XL1                 ESTIMATE INDICTOR                            
+ESTLAST  EQU   X'80'               LAST ESTIMATE RECORD                         
+ESTAUDIT EQU   X'01'               ESTIMATE AUDIT RECORD PRESENT                
+*                                                                               
+SVDATES  DS    0XL8                SAVED OPEN/CLOSE IN/OUT DATES                
+SVDTINOP DS    XL2                                                              
+SVDTINCL DS    XL2                                                              
+SVDTOUOP DS    XL2                                                              
+SVDTOUCL DS    XL2                                                              
+         EJECT                                                                  
+       ++INCLUDE ACGOBLOCK                                                      
+       ++INCLUDE ACGOXBLOCK                                                     
+         EJECT                                                                  
+       ++INCLUDE ACJOBMNTD                                                      
+PROBLOCK DS    0C                                                               
+       ++INCLUDE ACPRORATAD                                                     
+*                                                                               
+       ++INCLUDE ACRAPPERD                                                      
+*                                                                               
+BIGKEY   DS    CL56                FOR ACCDIR READS                             
+*                                                                               
+KEY      DS    CL42                                                             
+         ORG   KEY                                                              
+BUFF     DS    CL2000              BUFFER FOR DATAMGR  (AIO)                    
+BUFF2    DS    CL2000              BUFFER FOR DATAMGR  (AIO2)                   
+WORKX    EQU   *                                                                
+         EJECT                                                                  
+       ++INCLUDE ACPROEQU                                                       
+         EJECT                                                                  
+         PRINT ON                                                               
+* ACGENBOTH                                                                     
+         PRINT OFF                                                              
+       ++INCLUDE ACGENBOTH                                                      
+         PRINT ON                                                               
+* ACGENFILE                                                                     
+         PRINT OFF                                                              
+       ++INCLUDE ACGENFILE                                                      
+         PRINT ON                                                               
+* DDCOMFACS                                                                     
+         PRINT OFF                                                              
+       ++INCLUDE DDCOMFACS                                                      
+         PRINT ON                                                               
+* ACLDCPTRD                                                                     
+         PRINT OFF                                                              
+CPTRBLKD DSECT                                                                  
+       ++INCLUDE ACLDCPTRD                                                      
+         PRINT ON                                                               
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'102ACJOBMNT  08/06/19'                                      
+         END                                                                    

@@ -1,0 +1,753 @@
+*          DATA SET DDTICTOC   AT LEVEL 002 AS OF 01/17/14                      
+*CATALP TICTOC                                                                  
+***********************************************************************         
+* TIMER 1 IS A LOOP TIMER. TIMER 2 IS THE FACPAK MAJOR TIMER.         *         
+*                                                                     *         
+* TO SET TIMER 1       P1 = C'1SET' AND P2 NOT 0                      *         
+*                                                                     *         
+* TO SUSPEND TIMER 1   P1 = C'SSET' (EQUIVALENT TO 1SET/0)            *         
+*                                                                     *         
+* TO RESTART TIMER 1   P1 = C'RSET' (EQUIVALENT TO 1SET/1)            *         
+*                                                                     *         
+* TO SUSPEND TASK      P1 = C'WAIT' P2=NUMBER OF TUS TO WAIT          *         
+*                                                                     *         
+* TIMERS 02-15 ARE EVENT TIMERS THAT ARE INSPECTED FOR COMPLETION     *         
+* AFTER EACH CALL TO TICTOC.                                          *         
+*                                                                     *         
+* TO SET A TIMER VALUE P1 = C'NSET' WHERE N IS EITHER AN EBCDIC OR    *         
+* (FOR TIMERS 02-15)                BINARY NUMBER BETWEEN 2 AND 15.   *         
+*                      P2 = VALUE   NUMBER OF SECONDS (IN BINARY) TO  *         
+*                                   WHICH THIS TIMER IS TO BE SET.    *         
+*                                   A VALUE OF ZERO MEANS SUPPORT FOR *         
+*                                   THIS TIMER SHOULD BE DISCONTINUED *         
+*                                                                     *         
+* TO WAIT ON A TIMER   P1 = C'WSET' WAITS ON NEXT EVENT TIMER         *         
+* OTHER THAN TIMER 1                                                  *         
+*                                                                     *         
+* TO SET TIMER EXITS   P1 = C'XSET' PRIOR TO XSET ALL OTHER SET       *         
+*                           COMMANDS ARE IGNORED                      *         
+*                                                                     *         
+* TO RE-ESTABLISH      P1 = C'XRST'                                   *         
+* TIMER EXITS                                                         *         
+*                                                                     *         
+* TO GET THE TIME      P1 = C'BGET' GETIME BINARY SECONDS             *         
+*                           C'TGET' GETIME TU (1/38400 SEC=26.042MS)  *         
+*                           C'SGET' GETIME STANDARD                   *         
+* FOR ALL CALLS TO TICTOC THE TIME-OF-DAY WILL BE RETURNED IN P1 IN   *         
+* TU'S (UNLESS BGET OR SGET) AND P2 WILL CONTAIN A(TICTOCT).          *         
+* THE FIRST BYTE OF TICTOCT INDICATES WHICH TIMER WILL EXPIRE NEXT.   *         
+***********************************************************************         
+         TITLE 'TICTOC - INTERFACE TO IBM TIME MACROS'                          
+         PRINT NOGEN                                                            
+TICTOC   CSECT                                                                  
+         ENTRY TICFLAG                                                          
+         ENTRY TICTOCT                                                          
+         ENTRY TICTOCXX                                                         
+         NMOD1 0,**TICTOC                                                       
+         SAM24                                                                  
+*                                                                               
+         LR    R3,R1               R3=A(PARAMETER LIST)                         
+         USING TICPARM,R3                                                       
+         TIME  TU                                                               
+         ST    R0,TICTIME          TICTIME=TIME IN TU'S (1/38400 SEC)           
+                                                                                
+***********************************************************************         
+* IGNORE ALL TIMER ROUTINE REQUESTS EXCEPT 'GET' UNTIL TASKER         *         
+* REQUESTS TIMER ROUTINE SERVICES                                     *         
+***********************************************************************         
+TIC1     BC    0,TIC10                                                          
+         L     RE,=V(SSB)          SET USING MVS TUS FLAG                       
+         USING SSBD,RE                                                          
+         OI    SSBSTAT3,SSBMVSTU                                                
+         CLC   TICACTN,=C'GET'     ACCEPT GET TIME REQUESTS                     
+         BE    TIC50                                                            
+         CLC   TICP1,=C'XSET'      BUT IGNORE ALL SETS TILL XSET                
+         BNE   TICX                                                             
+         SR    R1,R1                                                            
+         ICM   R1,3,SSBPOPLN       SSB UNITS ARE IN 1/100 SEC                   
+         BZ    TIC2                                                             
+         M     R0,TICSEC                                                        
+         D     R0,=F'100'                                                       
+         ST    R1,T1SETVAL                                                      
+TIC2     MVI   TIC1+1,X'F0'        THIS CODE ONE TIME ONLY                      
+*                                                                               
+TIC3     MVI   TICXNOP+1,X'F0'                                                  
+         B     TICX                                                             
+         EJECT                                                                  
+***********************************************************************         
+* START TO PROCESS REQUEST                                            *         
+***********************************************************************         
+TIC10    MVI   TICXNOP+1,0         ALLOW TIMER COMPLETION POSTING               
+         MVI   TICFLAG,0           RESET SUPPRESS TIMER POP FLAG                
+         L     R1,T1SETVAL         GET NORMAL TIMER1 VALUE                      
+         CLC   TICP1,=C'1SET'      TEST '1SET' COMMAND                          
+         BNE   TIC12                                                            
+         OC    TICVALUE,TICVALUE   ZERO MEANS DISABLE                           
+         BNZ   TIC20                                                            
+         L     R1,TICSTOP          SO FORCE HIGH VALUE                          
+         MVI   TICXNOP+1,X'F0'     INHIBIT TIMER COMPLETION POSTING             
+         B     TIC20                                                            
+TIC12    CLC   TICP1,=C'RSET'      TEST RESTART TIMER 1                         
+         BE    TIC20                                                            
+         CLC   TICP1,=C'SSET'      TEST SUSPEND TIMER 1                         
+         BNE   TIC30                                                            
+         L     R1,TICSTOP          FORCE HIGH TIMER 1 VALUE                     
+         MVI   TICXNOP+1,X'F0'     INHIBIT TIMER COMPLETION POSTING             
+                                                                                
+***********************************************************************         
+* THESE ROUTINES SET TIMER 1 VALUES                                   *         
+***********************************************************************         
+TIC20    ST    R1,DUB              SAVE INTERVAL LENGTH                         
+         LA    R0,TICPOP                                                        
+         STIMER TASK,(0),TUINTVL=DUB                                            
+         L     R1,TICTIME                                                       
+         AL    R1,DUB                                                           
+         CL    R1,TICDAY           TEST IF PAST MIDNIGHT                        
+         BNH   *+8                                                              
+         SL    R1,TICDAY                                                        
+         ST    R1,TICTAB                                                        
+         MVI   TICNDX,1                                                         
+         CLC   TICP1,=C'SSET'      TEST SUSPEND TIMER 1                         
+         BNE   TICX                                                             
+         MVI   TICNDX,0            SET TICNDX TO ZERO IF SUSPENDED              
+         B     TICX                                                             
+         EJECT                                                                  
+***********************************************************************         
+* OTHER COMMANDS                                                      *         
+***********************************************************************         
+TIC30    CLC   TICP1,=C'WSET'      TEST WAIT ON TIMER REQUEST                   
+         BE    TIC40                                                            
+         CLC   TICACTN,=C'GET'     TEST TIME REQUEST                            
+         BE    TIC50                                                            
+         CLC   TICP1,=C'XRST'      TEST RESTORE STXIT                           
+         BE    TIC3                                                             
+         CLC   TICP1,=C'WAIT'      TEST TASK WAIT REQUEST                       
+         BE    TIC60                                                            
+         CLC   TICACTN,=C'SET'     TEST TIMER 2-15 SET                          
+         BNE   TICX                NO-UNSUPPORTED COMMAND                       
+                                                                                
+***********************************************************************         
+* THESE ROUTINES SET EVENT TIMES FOR TIMERS 2 - 15                    *         
+***********************************************************************         
+         NI    TICTYPE,X'0F'                                                    
+         CLI   TICTYPE,1                                                        
+         JNH   *+2                                                              
+*                                                                               
+         CLC   TICTYPE,TICHIGH                                                  
+         BNH   *+10                                                             
+         MVC   TICHIGH,TICTYPE     SAVE HIGHEST TIMER NUMBER                    
+*                                                                               
+         XC    DUB,DUB                                                          
+         MVC   DUB(1),TICTYPE      SET TIMER NUMBER                             
+         MVC   DUB+4(4),TICVALUE   AND INTERVAL                                 
+         BAS   RE,TICSET           GO AND SET EVENT TIME                        
+         EJECT                                                                  
+***********************************************************************         
+* THESE ROUTINES DETERMINE WHICH EVENT TIMER WILL EXPIRE SOONEST      *         
+***********************************************************************         
+TIC40    LA    R4,TICTAB+4         POINT TO TIMER 2 ENTRY                       
+         LA    R5,TICDAY           POINT TO A HUGE VALUE                        
+         CLI   TICHIGH,2           TEST TIMER 2 - 15 ESTABLISHED                
+         BL    TICX                NO                                           
+         LLC   R6,TICHIGH          GET HIGHEST TIMER NUMBER                     
+         AHI   R6,-1                                                            
+TIC42    ICM   R1,15,0(R4)         TEST TIMER SET                               
+         BZ    TIC44               NO                                           
+         CL    R1,TICTIME          IS TIME < NOW                                
+         BNL   *+8                                                              
+         AL    R1,TICDAY                                                        
+         CL    R1,0(R5)            WILL IT EXPIRE SOONER                        
+         BH    *+6                 NO                                           
+         LR    R5,R4               SAVE ITS ADDRESS                             
+*                                                                               
+TIC44    LA    R4,4(R4)                                                         
+         BCT   R6,TIC42                                                         
+*                                                                               
+         L     R1,0(R5)            GET EVENT TIME                               
+         CL    R1,TICTIME                                                       
+         BNL   *+8                                                              
+         AL    R1,TICDAY           ADJUST FOR MIDNIGHT                          
+         SL    R1,TICTIME          SETIME =EVENTTIME-CURRENT                    
+*                                                                               
+         CL    R1,TICKLE           TEST IF WE HAVE A SENSIBLE TIME              
+         BNH   *+8                                                              
+         L     R1,TICFIX                                                        
+         ST    R1,DUB                                                           
+         LA    R0,TICPOP                                                        
+         STIMER REAL,(0),TUINTVL=DUB                                            
+*                                                                               
+         LA    R0,TICTAB-4         CALULATE TIMER NUMBER                        
+         SR    R5,R0                                                            
+         SRL   R5,2                                                             
+         STC   R5,TICNDX                                                        
+         B     TICX                                                             
+         EJECT                                                                  
+***********************************************************************         
+* THESE ROUTINES GET THE TIME OF DAY                                  *         
+***********************************************************************         
+TIC50    LA    R0,TICTAB           RETURN TABLE ADDRESS                         
+         ST    R0,TICP2                                                         
+*                                                                               
+TIC51    CLI   TICTYPE,C'T'        TIME IN TU'S (1/38400 SEC)                   
+         BNE   TIC52                                                            
+         MVC   TICP1,TICTIME                                                    
+         B     EXIT                                                             
+*                                                                               
+TIC52    CLI   TICTYPE,C'S'        TIME IN DECIMAL P'0HHMMSSC'                  
+         BNE   TIC53                                                            
+         TIME  DEC                                                              
+         SRL   R0,8                DROP SECS/10 AND SECS/100                    
+         SLL   R0,4                SET TO ADD SIGN BITS                         
+         AHI   R0,12               SET SIGN TO +                                
+         ST    R0,TICP1                                                         
+         B     EXIT                                                             
+*                                                                               
+TIC53    CLI   TICTYPE,C'B'        TIME IN BINARY (SECONDS)                     
+         BNE   TIC54                                                            
+         TIME  BIN                                                              
+         SRDL  R0,32                                                            
+         D     R0,=F'100'          CONVERT TO SECONDS                           
+         ST    R1,TICP1                                                         
+         B     EXIT                                                             
+*                                                                               
+TIC54    MVC   TICP1,TICTIME       DEFAULT=TIME IN TU'S (1/38400 SEC)           
+         B     EXIT                                                             
+         EJECT                                                                  
+***********************************************************************         
+* REQUEST FOR TIMER WAIT FROM A TASK                                  *         
+***********************************************************************         
+TIC60    ICM   R1,15,TICP2         GET WAIT TIME IN R1                          
+         BZ    EXIT                                                             
+         ICM   RF,15,=V(TKWAIT)    PICK UP A(TKWAIT)                            
+         BZ    EXIT                                                             
+         BASR  RE,RF               GO WAIT UNTIL ITS TIME                       
+         B     EXIT                                                             
+         EJECT                                                                  
+***********************************************************************         
+* THESE ROUTINES RETURN TIME AND TICTAB ADDRESS TO USER.              *         
+* TIMERS 2 - 15 ARE CHECKED TO SEE IF ANY HAVE EXPIRED.               *         
+* IS SO THE APPROPRIATE BIT IS SET IN SSB AND TIMER IS RESTARTED.     *         
+***********************************************************************         
+TICX     DS    0H                  CREATE TRACE TABLE ENTRY                     
+         L     RF,TICTRACE         GET NEXT TRACE SLOT                          
+         MVC   0(8,RF),0(R3)       PARAMETER LIST                               
+         MVC   8(4,RF),TICTIME                                                  
+         L     RE,4(RD)            GET REG SAVE AREA ADDRESS                    
+*NOP*    MVC   12(60,RF),12(RE)    MOVE RE-RC                                   
+         MVC   12(4,RF),12(RE)     MOVE RE                                      
+         XC    12(60,RF),12(RF)                                                 
+*                                                                               
+         L     RE,=V(SSB)                                                       
+         USING SSBD,RE                                                          
+         ICM   RE,15,SSBTKADR                                                   
+         BZ    TICX1                                                            
+         DROP  RE                                                               
+*                                                                               
+         ST    RE,16(RF)                    SET TCB ENTRY ADDRESS               
+         MVC   20(12,RF),TCBSTATS-TCBD(RE)  SET TERM/OVSYS/SYS/PRG              
+         CLI   TCBUTL-TCBD(RE),0                                                
+         BNE   TICX1                        NO XA ADDRESSES PLEASE              
+         ICM   RE,15,TCBUTL-TCBD(RE)                                            
+         BZ    TICX1                                                            
+         MVC   32(2,RF),TUSER-UTLD(RE)      SET USER ID                         
+*                                                                               
+TICX1    LA    RF,72(RF)           NEXT ENTRY                                   
+         C     RF,=A(TICTRACX)     TEST STILL IN TABLE                          
+         BL    *+8                                                              
+         LA    RF,TICTRACE+4                                                    
+         ST    RF,TICTRACE         AND SET IN TABLE                             
+         MVC   TICP1,TICTIME       RETURN TIME TO USER                          
+         LA    R0,TICTAB                                                        
+         ST    R0,TICP2            AND TICTAB ADDRESS                           
+***********************************************************************         
+* TEST IF ANY TIMER 2 - 15 HAS EXPIRED                                *         
+* NEXT INSTRUCTION IS USED AS A GATE TO ALLOW/INHIBIT POSTING         *         
+***********************************************************************         
+TICXNOP  BC    0,EXIT                                                           
+         LA    R4,TICTAB+4                                                      
+         L     RE,=V(SSB)                                                       
+         USING SSBD,RE                                                          
+         LA    R5,SSBT2            POINT TO TABLE IN SSB                        
+         CLI   TICHIGH,2           TEST ANY TIMER ENABLED                       
+         BL    EXIT                NO-IGNORE                                    
+         LLC   R6,TICHIGH          GET HIGHEST TIMER SET                        
+         AHI   R6,-1                                                            
+         LA    R7,2                SET COUNTER                                  
+*                                                                               
+TICX2    CLC   TICTIME,0(R4)       TEST EXPIRED                                 
+         BL    TICX4                                                            
+         CLC   TICTIME,TICBMID     TEST IF JUST BEFORE MIDNIGHT                 
+         BL    *+14                AND ...                                      
+         CLC   0(4,R4),TICAMID     DUE TO EXPIRE JUST AFTER MIDNIGHT            
+         BL    TICX4               THEN DONT SET AS EXPIRED                     
+         OI    0(R5),X'80'         SET EXPIRED IN SSB                           
+*                                                                               
+         XC    DUB,DUB                                                          
+         STC   R7,DUB              SET TIMER NUMBER                             
+         MVC   DUB+4(4),0(R5)      MOVE INTERVAL LENGTH FROM SSB                
+         NI    DUB+4,X'7F'         TURN OFF BIT                                 
+         BAS   RE,TICSET           CALL TICSET TO RESTART EXPIRED TIMER         
+*                                                                               
+TICX4    LA    R4,4(R4)            TICTAB POINTER                               
+         LA    R5,4(R5)            SSB POINTER                                  
+         LA    R7,1(R7)            BUMP COUNTER                                 
+         BCT   R6,TICX2                                                         
+*                                                                               
+EXIT     XMOD1 1                                                                
+         EJECT                                                                  
+***********************************************************************         
+* THIS ROUTINE GETS CONTROL WHEN A TIMER INTERRUPT OCCURS.            *         
+* FOR MVS ONLY IT FINDS INTERRUPTED USER REGS AND SAVES THEM IN       *         
+* ORIGINALLY SPECIFIED USER SAVE AREA.                                *         
+* IF TIMER 1 HAS EXPIRED THE PSW ADR IS COMPARED WITH A LIST OF       *         
+* OF START/END ADDRESSES OF ROUTINES THAT ARE NON-INTERRUPTABLE.      *         
+* THE SSB IS ALSO CHECKED TO SEE IF MULTI-TASKING IS ENABLED.         *         
+* SAVES 12 BYTES OF CODE AT PRESENT PSW ADDRESS AND CHANGES THEM TO:  *         
+*        BASR  14,0         0DE0                                      *         
+*        L     15,6(14)     58FE0006                                  *         
+*        BR    15           07FF                                      *         
+*        DC    AL4(TICPOPX)                                           *         
+* WHEN WE EXIT THE STXIT IT ROUTINE, WE WILL RE-OBTAIN CONTROL        *         
+* IN NORMAL PROBLEM PROGRAM STATE. FIRST WE RESTORE THE 12 BYTES,     *         
+* THEN BRANCH TO THE TASKER TIMER INTERRUPT ROUTINE (ADIRPT).         *         
+* IF ANY OTHER TIMER HAS EXPIRED THE APPROPRIATE ACTION IS TAKEN      *         
+***********************************************************************         
+         USING *,RF                                                             
+         USING PSA,R0                                                           
+         USING TCB,R4                                                           
+TICPOP   STM   RE,RC,12(RD)        SAVE CALLING REGS (SRB)                      
+         XR    R0,R0                                                            
+         L     R4,PSATOLD          GET PSA TCB OLD                              
+         L     R4,TCBRBP           POINT TO CURRENT RB                          
+         USING RBBASIC,R4                                                       
+P        USING RBBASIC,R5                                                       
+*                                                                               
+         L     R5,RBLINK           POINT TO PREVIOUS RB                         
+         CLC   P.RBLINKB,PSATOLD+1 TEST IT POINTS TO TCB                        
+         BE    *+10                YES-R5 IS FIRST IN CHAIN                     
+         LR    R4,R5               ELSE CURRENT = PREVIOUS RB                   
+         B     *-16                AND TRY AGAIN                                
+*                                                                               
+         L     R9,TICSREG                                                       
+         USING ABENDREG,R9                                                      
+         MVC   PSW,P.RBOPSW        MOVE PSW FROM PRB                            
+         MVC   GPRS,RBGRS0         AND REGISTERS FROM IRB                       
+         LR    RE,R4                                                            
+         AHI   RE,-64              POINT TO RBXSB                               
+         DROP  P                                                                
+         USING RBPRFX,RE                                                        
+         L     RE,RBXSB            A(XSB)                                       
+         DROP  R4                                                               
+*                                                                               
+         SAM31                                                                  
+         USING XSB,RE                                                           
+         MVC   ARGS,XSBARS         ACCESS REGISTERS                             
+         MVC   GRGS,XSBG64H        GRAND  REGISTERS                             
+         SAM24                                                                  
+         DROP  RE                                                               
+*                                                                               
+         L     RB,=A(TICTOC)                                                    
+         USING TICTOC,RB                                                        
+         DROP  RF                                                               
+*                                                                               
+         MVC   OLDTIME,TICTIME     SAVE PREVIOUS TIME                           
+         TIME  TU                  GET TIME IN MVS TUS                          
+         ST    R0,TICTIME                                                       
+*                                                                               
+         L     RE,TICTRACE         CREATE TRACE TABLE ENTRY                     
+         MVC   0(4,RE),=C'*POP'                                                 
+         MVC   4(4,RE),TICTIME                                                  
+         MVC   8(4,RE),PSW+4       MOVE ADDRESS PORTION OF PSW                  
+         MVC   12(8,RE),REGE       MOVE RE/RF                                   
+         MVC   20(52,RE),GPRS      MOVE R0-RC                                   
+         LA    RE,72(RE)           NEXT ENTRY                                   
+         C     RE,=A(TICTRACX)     TEST STILL IN TABLE                          
+         BL    *+8                                                              
+         LA    RE,TICTRACE+4                                                    
+         ST    RE,TICTRACE         AND SET IN TABLE                             
+                                                                                
+***********************************************************************         
+* SPECIAL POP TABLE ENTRY TO FIND ADDTRANS BUG                        *         
+***********************************************************************         
+         L     R1,=A(TICPOPTB)     CREATE TRACE TABLE ENTRY                     
+         L     RE,0(R1)                                                         
+         ST    RE,TICPOPSV         SAVE ENTRY ADDRESS                           
+         MVC   0(3,RE),=C'POP '                                                 
+         MVC   3(1,RE),TICNDX                                                   
+         OI    3(RE),X'F0'         MAKE EBCDIC                                  
+         MVC   4(4,RE),TICTIME                                                  
+         MVC   8(4,RE),PSW+4       MOVE ADDRESS PORTION OF PSW                  
+         MVC   12(8,RE),REGE       MOVE RE/RF                                   
+         MVC   20(52,RE),GPRS      MOVE R0-RC                                   
+         LA    RE,72(RE)           NEXT ENTRY                                   
+         C     RE,=A(TICPOPTX)     TEST STILL IN TABLE                          
+         BL    *+8                                                              
+         LA    RE,4(R1)                                                         
+         ST    RE,0(R1)            AND SET IN TABLE                             
+*                                                                               
+         CLC   DUB(4),TICSTOP      WAS TIMER SUSPENDED                          
+         BNE   TICPOP0             WE MUST HAVE DONE A LOT OF CPU               
+*                                                                               
+         L     RE,TICTIME          WHAT TIME DIFFERENCE IS THERE                
+         S     RE,OLDTIME                                                       
+         C     RE,TIC10SEC         WAS THIS LES THAN 10 SECOND AGO              
+         BNH   TICPOP0             MUSTBEEXTRATERESTRIALINTERFERENCE            
+*                                                                               
+         L     RE,=V(SSB)                                                       
+         LA    R2,=C'..+FAC...+ SYSTEM MAY BE LOOPING  '                        
+*                                                                               
+         MVC   0(2,R2),=H'32'                                                   
+         MVC   6(3,R2),SSBSYSNA-SSBD(RE)                                        
+         WTO   TEXT=(R2)                                                        
+         B     TICPOP1                                                          
+*                                                                               
+TICPOP0  CLI   TICNDX,1            TEST TIMER 1                                 
+         BNE   TICPOP20                                                         
+         EJECT                                                                  
+***********************************************************************         
+* CHECK FOR OPERATOR CANCEL OR CANCEL,DUMP                            *         
+***********************************************************************         
+TICPOP1  L     RE,=V(SSB)                                                       
+         USING SSBD,RE                                                          
+         L     RF,SSBOPECB         TEST OPERATOR ECB                            
+         TM    0(RF),X'40'                                                      
+         BZ    TICPOP1A            NO-CONTINUE                                  
+*                                                                               
+         L     RF,SSBACOMM         A(COMLIST)                                   
+         USING COMLIST,RF                                                       
+         L     R9,COMCIBPT         A(CIB)                                       
+         USING CIBNEXT,R9                                                       
+         DROP  RF                                                               
+*                                                                               
+         CLI   CIBVERB,CIBMODFY    DID OPERATOR ENTER 'MODIFY'?                 
+         BNE   TICPOP1A            NO                                           
+*                                                                               
+         CLC   CIBDATLN,=X'0006'   L'CANCEL                                     
+         BNE   TICPOP1A                                                         
+         CLC   CIBDATA(3),=C'CANCEL'                                            
+         BNE   TICPOP1A                                                         
+         OI    SSBSTAT3,SSBCANCL   FLAG CANCEL REQUESTED                        
+         DC    H'0'                THIS WILL CANCEL SYSTEM                      
+*                                                                               
+TICPOP1A CLI   SSBMTIND,0          TEST MULTI-TASKING ACTIVE                    
+         BNE   TICPOP1B            NO-IGNORE POP                                
+         L     RE,TICPOPSV                                                      
+         MVC   0(3,RE),=C'*NM'                                                  
+         B     TICPOP10                                                         
+*                                                                               
+TICPOP1B OC    SSBTKADR,SSBTKADR   MAKE SURE A TASK IS ACTIVE                   
+         BNZ   TICPOP1C                                                         
+         L     RE,TICPOPSV                                                      
+         MVC   0(3,RE),=C'*NT'                                                  
+         B     TICPOP10                                                         
+*                                                                               
+TICPOP1C ICM   R1,15,SSBTKADR      IGNORE POP IF DEBUG IS ACTIVE                
+         TM    TCBFLAG3-TCBD(R1),TCBDEBUG                                       
+         BNO   TICPOP2                                                          
+         L     RE,TICPOPSV                                                      
+         MVC   0(3,RE),=C'*DB'                                                  
+         B     TICPOP10                                                         
+         EJECT                                                                  
+***********************************************************************         
+* NOW CHECK WHETHER INTERRUPT SHOULD BE ACCEPTED                      *         
+* IF NOT ACCEPTED AND TIMER 1 EXPIRED, RESTART IT FOR HALF THE NORMAL *         
+* INTERVAL                                                            *         
+***********************************************************************         
+TICPOP2  L     R9,TICSREG                                                       
+         USING ABENDREG,R9                                                      
+         L     RE,=V(SSB)          CHECK PSW WITHIN FACPAK                      
+         USING SSBD,RE                                                          
+*&&DO                                                                           
+         TM    PSW+2,X'C0'         TEST IN AR MODE                              
+         BZ    TICPOP3                                                          
+         SAC   0                   *NOP THIS IS NOT REQUIRED NOW                
+*                                                                               
+         ICM   R1,15,SSBTKADR                                                   
+         USING TCBD,R1                                                          
+         BZ    TICPOP4                                                          
+*                                                                               
+         XR    R0,R0               COUNT AR INTERRUPTS - FOR LOOPING            
+         ICM   R0,3,TCBARIRP                                                    
+         AHI   R0,1                                                             
+         STCM  R0,3,TCBARIRP                                                    
+         CH    R0,SSBPOPMX         IF EXCEEDS MAXIMUM ASSUME LOOP               
+         BNH   TICPOP4                                                          
+         MVC   TCBIRPTS,SSBPOPMX   MOCKUP REGULAR 'YOU ARE LOOPING'             
+         B     TICPOP6                                                          
+         DROP  R1                                                               
+*&&                                                                             
+TICPOP3  L     R0,PSW+4                                                         
+         NILH  GR0,X'7FFF'         DROP 31 BIT ADDRESSING FLAG                  
+         C     R0,SSBLOADR         BELOW FACPAK                                 
+         BL    TICPOP4                                                          
+         C     R0,SSBHIADR                                                      
+         BH    TICPOP4             IBM PRIVIATE STORAGE BELOW 16M               
+         C     R0,=A(TICTOCXX)     A(END OF TICTOC) & ALL OTHER OBJ             
+         BL    TICPOP4             BELOW TICTOC SO NOT INTERUPTABLE             
+         B     TICPOP6                                                          
+*                                                                               
+TICPOP4  L     RE,TICPOPSV                                                      
+         MVC   0(3,RE),=C'*AD'                                                  
+         B     TICPOP10                                                         
+*                                                                               
+TICPOP6  L     R1,TICSREG          GET USER SAVE AREA ADDRESS                   
+         L     RE,4(R1)            GET INST ADDRESS FROM PSW                    
+         CLI   TICSAVE,0           CHECK THAT TICSAVE IS FREE                   
+         BE    TICPOP8                                                          
+         L     RE,TICPOPSV                                                      
+         MVC   0(3,RE),=C'*BY'                                                  
+         B     TICPDMP             IF NOT, IGNORE THIS TIMER POP                
+*                                                                               
+TICPOP8  ST    RE,TICSVADR         SAVE ADDRESS OF INSTRUCTIONS                 
+         MVC   TICSAVE(12),0(RE)   SAVE 12 BYTES OF USER CODE                   
+         MVC   0(12,RE),GOPOPX     MOVE IN CODE TO GO TO TICPOPX                
+         B     TICPOP12            AND EXIT TIMER INTERRUPT                     
+*                                                                               
+TICPOP10 CLI   TICNDX,0            TEST TIMER SUSPEND                           
+         BNE   *+12                                                             
+         L     R1,TICSTOP          RELOAD 30 SECOND WAIT                        
+         B     TICPOP11                                                         
+*                                                                               
+         CLI   TICNDX,1            TEST TIMER 1                                 
+         BNE   TICPOP12                                                         
+         L     R1,T1SETVAL         GET TIMER 1 NORMAL VALUE                     
+         SRL   R1,1                HALVE IT                                     
+TICPOP11 ST    R1,DUB              AND SAVE IT                                  
+         LA    R0,TICPOP                                                        
+         STIMER TASK,(0),TUINTVL=DUB                                            
+         L     R1,TICTIME          GET CURRENT TIME                             
+         AL    R1,DUB              ADD INTERVAL LENGTH                          
+         CL    R1,TICDAY                                                        
+         BNH   *+8                                                              
+         SL    R1,TICDAY                                                        
+         ST    R1,TICTAB           AND SAVE TIME IN TABLE                       
+         CLI   TICNDX,0                                                         
+         BE    *+8                                                              
+         MVI   TICNDX,1            SET TIMER NUMBER IN TABLE                    
+*                                                                               
+TICPOP12 LM    RE,RC,12(RD)        TICTOC SAVED REGS                            
+         SR    RF,RF                                                            
+         BR    RE                                                               
+*                                                                               
+TICPDMP  B     TICPOP12            NEED TO PATCH TO MAKE OP                     
+         DC    12X'0700'           ROOM TO PATCH                                
+         OI    TICPDMP+1,X'F0'     MAKE SURE EXECUTE ONCE ONLY                  
+         B     TICPOP12                                                         
+*                                                                               
+GOPOPX   BASR  RE,0                THESE INSTRUCTIONS MOVED OVER                
+         L     RF,6(RE)            INTERRUPTED PSW ADDRESS                      
+         BR    RF                                                               
+         DC    AL4(TICPOPX)                                                     
+         EJECT                                                                  
+***********************************************************************         
+* SPECIAL CODE FOR OTHER SYSTEM TIMERS                                *         
+***********************************************************************         
+TICPOP20 CLI   TICNDX,2            TEST TIMER 2                                 
+         BNE   TICPOP30                                                         
+         L     RE,=V(SSB)                                                       
+         USING SSBD,RE                                                          
+         OI    SSBT2,X'80'         SET FLAG THAT TIMER 2 EXPIRED                
+         XC    DUB,DUB             SET NEXT EVENT TIME                          
+         MVC   DUB(1),TICNDX                                                    
+         MVC   DUB+4(4),SSBT2                                                   
+         NI    DUB+4,X'7F'                                                      
+         BAS   RE,TICSET                                                        
+         B     TICPOPOP            POP THE TIMER                                
+*                                                                               
+TICPOP30 CLI   TICNDX,3            TEST TIMER 3                                 
+         BNE   TICPOP12                                                         
+         XC    DUB,DUB                                                          
+         MVC   DUB(1),TICNDX       DISABLE AFTER 1 POP                          
+         BAS   RE,TICSET                                                        
+         B     TICPOPOP            POP THE TIMER                                
+*                                                                               
+TICPOPOP L     R1,=V(TIMERECB)     POST TIMER ECB                               
+         POST  (1)                                                              
+         L     RE,=V(SSB)                                                       
+         USING SSBD,RE                                                          
+         OC    SSBTKADR,SSBTKADR   TEST A TASK IS ACTIVE                        
+         BZ    TICPOP12            NO-POST WILL WAKE US UP                      
+         B     TICPOP1A            ELSE TEST WHERE IT HAPPENED                  
+         EJECT                                                                  
+***********************************************************************         
+* THESE ROUTINES SET EVENT TIMES FOR TIMERS 2 - 15                    *         
+***********************************************************************         
+TICSET   ICM   R1,15,DUB+4         GET TIME IN SECONDS                          
+         BZ    TICSET1                                                          
+         CLI   DUB,3               T3 IS GIVEN IN TUS                           
+         BE    *+8                                                              
+         M     R0,TICSEC           CONVERT TO TUS                               
+         AL    R1,TICTIME                                                       
+         CL    R1,TICDAY           TEST PAST 2400                               
+         BNH   *+8                                                              
+         SL    R1,TICDAY                                                        
+TICSET1  LLC   R2,DUB              GET TIMER NUMBER                             
+         SLL   R2,2                                                             
+         LA    R2,TICTAB-4(R2)                                                  
+         LA    R0,TICTABX                                                       
+         CR    R2,R0                                                            
+         JH    *+2                                                              
+*                                                                               
+         ST    R1,0(R2)            SET NEXT EVENT TIME FOR THIS TIMER           
+         BR    RE                                                               
+         EJECT                                                                  
+***********************************************************************         
+* CONTROL RETURNS TO TICPOPX AFTER TIMER ROUTINE EXIT                 *         
+***********************************************************************         
+         USING *,RF                                                             
+TICPOPX  SAC   0                   MAKE SURE ACCESS REG MODE OFF                
+         L     RE,=V(SSB)          TEST FACPAK PROTECT=YES                      
+         ICM   R1,3,0(RE)                                                       
+         BZ    TICPOPX3                                                         
+         TM    SSBPROT-SSBD(RE),SSBPONQ                                         
+         BZ    TICPOPX3                                                         
+         SPKA  128                 DISSABLE STORAGE PROTECTION                  
+*                                                                               
+TICPOPX3 L     R9,TICSREG          GET USER SAVE AREA ADDRESS                   
+         L     RE,4(R9)            GET INST ADDRESS FROM PSW                    
+         C     RE,TICSVADR         IT SHOULD BE THE SAME PLACE                  
+         JNE   *+2                                                              
+*                                                                               
+         MVC   0(12,RE),TICSAVE    RESTORE MODIFIED INSTRUCTIONS                
+*NOP*    STAM  AR0,ARF,ARGS        SAVE ANY ACCESS REGS (SEE TICPOP)            
+*                                                                               
+         MVI   TICSAVE,0           INDICATE TICSAVE IS FREE                     
+         LLC   RE,TICNDX           GET EXPIRED TIMER NUMBER                     
+         AHI   RE,-1                                                            
+         SLL   RE,2                                                             
+         L     RE,TICBRTAB(RE)                                                  
+         BR    RE                                                               
+                                                                                
+***********************************************************************         
+* BRANCH TABLE FOR TIMER EXPIRATION PROCESSING                        *         
+***********************************************************************         
+TICBRTAB DC    V(ADIRPT)           TIMER 1                                      
+         DC    V(ADNEXT)           TIMER 2                                      
+         DC    V(ADNEXT)           TIMER 3                                      
+         DC    V(ADNEXT)           TIMER 4                                      
+         DC    V(ADNEXT)           TIMER 5                                      
+         DC    V(ADNEXT)           TIMER 6                                      
+         DC    V(ADNEXT)           TIMER 7                                      
+         DC    V(ADNEXT)           TIMER 8                                      
+         DC    V(ADNEXT)           TIMER 9                                      
+         DC    V(ADNEXT)           TIMER 10                                     
+         DC    V(ADNEXT)           TIMER 11                                     
+         DC    V(ADNEXT)           TIMER 12                                     
+         DC    V(ADNEXT)           TIMER 13                                     
+         DC    V(ADNEXT)           TIMER 14                                     
+         DC    V(ADNEXT)           TIMER 15                                     
+*                                                                               
+         DS    0D                                                               
+         DC    CL8'*TICSAVE'                                                    
+TICSAVE  DC    12X'00'             INSTRUCTION SAVE AREA                        
+TICSVADR DC    A(0)                ADDRESS OF SAVED INSTRUCTIONS                
+TICPOPSV DC    A(0)                POP TABLE ENTRY ADDRESS                      
+*                                                                               
+TICBTAM  DC    A(0)                                                             
+TICBTAMX DC    A(0)                                                             
+*                                                                               
+TICTOCXX EQU   *-1                                                              
+*                                                                               
+         DS    0Q                                                               
+         DC    CL16'****APP REGS****'                                           
+APPCHAIN DS    0CL12                                                            
+         DS    3F                                                               
+APPREGS  DS    15F                                                              
+APPRD    DS    F                   RD                                           
+*                                                                               
+         LTORG                                                                  
+*                                                                               
+DUB      DC    D'0'                                                             
+*                                                                               
+TICSEC   DC    F'38400'            ONE SECOND IN TUS                            
+TIC10SEC DC    F'384000'           10 SECOND IN TUS                             
+TICDAY   DC    X'C5C10000'         ONE DAY IN TUS (60*60*24*38400)              
+*                                                                               
+TICBMID  DC    X'C5AF6C00'         BEFORE MIDNIGHT(5MINS BEFORE)                
+TICAMID  DC    F'11520000'         AFTER MIDNIGHT (5*60*38400)                  
+*                                                                               
+TICSTOP  DC    F'1152000'          30 SECONDS IN TUS (30*38400)                 
+T1SETVAL DC    F'1152'             3/100 SECONDS IN TUS (0.03*38400)            
+*                                                                               
+TICKLE   DC    F'4608000'          120 SECONDS IN TUS (120*38400)               
+TICFIX   DC    F'3840'             1/10 SECOND IN TUS (0.1*38400)               
+*                                                                               
+TICSREG  DC    V(ABENDITR)         A(STXIT REGISTER SAVE AREA)                  
+         EJECT                                                                  
+***********************************************************************         
+* TICTAB                                                              *         
+***********************************************************************         
+         DS    0D                                                               
+         DC    C'*TICTAB*'                                                      
+TICTOCT  DS    0F                                                               
+TICNDX   DC    AL1(0)              TIMER EVENT INDEX NUMBER                     
+TICMAX   DC    AL1(16)             NUMBER OF TIMERS SUPPORTED                   
+TICHIGH  DC    AL1(0)              HIGHEST ACTIVE TIMER NUMBER                  
+TICLOCK  DC    AL1(0)              TABLE OWNER FLAG                             
+OLDTIME  DC    F'0'                TIME OF PREVIOUS SET                         
+TICTIME  DC    F'0'                TIME OF LAST SET                             
+TICTAB   DC    16F'0'              TIME TILL NEXT EVENT/TIMER                   
+TICTABX  DC    X'00'                                                            
+*                                                                               
+TICFLAG  DC    X'00'                                                            
+*                                                                               
+         DS    XL6                 SPARE                                        
+         EJECT                                                                  
+***********************************************************************         
+* TIMER TRACE TABLE                                                   *         
+* $DUMP ASSUMES THAT THIS TABLE IS LOCATED 80 BYTES PAST LABEL TICTOCT*         
+***********************************************************************         
+         DS    0D                                                               
+         DC    CL8'TICTRACE'                                                    
+TICTRACE DC    A(*+4)                                                           
+         DC    60XL72'00'                                                       
+TICTRACX EQU   *-1                                                              
+*                                                                               
+         DC    CL8'*TICPOP*'                                                    
+TICPOPTB DC    A(*+4)                                                           
+         DC    60XL72'00'                                                       
+TICPOPTX EQU   *-1                                                              
+         EJECT                                                                  
+***********************************************************************         
+* PARAMETER LIST DSECT                                                *         
+***********************************************************************         
+TICPARM  DSECT                                                                  
+TICP1    DS    0F                                                               
+TICTYPE  DS    C                                                                
+TICACTN  DS    CL3                                                              
+TICP2    DS    0F                                                               
+TICVALUE DS    F                                                                
+TICP3    DS    F                                                                
+                                                                                
+***********************************************************************         
+* ABEND REGISTER BLOCKS DSECT                                         *         
+***********************************************************************         
+* FAREGSD                                                                       
+       ++INCLUDE FAREGSD                                                        
+         EJECT                                                                  
+***********************************************************************         
+* IBM AND FACPAK DSECTS                                               *         
+***********************************************************************         
+         IHAPSA                                                                 
+*                                                                               
+         IKJTCB                                                                 
+*                                                                               
+         IHARB                                                                  
+*                                                                               
+         IHAXSB                                                                 
+*                                                                               
+         DSECT                                                                  
+         IEZCIB                                                                 
+         IEZCOM                                                                 
+* FASSB                                                                         
+       ++INCLUDE FASSB                                                          
+* FATCB                                                                         
+       ++INCLUDE FATCB                                                          
+* FAUTL                                                                         
+       ++INCLUDE FAUTL                                                          
+* FASYSFAC                                                                      
+       ++INCLUDE FASYSFAC                                                       
+*                                                                               
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'002DDTICTOC  01/17/14'                                      
+         END                                                                    

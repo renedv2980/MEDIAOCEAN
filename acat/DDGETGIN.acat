@@ -1,0 +1,159 @@
+*          DATA SET DDGETGIN   AT LEVEL 002 AS OF 12/10/10                      
+*CATALP GETGIN                                                                  
+         TITLE 'Get Global Input Number'                                        
+***********************************************************************         
+* Get global dataspace system input number                                      
+*     Retreive from DMGR Dataspace the GIN and set in                           
+*       (a) off-line - SSOGIN                                                   
+*       (b) on-line  - TGIN                                                     
+*                                                                               
+* The GIN is in two parts. A 4 byte timestamp and a 4 byte number.              
+*                                                                               
+*     The timestamp is the binary number of seconds since 1Jan1900. It          
+*     serves to keep the GIN unique and in sequence across dataspace            
+*     restarts. 1 second precision guarantees uniqueness even if the            
+*     dataspace has to be restarted after minimum duration.                     
+*     It is set only once when the first caller in a dataspace session          
+*     requests a GIN and retains the same value until the end of the            
+*     dataspace session.                                                        
+*     We don't bother to CS the timestamp. It really doesn't matter if          
+*     more than one task happens to want to set it at the same time.            
+*                                                                               
+*     The GIN number is an unsigned 32 bit number and is incremented            
+*     by one each time a caller asks for a GIN. It resets to zero when          
+*     the dataspace is restarted hence the timestamp needed to maintain         
+*     uniqueness and sequence across multiple dataspace session                 
+*     It must be set using CS so we don't give same GIN to two callers.         
+***********************************************************************         
+         PRINT NOGEN                                                            
+GETGIN   CSECT                                                                  
+         NMOD1 3,**DGIN**                                                       
+         SAM31                                                                  
+*                                                                               
+         USING SSBD,R4                                                          
+         USING UTLD,R3                                                          
+*                                                                               
+         ICM   R4,15,=V(SSB)                                                    
+         BNZ   *+6                                                              
+         DC    H'00'               Must have an SSB                             
+*                                                                               
+         OC    SSOCNTL,SSOCNTL                                                  
+         BNZ   GETGIN20                                                         
+*                                                                               
+GETGIN10 L     R3,=V(UTL)                                                       
+         CLI   SSOXTND,X'FF'       Off-line, test extended SSB                  
+         BNE   EXIT                no, so no way to get a GIN                   
+         OC    SSBALET,SSBALET     do we have an ALET                           
+         BNZ   GETGIN30            yes, we are in business                      
+         LTR   R3,R3               do we have a UTL                             
+         BNZ   GETGIN14            yes, we can ask LOCKSPC for ALET             
+         MVI   SSOGIN,X'FF'        return FFs if can't get GIN off-line         
+         MVC   SSOGIN+1(L'SSOGIN-1),SSOGIN                                      
+         B     EXIT                                                             
+*                                                                               
+GETGIN14 STAR  LABEL=Y,CLEAR=Y,ARS=OFF                                          
+*                                                                               
+GETGIN16 LR    R1,RC               try LOCKSPC                                  
+         XC    0(24,R1),0(R1)                                                   
+         MVI   4(R1),X'20'         Enquire on system to get alet                
+         MVC   7(1,R1),4(R3)       SE from UTL                                  
+         SAM24                                                                  
+         GOTO1 =V(DATAMGR),(R1),=C'LOCKSP'                                      
+         SAM31                                                                  
+         STAM  AR2,AR2,SSBALET                                                  
+         OC    SSBALET,SSBALET     Did LOCKSPC give us an ALET                  
+         BZ    GETGIN18            No, need to initialise it.                   
+         SAC   512                                                              
+         B     GETGIN40                                                         
+GETGIN18 SAM24                                                                  
+         GOTO1 (RF),(R1),=C'LOCKSP',X'00120000' Re-init                         
+         SAM31                                                                  
+         B     GETGIN16            Try again                                    
+*                                                                               
+GETGIN20 ICM   R1,15,SSBTKADR      On-line need to get UTL from TCB             
+         BNZ   *+6                                                              
+         DC    H'00'               Must have a UTL on-line                      
+         USING TCBD,R1                                                          
+         L     R3,TCBUTL           On-line GIN goes in UTL                      
+         DROP  R1                                                               
+         OC    SSBALET,SSBALET     do we have an ALET                           
+         BNZ   *+6                 yes, we are in business                      
+         DC    H'00'               Must have an ALET on-line                    
+*                                                                               
+GETGIN30 STAR  LABEL=Y,CLEAR=Y,ARS=ON                                           
+*                                                                               
+         LAM   AR2,AR2,SSBALET                                                  
+*                                                                               
+GETGIN40 XR    R2,R2               System header                                
+         USING DMDSHDR,R2                                                       
+         L     R2,DHASSBG          Point to global SSB                          
+         DROP  R2                  DMDSHDR                                      
+         USING FASSBG,R2                                                        
+*                                                                               
+         ICM   R5,15,SSGGINTS      Has timestamp been set yet?                  
+         BNZ   GETGIN42            yes, and it's in R5                          
+         STCK  0(RC)               Get 64 bit TOD clock                         
+         LM    R0,R1,0(RC)         Bit 51 increments every microsecond          
+         SRDL  R0,63-51            Shift bit 51 to 63 so microseconds           
+         DL    R0,=F'1000000'      Divide to get seconds since 1/1/1900         
+         STCM  R1,15,SSGGINTS      Set timestamp. No need for CS                
+         LR    R5,R1               Will fit word up to year 2036                
+*                                                                               
+GETGIN42 L     R6,SSGGINNM         Get current GIN value                        
+GETGIN44 LR    R7,R6                                                            
+         LA    R1,1                                                             
+         ALR   R7,R1               Set next value                               
+         LA    R0,CS               compare and swap                             
+         LA    R1,SSGGINNM         Use A(GIN) value for CPU lock                
+         PLO   R6,SSGGINNM,0,0(R0) R6=current value, R7=new value               
+         BNE   GETGIN44            Failed. R6=new current value. Retry          
+*                                  Success, R7=new value                        
+         LR    R6,R5               R6/R7=timestamp/number                       
+*                                                                               
+         REAR  ARS=OFF                                                          
+         DROP  R2                  FASSBG                                       
+*                                                                               
+GETGIN50 OC    SSOCNTL,SSOCNTL                                                  
+         BZ    GETGIN52                                                         
+*                                                                               
+         STM   R6,R7,TGIN          On-line GIN goes in UTL                      
+         B     EXIT                                                             
+*                                                                               
+GETGIN52 STM   R6,R7,SSOGIN        Off-line GIN goes in SSB                     
+*                                                                               
+EXIT     XIT1  ,                                                                
+         DROP  R3,R4               UTLD, SSBD                                   
+         EJECT ,                                                                
+         LTORG                                                                  
+         EJECT                                                                  
+*************************************************************                   
+*        Other DSECTS                                       *                   
+*************************************************************                   
+* FAUTL                                                                         
+         PRINT OFF                                                              
+       ++INCLUDE FAUTL                                                          
+         PRINT ON                                                               
+* FAPLO                                                                         
+         PRINT OFF                                                              
+       ++INCLUDE FAPLO                                                          
+         PRINT ON                                                               
+* FASSB                                                                         
+         PRINT OFF                                                              
+       ++INCLUDE FASSB                                                          
+         PRINT ON                                                               
+* FASSBOFF                                                                      
+         ORG   SSBD                                                             
+         PRINT OFF                                                              
+       ++INCLUDE FASSBOFF                                                       
+         PRINT ON                                                               
+* FATCB                                                                         
+         PRINT OFF                                                              
+       ++INCLUDE FATCB                                                          
+         PRINT ON                                                               
+* DMDSHDR                                                                       
+         PRINT OFF                                                              
+       ++INCLUDE DMDSHDR                                                        
+         PRINT ON                                                               
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'002DDGETGIN  12/10/10'                                      
+         END                                                                    

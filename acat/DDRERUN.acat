@@ -1,0 +1,1362 @@
+*          DATA SET DDRERUN    AT LEVEL 012 AS OF 09/07/18                      
+         TITLE 'RERUN - REBUILD THE RUN QUEUE FROM PQ JOBS'                     
+*                                                                               
+*&&      SET   DB=Y                                                             
+*&&      SET   CL=Y,AG=N                                                        
+**********************************************************************          
+* INCOMING PARAMETERS 0(1,R1)                                                   
+* C'S' - REPORT ON STATUS OF CLASS TABLE VS JOB TABLE                           
+* C'Q' - SCAN PRINT QUEUES LOOKING FOR ORPHANS                                  
+* C'E' - SOMETHING IS WRONG - CLEAR AND REBUILD FROM THE PQS                    
+* C'C' - NEED TO REBUILD CLASS TABLE FROM JOB TABLE                             
+*                                                                               
+**********************************************************************          
+*CATALP RERUN                                                                   
+         PRINT NOGEN                                                            
+RERUN    CSECT                                                                  
+         NMODL WORKL,**RERUN*,RA,R9,CLEAR=YES                                   
+         USING WORKD,RC                                                         
+         ST    RD,SAVERD                                                        
+         MVC   MODE,0(R1)          SET RUN MODE REQUESTED                       
+         BRAS  RE,ARSOFF                                                        
+*                                                                               
+         BRAS  RE,INIT                                                          
+JT       USING DMSPACED,JTHDR      JOB TABLE DSPACE HEADER                      
+CL       USING DMSPACED,CLHDR      CLASS TABLE DSPACE HEADER                    
+*                                                                               
+         MVI   REBUILD,NO                                                       
+         BRAS  RE,LOCK             FORCE LOCK TABLES                            
+*                                                                               
+         CLI   MODE,C'C'           REBUILD CLASS TABLE ONLY                     
+         BNE   *+12                YES                                          
+         BRAS  RE,BLDCLS                                                        
+         B     RUNX                                                             
+*                                                                               
+         CLI   MODE,C'E'           FORCE EMERGENCY RERUN?                       
+         BNE   *+12                                                             
+         MVI   REBUILD,YES                                                      
+         B     RUN02                                                            
+*                                                                               
+         CLI   MODE,C'Q'           REGULAR PQ SCAN FOR ORPHANS                  
+         BE    RUN02               YES                                          
+*                                                                               
+         CLI   MODE,C'S'                                                        
+         BNE   *+8                                                              
+         BRAS  RE,STATUS           STATUS CHECK - MAY SET FORCE REBUILD         
+*                                                                               
+         CLI   DSTYP,C'R'          WAS THIS RECOVERY FROM A REP JOB?            
+         BNE   RUN02               NO                                           
+         CLI   REBUILD,YES         AND STATUS WANTS TO FORCE A REBUILD?         
+         BNE   RUN02               NO                                           
+*                                                                               
+         BRAS  RE,ARSOFF           IF REP NEEDS TO REBUILD ADV MUST DO          
+         LAM   AR2,AR2,TBLET       SO FIRST - EFFS FORCES ADV REBUILD           
+         ICM   R2,15,JT.DSPTFRST   ADV IN TURN WILL THEN FORCE REP TO           
+         SAC   512                 REBUILD WHEN IT COMPLETES BY POSTING         
+         USING TABJOBS,R2          X'FFFFFFFE' IN TBJTIME (DONE BELOW)          
+         MVC   TBJTIME,EFFS                                                     
+         BRAS  RE,ARSOFF                                                        
+         LA    R0,RUNMSG2H                                                      
+         BRAS  RE,WTO                                                           
+         B     RUNX                                                             
+*                                                                               
+RUN02    BRAS  RE,ARSOFF           SET LAST PROCESS TIME                        
+         LAM   AR2,AR2,TBLET                                                    
+         ICM   R2,15,JT.DSPTEND                                                 
+         ST    R2,AJOBEND                                                       
+         ICM   R2,15,JT.DSPTFRST                                                
+         SLL   R2,2                                                             
+         SRL   R2,2                                                             
+         ST    R2,AJOBTAB                                                       
+         SAC   512                                                              
+         USING TABJOBS,R2                                                       
+         MVC   TBJTIME,TIME                                                     
+         BRAS  RE,ARSOFF                                                        
+         DROP  R2                                                               
+*                                                                               
+         CLI   MODE,C'Q'           REGULAR PQ SCAN FOR ORPHANS                  
+         BE    RUN03               YES                                          
+         CLI   REBUILD,YES         FORCED REBUILD REQUIRED?                     
+         BNE   RUNX                NO - JUST EXIT                               
+*                                                                               
+RUN03    LA    R0,RUNMSG1H                                                      
+         BRAS  RE,WTO                                                           
+*                                                                               
+         BRAS  RE,ZAPIT            CLEAR TABLE TO FORCE ADDS                    
+*&&US                                                                           
+         CLI   DSTYP,C'A'          AM I THE ADV RCVR JOB?                       
+         BNE   RUN04               NO                                           
+*                                                                               
+         BRAS  RE,ARSOFF           FORCE REP RVCR JOB TO RUN NEXT               
+         LAM   AR2,AR2,TBLET       (SEE ABOVE)                                  
+         ICM   R2,15,JT.DSPTFRST                                                
+         SAC   512                                                              
+         USING TABJOBS,R2                                                       
+         MVC   TBJTIME,=X'FFFFFFFE'                                             
+*&&                                                                             
+RUN04    BRAS  RE,ARSOFF                                                        
+         BRAS  RE,MAIN             MAIN REBUILD LOOP                            
+*                                                                               
+RUNX     BRAS  RE,UNLK             UNLOCK JOB AND CLASS TABLES                  
+         BRAS  RE,ARSOFF           ONE FOR LUCK                                 
+         B     XMOD                                                             
+         EJECT                                                                  
+***********************************************************************         
+* Initialisation                                                      *         
+***********************************************************************         
+INIT     NTR1  ,                                                                
+         L     R0,=A(CIREC-WORKD)                                               
+         AR    R0,RC                                                            
+         ST    R0,ACIREC                                                        
+         L     R0,=A(PQSCBUFF-WORKD)                                            
+         AR    R0,RC                                                            
+         ST    R0,APQSCBUF         A(Start of buffer)                           
+         L     R0,=A(PQSCBEND-WORKD)                                            
+         AR    R0,RC                                                            
+         ST    R0,APQSCBUE         A(End of buffer)                             
+*                                                                               
+         TIME  BIN                                                              
+         ST    R0,TIME                                                          
+*                                                                               
+         L     RF,ASSB             GET TABS ALET                                
+         MVC   TBLET,SSOTBLET-SSOOFF(RF)                                        
+*                                                                               
+         XC    DUB,DUB             GET JOB TABLE DSPACE HEADER                  
+         MVC   DUB(4),=AL4(DTJOB)                                               
+         OI    DUB,X'20'                                                        
+         GOTO1 VLOCKSPC,DUB                                                     
+         ICM   RF,15,4(R1)                                                      
+         MVC   JTHDR,0(RF)                                                      
+         NI    JT.DSPTFRST,X'3F'                                                
+*                                                                               
+         XC    DUB,DUB             GET CLASS TABLE DSPACE HEADER                
+         MVC   DUB(4),=AL4(DTDCLASS)                                            
+         OI    DUB,X'20'                                                        
+         GOTO1 VLOCKSPC,DUB                                                     
+         ICM   RF,15,4(R1)                                                      
+         MVC   CLHDR,0(RF)                                                      
+         NI    CL.DSPTFRST,X'3F'                                                
+*                                                                               
+         BRAS  RE,ARSOFF                                                        
+         MVI   USECLS,YES          ONLY HAVE NEW MONSOON NOW                    
+*                                                                               
+         ICM   RF,15,ASSB                                                       
+         BNZ   *+6                                                              
+         DC    H'0'                                                             
+         MVC   DSTYP,SSODSPAC-SSOOFF(RF)                                        
+         B     EXITOK                                                           
+         EJECT                                                                  
+***********************************************************************         
+* Status report / check                                               *         
+***********************************************************************         
+STATUS   NTR1  ,                                                                
+         BRAS  RE,ARSOFF                                                        
+         LA    R0,STMSG3H                                                       
+         BRAS  RE,WTO                                                           
+*                                                                               
+         BRAS  RE,ARSOFF                                                        
+         ICM   R2,15,CL.DSPTFRST   SCAN CLASS TABLE FOR ERRORS                  
+*                                                                               
+STAT02   BRAS  RE,ARSOFF                                                        
+         LAM   AR2,AR2,TBLET       FORCIBLY RESET ACCESS REGISTER MODE          
+         SAC   512                                                              
+         USING JCLASSD,R2                                                       
+         OC    JCLASSD(JCKEYL),JCLASSD                                          
+         BZ    STATX                                                            
+*                                                                               
+* FIRST SCAN SUBMITTED JOBS TO MAKE SURE LINKED LISTS LOOK INTACT               
+*                                                                               
+         ICM   R3,15,JCFSUB        PICK UP A(1ST SUB)                           
+         BZ    STAT08                                                           
+*                                                                               
+         LHI   R0,1                R0 = 1 - LAST SUB IS ZERO                    
+         OC    JCLSUB,JCLSUB                                                    
+         BZ    STATERR                                                          
+*                                                                               
+         CPYA  AR3,AR2                                                          
+         USING TBJOBTAB,R3         R3 POINTS INTO JOB TABLE NOW                 
+*                                                                               
+STAT04   LHI   R0,2                R0 = 2 - CLASS DOESN'T MATCH                 
+*&&CL*&& CLC   JCCLASS,TBJCLASS    MAKE SURE CLASS AND AGY ID MATCH             
+*&&CL*&& BNE   STATERR                                                          
+*                                                                               
+         LHI   R0,3                R0 = 3 - AGY ID DOESN'T MATCH                
+*&&AG*&& CLC   JCAGY,TBJAGY                                                     
+*&&AG*&& BNE   STATERR                                                          
+*                                                                               
+         LHI   R0,4                R0 = 4 - JOB FLAGGED AS RUNNING              
+         OC    TBJRTIME,TBJRTIME   JOB MUST NOT BE RUNNING                      
+         BNZ   STATERR                                                          
+         LHI   R0,5                R0 = 5 - JOB HAS END TIME SET                
+         OC    TBJETIME,TBJETIME   JOB MUST NOT BE READY                        
+         BNZ   STATERR                                                          
+         LHI   R0,6                R0 = 6 - JOB HAS MONSTER SET                 
+         CLC   TBJMONS,SPACES                                                   
+         BH    STATERR                                                          
+*                                                                               
+         CLM   R3,15,JCLSUB        AM I THE LAST SUBMITTED ENTRY?               
+         BNE   STAT06              NO                                           
+*                                                                               
+         LHI   R0,7                R0 = 7 - TBJNXT IN LAST JOB IS NZ            
+         OC    TBJNXT,TBJNXT                                                    
+         BZ    STAT08                                                           
+         B     STATERR                                                          
+*                                                                               
+STAT06   LHI   R0,8                R0 = 8 - TBJNXT IS SET ZERO                  
+         ICM   R3,15,TBJNXT        NEXT IN LINKED LIST                          
+         BZ    STATERR                                                          
+         LHI   R0,9                R0 = 9 - TBJNXT IS SET TOO LOW               
+         CLM   R3,15,JT.DSPTFRST   RANGE CHECK IT                               
+         BL    STATERR                                                          
+         LHI   R0,10               R0 = 10 - TBJNXT IS SET TOO HIGH             
+         CLM   R3,15,JT.DSPTEND                                                 
+         BH    STATERR                                                          
+         B     STAT04                                                           
+*                                                                               
+* NEXT SCAN RUNNING JOBS TO MAKE SURE LINKED LISTS LOOK INTACT                  
+*                                                                               
+STAT08   ICM   R3,15,JCFRUN        PICK UP A(1ST RUN)                           
+         BZ    STAT14                                                           
+*                                                                               
+         LHI   R0,11               R0 = 11 - LIST TAIL SET WRONG                
+         OC    JCLRUN,JCLRUN                                                    
+         BZ    STATERR                                                          
+*                                                                               
+         CPYA  AR3,AR2                                                          
+         USING TBJOBTAB,R3         R3 POINTS INTO JOB TABLE NOW                 
+*                                                                               
+STAT10   LHI   R0,12               R0 = 12 - CLASS DOESN'T MATCH                
+*&&CL*&& CLC   JCCLASS,TBJCLASS    MAKE SURE CLASS AND AGY ID MATCH             
+*&&CL*&& BNE   STATERR                                                          
+*                                                                               
+         LHI   R0,13               R0 = 13 - AGY ID DOESN'T MATCH               
+*&&AG*&& CLC   JCAGY,TBJAGY                                                     
+*&&AG*&& BNE   STATERR                                                          
+*                                                                               
+         LHI   R0,14               R0 = 14 - JOB NOT SET RUNNING                
+         OC    TBJRTIME,TBJRTIME   MUST BE RUNNING                              
+         BZ    STATERR                                                          
+         LHI   R0,15               R0 = 15 - JOB WAS SET READY                  
+         OC    TBJETIME,TBJETIME   MUST NOT BE READY                            
+*??      BNZ   STATERR                                                          
+*                                                                               
+         CLM   R3,15,JCLRUN        LAST RUNNING ENTRY?                          
+         BNE   STAT12              NO                                           
+         LHI   R0,16               R0 = 16 - LAST IN LIST NZ                    
+         OC    TBJNXT,TBJNXT       LAST SHOULD BE ZERO TERMINATED               
+         BNZ   STATERR                                                          
+         B     STAT14                                                           
+*                                                                               
+STAT12   LHI   R0,17               R0 = 17 - TBJNXT IS SET ZERO                 
+         ICM   R3,15,TBJNXT        NEXT IN LINKED LIST                          
+         BZ    STATERR                                                          
+         LHI   R0,18               R0 = 18 - TBJNXT IS SET TOO LOW              
+         CLM   R3,15,JT.DSPTFRST   RANGE CHECK IT                               
+         BL    STATERR                                                          
+         LHI   R0,19               R0 = 19 - TBJNXT IS SET TOO HIGH             
+         CLM   R3,15,JT.DSPTEND                                                 
+         BH    STATERR                                                          
+         B     STAT10                                                           
+*                                                                               
+* LAST SCAN READY JOBS TO MAKE SURE LINKED LISTS LOOK INTACT                    
+*                                                                               
+STAT14   B     STAT20                                                           
+******                                                                          
+*&&DO          <<<<<<<<<<<<<<<<<<<<<<<<UNTIL USE READY JOBS FOR STATS           
+******                                                                          
+STAT14   ICM   R3,15,JCFRDY        PICK UP A(1ST RDY)                           
+         BZ    STAT20                                                           
+*                                                                               
+         LHI   R0,20               R0 = 20 - LIST TAIL SET WRONG                
+         OC    JCLRDY,JCLRDY                                                    
+         BZ    STATERR                                                          
+*                                                                               
+         CPYA  AR3,AR2                                                          
+         USING TBJOBTAB,R3                                                      
+*                                                                               
+STAT16   LHI   R0,21               R0 = 21 - CLASS DOESN'T MATCH                
+*&&CL*&& CLC   JCCLASS,TBJCLASS    MAKE SURE CLASS AND AGY ID MATCH             
+*&&CL*&& BNE   STATERR                                                          
+*                                                                               
+         LHI   R0,22               R0 = 22 - AGY ID DOESN'T MATCH               
+*&&AG*&& CLC   JCAGY,TBJAGY                                                     
+*&&AG*&& BNE   STATERR                                                          
+*                                                                               
+         LHI   R0,23               R0 = 23 - JOB NOT SET RUNNING                
+         OC    TBJRTIME,TBJRTIME   MUST HAVE BEEN RUNNING                       
+         BZ    STATERR                                                          
+         LHI   R0,24               R0 = 24 - JOB NOT SET READY                  
+         OC    TBJETIME,TBJETIME   MUST BE READY                                
+         BZ    STATERR                                                          
+*                                                                               
+         CLM   R3,15,JCLRDY        LAST READY ENTRY?                            
+         BNE   STAT18              NO                                           
+         LHI   R0,25               R0 = 25 - LIST TAIL IS SET NZ                
+         OC    TBJNXT,TBJNXT       LAST SHOULD BE ZERO TERMINATED               
+         BNZ   STATERR                                                          
+         B     STAT20                                                           
+*                                                                               
+STAT18   LHI   R0,26               R0 = 26 - TBJNXT IS SET ZERO                 
+         ICM   R3,15,TBJNXT        NEXT IN LINKED LIST                          
+         BZ    STATERR                                                          
+         LHI   R0,27               R0 = 27 - TBJNXT IS SET TOO LOW              
+         CLM   R3,15,JT.DSPTFRST   RANGE CHECK IT                               
+         BL    STATERR                                                          
+         LHI   R0,28               R0 = 28 - TBJNXT IS SET TOO HIGH             
+         CLM   R3,15,JT.DSPTEND                                                 
+         BH    STATERR                                                          
+         B     STAT16                                                           
+******   ****                                                                   
+*&&                                                                             
+******   ****                                                                   
+*                                                                               
+* THIS CLASS TABLE ENTRY LOOKS GOOD - REPORT ON # OF EACH TYPE OF JOB           
+*                                                                               
+STAT20   BRAS  RE,STM1FILL         FILL OUT REPORT LINE                         
+         BRAS  RE,ARSOFF                                                        
+*                                                                               
+         LA    R0,STMSG1H          OUTPUT DEBUG ERROR MESSAGE                   
+         BRAS  RE,WTO                                                           
+*                                                                               
+         AHI   R2,JCLASSL                                                       
+         B     STAT02              CONTINUE WITH NEXT CLASS TABLE ENTRY         
+         DROP  R3                                                               
+*                                                                               
+STATX    BRAS  RE,ARSOFF                                                        
+         LA    R0,STMSG4H                                                       
+         BRAS  RE,WTO                                                           
+         BRAS  RE,ARSOFF                                                        
+         B     EXIT                                                             
+*                                                                               
+STATERR  CVD   R0,DUB              SET ERROR CODE                               
+         OI    DUB+L'DUB-1,X'0F'                                                
+         UNPK  STR02,DUB                                                        
+*                                                                               
+         MVC   STCLS2,JCCLASS      SAVE CLASS AND AGENCY                        
+         MVC   STAGY2,JCAGY                                                     
+         MVI   REBUILD,YES         FORCE REBUILD OF TABLE                       
+*                                                                               
+         BRAS  RE,ARSOFF                                                        
+*                                                                               
+         LA    R0,STMSG2H          OUTPUT DEBUG ERROR MESSAGE                   
+         BRAS  RE,WTO                                                           
+         BRAS  RE,ARSOFF                                                        
+*                                                                               
+         AHI   R2,JCLASSL          NEXT CLASS TABLE ENTRY                       
+         B     STAT02                                                           
+         DROP  R2                                                               
+*                                                                               
+STMSG1H  DC    AL2(STMSG1L)        # OF JOBS IN EACH CLASS REPORT               
+STMSG1   DC    C'CLASS='                                                        
+STCLS    DC    CL2'  ',C',AGY='                                                 
+STAGY    DC    CL2'  ',C',#SUB='                                                
+STSUB    DC    C'     /     ,#RUN='                                             
+STRUN    DC    C'     /     ,#RDY='                                             
+STRDY    DC    C'     /     '                                                   
+STMSG1L  EQU   *-STMSG1                                                         
+*                                                                               
+STMSG2H  DC    AL2(STMSG2L)                                                     
+STMSG2   DC    C'**ERROR IN CLASS TABLE** - R0='                                
+STR02    DC    CL3'XXX',C',CLASS='                                              
+STCLS2   DC    CL2'  ',C',AGY='                                                 
+STAGY2   DC    CL2'  ',C'-  ATTEMPTING REBUILD'                                 
+STMSG2L  EQU   *-STMSG2                                                         
+*                                                                               
+STMSG3H  DC    AL2(L'STMSG3)                                                    
+STMSG3   DC    C'Starting status scan'                                          
+STMSG4H  DC    AL2(L'STMSG4)                                                    
+STMSG4   DC    C'Finished status scan'                                          
+         EJECT                                                                  
+***********************************************************************         
+* ROUTINE TO FILL OUT STMSG1 STATUS REPORT FIELDS                     *         
+* NTRY: R2     = A(JCLASSD TABLE ENTRY - AR2 SET ARS ON)              *         
+***********************************************************************         
+         USING JCLASSD,R2                                                       
+STM1FILL NTR1  ,                                                                
+         MVC   STCLS,JCCLASS                                                    
+         MVC   STAGY,JCAGY                                                      
+         LH    R0,JCNSUB                                                        
+         BRAS  RE,CVDR0                                                         
+         UNPK  STSUB+00(5),DUB                                                  
+         LH    R0,JCNTSUB                                                       
+         BRAS  RE,CVDR0                                                         
+         UNPK  STSUB+06(5),DUB                                                  
+         LH    R0,JCNRUN                                                        
+         BRAS  RE,CVDR0                                                         
+         UNPK  STRUN+00(5),DUB                                                  
+         LH    R0,JCNTRUN                                                       
+         BRAS  RE,CVDR0                                                         
+         UNPK  STRUN+06(5),DUB                                                  
+         LH    R0,JCNRDY                                                        
+         BRAS  RE,CVDR0                                                         
+         UNPK  STRDY+00(5),DUB                                                  
+         LH    R0,JCNTRDY                                                       
+         BRAS  RE,CVDR0                                                         
+         UNPK  STRDY+06(5),DUB                                                  
+         B     EXITOK                                                           
+         DROP  R2                                                               
+         EJECT                                                                  
+*&&US                                                                           
+***********************************************************************         
+* CLEAR JOBTAB ENTRIES AND ENTIRE CLASSTAB                            *         
+* TWO RECOVER STEPS ARE SUPPOSED TO RUN - ADV FIRST THEN REP          *         
+* WE ONLY WANT TO CLEAR THOSE JOBS THAT CORRESPOND TO OUR TYPE AND    *         
+* LEAVE THE REST INTACT - IT IS SAFE TO CLEAR THE ENTIRE CLASSTAB AS  *         
+* IT IS REBUILT FROM THE JOBTAB AT A LATER POINT                      *         
+***********************************************************************         
+ZAPIT    NTR1  ,                                                                
+         BRAS  RE,ARSOFF                                                        
+         LA    R0,ZAPMSG1H                                                      
+         BRAS  RE,WTO                                                           
+*                                                                               
+         BRAS  RE,ARSOFF                                                        
+         LAM   AR2,AR2,TBLET                                                    
+         ICM   R2,15,JT.DSPTFRST                                                
+         SAC   512                                                              
+*                                                                               
+         USING TABJOBS,R2                                                       
+         LH    RE,TBJLNTRY                                                      
+         LR    R3,R2                                                            
+         AH    R3,TBJLHEAD                                                      
+         CPYA  AR3,AR2                                                          
+         USING TBJOBTAB,R3                                                      
+         ICM   RF,15,JT.DSPTEND                                                 
+         XR    R0,R0               R0 = COUNT PURGED                            
+*                                                                               
+ZAP02    OC    TBJNTRY(4),TBJNTRY  IGNORE EMPTY ENTRIES                         
+         BZ    ZAP10                                                            
+         CLC   TBJNTRY(4),EFFS     COUNT TEMP ENTRIES                           
+         BE    ZAP08                                                            
+*                                                                               
+         OC    TBJMONS,TBJMONS     KEEP ENTRIES WITH MONSTER                    
+         BZ    *+14                                                             
+         OC    TBJETIME,TBJETIME   THAT HAVE NOT ENDED (RUNNING)                
+         BZ    ZAP08                                                            
+*                                                                               
+         CLI   TBJSTAT,0           CLEAR DELETE(ABLE) ENTRIES                   
+         BE    ZAP06                                                            
+*                                                                               
+         IC    R1,TBJADV           GET FACPAK NUMBER                            
+         N     R1,=X'0000000F'                                                  
+         MHI   R1,L'FACITAB                                                     
+         A     R1,=A(FACIDTAB)                                                  
+*                                                                               
+         USING FACITABD,R1                                                      
+         TM    FACIFL,FACIREP      IS THIS FROM A REP?                          
+         BZ    ZAP04               NO - ADV OR TST THEN                         
+         DROP  R1                                                               
+*                                                                               
+         CLI   DSTYP,C'R'          REP RCVR AND REP JOB                         
+         BE    ZAP06               YES - CLEAR IT                               
+         B     ZAP08               KEEP (AND COUNT) IT                          
+*                                                                               
+ZAP04    CLI   DSTYP,C'R'          REP RCVR AND ADV JOB                         
+         BNE   ZAP06               NO - CLEAR IT                                
+         B     ZAP08               KEEP (AND COUNT) IT                          
+*                                                                               
+ZAP06    LR    R1,RE               CLEAR OUT MATCHING ENTRY                     
+         BCTR  R1,0                                                             
+         EX    R1,*+8                                                           
+         B     *+10                                                             
+         XC    TBJNTRY(0),TBJNTRY                                               
+         B     ZAP10                                                            
+*                                                                               
+ZAP08    AHI   R0,1                INCREMENT COUNT OF REMAINING JOBS            
+*                                                                               
+ZAP10    BXLE  R3,RE,ZAP02         DO FOR ALL IN TABLE                          
+         DROP  R3                                                               
+*                                                                               
+         MVC   FULL,TBJNUM         SAVE ORIGINAL COUNTER                        
+         STCM  R0,15,TBJNUM        RESET COUNTER TO CORRECT VALUE               
+*                                                                               
+         BRAS  RE,ARSOFF           GET OUT OF AR MODE                           
+*                                                                               
+         CVD   R0,DUB              SET NEW COUNT                                
+         OI    DUB+L'DUB-1,X'0F'                                                
+         UNPK  ZAPMSG3+00(05),DUB                                               
+         L     R0,FULL                                                          
+         CVD   R0,DUB              SET OLD COUNT                                
+         OI    DUB+L'DUB-1,X'0F'                                                
+         UNPK  ZAPMSG3+29(05),DUB                                               
+*                                                                               
+         LA    R0,ZAPMSG3H                                                      
+         BRAS  RE,WTO                                                           
+         BRAS  RE,ARSOFF                                                        
+*                                                                               
+ZAP12    LAM   AR2,AR2,TBLET                                                    
+         ICM   R2,15,CL.DSPTFRST   NOW RESET ENTIRE CLASS TABLE                 
+         SAC   512                  (IT GETS REBUILT LATER)                     
+         USING JCLASSD,R2                                                       
+*                                                                               
+ZAP14    OC    JCLASSD(JCKEYL),JCLASSD                                          
+         BZ    ZAP16                                                            
+         XC    JCNSUB,JCNSUB       CLEAR ALL COUNTERS AND POINTERS              
+         XC    JCFSUB,JCFSUB       BUT LEAVE DAILY TOTALS                       
+         XC    JCLSUB,JCLSUB                                                    
+         XC    JCNRUN,JCNRUN                                                    
+         XC    JCFRUN,JCFRUN                                                    
+         XC    JCLRUN,JCLRUN                                                    
+         XC    JCNRDY,JCNRDY                                                    
+         XC    JCFRDY,JCFRDY                                                    
+         XC    JCLRDY,JCLRDY                                                    
+         AHI   R2,JCLASSL                                                       
+         B     ZAP14                                                            
+         DROP  R2                                                               
+*                                                                               
+ZAP16    BRAS  RE,ARSOFF                                                        
+         LA    R0,ZAPMSG2H                                                      
+         BRAS  RE,WTO                                                           
+         BRAS  RE,ARSOFF                                                        
+         MVI   REBUILD,YES                                                      
+         B     EXITOK                                                           
+*                                                                               
+ZAPMSG1H DC    AL2(L'ZAPMSG1)                                                   
+ZAPMSG1  DC    C'Beginning ZAP step to clear RUN and CLASS tables'              
+ZAPMSG2H DC    AL2(L'ZAPMSG2)                                                   
+ZAPMSG2  DC    C'Completed ZAP step to clear RUN and CLASS tables'              
+ZAPMSG3H DC    AL2(L'ZAPMSG3)                                                   
+ZAPMSG3  DC    C'XXXXX entries remaining from XXXXX in table counter'           
+         EJECT                                                                  
+*&&                                                                             
+*&&UK                                                                           
+*************************************************************                   
+*        ZAP JOBTAB TO ZERO AND REBUILD HEADER              *                   
+*************************************************************                   
+ZAPIT    NTR1                                                                   
+*                                                                               
+         SAC   512                                                              
+         LAM   AR2,AR2,TBLET                                                    
+         L     R2,AJOBTAB                                                       
+         L     R1,AJOBEND                                                       
+*                                                                               
+         LR    R3,R1               R3 = EOT                                     
+         SR    R3,R2               R3 = LEN                                     
+         SR    RE,RE                                                            
+         SR    RF,RF                                                            
+         MVCL  R2,RE               ZAP TABLE TO ZERO                            
+         L     R2,AJOBTAB                                                       
+*                                                                               
+         USING TABJOBS,R2                                                       
+         MVC   TBJLHEAD,=Y(L'TBJOBHDR)                                          
+         MVC   TBJLNTRY,=Y(L'TBJNTRY)                                           
+*                                                                               
+ZAPITX   SAC   0                                                                
+         WTO   'RUN QUEUE HAS BEEN CLEARED - REBUILDING NOW '                   
+         B     EXITOK                                                           
+         EJECT                                                                  
+*&&                                                                             
+***********************************************************************         
+* READ REPORTS AND REPLACE MISSING MEMBERS                            *         
+***********************************************************************         
+MAIN     NTR1  ,                                                                
+         XC    RUNQADD,RUNQADD     CLEAR COUNT OF JOBS ADDED                    
+         XC    RUNQMCH,RUNQMCH     CLEAR COUNT OF JOBS MATCHED                  
+         MVI   STOPFLG,NO          SET ADDS POSSIBLE                            
+*                                                                               
+         LA    R2,PQBLK                                                         
+         XC    PQBLK,PQBLK                                                      
+         USING PQBLOCKD,R2                                                      
+         MVI   PQFILE,X'FF'        ALL PQS                                      
+         MVI   PQSORT,2            SORT = CREATE                                
+         OI    PQFLAGS,PQFXUSER+PQBIGBUF                                        
+         OI    PQATT,PQATJOBI      FIND JOBI                                    
+*&&UK*&& OI    PQATTBN,PQATJOBO    BUT NOT JOBO (ComScore related)              
+*                                                                               
+         WTO   'About to scan PQ for rebuild'                                   
+         XC    DMCB(24),DMCB       BUILD PARAMETER LIST BY HAND                 
+         LA    RF,PQBLK                                                         
+         ST    RF,DMCB+00          P1 = PQBLOCK                                 
+         LA    RF,PQCNT                                                         
+         ST    RF,DMCB+4           P2 = PQ counters                             
+         L     RF,APQSCBUF                                                      
+         ST    RF,DMCB+08          P3 = A(Start of buffer)                      
+         L     RF,APQSCBUE                                                      
+         ST    RF,DMCB+12          P4 = A(end of buffer)                        
+         GOTO1 VPQSCAN,DMCB                                                     
+*                                                                               
+         L     R2,APQSCBUF         POINT R2 TO ENTRIES                          
+         USING PQEDATAD,R2                                                      
+MAIN02   CLC   0(2,R2),=X'FFFF'    LAST ENTRY                                   
+         BE    MAIN22                                                           
+*                                                                               
+         MVC   JOBDET(JOBDETL),SPACES                                           
+         MVC   PLINE,SPACES                                                     
+*                                                                               
+         MVC   PRTQID,=C'PRTQU   ' READ PQ REPORT                               
+         MVC   PRTQID+4(1),PQEPRTQ                                              
+         MVC   CIADDR,PQECIAD                                                   
+         GOTO1 VDMGR,DMCB,DMREAD,PRTQID,CIADDR,ACIREC                           
+         CLI   8(R1),0                                                          
+         BE    *+6                                                              
+         DC    H'0'                                                             
+*                                                                               
+         L     R3,ACIREC                                                        
+         USING PQRECD,R3                                                        
+         OC    PQREPNO,PQREPNO     DON'T PROCESS IF NO REPORT NUMBER            
+         BZ    MAIN20                                                           
+*                                                                               
+         MVC   JSTIME(2),EFFS      FORCE MATCH ON TIME                          
+         MVC   JSTIME+2(2),PQAGELT                                              
+*                                                                               
+         MVI   JUPDT,NO            UPDATIVE?                                    
+         TM    PQTYPE,PQTYUPDT                                                  
+         BZ    *+8                                                              
+         MVI   JUPDT,YES                                                        
+*&&US                                                                           
+         MVI   JHOLD,NO            STATUS?                                      
+         TM    PQSTAT,PQSTHO       HOLD                                         
+         BZ    *+8                                                              
+         MVI   JHOLD,YES                                                        
+*&&                                                                             
+         LA    R1,PQDATA1          EXTRACT JCL DETAIL                           
+         TM    PQTYPE,PQTYNEW                                                   
+         BO    *+8                                                              
+         LA    R1,OQDATA1                                                       
+MAIN04   XR    R0,R0                                                            
+         ICM   R0,3,0(R1)          TEST FOR BAD REPORT                          
+         BZ    MAIN20              DONT CORE LOOP                               
+*                                                                               
+         CHI   R0,3                SKIP TAB FIELDS                              
+         BE    MAIN17                                                           
+         CHI   R0,1                0001 = END OF PAGE                           
+         BE    MAIN18                                                           
+*                                                                               
+         STM   R0,R1,DUB                                                        
+         SHI   R0,2                                                             
+         CLC   3(2,R1),=C'//'      IS THIS A JCL CARD                           
+         BNE   MAIN08                                                           
+         CLC   13(5,R1),=C' JOB '  IS THIS A JOB CARD                           
+         BNE   *+10                                                             
+         MVC   JMVSID,5(R1)                                                     
+*                                                                               
+MAIN06   CHI   R0,7                LOOP LOOKING FOR CLASS= PRTY=                
+         BL    MAIN08                                                           
+*                                                                               
+*&&UK*&& CLC   0(7,R1),=C',CLASS='                                              
+*&&UK*&& BNE   *+10                                                             
+*&&UK*&& MVC   JCLASS,7(R1)                                                     
+*                                                                               
+*&&US*&& CLC   0(14,R1),=C'//*MAIN CLASS='                                      
+*&&US*&& BNE   *+10                                                             
+*&&US*&& MVC   JCLASS,14(R1)                                                    
+*                                                                               
+         CLC   0(6,R1),=C',PRTY='                                               
+         BNE   *+10                                                             
+         MVC   JPRTY,6(R1)                                                      
+         LA    R1,1(R1)                                                         
+         BCT   R0,MAIN06                                                        
+*                                                                               
+MAIN08   CLC   =C'FACPAK=',3(R1)                                                
+         BNE   MAIN10                                                           
+         MVC   JFACID,10(R1)                                                    
+*&&UK                                                                           
+         CLI   JFACID,C'T'         TEST SYSTEMS HAVE FACID IN CLASS             
+         BE    MAIN08A                                                          
+         CLI   JFACID,C'S'                                                      
+         BE    MAIN08A                                                          
+         CLI   JFACID,C'N'                                                      
+         BE    MAIN08A                                                          
+         MVI   JCLASS+1,C'A'                                                    
+         B     MAIN16                                                           
+*                                                                               
+MAIN08A  MVC   JCLASS+1(1),JFACID                                               
+*&&                                                                             
+         B     MAIN16                                                           
+*                                                                               
+MAIN10   CLC   =C'LOGO=',3(R1)     TAGY AND TLUID OUTPUT ON LOGO= CARD          
+         BNE   MAIN12                                                           
+*                                                                               
+         XC    JAGY,JAGY                                                        
+         CLC   =C'AG=',53(R1)                                                   
+         BNE   *+10                                                             
+         MVC   JAGY,56(R1)                                                      
+*                                                                               
+         MVC   JLUID,QUERY                                                      
+         CLC   =C'LU=',59(R1)                                                   
+         BNE   *+10                                                             
+         MVC   JLUID,62(R1)                                                     
+*&&US                                                                           
+         MVC   JCLASS,=C'OO'       2 CHARACTER REQUEUE CLASS                    
+         CLC   =C'QC=',71(R1)                                                   
+         BNE   *+10                                                             
+         MVC   JCLASS,74(R1)                                                    
+*&&                                                                             
+         MVI   JTYPE,JCMED         JOB TYPE - DEFAULT IS REGULAR                
+         CLC   =C'TY=',77(R1)                                                   
+         BNE   *+10                                                             
+         MVC   JTYPE,80(R1)                                                     
+*&&US                                                                           
+         CLI   JTYPE,C'R'                                                       
+         BNE   MAIN16                                                           
+         MVI   JTYPE,JCMED         JOB TYPE - DEFAULT IS REGULAR                
+         B     MAIN16                                                           
+*&&                                                                             
+MAIN12   DS    0H                                                               
+*&&US                                                                           
+         CLC   =C'COMSCORE=',3(R1) Find COMSCORE CARD                           
+         BNE   MAIN16                                                           
+         CLI   JTYPE,JCCOMSC       Is it set right?                             
+         BE    *+8                                                              
+         MVI   JTYPE,JCCOMSC                                                    
+         MVC   JPASS,12(R1)        Phase I or Phase II                          
+*&&                                                                             
+MAIN16   LM    R0,R1,DUB                                                        
+MAIN17   LTR   R0,R0               IF R0 IS NEGATIVE GET OUT                    
+         BM    MAIN20              THIS HAS CAUSED A CORE LOOP                  
+         AR    R1,R0                                                            
+         B     MAIN04                                                           
+*                                                                               
+MAIN18   CLI   JCLASS+1,C','       TEST FOR 1 CHR CLASS                         
+         BNE   *+8                                                              
+         MVI   JCLASS+1,C' '                                                    
+*                                                                               
+         CLI   JPRTY,C' '          TEST FOR PRIORITY                            
+         BNE   *+8                                                              
+         MVI   JPRTY,C'5'          SET BACK TO REGULAR (AS ALL OTHERS)          
+*                                                                               
+         BRAS  RE,FINDJOB          FIND JOB IN RUNQ                             
+         OC    FULL,FULL                                                        
+         BNZ   MAIN20              DID MATCH                                    
+*                                                                               
+         BRAS  RE,ADDRUN           ADD TO RUN QUEUE                             
+         CLI   STOPFLG,YES         JOB TABLE IS FULL - POINTLESS ADDING         
+         BE    MAIN22                                                           
+*                                                                               
+         L     R1,RUNQADD          COUNT ADDS                                   
+         AHI   R1,1                                                             
+         ST    R1,RUNQADD                                                       
+*                                                                               
+X        USING MLINED,PLINE        REPORT ON THIS ADD                           
+         MVC   X.MLEN,=AL2(MLINEL)                                              
+         MVI   X.MSLS1,C'/'                                                     
+         MVI   X.MCOM1,C','                                                     
+         MVI   X.MCOM2,C','                                                     
+         MVC   X.MAGY,JAGY                                                      
+         MVC   X.MCLASS,JCLASS                                                  
+*                                                                               
+         GOTO1 VHEXOUT,DMCB,PQSRCID,X.MSRCID,2                                  
+         MVC   X.MSUBID,PQSUBID                                                 
+*                                                                               
+         XR    R0,R0                                                            
+         ICM   R0,3,PQREPNO                                                     
+         CVD   R0,DUB                                                           
+         OI    DUB+L'DUB-1,X'0F'                                                
+         UNPK  X.MREPNO,DUB                                                     
+*                                                                               
+         MVC   X.MMVSID,JMVSID                                                  
+         MVC   X.MPRTY,JPRTY                                                    
+         MVC   X.MFACID,JFACID                                                  
+*                                                                               
+         MVC   FULL,JSTIME         FORMAT SUBMIT TIME                           
+         BRAS  RE,TIMEOUT                                                       
+         MVC   X.MTIME,WORK1                                                    
+         MVC   X.MLUID,JLUID                                                    
+*                                                                               
+         LA    R0,PLINE                                                         
+         BRAS  RE,WTO                                                           
+*                                                                               
+MAIN20   AHI   R2,L'PQEDATA                                                     
+         B     MAIN02                                                           
+*                                                                               
+MAIN22   GOTO1 =V(DMISGENQ),DMCB,C'TASK'   CLEAN UP ENQUEUES                    
+         ICM   R1,15,RUNQMCH       REPORT ON MATCHED ENTRIES                    
+         BZ    MAIN24                                                           
+*                                                                               
+         MVC   PLINE,SPACES                                                     
+         MVC   PLINE+00(02),=AL2(35)                                            
+         MVC   PLINE+02(35),=CL35'xxxxx Run queue entries matched '             
+         CVD   R1,DUB                                                           
+         OI    DUB+L'DUB-1,X'0F'                                                
+         UNPK  PLINE+02(5),DUB                                                  
+         LA    R0,PLINE                                                         
+         BRAS  RE,WTO                                                           
+*                                                                               
+MAIN24   ICM   R1,15,RUNQADD       REPORT ON ADDED ENTRIES                      
+         BZ    MAINX                                                            
+*                                                                               
+         MVC   PLINE,SPACES                                                     
+         MVC   PLINE+00(02),=AL2(35)                                            
+         MVC   PLINE+02(35),=CL35'XXXXX  Run queue entries added'               
+         CVD   R1,DUB                                                           
+         OI    DUB+L'DUB-1,X'0F'                                                
+         UNPK  PLINE+02(5),DUB                                                  
+         LA    R0,PLINE                                                         
+         BRAS  RE,WTO                                                           
+*                                                                               
+MAINX    CLI   REBUILD,YES         FORCE REBUILD BOTH TABLES                    
+         BE    *+12                YES                                          
+         ICM   R1,15,RUNQADD       ADDED ENTRIES?                               
+         BZ    EXITOK              NO                                           
+*                                                                               
+         BRAS  RE,BLDCLS           REBUILD CLASS TABLE                          
+         B     EXITOK                                                           
+         EJECT                                                                  
+***********************************************************************         
+* FIND JOB ENTRY IN RUN QUEUE                                         *         
+***********************************************************************         
+FINDJOB  NTR1  ,                                                                
+         XC    FULL,FULL           RETURN A(JOB) IN FULL                        
+         BRAS  RE,ARSOFF                                                        
+         LAM   AR2,AR2,TBLET                                                    
+         ICM   R2,15,JT.DSPTFRST                                                
+         SAC   512                                                              
+         USING TBJOBHDR,R2                                                      
+         AH    R2,TBJLHEAD         GO ON TO JOBS THEMSELVES                     
+         USING TBJOBTAB,R2                                                      
+         LHI   RE,L'TBJNTRY                                                     
+         ICM   RF,15,JT.DSPTEND                                                 
+*                                                                               
+FJOB02   OC    TBJNTRY,TBJNTRY     FIRST 4 BYTES ARE LOCKWORD                   
+         BZ    FJOB04                                                           
+*&&CL                                                                           
+         CLC   TBJCLASS,JCLASS     MATCH CLASS                                  
+         BNE   FJOB04                                                           
+*                                                                               
+         MVC   BYTE,TBJCTYPE       NEW CLASS TYPE FIELD                         
+         CLI   BYTE,C' '           WAS IT SET?                                  
+         BH    FJOB03              YES SO TAKE THAT VALUE                       
+         MVI   BYTE,JCMED          SET TYPE - REGULAR OR LONG                   
+         TM    TBJSTAT,TBJLONG                                                  
+         BZ    *+8                                                              
+         MVI   BYTE,JCLONG                                                      
+*                                                                               
+FJOB03   CLC   JTYPE,BYTE          MATCH REQUEST TYPE                           
+         BNE   FJOB04                                                           
+*&&                                                                             
+*                                                                               
+*&&AG*&& CLC   TBJAGY,JAGY         AGENCY                                       
+*&&AG*&& BNE   FJOB04                                                           
+*                                                                               
+         CLC   TBJPQID,PRTQID+4    PRTQ #                                       
+         BNE   FJOB04                                                           
+         CLC   TBJPQUSR,PQSRCID    PQ USER ID                                   
+         BNE   FJOB04                                                           
+         CLC   TBJPQSUB,PQSUBID    INITIALS                                     
+         BNE   FJOB04                                                           
+         CLC   TBJPQSEQ,PQREPNO    SEQ #                                        
+         BNE   FJOB04                                                           
+*                                                                               
+         ST    R2,FULL             SAVE A(MATCHING JOB)                         
+         L     RF,RUNQMCH                                                       
+         AHI   RF,1                                                             
+         ST    RF,RUNQMCH                                                       
+         B     FJOB06                                                           
+*                                                                               
+FJOB04   BXLE  R2,RE,FJOB02                                                     
+*                                                                               
+FJOB06   BRAS  RE,ARSOFF                                                        
+         B     EXITOK                                                           
+         DROP  R2                                                               
+         EJECT                                                                  
+***********************************************************************         
+* ADD JOB ENTRY TO RUN AND CLASS QUEUES                               *         
+* NTRY: ASSUMES JOB TABLE IS LOCKED IN DATASPACE                      *         
+***********************************************************************         
+ADDRUN   NTR1  ,                                                                
+         BRAS  RE,ARSOFF                                                        
+         LAM   AR2,AR2,TBLET                                                    
+         ICM   R2,15,JT.DSPTFRST                                                
+         SAC   512                                                              
+         USING TBJOBHDR,R2                                                      
+         MVC   JLEN,TBJLNTRY                                                    
+*                                                                               
+         ICM   RF,15,TBJNUM        INCREMENT COUNTER OF JOBS IN TABLE           
+         AHI   RF,1                                                             
+         STCM  RF,15,TBJNUM                                                     
+         AHI   R2,L'TBJOBHDR                                                    
+         USING TBJOBTAB,R2                                                      
+*                                                                               
+         LH    RE,JLEN             USE RE/RF FOR BXLE                           
+         ICM   RF,15,JT.DSPTEND                                                 
+*                                                                               
+         ICM   R0,15,0(R2)         FIND A FREE ENTRY                            
+         BZ    ARUN02                                                           
+         BXLE  R2,RE,*-8                                                        
+         BRAS  RE,ARSOFF           JOB TABLE IN TABS IS NOT BIG ENOUGH          
+         XR    R0,R0                                                            
+         WTO   TEXT=((RUNMSG3H,D),(RUNMSG4H,D),(0,E))                           
+*                                                                               
+         MVI   STOPFLG,YES         SET NO MORE ADDS POSSIBLE                    
+         BRAS  RE,ARSOFF                                                        
+         B     EXITL                                                            
+*                                                                               
+         USING TBJOBTAB,R2         REBUILD TABLE ENTRY                          
+ARUN02   XC    TBJOBTAB(L'TBJNTRY),TBJOBTAB                                     
+         MVC   TBJCLASS,JCLASS                                                  
+         MVC   TBJAGY,JAGY                                                      
+         MVC   TBJPRTY,JPRTY                                                    
+         MVI   TBJSTAT,TBJINUSE                                                 
+         CLI   JUPDT,YES           SPECIAL FLAG FOR UPDATIVE                    
+         BNE   *+8                                                              
+         OI    TBJSTAT,TBJUPDT                                                  
+         MVC   TBJCTYPE,JTYPE      SET JOB CLASS QUEUE TYPE                     
+         CLI   JTYPE,JCLONG        SPECIAL FLAG FOR LONG                        
+         BNE   *+8                                                              
+         OI    TBJSTAT,TBJLONG                                                  
+*&&US                                                                           
+         CLI   JTYPE,JCCOMSC       ComScore?                                    
+         BNE   ARUN03                                                           
+         CLI   JPASS,C'1'                                                       
+         BNE   ARUN03                                                           
+         CLI   JHOLD,YES                                                        
+         BNE   *+8                                                              
+         OI    TBJSTAT,TBJHOLD     Hold for now                                 
+*&&                                                                             
+ARUN03   MVC   TBJPQUSR,PQSRCID                                                 
+         MVC   TBJPQSUB,PQSUBID                                                 
+         MVC   TBJPQSEQ,PQREPNO                                                 
+         MVC   TBJPQID,PRTQID+4                                                 
+         MVC   TBJMVSID,JMVSID                                                  
+         MVC   TBJSTIME,JSTIME+1                                                
+         MVC   TBJLUID,JLUID                                                    
+         MVC   TBJADV,JFACID                                                    
+                                                                                
+         L     R1,=A(FACIDTAB)                                                  
+ARUN04   CLI   0(R1),X'FF'                                                      
+         BE    ARUN06                                                           
+         CLC   7(1,R1),JFACID                                                   
+         BE    ARUN06                                                           
+         LA    R1,8(R1)                                                         
+         B     ARUN04                                                           
+*                                                                               
+ARUN06   MVC   TBJADV,4(R1)                                                     
+         MVC   TBJTERM,=X'0001'    <==NEED TO DO SOMETHING ABOUT THIS           
+         BRAS  RE,ARSOFF                                                        
+         B     EXITOK                                                           
+         DROP  R2,R3                                                            
+         EJECT                                                                  
+***********************************************************************         
+* REBUILD CLASS TABLE ENTRIES FROM JOB TABLE (SUB+RUN JOBS ONLY)      *         
+***********************************************************************         
+BLDCLS   NTR1  ,                                                                
+         BRAS  RE,ARSOFF                                                        
+         TIME  BIN                 GET TIME IN R0                               
+*                                                                               
+         BRAS  RE,ARSOFF                                                        
+         LAM   AR2,AR2,TBLET       SET TIME IN DSPACE HEADER                    
+         ICM   R2,15,=AL4(DTDCLASS)                                             
+         N     R2,=XL4'00007FFF'                                                
+         MHI   R2,L'DSPHDR                                                      
+         SAC   512                                                              
+         USING DMSPACED,R2                                                      
+         STCM  R0,15,DSPUSER       SET LAST REBUILD IN USER AREA                
+         DROP  R2                                                               
+*                                                                               
+         ICM   R2,15,CL.DSPTFRST   CLEAR CLASS TABLE POINTERS                   
+         USING JCLASSD,R2                                                       
+BCLS02   OC    JCLASSD(JCKEYL),JCLASSD                                          
+         BZ    BCLS04                                                           
+         XC    JCNSUB,JCNSUB                                                    
+         XC    JCFSUB,JCFSUB                                                    
+         XC    JCLSUB,JCLSUB                                                    
+         XC    JCNRUN,JCNRUN                                                    
+         XC    JCFRUN,JCFRUN                                                    
+         XC    JCLRUN,JCLRUN                                                    
+         XC    JCNRDY,JCNRDY                                                    
+         XC    JCFRDY,JCFRDY                                                    
+         XC    JCLRDY,JCLRDY                                                    
+         AHI   R2,JCLASSL                                                       
+         B     BCLS02                                                           
+         DROP  R2                                                               
+*                                                                               
+BCLS04   ICM   R2,15,JT.DSPTFRST                                                
+         USING TABJOBS,R2                                                       
+         ICM   R0,15,TBJNUM        SEE IF ANYTHING TO REBUILD                   
+         BZ    BCLS26              NO                                           
+*                                                                               
+         AH    R2,TBJLHEAD         GO PAST HEADER                               
+         USING TBJOBTAB,R2                                                      
+*                                                                               
+BCLS06   XC    TBJNXT,TBJNXT       NO MATTER WHAT RESET THIS                    
+         OC    TBJCLASS(4),TBJCLASS                                             
+         BZ    BCLS08                                                           
+         CLC   TBJCLASS(4),EFFS    IGNORE TEMP                                  
+         BE    BCLS08                                                           
+         CLI   TBJSTAT,0           IGNORE FLAGGED FOR DELETE                    
+         BE    BCLS08                                                           
+         CLI   TBJSTAT,TBJERROR    IGNORE IN ERROR                              
+         BE    BCLS08                                                           
+*                                                                               
+         CLI   TBJCLASS,C'A'       IGNORE BAD ENTRIES                           
+         BL    BCLS08                                                           
+         CLI   TBJCLASS,C'9'                                                    
+         BH    BCLS08                                                           
+*                                                                               
+         OC    TBJETIME,TBJETIME   IGNORE READY JOBS                            
+         BZ    BCLS10                                                           
+*                                                                               
+BCLS08   AHI   R2,L'TBJNTRY        NEXT ENTRY IN JOB TABLE                      
+         CLM   R2,15,JT.DSPTEND    ALWAYS ALWAYS ALWAYS RANGE CHECK             
+         BNL   BCLS26              DO NOT RELY ON THE FUCKING COUNTER           
+         B     BCLS06                                                           
+*                                                                               
+BCLS10   CPYA  AR3,AR2             ADD JOB TABLE ENTRY TO CLASS LIST            
+         ICM   R3,15,CL.DSPTFRST                                                
+         USING JCLASSD,R3                                                       
+*                                                                               
+BCLS12   OC    JCLASSD(JCKEYL),JCLASSD                                          
+         BZ    BCLS16                                                           
+         MVC   BYTE,TBJCTYPE       JOB CLASS QUEUE TYPE                         
+         CLI   BYTE,C' '           WAS IT SET?                                  
+         BH    BCLS13                                                           
+         MVI   BYTE,JCMED          DEFAULT TO MEDIUM                            
+*&&CL*&& TM    TBJSTAT,TBJLONG     WANT LONG?                                   
+*&&CL*&& BZ    *+8                 NO                                           
+*&&CL*&& MVI   BYTE,JCLONG         SET LONG                                     
+*                                                                               
+BCLS13   DS    0H                                                               
+*&&CL*&& CLC   JCCLASS,TBJCLASS                                                 
+*&&CL*&& BNE   BCLS14                                                           
+*&&AG*&& CLC   JCAGY,TBJAGY                                                     
+*&&AG*&& BNE   BCLS14                                                           
+*                                                                               
+*&&CL*&& CLC   JCTYPE,BYTE         MATCH TYPE                                   
+*&&CL*&& BE    BCLS16                                                           
+*                                                                               
+BCLS14   AHI   R3,JCLASSL          NEXT CLASS                                   
+         B     BCLS12                                                           
+*                                                                               
+BCLS16   DS    0H                                                               
+*&&CL*&& MVC   JCCLASS,TBJCLASS    MAKE SURE THESE ALWAYS SET                   
+*&&AG*&& MVC   JCAGY,TBJAGY                                                     
+         MVC   JCTYPE,BYTE                                                      
+*                                                                               
+         OC    TBJRTIME,TBJRTIME   JOB RUNNING?                                 
+         BNZ   BCLS20              YES                                          
+*                                                                               
+         OC    JCFSUB,JCFSUB       FIRST ENTRY ALREADY SET?                     
+         BNZ   BCLS18              YES                                          
+         STCM  R2,15,JCFSUB        SET HEAD                                     
+         STCM  R2,15,JCLSUB        SET TAIL                                     
+         LHI   RF,1                                                             
+         STH   RF,JCNSUB           SET 1 JOB IN LIST                            
+         B     BCLS24                                                           
+*                                                                               
+BCLS18   CPYA  AR4,AR3             SET AT END OF LINKED LIST                    
+         ICM   R4,15,JCLSUB                                                     
+LS       USING TBJOBTAB,R4         LS = LAST SUBMITTED                          
+         STCM  R2,15,LS.TBJNXT     SET POINTER IN OLD TAIL                      
+         STCM  R2,15,JCLSUB        SET NEW TAIL                                 
+         LH    RF,JCNSUB                                                        
+         AHI   RF,1                                                             
+         STH   RF,JCNSUB           INCREMENT COUNT                              
+         B     BCLS24                                                           
+         DROP  LS                                                               
+*                                                                               
+BCLS20   OC    JCFRUN,JCFRUN       FIRST ENTRY SET?                             
+         BNZ   BCLS22              YES                                          
+         STCM  R2,15,JCFRUN        SET HEAD                                     
+         STCM  R2,15,JCLRUN        SET TAIL                                     
+         LHI   RF,1                                                             
+         STH   RF,JCNRUN           SET 1 JOB IN LIST                            
+         B     BCLS24                                                           
+*                                                                               
+BCLS22   CPYA  AR4,AR3             SET AT END OF LINKED LIST                    
+         ICM   R4,15,JCLRUN                                                     
+LR       USING TBJOBTAB,R4         LR = LAST RUN                                
+         STCM  R2,15,LR.TBJNXT     SET POINTER IN OLD TAIL                      
+         STCM  R2,15,JCLRUN        SET NEW TAIL                                 
+         LH    RF,JCNRUN                                                        
+         AHI   RF,1                                                             
+         STH   RF,JCNRUN           INCREMENT COUNT IN LIST                      
+         DROP  LR                                                               
+*                                                                               
+BCLS24   LAM   AR3,AR4,ARZERO                                                   
+         B     BCLS08                                                           
+*                                                                               
+BCLS26   BRAS  RE,ARSOFF                                                        
+         LA    R0,CLMSG1H                                                       
+         BRAS  RE,WTO                                                           
+         BRAS  RE,ARSOFF                                                        
+         B     EXITOK                                                           
+*                                                                               
+CLMSG1H  DC    AL2(L'CLMSG1)                                                    
+CLMSG1   DC    C'RERUN - CLASS TABLE REBUILT'                                   
+         EJECT                                                                  
+***********************************************************************         
+* LOCK TABLES                                                         *         
+***********************************************************************         
+LOCK     NTR1  ,                                                                
+         BRAS  RE,ARSOFF                                                        
+         BRAS  RE,LOCKCLS          LOCK CLASS TABLE                             
+         BRAS  RE,LOCKJOB          LOCK JOBTAB                                  
+         BRAS  RE,ARSOFF                                                        
+         B     EXITOK                                                           
+***********************************************************************         
+* FREE TABLES                                                         *         
+***********************************************************************         
+UNLK     NTR1  ,                                                                
+         BRAS  RE,ARSOFF                                                        
+         BRAS  RE,FREEJOB          UNLK JOBTAB                                  
+         BRAS  RE,FREECLS          UNLK CLASS TABLE                             
+         BRAS  RE,ARSOFF                                                        
+         B     EXITOK                                                           
+***********************************************************************         
+* EDIT TIME FROM FULL TO WORK1                                        *         
+***********************************************************************         
+TIMEOUT  NTR1  ,                                                                
+         CLC   FULL(2),EFFS        CONVERT STUPID 3/4 SECOND TIME?              
+         BNE   TIME02              NO                                           
+*                                                                               
+         XR    R0,R0                                                            
+         XR    R1,R1                                                            
+         ICM   R1,3,FULL+2         TIME *3/4                                    
+         SLL   R1,2                *4                                           
+         D     R0,=F'3'            /3                                           
+         MHI   R1,100                                                           
+         STCM  R1,15,FULL                                                       
+*                                                                               
+TIME02   MVC   WORK1(11),=C'00:00:00.00'                                        
+         SR    RE,RE                                                            
+         L     RF,FULL                                                          
+         D     RE,=F'360000'                                                    
+         EDIT  (RF),(2,WORK1),FILL=0      HRS                                   
+         LR    RF,RE                                                            
+         SR    RE,RE                                                            
+         D     RE,=F'6000'                                                      
+         EDIT  (RF),(2,WORK1+3),FILL=0    MINS                                  
+         LR    RF,RE                                                            
+         SR    RE,RE                                                            
+         D     RE,=F'100'                                                       
+         EDIT  (RF),(2,WORK1+6),FILL=0    SECS                                  
+         EDIT  (RE),(2,WORK1+9),FILL=0    100/SEC                               
+         B     EXITOK                                                           
+         EJECT                                                                  
+***********************************************************************         
+* USEFUL ROUTINES                                                     *         
+***********************************************************************         
+LOCKJOB  NTR1  ,                                                                
+         XC    DMCB(24),DMCB       LOCK JOB TABLE DSPACE HEADER                 
+         MVC   DMCB(4),=AL4(DTJOB)                                              
+         OI    DMCB,X'80'                                                       
+         GOTO1 VLOCKSPC,DMCB                                                    
+         ICM   RF,15,4(R1)                                                      
+         MVC   JTHDR,0(RF)         GET LATEST COPY                              
+         NI    JT.DSPTFRST,X'3F'                                                
+         B     EXIT                                                             
+*                                                                               
+FREEJOB  NTR1  ,                                                                
+         XC    DMCB(24),DMCB       FREE JOB TABLE DSPACE HEADER                 
+         MVC   DMCB(4),=AL4(DTJOB)                                              
+         OI    DMCB,X'10'                                                       
+         GOTO1 VLOCKSPC,DMCB                                                    
+         B     EXIT                                                             
+*                                                                               
+LOCKCLS  NTR1  ,                                                                
+         XC    DMCB(24),DMCB       LOCK CLASS TABLE DSPACE HEADER               
+         MVC   DMCB(4),=AL4(DTDCLASS)                                           
+         OI    DMCB,X'80'                                                       
+         GOTO1 VLOCKSPC,DMCB                                                    
+         ICM   RF,15,4(R1)                                                      
+         MVC   CLHDR,0(RF)         GET LATEST COPY                              
+         NI    CL.DSPTFRST,X'3F'                                                
+         B     EXIT                                                             
+*                                                                               
+FREECLS  NTR1  ,                                                                
+         XC    DMCB(24),DMCB       FREE CLASS TABLE DSPACE HEADER               
+         MVC   DMCB(4),=AL4(DTDCLASS)                                           
+         OI    DMCB,X'10'                                                       
+         GOTO1 VLOCKSPC,DMCB                                                    
+         B     EXIT                                                             
+*                                                                               
+WTO      NTR1  ,                   ROUTINE TO WRITE TO CONSOLE                  
+         WTO   TEXT=(R0),MCSFLAG=HRDCPY                                         
+         B     EXITOK                                                           
+*                                                                               
+CVDR0    CVD   R0,DUB                                                           
+         OI    DUB+L'DUB-1,X'0F'                                                
+         BR    RE                                                               
+*                                                                               
+ARSOFF   SAC   0                                                                
+         LAM   AR0,ARF,ARZERO                                                   
+         BR    RE                                                               
+*                                                                               
+EXITOK   CR    RB,RB                                                            
+         B     EXIT                                                             
+*                                                                               
+EXITL    CLI   *,255                                                            
+         B     EXIT                                                             
+*                                                                               
+EXIT     XIT1  ,                                                                
+*                                                                               
+XMOD     L     RD,SAVERD           EXIT FROM TOP                                
+         XMOD1 ,                                                                
+         EJECT                                                                  
+***********************************************************************         
+* CONSTANTS & LTORG                                                   *         
+***********************************************************************         
+         LTORG                                                                  
+*                                                                               
+ARZERO   DC    16F'0'                                                           
+ASSB     DC    V(SSB)                                                           
+VPQSCAN  DC    V(PQSCAN)                                                        
+VHEXOUT  DC    V(HEXOUT)                                                        
+VDMGR    DC    V(DATAMGR)                                                       
+VLOCKSPC DC    V(LOCKSPC)                                                       
+*                                                                               
+DMREAD   DC    CL8'DMREAD  '                                                    
+CTFILE   DC    CL8'CTFILE  '                                                    
+DMPRINT  DC    CL8'DMPRINT '                                                    
+BUFFER   DC    CL8'BUFFER  '                                                    
+GLIST    DC    CL8'GLIST   '                                                    
+WRKFILE  DC    CL8'WRKFIL  '                                                    
+LOCKSPC  DC    CL8'LOCKSPC '                                                    
+SEQ      DC    CL8'SEQ     '                                                    
+SPACES   DC    CL166' '                                                         
+EFFS     DC    16X'FF'                                                          
+QUERY    DC    8C'?'                                                            
+*                                                                               
+MAXLINE  DC    P'60'                                                            
+*                                                                               
+       ++INCLUDE FACIDTAB                                                       
+*                                                                               
+RUNMSG1H DC    AL2(L'RUNMSG1)                                                   
+RUNMSG1  DC    C'Emergency rebuild needed - Clearing tables'                    
+*                                                                               
+RUNMSG2H DC    AL2(L'RUNMSG2)                                                   
+RUNMSG2  DC    C'Emergency rebuild needed - Flagging DSPACE'                    
+*                                                                               
+RUNMSG3H DC    AL2(L'RUNMSG3)                                                   
+RUNMSG3  DC    C'++++ ERROR - JOB table in TABS is too small     +++++'         
+RUNMSG4H DC    AL2(L'RUNMSG4)                                                   
+RUNMSG4  DC    C'++++         Suggest recycling TABS immediately +++++'         
+         EJECT                                                                  
+***********************************************************************         
+* WORKING STORAGE                                                     *         
+***********************************************************************         
+YES      EQU   C'Y'                                                             
+NO       EQU   C'N'                                                             
+*                                                                               
+WORKD    DSECT                                                                  
+DUB      DS    D                                                                
+DUB1     DS    D                                                                
+JTHDR    DS    XL(L'DSPHDR)                                                     
+CLHDR    DS    XL(L'DSPHDR)                                                     
+EDUB     DS    D                                                                
+TIME     DS    F                                                                
+SAVERD   DS    A                                                                
+TBLET    DS    A                                                                
+SAVERE   DS    A                                                                
+*                                                                               
+ACIREC   DS    A                                                                
+APQSCBUF DS    A                                                                
+APQSCBUE DS    A                                                                
+AJOBTAB  DS    A                                                                
+AJOBEND  DS    A                                                                
+*                                                                               
+RUNQADD  DS    F                                                                
+RUNQMCH  DS    F                                                                
+*                                                                               
+FULL     DS    F                                                                
+FULL2    DS    F                                                                
+REBUILD  DS    C                                                                
+STOPFLG  DS    C                                                                
+HALF     DS    H                                                                
+HALF2    DS    H                                                                
+BYTE     DS    X                                                                
+EDITCHR  DS    X                                                                
+DMCB     DS    6F                                                               
+PLIST    DS    6F                                                               
+WORK     DS    CL64                                                             
+WORK1    DS    CL64                                                             
+JLEN     DS    H                                                                
+*                                                                               
+PLINE    DS    CL80                                                             
+*                                                                               
+PRTQID   DS    CL8                                                              
+CIADDR   DS    XL4                                                              
+*                                                                               
+PQBLK    DS    CL80                                                             
+PQCNT    DS    CL768                                                            
+*                                                                               
+KEY      DS    CL40                                                             
+MODE     DS    X                                                                
+USECLS   DS    X                   Y = NEW MONSTER (USES CLASS TABLE)           
+DSTYP    DS    X                   DATASPACE TYPE - ADV/REP/TST                 
+*                                                                               
+JOBDET   DS    0F                                                               
+JMVSID   DS    CL8                                                              
+JCLASS   DS    CL2                 System class                                 
+JTYPE    DS    X                   TYPE (REGULAR, LONG, COMSCORE)               
+JPRTY    DS    X                   Job Priority                                 
+JFACID   DS    X                   Which FACPAK                                 
+JUPDT    DS    X                   Update type job                              
+JPASS    DS    C                   ComScore Phase number                        
+JHOLD    DS    C                   PrintQ entry is on hold                      
+JSTIME   DS    XL4                                                              
+JAGY     DS    CL2                                                              
+JLUID    DS    CL8                                                              
+JOBDETL  EQU   *-JOBDET                                                         
+*                                                                               
+CIREC    DS    14336C                                                           
+*                                                                               
+PQSMX    EQU   5000                MAX PQSCAN CAN HANDLE                        
+PQSCBUFF DS    (PQSMX)XL(PQELNQ)                                                
+PQSCBEND DS    0X                                                               
+*                                                                               
+WORKL    EQU   *-WORKD                                                          
+         EJECT                                                                  
+***********************************************************************         
+* REBUILD MESSAGE LINE DSECT                                          *         
+***********************************************************************         
+MLINED   DSECT                                                                  
+MLEN     DS    AL2                 LENGTH FOR WTO                               
+MCLASS   DS    CL2                                                              
+MSLS1    DS    C                                                                
+MAGY     DS    CL2                                                              
+         DS    C                                                                
+MSRCID   DS    CL4                                                              
+MCOM1    DS    C                                                                
+MSUBID   DS    CL3                                                              
+MCOM2    DS    C                                                                
+MREPNO   DS    CL5                                                              
+         DS    C                                                                
+MLUID    DS    CL8                                                              
+         DS    C                                                                
+MFACID   DS    C                                                                
+         DS    C                                                                
+MPRTY    DS    C                                                                
+         DS    C                                                                
+MTIME    DS    CL8                                                              
+         DS    C                                                                
+MMVSID   DS    CL8                                                              
+MLINEL   EQU   *-MLINED                                                         
+         EJECT                                                                  
+***********************************************************************         
+* OTHER INCLUDED DSECTS                                               *         
+***********************************************************************         
+* CTGENFILE                                                                     
+         PRINT OFF                                                              
+       ++INCLUDE CTGENFILE                                                      
+         PRINT ON                                                               
+* DDPQSCAND                                                                     
+         PRINT OFF                                                              
+       ++INCLUDE DDPQSCAND                                                      
+         PRINT ON                                                               
+* DNPRTQD                                                                       
+         PRINT OFF                                                              
+       ++INCLUDE DNPRTQD                                                        
+         PRINT ON                                                               
+* FASSBOFF                                                                      
+         PRINT OFF                                                              
+       ++INCLUDE FASSBOFF                                                       
+         PRINT ON                                                               
+* FATABSDEQU                                                                    
+         PRINT OFF                                                              
+       ++INCLUDE FATABSDEQU                                                     
+         PRINT ON                                                               
+* FATABSJOB                                                                     
+         PRINT OFF                                                              
+       ++INCLUDE FATABSJOB                                                      
+         PRINT ON                                                               
+* FACIDTABD                                                                     
+         PRINT OFF                                                              
+       ++INCLUDE FACIDTABD                                                      
+         PRINT ON                                                               
+* DMSPACED                                                                      
+         PRINT OFF                                                              
+       ++INCLUDE DMSPACED                                                       
+         PRINT ON                                                               
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'012DDRERUN   09/07/18'                                      
+         END                                                                    

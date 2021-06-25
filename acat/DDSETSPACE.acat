@@ -1,0 +1,399 @@
+*          DATA SET DDSETSPACE AT LEVEL 001 AS OF 06/02/20                      
+*CATALP SETSPACE                                                                
+         TITLE 'GET DSPACE VALUE to SET SSODSPAC in SSB'                        
+***********************************************************************         
+* Input                                                                         
+* P1 = A(CALLERS SSB)                                                           
+*                                                                               
+* Output                                                                        
+* SSB bit SSOFLAG3 bit set with SSO3DSPS                                        
+* SSB chr SSODSPAC set or not set                                               
+*                                                                               
+* If  SSODSPAC is less then blank then continue                                 
+* ??                                                                            
+***********************************************************************         
+         PRINT NOGEN                                                            
+SETSPACE CSECT                                                                  
+***********************************************************************         
+* NOTE: We only go though this code once                                        
+*                                                                               
+* Scan TIOT for special DD statements                                           
+* Scan SYSIN deck for DSPACE=                                                   
+* DSPACEx  DD will force the DSPACE or die if doesn't match                     
+***********************************************************************         
+         NMOD1 WORKX-WORKD,*DSPACE*                                             
+         USING WORKD,RC                                                         
+         L     R5,0(,R1)           A(SSB)                                       
+         L     R1,X'10'(,0)        COMMUNICATION VECTOR TABLE                   
+         USING CVT,R1                                                           
+         L     R1,CVTSMCA          SYSTEM MANAGEMENT CONTROL AREA               
+                                                                                
+         USING SMCABASE,R1                                                      
+         MVC   SMFSYS,SMCASID      SAVE OF CPU ID (SMF) SYA / SYC               
+*&&UK*&& CLC   SMFSYS,=CL4'SY7 '                                                
+*&&US*&& CLC   SMFSYS,=CL4'SYA '                                                
+         JNE   *+8                 Must be prod type (default)                  
+         MVI   SYSTYPE,DSPTSTQ     Must be test type                            
+         DROP  R1                                                               
+*                                                                               
+         LA    R3,TIOT                                                          
+         EXTRACT (3),'S',FIELDS=TIOT                                            
+         L     R3,TIOT                                                          
+         AHI   R3,24               POINT TO TIOT TABLE                          
+         MVI   ISSET,NO                                                         
+         MVI   DSPACE,C' '                                                      
+*                                                                               
+         USING SSBD,R5                                                          
+         CLI   SSODSPAC,C' '                                                    
+         BNH   SETDS10                                                          
+         MVI   ISSET,YES                                                        
+         CLI   SSODSPAC,C'N'       Don't connect to DSPACE in DMDMGRL           
+         BE    SETDSXIT                                                         
+**********************************************************************          
+* If SSODSPAC was set to 'N' then we didn't connect to TABS in       *          
+* DMDMGRL. It means this program can not determine the SSODSPAC      *          
+* value. It can be determined in DDSIO if you use the specail DD     *          
+* statement to set the DSPACE card.                                  *          
+* i.e.                                                               *          
+* //DSPACEx  DD DUMMY                                                *          
+*                                                                    *          
+* This also means the application will be responsible for            *          
+* determining which DSPACE to connect to if any.                     *          
+*                                                                    *          
+* Note: the SSODSPAC (DSPACE) value dictates what HLQ will be used   *          
+*       to dynamically allocate the file. ex. TST. or FQA. etc.      *          
+* If you open files in read-only mode they don't need to connect to  *          
+* the dataspace. So if you use the DD statement to set the DSPACE    *          
+* and had initially set the SSOSPAC value to 'N' then it will be set *          
+* in DDSIO and will allow the HLQ to be set base on the new value.   *          
+*                                                                    *          
+* There for it is possible to connect to the production files in     *          
+* read-only mode if you don't open for update                        *          
+* It may fail if you run with global files since it compares         *          
+* the file name against the stored value in the DMGR dataspace.      *          
+*                                                                    *          
+**********************************************************************          
+                                                                                
+SETDS10  CLI   0(R3),0             TEST END OF TIOT TABLE                       
+         BE    SETDS60                                                          
+         CLC   =C'DSPACE',4(R3)                                                 
+         BE    SETDS30                                                          
+         CLC   =C'$$DNDX$$',4(R3)  FORCE DANDX READS FOR DEMOS                  
+         BE    SETDS40                                                          
+         CLC   =C'$$VSAM$$',4(R3)  FORCE VSAM READS FOR DEMOS                   
+         BE    SETDS40                                                          
+         CLC   =C'PQDD0',7(R3)     Special PQ DD statement                      
+         BE    SETDS50                                                          
+         CLC   =C'CTDD0',7(R3)     Special CT DD statement                      
+         BE    SETDS50                                                          
+         CLC   =C'MEDZNEW',4(R3)   Special MEDZNEW DD statement                 
+         BE    SETDS54                                                          
+         CLC   =C'SHOWDYN',4(R3)   SHOW DYNALLOC ALLOCATIONS                    
+         BE    SETDS56                                                          
+*                                                                               
+SETDS20  LLC   R0,0(,R3)           BUMP TO NEXT TABLE ENTRY                     
+         AR    R3,R0                                                            
+         B     SETDS10                                                          
+                                                                                
+***********************************************************************         
+* Extract DSPACE from DSPACEx DD statement where x is the value                 
+* validate and set SSODSPAC or die if doesn't match                             
+***********************************************************************         
+SETDS30  CLI   DSPACE,C' '         Was this set before?                         
+         BNH   SETDS32             No                                           
+         CLC   DSPACE,10(R3)       Same value?                                  
+         BE    SETDS20             Yes, whatever.                               
+*                            01234567890123456789012345678901234556789          
+         MVC   MSGTEXT,=CL40'DSPACE being set twice, values are x && y'         
+         MVC   MSGTEXT+35(1),DSPACE                                             
+         MVI   MSGTEXT+37,C'&&'                                                 
+         MVC   MSGTEXT+39(1),10(R3)                                             
+         LA    R4,MSG                                                           
+         WTO   TEXT=(R4)                                                        
+         ABEND 666                                                              
+*                                                                               
+SETDS32  MVC   DSPACE,10(R3)       Extract DSPACE value                         
+         B     SETDS20                                                          
+                                                                                
+***********************************************************************         
+* Set the VSAM/DANDX switch accordingly based on the DD statements.             
+* Note: $$DNDX$$ and $$VSAM$$ DD statements are mutually exclusive!             
+***********************************************************************         
+SETDS40  DS    0H                                                               
+         CLI   SSODMSTA,C' '       was the switch set already?                  
+         BNH   SETDS45                                                          
+         WTO   'Cannot have *both* $$DNDX$$ and $$VSAM$$ DD statements'         
+         J      *+2                                                             
+*        ABEND 666                 yes: that's a no-no                          
+*                                                                               
+SETDS45  DS    0H                                                               
+         CLC   =C'$$DNDX$$',4(R3)         force read via DANDX?                 
+         JNE   *+12                                                             
+         MVI   SSODMSTA,SSODMSTA_DANDX    yes: set SSB flag to DANDX            
+         J     SETDS20                    bump to next TIOT entry               
+*                                                                               
+         CLC   =C'$$VSAM$$',4(R3)         force read via VSAM?                  
+         JNE   *+2                        how did we get here ?!                
+         MVI   SSODMSTA,SSODMSTA_VSAM     yes: set SSB flag to VSAM             
+         J     SETDS20                    bump to next TIOT entry               
+                                                                                
+***********************************************************************         
+* EXTRAC DD CSCPQDD0, TSTPQDD0 or FQAPQDD0                                      
+* EXTRAC DD CSCCTDD0, TSTCTDD0 or FQACTDD0                                      
+***********************************************************************         
+SETDS50  MVI   BYTE,C' '                                                        
+         CLC   =C'CSC',4(R3)       CSCPQDD0 DD DUMMY                            
+         BNE   *+8                                                              
+         MVI   BYTE,C'C'                                                        
+*                                                                               
+         CLC   =C'FQA',4(R3)       FQAPQDD0 DD DUMMY                            
+         BNE   *+8                                                              
+         MVI   BYTE,C'Q'                                                        
+*                                                                               
+         CLC   =C'TST',4(R3)       TSTPQDD0 DD DUMMY                            
+         BNE   *+8                                                              
+         MVI   BYTE,C'T'                                                        
+*                                                                               
+         CLC   =C'REP',4(R3)       REPPQDD0 DD DUMMY                            
+         BNE   *+8                                                              
+         MVI   BYTE,C'R'                                                        
+*                                                                               
+         CLI   DSPACE,C' '         Was it set already?                          
+         BNH   SETDS52             No                                           
+         CLC   DSPACE,BYTE         Yes, does it match?                          
+         JE    SETDS52             Yes, so whatever.                            
+*                            01234567890123456789012345678901234556789          
+         MVC   MSGTEXT,=CL40'DSPACE being set twice, values are x && y'         
+         MVC   MSGTEXT+35(1),DSPACE                                             
+         MVI   MSGTEXT+37,C'&&'                                                 
+         MVC   MSGTEXT+39(1),BYTE                                               
+         LA    R4,MSG                                                           
+         WTO   TEXT=(R4)                                                        
+         ABEND 666                                                              
+*                                                                               
+SETDS52  MVC   DSPACE,BYTE                                                      
+         B     SETDS20                                                          
+                                                                                
+***********************************************************************         
+* MEDZNEW DD DUMMY SETS SSODYNDD to NEW                                         
+***********************************************************************         
+SETDS54  MVI   SSODYNDD,5          SET TO NEW                                   
+         BNE   *+8                                                              
+         B     SETDS20             Next                                         
+                                                                                
+***********************************************************************         
+* SHOWDYN DD DUMMY                                                              
+***********************************************************************         
+SETDS56  OI    SSOFLAG3,SSO3SDYN   SET SSO3SDYN                                 
+         B     SETDS20             Next                                         
+                                                                                
+**********************************************************************          
+* Now pre-scan SYSIN DECK                                                       
+**********************************************************************          
+SETDS60  TM    SSOFLAG3,SSO3DSPS   Don't process cards twice                    
+         BO    SETDS80                                                          
+         OPEN  (SYSIN)                                                          
+         STC   RF,ERRSYSIN                                                      
+         CLI   ERRSYSIN,4                                                       
+         BH    SETDS70             Done if couldn't open                        
+SETDS62  LA    R1,SYSIN                                                         
+         LA    R0,INPUT                                                         
+         GET   (1),(0)                                                          
+         CLI   INPUT,C'*'          '*' indicate comment line                    
+         BE    SETDS62                                                          
+*                                                                               
+         XR    R0,R0                                                            
+         ICM   R0,1,=C'D'          Seaching for DSPACE=                         
+         LA    R4,INPUT            R2=A(START of string)                        
+SETDS63  LA    R2,INPUT+L'INPUT-8  R3=A(END of string)                          
+         SRST  R2,R4                                                            
+         BL    SETDS64           Found                                          
+         BH    SETDS62           Not found - next card                          
+         J     *+2                                                              
+*                                                                               
+SETDS64  CLC   =C'DDSIO=',0(R2)     Handle DDSIO= too                           
+         BE    SETDS65              Yes                                         
+         LA    R6,10(,R2)           Point to DSPACE value                       
+         CLC   =C'DSPACE=TAB',0(R2) Verify                                      
+         BE    SETDS66              Yes                                         
+         CLC   =C'DSPACE=DMG',0(R2) Verify                                      
+         BE    SETDS66              Yes                                         
+         LA    R6,7(,R2)            Point to DSPACE value                       
+         CLC   =C'DSPACE=',0(R2)    Verify                                      
+         BE    SETDS66              Yes                                         
+*                                  Nope not it, countinue looking               
+         LR    R4,R2               Up A(START of string)                        
+         AHI   R4,1                and 1 to get past last match                 
+         B     SETDS63                                                          
+*                                                                               
+SETDS65  LA    RF,9                Max length is 8 but need +1                  
+         LA    R2,6(,R2)           Point past 'DDSIO='                          
+         LR    R4,R2               Change start 'from' position                 
+         LT    RE,=V(DDSIO)        Set DDSIO while we are at it                 
+         BZ    SETDS63             Any more on current card?                    
+SETDS65A CLI   0(R2),C' '          end of card                                  
+         BNH   SETDS62             next card                                    
+         CLI   0(R2),C','          end of value for item on card                
+         BE    SETDS63             next entry on card                           
+         MVC   0(1,RE),0(R2)       Move 1 character at a time                   
+         OI    SSOFLAG3,SSO3DSPS   Turn on, process cards onces only            
+         AHI   RE,1                Destination                                  
+         AHI   R2,1                Source                                       
+         AHI   R4,1                Change start 'from' position                 
+         BCT   RF,SETDS65A                                                      
+         DC    H'00'               See what this is to fix                      
+                                                                                
+SETDS66  CLI   DSPACE,C' '                                                      
+         BNH   SETDS67                                                          
+         CLC   DSPACE,0(R6)                                                     
+         JE    SETDS62            Same value so okay as is                      
+         CLI   0(R6),C'N'         Special case                                  
+         BE    SETDS67            DSPACE=N has precedence                       
+*                                                                               
+*                            01234567890123456789012345678901234556789          
+         MVC   MSGTEXT,=CL40'DSPACE has two different values, x && y'           
+         MVC   MSGTEXT+33(1),DSPACE                                             
+         MVC   MSGTEXT+37(1),0(R6)                                              
+         LA    R4,MSG                                                           
+         WTO   TEXT=(R4)                                                        
+         ABEND 666                                                              
+*                                                                               
+SETDS67  MVC   DSPACE,0(R6)        Get DSPACE value                             
+         B     SETDS62                                                          
+                                                                                
+SETDSCLS CLOSE (SYSIN)                                                          
+                                                                                
+SETDS70  CLI   DSPACE,C' '         Find anything?                               
+         BH    SETDS72             No                                           
+         CLI   ISSET,YES                                                        
+         BE    SETDS72                                                          
+         TM    SYSTYPE,DSPTSTQ                                                  
+         BZ    SETDS72                                                          
+         MVC   MSGTEXT,=CL40'DSPACE required on test LPAR,'                     
+         MVC   MSGTEXT+30(L'SMFSYS),SMFSYS                                      
+         LA    R4,MSG                                                           
+         WTO   TEXT=(R4)                                                        
+         ABEND 666                                                              
+                                                                                
+SETDS72  CLI   ISSET,YES           Was DSPACE set comming in?                   
+         BNE   SETDS80             No, so set it                                
+         CLC   DSPACE,SSODSPAC     Yes, is it the same?                         
+         JE    SETDS80             Okay since it has same value                 
+*                            01234567890123456789012345678901234556789          
+         MVC   MSGTEXT,=CL40'DSPACE has two different values, x && y'           
+         MVC   MSGTEXT+33(1),DSPACE                                             
+         MVC   MSGTEXT+37(1),SSODSPAC                                           
+         LA    R4,MSG                                                           
+         WTO   TEXT=(R4)                                                        
+         ABEND 666                                                              
+*                                                                               
+SETDS80  OI    SSOFLAG3,SSO3DSPS   Indicate DSPACE is now set                   
+         MVC   SSODSPAC,DSPACE                                                  
+         CLI   SSODSPAC,C'N'                                                    
+         BE    SETDSXIT                                                         
+*                                                                               
+         CLI   SSODSPAC,C' '                                                    
+         BNH   SETDSXIT            Nothing to validate                          
+         LA    R1,DSPCTAB#         Number of entries                            
+         LARL  R6,DSPCTAB                                                       
+         USING DSPTABD,R6                                                       
+SETDS82  CLC   SSODSPAC,DSPCHAR                                                 
+         BE    SETDS84                                                          
+         AHI   R6,DSPTABQ                                                       
+         BRCT  R1,SETDS82                                                       
+*                            01234567890123456789012345678901234556789          
+         MVC   MSGTEXT,=CL40'Invalid DSPACE '                                   
+         MVC   MSGTEXT+15(1),SSODSPAC                                           
+         LA    R4,MSG                                                           
+         WTO   TEXT=(R4)           Invalid HLQ                                  
+         ABEND 666                                                              
+*                                                                               
+SETDS84  LA    RE,DSPSYS           Valid system(s)                              
+         LLC   R1,SYSTYPE          Current system                               
+         EXRL  R1,TESTSYS                                                       
+         BO    SETDSXIT            Okay bit matches                             
+*                                                                               
+*                            01234567890123456789012345678901234556789          
+         MVC   MSGTEXT,=CL40'DSPACE   not valid for LPAR,'                      
+         MVC   MSGTEXT+7(1),SSODSPAC                                            
+         MVC   MSGTEXT+29(L'SMFSYS),SMFSYS                                      
+         LA    R4,MSG                                                           
+         WTO   TEXT=(R4)                                                        
+         ABEND 666                                                              
+                                                                                
+SETDSXIT XIT1  ,                                                                
+         DROP  R5,R6                                                            
+         EJECT ,                                                                
+         LTORG                                                                  
+*                                                                               
+SYSIN    DCB   DDNAME=SYSIN,MACRF=(GM),DSORG=PS,RECFM=FB,              +        
+               EODAD=SETDSCLS,,LRECL=80                                         
+                                                                                
+***********************************************************************         
+* DSPACE plus UPDID values                                                      
+***********************************************************************         
+DSPCTAB  DC    C'ADM',AL1(DSPPRDQ) Production (ADV)                             
+         DC    C'RDM',AL1(DSPPRDQ) Production (REP)                             
+         DC    C'PDM',AL1(DSPPRDQ) Production (ADV & REP)                       
+         DC    C'QFQ',AL1(DSPTSTQ) FQA                                          
+         DC    C'CFC',AL1(DSPTSTQ) CSC                                          
+         DC    C'TFT',AL1(DSPTSTQ) TST                                          
+         DC    C'TFM',AL1(DSPTSTQ) MEL                                          
+         DC    C'NXX',AL1(DSPPRDQ+DSPTSTQ) No DSPACE                            
+DSPCTAB# EQU   ((*-DSPCTAB)/DSPTABQ)                                            
+                                                                                
+SYSTYPE  DC    AL1(DSPPRDQ)                                                     
+*                                                                               
+MSG      DC    AL2(MSGEND-*-2)                                                  
+MSGTEXT  DC    CL40' '                                                          
+MSGEND   DS    0X                                                               
+                                                                                
+TESTSYS  TM    0(RE),0                                                          
+**********************************************************************          
+* Local working dsect                                                           
+**********************************************************************          
+YES      EQU   C'Y'                                                             
+NO       EQU   C'N'                                                             
+                                                                                
+WORKD    DSECT                                                                  
+TIOT     DS    D                                                                
+DSPACE   DS    C                                                                
+ISSET    DS    C           DSPACE WAs set comming in.                           
+BYTE     DS    C                                                                
+ERRSYSIN DS    X                                                                
+SMFSYS   DS    CL4                                                              
+INPUT    DS    CL80                                                             
+WORKX    DS    0D                                                               
+         LTORG                                                                  
+                                                                                
+*************************************************                               
+* LOCAL DSECT for DSPACE                        *                               
+*************************************************                               
+DSPTABD  DSECT                                                                  
+DSPCHAR  DS    C           Dataspace character                                  
+DSPUPDID DS    CL2         For MCUPDID                                          
+DSPSYS   DS    X           TEST or PROD                                         
+DSPPRDQ  EQU   X'80'                                                            
+DSPTSTQ  EQU   X'40'                                                            
+DSPTABQ  EQU   *-DSPTABD                                                        
+                                                                                
+**********************************************************************          
+* IBM DSECTS - LOW CORE PRIVITE REGION INFORMATION                              
+*              CVT  - COMMUNICATION VECTOR TABLE                                
+*              SMCA - SYSTEM MANAGEMENT CONTROL AREA                            
+**********************************************************************          
+         CVT   DSECT=YES                                                        
+*                                                                               
+         IEESMCA                                                                
+                                                                                
+**********************************************************************          
+* MO  DSECTS - System Status Block                                              
+**********************************************************************          
+*FASSBOFF                                                                       
+SSBD     DSECT                                                                  
+         PRINT OFF                                                              
+       ++INCLUDE FASSBOFF                                                       
+         PRINT ON                                                               
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'001DDSETSPACE06/02/20'                                      
+         END                                                                    

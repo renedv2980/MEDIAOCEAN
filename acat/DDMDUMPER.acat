@@ -1,0 +1,1029 @@
+*          DATA SET DDMDUMPER  AT LEVEL 006 AS OF 09/16/20                      
+*CATALP MDUMPER                                                                 
+***********************************************************************         
+* PARAM1 P1+0  X'80'       RETURN A(DSN) IN PARAM4                    *         
+*              X'40'       DO NOT SENT EMAIL                          *         
+*        P1+1  A(C'INIT')  SET UP ESTAEX                              *         
+*              A(C'DUMP')  WRITE DUMP (CALL FROM ESTAE)               *         
+*              A(C'DROP')  CANCEL ESTAEX                              *         
+*                                                                     *         
+* PARAM2 P2+0  NUMBER OF TIMES TO RETRY 0=NONE 255=MAX                *         
+*        P2+1  A(ESTAE EXIT ROUTINE)                                  *         
+*                                                                     *         
+* PARAM3 P2+0  NOT DEFINED                                            *         
+*                                                                     *         
+* RETURN P2+0  0=INIT N=NUMBER OF RETRY                               *         
+* RETURN P4+0  A(DSN) IF P1=X'80'                                     *         
+***********************************************************************         
+         TITLE 'DDMDUMPER - CORE DUMPS AND ERROR HANDLING'                      
+         PRINT NOGEN                                                            
+MDUMPER  CSECT                                                                  
+         IEABRCX DEFINE                                                         
+         IEABRCX DISABLE                                                        
+         ENTRY PDMPSOON                                                         
+         NMOD1 WRKX-WORKD,**MDUMP*                                              
+         USING WORKD,RC                                                         
+         J     START               GOTO START OF CODE                           
+*                                                                               
+$$DATA   LOCTR ,                   DATA LOCATION CLOSE TO RB                    
+*                                                                               
+***********************************************************************         
+* RB = BASE1 LITERALS AND CONSTANTS                                   *         
+* RA = RESERVED                                                       *         
+* R9 = LOCAL BASE                                                     *         
+* CONSTANTS & LITERALS DEFINE LATER USING $$DATA LOCTR                *         
+***********************************************************************         
+*                                                                               
+$$CODE   LOCTR ,                   CODE AFTER DATA                              
+*                                                                               
+***********************************************************************         
+* MAIN CODE AREA                                                      *         
+***********************************************************************         
+START    ST    RD,SAVERD                                                        
+         LR    R2,R1                                                            
+         USING SVPARMS,R2                                                       
+         MVC   OPTIONS,0(R2)       SAVE OPTIONS BYTE FROM P1+0                  
+         TM    OPTIONS,X'80'                                                    
+         JZ    MDUMP001                                                         
+         LARL  RE,DSNWORK          PASS BACK A(DSN) IN PARAM4                   
+         ST    RE,SVP4                                                          
+*                                                                               
+MDUMP001 L     R1,=V(PDMPSOON)     COPY PDMPSOON OVER ITSELF                    
+         LARL  RF,PDMPSOON         IN CASE WE HAVE TWO PDMPSOONS                
+         MVC   0(L'PDMPSOON,RF),0(R1)                                           
+*                                                                               
+MDUMP010 LARL  RE,ACTTAB           VALIDATE ACTION                              
+         XR    R1,R1                                                            
+         ICM   R1,7,SVP1+1                                                      
+*                                                                               
+MDUMP011 CLC   0(4,RE),0(R1)       SCAN TABLE                                   
+         JE    MDUMP020                                                         
+         LA    RE,8(RE)                                                         
+         CLC   0(4,RE),=C'XXXXXXXX'                                             
+         JNE   MDUMP011                                                         
+         DC    H'0'                                                             
+*                                                                               
+MDUMP020 L     RF,4(RE)            GET A(ROUTINE)                               
+         BASR  RE,RF                                                            
+*                                                                               
+         XMOD1                                                                  
+*                                                                               
+EXITOK   CR    RB,RB                                                            
+         J     EXIT                                                             
+*                                                                               
+EXITL    CLI   *,255                                                            
+         J     EXIT                                                             
+*                                                                               
+EXIT     XIT1  ,                                                                
+*                                                                               
+***********************************************************************         
+* INITIALISE ERROR HANDLING                                           *         
+***********************************************************************         
+INIT     NTR1                                                                   
+*                                                                               
+         ESTAEX ERREXIT,CT,ASYNCH=YES,TERM=NO                                   
+         LTR   RF,RF                                                            
+         JNZ   *+2                                                              
+*                                                                               
+         LLC   R1,SVP2             MAX RETRIES                                  
+         ST    R1,DUMPMAX          SAVE AS FULL WORD                            
+         XR    R1,R1                                                            
+         ICM   R1,7,SVP2+1         SAVE A(EXIT)                                 
+         ST    R1,DUMPEXIT                                                      
+         XC    DUMPCTR,DUMPCTR                                                  
+         XC    LOOPCTR,LOOPCTR                                                  
+         MVC   SVP2,DUMPCTR        ZERO COUNT                                   
+*                                                                               
+         L     RD,SAVERD           SET UP ERROR RETURN                          
+         L     RD,4(RD)                                                         
+         MVC   MYREGS(52),20(RD)   R1 TO RC                                     
+         MVC   MYREGS+56(8),12(RD) RE TO RF                                     
+         ST    RD,MYREGS+52        RD                                           
+         LM    RE,RC,12(RD)                                                     
+         BSM   0,RE                GO BACK TO CALLER                            
+         EJECT                                                                  
+***********************************************************************         
+* CANCEL ESTAE                                                        *         
+***********************************************************************         
+DROP     NTR1                                                                   
+         ESTAEX 0                                                               
+         J     EXITOK                                                           
+         EJECT                                                                  
+***********************************************************************         
+* ALLOCATE AND WRITE DUMP TO SYSMDUMP.                                *         
+* FORMAT OF DSN IS BATCH.XX.... OR SOON.XX....                        *         
+***********************************************************************         
+DUMP     NTR1                                                                   
+         MVC   DSNWORK,SPACES                                                   
+*                                                                               
+DUMP010  XC    TIMEDATE(16),TIMEDATE                                            
+         TIME  DEC,TIMEDATE,LINKAGE=SYSTEM,DATETYPE=MMDDYYYY                    
+*                                                                               
+         CLC   TIMEDATE(6),DUMPTIME                                             
+         JNE   DUMP020             CHECK TIME NOT SAME AS PREVIOUS              
+         L     R1,=F'38400'        TIME IN TUS                                  
+         ST    R1,FULL                                                          
+         STIMER WAIT,TUINTVL=FULL  WAIT 1 SEC                                   
+         J     DUMP010                                                          
+DUMP020  MVC   DUMPTIME,TIMEDATE   SAVE TIME OF DUMP                            
+*                                                                               
+         LA    R2,FULL             GET JOB NAME                                 
+         EXTRACT (2),FIELDS=TIOT                                                
+         L     R2,FULL                                                          
+         MVC   JOBNAME,0(R2)                                                    
+*                                                                               
+         SAM31                                                                  
+         LA    R2,JOBNUM                                                        
+         IAZXJSAB READ,JOBID=(R2)  JOBNUM=C'JOBNNNNN'                           
+         SAM24                                                                  
+*                                                                               
+         LT    R1,=V(SSB)          GET DSPACE FROM SSB                          
+         JZ    DUMP030                                                          
+         MVC   DSPACE,SSODSPAC-SSOOFF(R1)                                       
+         CLI   DSPACE,C' '                                                      
+         JH    *+8                                                              
+DUMP030  MVI   DSPACE,C'A'         SET DEFAULT DSPACE VALUE                     
+*                                                                               
+         OC    PDMPQREP(5),PDMPQREP                                             
+         JNZ   SOON                TREAT AS SOON JOB IF PQ REPORT SET           
+         EJECT                                                                  
+***********************************************************************         
+* 01234567890123456789012345678901234                                 *         
+* BATCH.JAN01.X123456.SPP.JOBNAME.JOBNNNNN                            *         
+***********************************************************************         
+BATCH    MVC   DSNWORK(L'DSNHLQB),DSNHLQB                                       
+         LA    R5,DSNWORK+L'DSNHLQB                                             
+*                                                                               
+BTCH010  LA    R0,4                HEXOUT DATE _MMDD                            
+         SR    RF,RF                                                            
+         ICM   RF,12,TIMEDATE+8                                                 
+         LA    R2,1(R5)                                                         
+         BRAS  RE,HEXOUT                                                        
+*                                                                               
+BTCH020  XC    DUB,DUB             REPLACE _MM WITH MONTH NAME                  
+         MVO   DUB+6(2),TIMEDATE+8(1)                                           
+         OI    DUB+7,X'0C'                                                      
+         CVB   R1,DUB                                                           
+         AHI   R1,-1                                                            
+         SLL   R1,2                                                             
+         LA    R1,MONTAB(R1)       FROM MONTAB                                  
+         MVC   0(3,R5),0(R1)                                                    
+*                                                                               
+BTCH030  LA    R5,5(R5)            R5=A(END OF ALPHA MONTH)                     
+         MVI   0(R5),C'.'                                                       
+         LA    R5,1(R5)                                                         
+*                                                                               
+BTCH040  MVC   0(1,R5),DSPACE      FIRST CHR OF TIME FIELD IS DSPACE            
+         LA    R0,6                HEXOUT TIME HHMMSS                           
+         SR    RF,RF                                                            
+         ICM   RF,14,TIMEDATE                                                   
+         LA    R2,1(R5)                                                         
+         BRAS  RE,HEXOUT                                                        
+         LA    R5,7(R5)                                                         
+*                                                                               
+         LR    RF,R5               SAVE LENGTH UP TO END OF HHMM                
+         AHI   RF,-2                                                            
+         LA    RE,DSNWORK                                                       
+         SR    RF,RE                                                            
+         STC   RF,LENHHMM                                                       
+*                                                                               
+         MVC   EMAILKEY,JOBNAME    USE JOBNAME AS EMAIL KEY                     
+         MVC   SYSN1(4),SPACES                                                  
+         CLI   PDMPSYS,0           TEST IF SYSTEM NUM SET IN PDMPSOON           
+         JNE   BTCH045                                                          
+         MVC   0(4,R5),=C'.XXX'    SET UNKNOWN SYSTEM/PROGRAM IN DSN            
+         LA    R5,4(R5)                                                         
+         J     BTCH100                                                          
+*                                                                               
+BTCH045  LA    RE,SYSLST           FIND SYSTEM NAME                             
+         LA    RE,6(RE)                                                         
+         USING SYSLSTD,RE                                                       
+BTCH050  CLI   SYSLNUM,0                                                        
+         JE    BTCH060                                                          
+         CLC   SYSLNUM,PDMPSYS                                                  
+         JE    BTCH070                                                          
+         LA    RE,SYSLLEN(RE)                                                   
+         J     BTCH050                                                          
+BTCH060  LA    RE,UNKSYS           USE DUMMY UNKNOWN SYSTEM ENTRY               
+         MVC   0(4,R5),=C'.XXX'    SET UNKNOW SYSTEM/PROGRAM IN DSN             
+         LA    R5,4(R5)                                                         
+         J     BTCH100                                                          
+*                                                                               
+BTCH070  MVC   SYSN1,SYSLRPLT      SAVE SYSTEM CODES                            
+         MVC   SYSN3,SYSLSHRT                                                   
+         MVC   EMAILKEY,SPACES                                                  
+         MVC   EMAILKEY(1),SYSN1   SET EMAILKEY TO SYSTEM LETTER                
+         MVI   0(R5),C'.'                                                       
+         MVC   1(1,R5),SYSN1       MOVE ONE CHR SYSTEM NAME INTO DSN            
+         LA    R5,2(R5)                                                         
+         DROP  RE                                                               
+*                                                                               
+BTCH080  LA    R0,2                TWO CHARACTER PROGRAM NAME INTO DSN          
+         LA    RE,PDMPPROG                                                      
+         CLI   0(RE),C' '          TEST IF PROGRAM NAME IS DEFINED              
+         JH    *+8                                                              
+         LA    RE,=C'XXXXXXXX'                                                  
+         LA    RF,EMAILKEY+1                                                    
+         CLI   0(RE),C'A'          MUST START WITH A LETTER                     
+         JL    BTCH095                                                          
+         CLI   0(RE),C'Z'                                                       
+         JH    BTCH095                                                          
+*                                                                               
+BTCH090  CLI   0(RE),C'A'          REPLACE NON ALPHA CHRS WITH X                
+         JNL   *+12                                                             
+BTCH095  MVI   0(R5),C'X'                                                       
+         J     *+10                                                             
+         MVC   0(1,R5),0(RE)                                                    
+         MVC   0(1,RF),0(R5)       SET PROGRAM CHR INTO EMAILKEY                
+         LA    R5,1(R5)                                                         
+         LA    RF,1(RF)                                                         
+         LA    RE,1(RE)                                                         
+         JCT   R0,BTCH090                                                       
+*                                                                               
+BTCH100  MVI   0(R5),C'.'          JOBNAME                                      
+         MVC   1(8,R5),JOBNAME                                                  
+         LA    R5,1(R5)                                                         
+         LA    R0,8                                                             
+BTCH110  CLI   0(R5),C' '          FIND END OF JOBNAME                          
+         JNH   BTCH120                                                          
+         LA    R5,1(R5)                                                         
+         JCT   R0,BTCH110                                                       
+*                                                                               
+BTCH120  CLI   JOBNUM,C' '         JOB NUMBER                                   
+         JNH   DUMP060                                                          
+         MVI   0(R5),C'.'                                                       
+         MVC   1(8,R5),JOBNUM      JOBNNNNNN                                    
+         LA    R5,9(R5)                                                         
+         J     DUMP060                                                          
+*                                                                               
+HEXOUT   ST    RE,SAVERE           QUICK HEXOUT FOR VALUE IN RF                 
+         XR    RE,RE               R0=NUM BYTES R2=A(OUTPUT AREA)               
+         SLDL  RE,4                                                             
+         LARL  R1,HEXTAB                                                        
+         IC    R1,0(R1,RE)                                                      
+         STC   R1,0(R2)                                                         
+         LA    R2,1(R2)                                                         
+         JCT   R0,HEXOUT+4                                                      
+         L     RE,SAVERE                                                        
+         BR    RE                                                               
+*                                                                               
+HEXTAB   DC    C'0123456789ABCDEF'                                              
+         EJECT                                                                  
+***********************************************************************         
+* 012345678901234567890123456789012345678901                          *         
+* SOON.JAN01.X1234.SPP.USERNAME.RPT.#NNNNN                            *         
+***********************************************************************         
+SOON     MVC   DSNWORK(L'DSNHLQS),DSNHLQS                                       
+         LA    R5,DSNWORK+L'DSNHLQS                                             
+*                                                                               
+SOON010  LA    R0,4                HEXOUT DATE _MMDD                            
+         SR    RF,RF                                                            
+         ICM   RF,12,TIMEDATE+8                                                 
+         LA    R2,1(R5)                                                         
+         BRAS  RE,HEXOUT                                                        
+*                                                                               
+SOON020  XC    DUB,DUB             REPLACE _MM WITH MONTH CHR                   
+         MVO   DUB+6(2),TIMEDATE+8(1)                                           
+         OI    DUB+7,X'0C'                                                      
+         CVB   R1,DUB                                                           
+         AHI   R1,-1                                                            
+         SLL   R1,2                                                             
+         LA    R1,MONTAB(R1)       FROM MONTAB                                  
+         MVC   0(3,R5),0(R1)                                                    
+*                                                                               
+SOON030  LA    R5,5(R5)            R5=A(END OF ALPHA MONTH)                     
+         MVI   0(R5),C'.'                                                       
+         LA    R5,1(R5)                                                         
+*                                                                               
+SOON040  MVC   0(1,R5),DSPACE      FIRST CHR OF TIME FIELD IS DSPACE            
+         LA    R0,4                HEXOUT TIME HHMM                             
+         SR    RF,RF                                                            
+         ICM   RF,14,TIMEDATE                                                   
+         LA    R2,1(R5)                                                         
+         BRAS  RE,HEXOUT                                                        
+         LA    R5,5(R5)                                                         
+*                                                                               
+         LR    RF,R5               SAVE LENGTH UP TO END OF HHMM                
+         LA    RE,DSNWORK                                                       
+         SR    RF,RE                                                            
+         STC   RF,LENHHMM                                                       
+*                                                                               
+         LA    RE,SYSLST           FIND SYSTEM NAME                             
+         LA    RE,6(RE)                                                         
+         USING SYSLSTD,RE                                                       
+SOON050  CLI   SYSLNUM,0                                                        
+         JE    SOON060                                                          
+         CLC   SYSLNUM,PDMPSYS                                                  
+         JE    SOON070                                                          
+         LA    RE,SYSLLEN(RE)                                                   
+         J     SOON050                                                          
+SOON060  LA    RE,UNKSYS           USE DUMMY UNKNOWN SYSTEM ENTRY               
+*                                                                               
+SOON070  MVC   SYSN1,SYSLRPLT      SAVE SYSTEM CODES                            
+         MVC   SYSN3,SYSLSHRT                                                   
+         MVC   EMAILKEY,SPACES                                                  
+         MVC   EMAILKEY(1),SYSN1   SET EMAILKEY TO SYSTEM LETTER                
+         MVI   0(R5),C'.'                                                       
+         MVC   1(1,R5),SYSN1       MOVE ONE CHR SYSTEM NAME INTO DSN            
+         LA    R5,2(R5)                                                         
+         DROP  RE                                                               
+*                                                                               
+SOON080  LA    R0,2                TWO CHARACTER PROGRAM NAME INTO DSN          
+         LA    RE,PDMPPROG                                                      
+         CLI   0(RE),C' '          TEST IF PROGRAM NAME IS DEFINED              
+         JH    *+8                                                              
+         LA    RE,=C'XXXXXXXX'                                                  
+         LA    RF,EMAILKEY+1                                                    
+         CLI   0(RE),C'A'          MUST START WITH A LETTER                     
+         JL    SOON095                                                          
+         CLI   0(RE),C'Z'                                                       
+         JH    SOON095                                                          
+*                                                                               
+SOON090  CLI   0(RE),C'A'          REPLACE NON ALPHA CHRS WITH X                
+         JNL   *+12                                                             
+SOON095  MVI   0(R5),C'X'                                                       
+         J     *+10                                                             
+         MVC   0(1,R5),0(RE)                                                    
+         MVC   0(1,RF),0(R5)       SET PROGRAM CHR INTO EMAILKEY                
+         LA    R5,1(R5)                                                         
+         LA    RF,1(RF)                                                         
+         LA    RE,1(RE)                                                         
+         JCT   R0,SOON090                                                       
+*                                                                               
+SOON100  LA    R0,8                EIGHT CHARACTERS MAX USER ID ALPHA           
+         LA    RE,PDMPUSR                                                       
+         CLI   0(RE),C' '          TEST IF USER ID ALPHA IS DEFINED             
+         JH    *+8                                                              
+         LA    RE,=C'XXXXXXXX'                                                  
+         MVI   0(R5),C'.'                                                       
+         LA    R5,1(R5)                                                         
+         CLI   0(RE),C'A'          MUST START WITH A LETTER                     
+         JL    SOON120                                                          
+         CLI   0(RE),C'Z'                                                       
+         JH    SOON120                                                          
+*                                                                               
+SOON110  CLI   0(RE),C' '          TEST END OF USER ID ALPHA                    
+         JNH   SOON140                                                          
+         CLI   0(RE),C'A'                                                       
+         JNL   *+12                                                             
+SOON120  MVI   0(R5),C'X'          REPLACE NON ALPHA CHRS WITH X                
+         J     *+10                                                             
+         MVC   0(1,R5),0(RE)       MOVE USERID INTO DSN                         
+         LA    R5,1(R5)                                                         
+         LA    RE,1(RE)                                                         
+         JCT   R0,SOON110                                                       
+*                                                                               
+SOON140  LA    R0,3                THREE CHARACTER MAX PQ REPORT ID             
+         LA    RE,PDMPQREP                                                      
+         CLI   0(RE),C' '          TEST IF PQ REPORT ID IS DEFINED              
+         JH    *+8                                                              
+         LA    RE,=C'XXXXXXXX'                                                  
+         MVI   0(R5),C'.'                                                       
+         LA    R5,1(R5)                                                         
+         CLI   0(RE),C'A'          MUST START WITH A LETTER                     
+         JL    SOON160                                                          
+         CLI   0(RE),C'Z'                                                       
+         JH    SOON160                                                          
+*                                                                               
+SOON150  CLI   0(RE),C' '          TEST END OF PQ REPORT ID                     
+         JNH   SOON180                                                          
+         CLI   0(RE),C'A'                                                       
+         JNL   *+12                                                             
+SOON160  MVI   0(R5),C'X'          REPLACE NON ALPHA CHRS WITH X                
+         J     *+10                                                             
+         MVC   0(1,R5),0(RE)       MOVE REPORT ID INTO DSN                      
+         LA    R5,1(R5)                                                         
+         LA    RE,1(RE)                                                         
+         JCT   R0,SOON150                                                       
+*                                                                               
+SOON180  MVC   0(2,R5),=C'.#'      PQ REPORT NUMBER                             
+         LA    R5,2(R5)                                                         
+         SR    RE,RE                                                            
+         ICM   RE,3,PDMPQNUM                                                    
+         IEABRCX ENABLE                                                         
+         EDIT  (RE),(5,0(R5)),DUB=DUB2,ALIGN=LEFT,ZERO=NOBLANK                  
+         IEABRCX DISABLE                                                        
+         AR    R5,R0               R5=A(END OF NAME SO FAR)                     
+         J     DUMP060                                                          
+         EJECT                                                                  
+***********************************************************************         
+* DYNAMICALLY ALLOCATE SYSMDUMP                                       *         
+***********************************************************************         
+DUMP060  LARL  R1,DSNWORK          REPLACE IN DYNALLOC PARMS                    
+         LARL  RE,TXTDSN+6                                                      
+         MVC   0(44,RE),0(R1)                                                   
+*                                                                               
+         MVC   SUBJECT(44),0(R1)                                                
+*                                                                               
+         LA    RE,TXTRET+6         4 DAYS RETAIN                                
+         MVC   0(2,RE),=X'0004'                                                 
+         LLC   R1,LENHHMM          GET LEN OF DSN UP TO END OF HHMM             
+         AHI   R1,-1                                                            
+         JM    DUMP070                                                          
+         EXRL  R1,*+10                                                          
+         J     *+10                                                             
+         CLC   DSNWORK(0),DSNPREV  SAME DSN IN SAME MINUTE                      
+         JNE   *+10                                                             
+         MVC   0(2,RE),=X'0001'    DROP TO 1 DAY RETAIN                         
+*                                                                               
+DUMP070  MVC   DSNPREV,DSNWORK                                                  
+*                                                                               
+         L     R1,DSNCOUNT         BUMP DSN COUNTER                             
+         LA    R1,1(R1)                                                         
+         ST    R1,DSNCOUNT                                                      
+         CLC   DSNCOUNT,=F'15'     15 SYSMDUMPS PER JOB MAX                     
+         JH    EXITTOO                                                          
+*                                                                               
+         LARL  R1,ARBLK            DYNALLOC SYSMDUMP DATASET                    
+         DYNALLOC                                                               
+         LTR   RF,RF                                                            
+         JNZ   EXITOK              IF CANT THEN EXIT                            
+         J     DUMP100                                                          
+*                                                                               
+EXITTOO  WTO   'MORE THAN 15 SYSMDUMPS - RECYCLE',MCSFLAG=HRDCPY                
+         J     EXITOK                                                           
+*                                                                               
+DUMP100  TM    OPTIONS,X'40'       TEST IF DON'T WANT EMAIL                     
+         JO    DUMP199                                                          
+         CLI   DSPACE,C'T'         NO EMAIL IF DSPACE=T                         
+         JE    DUMP199                                                          
+*                                                                               
+         LARL  R1,RECEIPTS         WHO TO EMAIL                                 
+DUMP101  LA    R0,8                                                             
+         LA    RE,EMAILKEY                                                      
+DUMP102  CLI   0(R1),C'*'          MATCH ANY CHR                                
+         JE    DUMP103                                                          
+         CLC   0(1,R1),0(RE)       OR MATCH CHR                                 
+         JE    DUMP103                                                          
+*                                                                               
+         AR    R1,R0               NO MATCH SO TRY NEXT                         
+         LA    R1,4(R1)                                                         
+         CLC   0(8,R1),=C'XXXXXXXX'   EOT                                       
+         JNE   DUMP101                                                          
+         J     DUMP105                                                          
+*                                                                               
+DUMP103  LA    RE,1(RE)            NEXT CHR                                     
+         LA    R1,1(R1)                                                         
+         JCT   R0,DUMP102          DO ALL 8 CHRS                                
+*                                                                               
+         L     RF,0(R1)            ADDRESS OF RECEIPT LIST                      
+         LA    R0,80                                                            
+         LA    RE,RECEIPT1         RECEIPT AREA                                 
+DUMP104  MVC   0(1,RE),0(RF)                                                    
+         CLI   0(RF),C'>'          COPY UNTIL >                                 
+         JE    DUMP108                                                          
+         LA    RE,1(RE)                                                         
+         LA    RF,1(RF)                                                         
+         JCT   R0,DUMP104                                                       
+*                                                                               
+DUMP105  BRAS  RE,GETEMAIL         NO RECEIPT FOUND LOOK FOR NOTIFY REC         
+         MVC   RECEIPT1,EMAIL      COPY EMAIL LINE TO RECEIPT1                  
+         CLI   RECEIPT1,C' '                                                    
+         JNH   DUMP199             NOTHING FOUND SO SKIP EMAIL                  
+*                                                                               
+DUMP108  SAM31                                                                  
+         L     R1,PSATOLD-PSA(,R0) GET CURRENT TCB                              
+         L     R6,TCBRTWA-TCB(R1)                                               
+         L     R5,104(R6)          RB                                           
+         L     RF,128(R6)          PSW                                          
+         ST    R5,SVRB                                                          
+         SR    RF,R5               RF=PSW-RB                                    
+         ST    RF,PSWMRB           SAVE OFFS                                    
+         MVC   PGMRB,22(R5)        SAVE PGM                                     
+         OC    PGMRB,SPACES                                                     
+*                                                                               
+         LA    R5,20                                                            
+         LA    R2,WORK                                                          
+DUMP109  LA    R0,8                HEXOUT REGS TO WORK                          
+         L     RF,60(R6)           RTM2EREG                                     
+         BRAS  RE,HEXOUT                                                        
+         MVC   0(2,R2),=C'  '                                                   
+         LA    R2,2(,R2)                                                        
+         LA    R6,4(,R6)                                                        
+         JCT   R5,DUMP109                                                       
+         SAM24                                                                  
+*                                                                               
+         LARL  R3,EMBUFF                                                        
+         USING EMBUFF,R3                                                        
+         MVC   EMAIL0+0(8),JOBNAME                                              
+         MVC   EMAILS+9(44),SUBJECT                                             
+         MVC   EMAIL0+16(44),SUBJECT                                            
+         MVC   EMAIL1+10(38),WORK+00                                            
+         MVC   EMAIL2+10(38),WORK+40                                            
+         MVC   EMAIL3+10(38),WORK+80                                            
+         MVC   EMAIL4+10(38),WORK+120                                           
+         MVC   EMAIL5+10(38),WORK+160                                           
+         MVC   EMAIL6+10(8),PGMRB                                               
+         LA    R0,8                                                             
+         L     RF,PSWMRB                                                        
+         LA    R2,EMAIL6+22                                                     
+         BRAS  RE,HEXOUT                                                        
+*                                                                               
+DUMP110  MVC   EMTO+9(64-9),RECEIPT1                                            
+         MVC   EMTO2+4(64-4),RECEIPT1                                           
+         DROP  R3                                                               
+***********************************************************************         
+* SEND DIRECTLY TO SMTP WRITER                                        *         
+***********************************************************************         
+         USING IFGRPL,R2           R2=A(RPL FOR INTERNAL READER)                
+         IEABRCX ENABLE                                                         
+*&&US                                                                           
+         MVC   SMTPSVR,=CL8'SMTP01' SY1 AKA TSO1                                
+         L     R1,X'10'(,R0)                                                    
+         USING CVT,R1                                                           
+         L     R1,CVTSMCA                                                       
+         USING SMCABASE,R1                                                      
+         CLC   SMCASID(3),=C'SYA'   SY7 AKA TSO7                                
+         JNE   *+10                 NO                                          
+         MVC   SMTPSVR,=CL8'SMTP07'                                             
+*&&                                                                             
+         LA    R1,SMBLK                                                         
+         DYNALLOC                                                               
+         LTR   RF,RF               TEST FOR ERRORS                              
+         JNZ   *+2                 ERROR AT SBLK+4                              
+*                                                                               
+         OPEN  SMTPF               OPEN INTERNAL READER                         
+         LA    R2,SMTPRPL                                                       
+         LARL  R3,EMBUFF           R3=A(CARD DECK - FF MARKS END)               
+*                                  FIXED LENGTH ARRAY                           
+SEND40   CLI   0(R3),X'FF'                                                      
+         JE    SEND60                                                           
+         MVC   RECORD,SPACES                                                    
+         MVC   RECORD(64),0(R3)                                                 
+         PUT   RPL=(2)                                                          
+         AHI   R3,64                                                            
+         J     SEND40                                                           
+*                                                                               
+SEND60   ENDREQ RPL=(2)                                                         
+         CLOSE SMTPF               CLOSE INTERNAL READER                        
+         J     EXITOK                                                           
+*                                                                               
+DUMP199  J     EXITOK                                                           
+*                                                                               
+         IEABRCX DISABLE                                                        
+         EJECT                                                                  
+***********************************************************************         
+* ERROR HANDLER                                                       *         
+***********************************************************************         
+ERREXIT  DS    0D                                                               
+         LARL  RB,MDUMPER          ESTABLISH OLD BASE                           
+*                                                                               
+         CHI   R0,12               TEST SDWA ACQUIRED                           
+         JNE   *+8                 NO,JUST LET MVS PERC                         
+         SR    RF,RF                                                            
+         BR    RE                                                               
+*                                                                               
+         STM   RE,RC,12(RD)        SAVE CALLING REGS                            
+         ST    RD,ESTAERD                                                       
+         ST    R1,ESTAER1          AND POINTER TO SDWA                          
+         MVC   MYSDWA,0(R1)                                                     
+*                                                                               
+         LA    R2,MYSDWA           COPY START OF SDWA                           
+         USING SDWA,R2                                                          
+         LARL  RC,ERRWRK           RC WORK AREA                                 
+         USING WORKD,RC                                                         
+         LARL  RD,ERRWRKD          RD WORK AREA                                 
+         DROP  R2                                                               
+*                                                                               
+*OLD     BRAS  RE,DUMP             ALLOCATE DUMP DATASET                        
+*                                                                               
+         LARL  R1,SAVEREGS                                                      
+         STM   R0,RF,0(R1)         SAVE REGS AND CHECK FOR EXIT ROUTINE         
+         ICM   RF,15,DUMPEXIT      ANY EXIT                                     
+         JZ    ERRX010                                                          
+*                                                                               
+         XC    MDPARMS(24),MDPARMS PASS MDPARMS                                 
+         LA    R1,MYSDWA                                                        
+         ST    R1,MDPARMS          P1=MYSDWA                                    
+         LA    R1,MDPARMS                                                       
+         BASR  RE,RF               GO DO IT PASSING MYSDWA                      
+         LARL  RB,MDUMPER          RE-ESTABLISH OLD BASE                        
+*                                                                               
+         ICM   RF,15,4(R1)         P2=RETURN                                    
+         JZ    ERRX010                                                          
+         CLC   0(6,RF),=C'NODUMP'  RETURNED NODUMP SO JUST RESUME               
+         JE    ERRX020                                                          
+         CLC   0(6,RF),=C'ENDJOB'  RETURNED ENDJOB SO END IT NOW                
+         JNE   ERRX010                                                          
+         XC    DUMPMAX,DUMPMAX                                                  
+*                                                                               
+ERRX010  BRAS  RE,DUMP             ALLOCATE DUMP DATASET                        
+         L     R1,DUMPCTR          BUMP DUMP COUNTER                            
+         LA    R1,1(R1)                                                         
+         ST    R1,DUMPCTR                                                       
+*                                                                               
+         LARL  R1,SAVEREGS                                                      
+         LM    R0,RF,0(R1)                                                      
+         L     R1,ESTAER1          R1=POINTER TO SDWA                           
+         USING SDWA,R1                                                          
+         L     RD,ESTAERD                                                       
+         LARL  R2,ERRRETN          SET 'RETRY' ADDRESS                          
+         SETRP DUMP=YES,RC=4,RETADDR=(R2),FRESDWA=YES                           
+         LM    RE,RC,12(RD)                                                     
+         BR    RE                  CONTROL SHOULD RETURN TO ERRRETN             
+*                                                                               
+ERRX020  LARL  R1,SAVEREGS                                                      
+         LM    R0,RF,0(R1)                                                      
+         L     R1,ESTAER1          R1=POINTER TO SDWA                           
+         USING SDWA,R1                                                          
+         L     RD,ESTAERD                                                       
+         LARL  R2,ERRRETN          SET 'RETRY' ADDRESS                          
+         SETRP DUMP=NO,RC=4,RETADDR=(R2),FRESDWA=YES                            
+         LM    RE,RC,12(RD)                                                     
+         BR    RE                  CONTROL SHOULD RETURN TO ERRRETN             
+*                                                                               
+         USING *,RF                                                             
+ERRRETN  LARL  RB,MDUMPER                                                       
+         L     R1,LOOPCTR          BUMP LOOP COUNTER                            
+         LA    R1,1(R1)                                                         
+         ST    R1,LOOPCTR                                                       
+         CLC   LOOPCTR,LOOPMAX     MAX LOOPS                                    
+         JH    ERRRETN0                                                         
+         CLC   DUMPCTR,DUMPMAX     MAX YET                                      
+         JL    ERRRETN1                                                         
+*                                                                               
+ERRRETN0 ESTAEX 0                  TOO MANY SO SWITCH OFF                       
+*                                                                               
+ERRRETN1 L     R1,MYR1             RETURN NUMBER OF RETRIES                     
+         MVC   SVP2-SVPARMS(4,R1),DUMPCTR                                       
+         LM    R0,RF,MYREGS        LOAD REGS SAVED IN INIT                      
+         OI    8(R1),X'80'         FLAG ERROR RETURN                            
+         BSM   0,RE                GO BACK                                      
+*                                                                               
+SAVEREGS DC    16F'0'                                                           
+         DROP  R1,RF                                                            
+*                                                                               
+***********************************************************************         
+* GET EMAIL ADDRESS                                                   *         
+***********************************************************************         
+GETEMAIL NTR1                                                                   
+         LT    R1,=V(DATAMGR)                                                   
+         JZ    GETEMX                                                           
+         LA    R2,IO                                                            
+         USING CTDEREC,R2                                                       
+         XC    CTDEKEY,CTDEKEY                                                  
+         MVI   CTDEKTYP,CTDEKTYQ                                                
+         MVI   CTDEKSUB,CTDEKSOF   OFFLINE SOON REQUEST                         
+         MVC   CTDEOSYS,PDMPSYS    SYSTEM NUMBER                                
+         MVC   CTDERPT,PDMPPROG    REPORT TYPE                                  
+         GOTO1 =V(DATAMGR),DMCB,=C'DMREAD',=C'CTFILE',IO,IO                     
+         CLI   8(R1),0                                                          
+         JE    GETEOK                                                           
+*                                  TRY IT WITH SYSTEM ONLY                      
+         LA    R2,IO                                                            
+         USING CTDEREC,R2                                                       
+         XC    CTDEKEY,CTDEKEY                                                  
+         MVI   CTDEKTYP,CTDEKTYQ                                                
+         MVI   CTDEKSUB,CTDEKSOF   OFFLINE SOON REQUEST                         
+         MVC   CTDEOSYS,PDMPSYS    SYSTEM NUMBER                                
+         GOTO1 =V(DATAMGR),DMCB,=C'DMREAD',=C'CTFILE',IO,IO                     
+         CLI   8(R1),0                                                          
+         JE    GETEOK                                                           
+*                                                                               
+         LA    RE,EMAIL                                                         
+         LARL  RF,GETEDEF                                                       
+         MVC   0(L'EMAIL,RE),0(RF)                                              
+         J     GETEMX                                                           
+*                                                                               
+GETEOK   LA    RE,EMAIL                                                         
+         MVC   0(L'EMAIL,RE),SPACES                                             
+         MVC   0(L'CTDEEML,RE),CTDEEML                                          
+*                                                                               
+GETEMX   XIT1                                                                   
+         DROP  R2                                                               
+GETEDEF  DS    0CL50                                                            
+*&&US*&& DC    CL50'US-MF_FAC_NOTIFY'                                           
+*&&UK*&& DC    CL50'                '                                           
+         EJECT                                                                  
+***********************************************************************         
+* DATA AREAS HERE                                                     *         
+***********************************************************************         
+*                                                                               
+$$DATA   LOCTR ,                                                                
+*                                                                               
+         LTORG                                                                  
+***********************************************************************         
+* CONSTANTS                                                           *         
+***********************************************************************         
+         DS    0D                                                               
+         DC    C'PDMPSOON'                                                      
+PDMPSOON DC    XL32'00'            SOON DATA BUILT BY CALLER                    
+         ORG   PDMPSOON                                                         
+PDMPUSR  DS    CL8                 USER ID ALPHA                                
+PDMPQREP DS    CL3                 PQ REPORT ID                                 
+PDMPQNUM DS    XL2                 PQ REPORT NUMBER                             
+PDMPPROG DS    CL2                 PROGRAM                                      
+PDMPCMPC DS    XL3                 SYSTEM/USER ABEND CODES X'SSSUUU'            
+PDMPUNUM DS    XL2                 USERID NUMBER                                
+PDMPSEN  DS    XL1                 SE NUMBER                                    
+PDMPSYS  DS    XL1                 SYSTEM NUMBER                                
+PDMPAGYA DS    CL2                 AGENCY ALPHA                                 
+         DS    XL8                 N/D                                          
+*                                                                               
+         DS    0F                                                               
+ACTTAB   DC    C'INIT',A(INIT)     INITIALISE ESTAEX                            
+         DC    C'DUMP',A(DUMP)     ALLOCATE UNIQUE SYSMDUMP DATASET             
+         DC    C'DROP',A(DROP)     CANCEL ESTAE                                 
+         DC    C'XXXX',A(0)                                                     
+*                                                                               
+MONTAB   DC    C'JAN '                                                          
+         DC    C'FEB '                                                          
+         DC    C'MAR '                                                          
+         DC    C'APR '                                                          
+         DC    C'MAY '                                                          
+         DC    C'JUN '                                                          
+         DC    C'JUL '                                                          
+         DC    C'AUG '                                                          
+         DC    C'SEP '                                                          
+         DC    C'OCT '                                                          
+         DC    C'NOV '                                                          
+         DC    C'DEC '                                                          
+*                                                                               
+       ++INCLUDE FASYSLST                                                       
+*                                                                               
+UNKSYS   DC    X'0000',C'UNKNOWNUNK',C'XX',X'0000'                              
+*                                                                               
+EMAILKEY DC    CL8' '                                                           
+OPTIONS  DC    X'00'               X'80'=RETURN DSN, X'40'=NO EMAIL             
+         DC    XL3'00'                                                          
+SUBJECT  DC    CL80' '                                                          
+*                                                                               
+RECEIPT1 DC    CL80' '                                                          
+         DC    C'>'                IN CASE OF OVERFLOW                          
+DUMPNAME DC    CL44' '                                                          
+         EJECT                                                                  
+***********************************************************************         
+* SAVED AREAS                                                         *         
+***********************************************************************         
+         DS    0D                                                               
+JOBNAME  DC    CL8' '              JOB NAME                                     
+JOBNUM   DC    CL8' '              JOB NUMBER                                   
+SYSN1    DC    CL1' '              SYSTEM NAME ONE CHR                          
+SYSN3    DC    CL3' '              SYSTEM NAME THREE CHRS                       
+DSNCOUNT DC    F'0'                                                             
+DSNHLQB  DC    CL6'BATCH.'         DSN HIGH LEVEL QUALIFIER FOR BATCH           
+DSNHLQS  DC    CL5'SOON.'          DSN HIGH LEVEL QUALIFIER FOR SOON            
+         DC    CL1' '                                                           
+DSNWORK  DC    CL44' '                                                          
+DSNPREV  DC    CL44' '                                                          
+*                                                                               
+LOOPCTR  DC    F'0'                COUNT LOOPS THROUGH MDUMPER                  
+LOOPMAX  DC    F'2000'                                                          
+DUMPCTR  DC    F'0'                COUNT DUMPS                                  
+DUMPMAX  DC    F'0'                MAX COUNT                                    
+DUMPEXIT DC    A(0)                EXIT ROUTINE                                 
+DUMPTIME DC    PL6'00'             TIME OF LAST DUMP P'HHMMSSTHMIJU'            
+*                                                                               
+         DS    0D                                                               
+         DC    C'**SDWA**'                                                      
+MYSDWA   DS    CL256                                                            
+*                                                                               
+ESTAERD  DS    F                                                                
+ESTAER1  DS    F                                                                
+*                                                                               
+         DS    0D                                                               
+         DC    C'**REGS**'                                                      
+MYREGS   DS    16F                 SAVED REGS FROM RESTART POINT                
+         ORG   MYREGS                                                           
+MYR0     DS    F                                                                
+MYR1     DS    F                                                                
+MYR2     DS    F                                                                
+MYR3     DS    F                                                                
+MYR4     DS    F                                                                
+MYR5     DS    F                                                                
+MYR6     DS    F                                                                
+MYR7     DS    F                                                                
+MYR8     DS    F                                                                
+MYR9     DS    F                                                                
+MYRA     DS    F                                                                
+MYRB     DS    F                                                                
+MYRC     DS    F                                                                
+MYRD     DS    F                                                                
+MYRE     DS    F                                                                
+MYRF     DS    F                                                                
+*                                                                               
+MDPARMS  DS    6F                                                               
+         EJECT                                                                  
+***********************************************************************         
+* FOR DYNAMIC ALLOCATION OF DUMP DATASETS                             *         
+***********************************************************************         
+         DS    0F                                                               
+ARBLK    DC    X'80',AL3(RBLK)     R1 POINTS TO THIS BEFORE DYNALLOC            
+*                                                                               
+RBLK     DC    X'1401000000000000',A(ATXT),X'0000000018000000'                  
+*                                                                               
+ATXT     DC    X'00',AL3(TXTDD)                                                 
+         DC    X'00',AL3(TXTDSN)                                                
+         DC    X'00',AL3(TXTDISP)                                               
+         DC    X'00',AL3(TXTNDISP)                                              
+         DC    X'00',AL3(TXTBLKLN)                                              
+         DC    X'00',AL3(TXTPRI)                                                
+         DC    X'00',AL3(TXTSEC)                                                
+         DC    X'00',AL3(TXTRLSE)                                               
+         DC    X'00',AL3(TXTUNIT)                                               
+         DC    X'00',AL3(TXTBLKSZ)                                              
+         DC    X'00',AL3(TXTDSORG)                                              
+         DC    X'00',AL3(TXTRECL)                                               
+         DC    X'00',AL3(TXTRET)   4 DAY RETAIN                                 
+         DC    X'00',AL3(TXTRECF)                                               
+         DC    X'80',AL3(TXTCLOSE) FREE=CLOSE                                   
+*                                                                               
+TXTDD    DC    AL2(DALDDNAM),X'00010008',C'SYSMDUMP'   DDNAME=SYSMDUMP          
+TXTDSN   DC    AL2(DALDSNAM),X'0001002C',CL44' '       DSN=SOON.......          
+TXTDISP  DC    AL2(DALSTATS),X'0001000104'             DISP=(NEW,.....)         
+TXTNDISP DC    AL2(DALNDISP),X'0001000102'                 =(...,CATLG)         
+TXTBLKLN DC    AL2(DALBLKLN),X'00010003',AL3(23142)    SPACE=(23142,...         
+*                                                                               
+TXTPRI   DC    AL2(DALPRIME),X'00010003',AL3(400)           =(..(400,..         
+TXTSEC   DC    AL2(DALSECND),X'00010003',AL3(200)           =(..(,200),         
+TXTRLSE  DC    AL2(DALRLSE),X'0000'                         =(...,RLSE)         
+TXTUNIT  DC    AL2(DALUNIT),X'00010004',C'3390'        UNIT=3390                
+*                                                                               
+TXTBLKSZ DC    AL2(DALBLKSZ),X'00010002',AL2(24960)    BLKSIZE=24960            
+TXTDSORG DC    AL2(DALDSORG),X'000100024000'           DSORG=PS                 
+TXTRECL  DC    AL2(DALLRECL),X'00010002',AL2(4160)     LRECL=4160               
+TXTRET   DC    AL2(DALRETPD),X'00010002',AL2(4)        RETPD=4                  
+TXTRECF  DC    AL2(DALRECFM),X'0001000198'             RECFM=FBS                
+TXTCLOSE DC    AL2(DALCLOSE),X'00000000'                                        
+*                                                                               
+***********************************************************************         
+* FOR DYNAMIC ALLOCATION OF SMTP WRITER                                         
+***********************************************************************         
+         DS    0F                                                               
+SMBLK    DC    X'80',AL3(SBLK)     R1 POINTS TO THIS BEFORE DYNALLOC            
+*                                                                               
+SBLK     DC    X'1401000000000000',A(STXT),X'0000000000000000'                  
+*                                                                               
+STXT     DC    X'00',AL3(SMTDD)                                                 
+         DC    X'00',AL3(SMTSYO)                                                
+         DC    X'00',AL3(SMTWRIT)                                               
+         DC    X'80',AL3(SMTCLOSE)                                              
+*                                                                               
+SMTDD    DC    AL2(DALDDNAM),X'00010004'                                        
+         DC    C'SMTP    '                                                      
+SMTSYO   DC    AL2(DALSYSOU),X'00010001'                                        
+*&&UK*&& DC    C'A'                                                             
+*&&US*&& DC    C'T'                                                             
+SMTWRIT  DC    AL2(DALSPGNM),X'00010008'                                        
+SMTPSVR  DC    CL8'TCPSMTP '                                                    
+SMTCLOSE DC    AL2(DALCLOSE),X'00000000'                                        
+*                                                                               
+***********************************************************************         
+* DCBS AND ADCONS                                                     *         
+***********************************************************************         
+         DS    0D                                                               
+         DC    CL16'SMTPACB=SMTPACB='                                           
+SMTPF    ACB   AM=VSAM,MACRF=(ADR,SEQ,OUT),DDNAME=SMTP                          
+*                                                                               
+         DS    0D                                                               
+         DC    CL16'SMTPRPL=SMTPRPL='                                           
+SMTPRPL  RPL   ACB=SMTPF,OPTCD=(ADR,SEQ,SYN,NUP),RECLEN=160,           X        
+               AREA=RECORD,AREALEN=160                                          
+*                                                                               
+         DS    0D                                                               
+         DC    CL16'RECORD=>RECORD=>'                                           
+RECORD   DC    CL160' '                                                         
+SPACES   DC    CL160' '                                                         
+*                                                                               
+***********************************************************************         
+* MESSAGE AREA                                                        *         
+***********************************************************************         
+       DS 0F                                                                    
+EMBUFF DC CL64'HELO DDNMVS                                           '          
+*&&UK                                                                           
+       DC CL64'MAIL FROM: <Soon-dump@Mediaocean.com>                 '          
+*&&                                                                             
+*&&US                                                                           
+       DC CL64'MAIL FROM: <DONOTREPLY@MEDIAOCEAN.COM>                '          
+*&&                                                                             
+EMTO   DC CL64'RCPT TO:                                              '          
+       DC CL64'DATA                                                  '          
+*&&UK                                                                           
+       DC CL64'FROM: Soon-dump@Mediaocean.com                        '          
+*&&                                                                             
+*&&US                                                                           
+       DC CL64'FROM: DONOTREPLY@MEDIAOCEAN.COM                       '          
+*&&                                                                             
+EMTO2  DC CL64'TO:                                                   '          
+EMAILS DC CL64'SUBJECT:                                              '          
+       DC CL64'                                                      '          
+EMAIL0 DC CL64'          MDUMP                                       '          
+       DC CL64'                                                      '          
+EMAIL1 DC CL64'REGS 0-3  00000000  00000000  00000000  00000000     .'          
+EMAIL2 DC CL64'REGS 4-7  00000000  00000000  00000000  00000000     .'          
+EMAIL3 DC CL64'REGS 8-B  00000000  00000000  00000000  00000000     .'          
+EMAIL4 DC CL64'REGS C-F  00000000  00000000  00000000  00000000     .'          
+       DC CL64'                                                      '          
+EMAIL5 DC CL64'PSW   >>  00000000  00000000  00000000  00000000     .'          
+       DC CL64'                                                      '          
+EMAIL6 DC CL64'DIED IN   ******** AT 00000000                        '          
+       DC CL64'.                                                     '          
+       DC CL64'QUIT                                                  '          
+       DC X'FF'                                                                 
+                                                                                
+*                                                                               
+         LTORG                                                                  
+*                                                                               
+$$CODE   LOCTR ,                   BACK TO CODE AREA                            
+*                                                                               
+ERRWRK   DS    500D                                                             
+ERRWRKD  DS    500D                                                             
+         EJECT                                                                  
+***********************************************************************         
+* EMAIL TABLE FOR NOTIFICATIONS                                       *         
+***********************************************************************         
+*&&UK                                                                           
+         DS    0F                                                               
+RECEIPTS DS    0CL12                                                            
+         DC    C'DMGR****',A(FACLIST)                                           
+         DC    C'MNTN****',A(FACLIST)                                           
+         DC    C'RCVR****',A(FACLIST)                                           
+         DC    C'RMOR****',A(RMORLST)                                           
+         DC    C'XXXXXXXX'                                                      
+*                                                                               
+ACCLIST  DC    C'<ACCRUNNERNOTIFY@MEDIAOCEAN.COM>'                              
+MEDLIST  DC    C'<UK-MEDIAPROGRAMMERS@MEDIAOCEAN.COM>'                          
+FACLIST  DC    C'<EU-FACTEAM@MEDIAOCEAN.COM>'                                   
+RMORLST  DC    C'<RMORSE@MEDIAOCEAN.COM>'                                       
+*&&                                                                             
+*&&US                                                                           
+         DS    0F                                                               
+RECEIPTS DS    0CL12                                                            
+         DC    C'DMGR****',A(FACLIST)                                           
+         DC    C'MNTN****',A(FACLIST)                                           
+         DC    C'RCVR****',A(FACLIST)                                           
+         DC    C'XXXXXXXX'                                                      
+*                                                                               
+ACCLIST  DC    C'<US-MF ACC PROGRAMMERS>'                                       
+FACLIST  DC    C'<US-MF FAC TEAM NY>'                                           
+PRTLIST  DC    C'<US-MF PRINT PROGRAMMERS>'                                     
+REPLIST  DC    C'<US-MF REP PROGRAMMERS>'                                       
+SPTLIST  DC    C'<US-MF SPOT PROGRAMMERS>'                                      
+*&&                                                                             
+         EJECT                                                                  
+***********************************************************************         
+* WORKING STORAGE DSECT                                               *         
+***********************************************************************         
+WORKD    DSECT                                                                  
+SAVERD   DS    F                                                                
+SAVERE   DS    F                                                                
+DSPACE   DS    C                                                                
+LENHHMM  DS    X                                                                
+         DS    CL2                                                              
+DUB      DS    D                                                                
+DUB2     DS    D                                                                
+TIMEDATE DS    2D                  P'HHMMSSTHMIJU0000MMDDYYYY00000000'          
+FULL     DS    F                                                                
+FULL1    DS    F                                                                
+HALF     DS    H                                                                
+BYTE     DS    X                                                                
+BYTE1    DS    X                                                                
+DMCB     DS    6F                                                               
+WORK     DS    CL256                                                            
+PSWMRB   DS    F                                                                
+SVRB     DS    F                                                                
+PGMRB    DS    CL8                                                              
+EMAIL    DS    CL80                                                             
+IO       DS    CL2048                                                           
+WRKX     EQU   *                                                                
+*                                                                               
+SVPARMS  DSECT                                                                  
+SVP1     DS    F                                                                
+SVP2     DS    F                                                                
+SVP3     DS    F                                                                
+SVP4     DS    F                                                                
+SVP5     DS    F                                                                
+SVP6     DS    F                                                                
+*                                                                               
+       ++INCLUDE FASSB                                                          
+         ORG  SSBD                                                              
+       ++INCLUDE FASSBOFF                                                       
+         ORG                                                                    
+*                                                                               
+       ++INCLUDE FASYSLSTD                                                      
+       ++INCLUDE DDSMTPD                                                        
+       ++INCLUDE CTGENFILE                                                      
+*                                                                               
+*IHASDWA MACRO                                                                  
+         IHASDWA GR32=YES                                                       
+         IEFZB4D0                                                               
+         IEFZB4D2                                                               
+*                                                                               
+         DSECT                                                                  
+         IEZCIB                                                                 
+         IEZCOM                                                                 
+         IHAASCB                                                                
+         IHAASSB                                                                
+         IAZJSAB                                                                
+*        IHARTM2A                                                               
+         IKJTCB LIST=YES                                                        
+         IHAPSA                                                                 
+         IHASTCB                                                                
+*                                                                               
+         CVT   DSECT=YES                                                        
+         IFGRPL                                                                 
+         IEESMCA                                                                
+*                                                                               
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'006DDMDUMPER 09/16/20'                                      
+         END                                                                    

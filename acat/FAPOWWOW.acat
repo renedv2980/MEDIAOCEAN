@@ -1,0 +1,818 @@
+*          DATA SET FAPOWWOW   AT LEVEL 018 AS OF 09/21/18                      
+*CATALP FAPOWWOW                                                                
+                                                                                
+***********************************************************************         
+* P1 0   X'80' IF P5 IS A(OVERRIDE UTL ENTRY)                         *         
+*    1-3 A(SUBMIT TYPE)                                               *         
+* P2 0                                                                *         
+*    1-3 A(ACTION)                                                    *         
+* P3 0                                                                *         
+*    1-3 A(JESKEY)                                                    *         
+* P4 0                                                                *         
+*    1-3 A(JESCARD)                                                   *         
+* P5 0                                                                *         
+*    1-3 A(UTL ENTRY) IF P1 BYTE 0 X'80' IS ON                        *         
+***********************************************************************         
+                                                                                
+         TITLE 'FAPOWWOW - SUBMIT SOON JOBS VIA PQ'                             
+         PRINT NOGEN                                                            
+POWWOW   CSECT                                                                  
+         NMOD1 WORKX-WORKD,**POWWOW,CLEAR=YES                                   
+         USING WORKD,RC                                                         
+         LR    R2,R1               R2=A(PARAMETER LIST) (P3 UNUSED)             
+         ST    R1,APARMS                                                        
+         MVC   PARMS(20),0(R1)                                                  
+         L     R1,4(R2)            R1=A(ACTION)                                 
+         MVC   ACTION,0(R1)                                                     
+         L     R4,12(R2)           R4=A(CARD)                                   
+         MVI   8(R2),0             RESET ERROR BYTE                             
+         L     RF,=V(SYSFAC)                                                    
+         MVC   VDMGR,VDATAMGR-SYSFACD(RF)                                       
+         MVC   ALOCKSPC,VLOCKSPC-SYSFACD(RF)                                    
+         MVC   ALOCKER,VLOCKER-SYSFACD(RF)                                      
+*                                                                               
+         L     RA,VSSB-SYSFACD(RF)                                              
+         USING SSBD,RA             RA=A(SSB)                                    
+         L     R9,SSBTKADR                                                      
+         USING TCBD,R9             R9=A(TCB ENTRY)                              
+         L     R8,TCBUTL                                                        
+         USING UTLD,R8             R8=A(UTL ENTRY)                              
+         TM    PARMS,X'80'         TEST USER PASSED UTL ENTRY                   
+         BZ    *+8                                                              
+         L     R8,PARMS+16         YES - THEN USE IT                            
+*                                                                               
+         PROT  OFF                 DISABLE CALLER'S STORAGE PROTECTION          
+*                                                                               
+         TIME  BIN                 SAVE FOR SUBMIT TIME                         
+         STCM  R0,7,TIMENOW                                                     
+*                                                                               
+         CLC   ACTION,OPEN         IGNORE OLD ACTION CALLS                      
+         BE    PUTX                                                             
+         CLC   ACTION,CLOSE                                                     
+         BE    PUTX                                                             
+         L     RE,0(R2)            RE=A(SUBMIT TYPE)                            
+         CLC   ACTION,END          FOR SPECIAL ACTIONS TYPE IS IMPLIED          
+         BE    *+14                                                             
+         CLC   ACTION,CLEAR                                                     
+         BNE   POW2                                                             
+         LA    RE,PUT                                                           
+         TM    TCBFLAG1,TCBSUBIR                                                
+         BNZ   POW2                                                             
+         LA    RE,SCH                                                           
+         TM    TCBFLAG1,TCBSUBPQ                                                
+         BNZ   POW2                                                             
+         B     POWX                                                             
+*                                                                               
+POW2     CLC   0(3,RE),PUT         TEST SUBMIT JOB                              
+         BE    PUT0                                                             
+         CLC   0(3,RE),SCH         TEST SCHEDULE JOB                            
+         BE    SCH0                                                             
+         DC    H'0'                                                             
+*                                                                               
+POWX     DS    0H                                                               
+         SAC   0                                                                
+         PROT  ON                  RESTORE CALLER'S STORAGE PROTECTION          
+         B     EXIT                                                             
+                                                                                
+***********************************************************************         
+* ALLOCATE A JES SUMBIT FACILITY IF NOT ALREADY ASSIGNED                        
+***********************************************************************         
+PUT0     ICM   R5,15,TCBIRDR       TEST IRDR ALLOCATED TO TASK                  
+         BNZ   PUT6                YES                                          
+         L     R5,SSBAATC          LOCATE A FREE JES SUBMIT FACILITY            
+         LH    R6,0(R5)                                                         
+         L     R7,2(R5)                                                         
+         LA    R5,6(R5)                                                         
+         USING ATCD,R5             R5=A(ATC)                                    
+PUT2     CLI   ATCTYPE,ATCTJESS    TEST JES SUBMIT TASK                         
+         BNE   PUT4                                                             
+         TM    ATCSTAT1,ATCSATCH   TEST TASK IS ATTACHED                        
+         BZ    PUT4                                                             
+         TM    ATCSTAT1,ATCSBUSY   TEST TASK IS BUSY                            
+         BNZ   PUT4                                                             
+         OC    ATCATCB,ATCATCB     TEST ALLOCATED TO ANOTHER TASK               
+         BNZ   PUT4                                                             
+         GOTO1 ATCSYNCH,DUB,=C'INI'                                             
+         CLI   0(R1),X'FF'         TEST SUBMITTER IS AVAILABLE                  
+         BE    PUT4                NO                                           
+         CLI   0(R1),0             TEST FOR OTHER ERRORS                        
+         BE    *+6                                                              
+         DC    H'0'                                                             
+         LA    RF,ATCD                                                          
+         ST    RF,TCBIRDR          SET TASK OWNING SUBMIT FACILITY              
+         NI    TCBFLAG1,255-TCBIRALL                                            
+         OI    TCBFLAG1,TCBIRALC+TCBSUBIR                                       
+         XC    TCBSJWRK,TCBSJWRK                                                
+         B     PUT6                                                             
+PUT4     BXLE  R5,R6,PUT2                                                       
+         MVI   8(R2),X'FF'         SET ERROR ALL SUBMIT TASKS BUSY              
+         OI    TCBFLAG1,TCBIRNOT   SET IRDR FAILED ALLOCATION                   
+         B     POWX                                                             
+                                                                                
+***********************************************************************         
+* PROCESS CALLER ACTION                                                         
+***********************************************************************         
+PUT6     TM    TCBFLAG1,TCBSUBIR   TEST IRDR SUBMIT                             
+         BNZ   *+6                                                              
+         DC    H'0'                                                             
+         CLC   ACTION,ADDR         RETURN A(TASK SAVE AREA)                     
+         BE    PUTX                                                             
+         CLC   ACTION,CLEAR        ABNORMAL TERMINATION CALL                    
+         BE    PUT8                                                             
+         CLC   ACTION,END          REGULAR END-OF-JOB                           
+         BE    PUT10                                                            
+         B     PUT12               ELSE IS PUT                                  
+*                                                                               
+PUT8     GOTO1 ATCSYNCH,DUB,=C'CLR'                                             
+         XC    TCBIRDR,TCBIRDR                                                  
+         NI    TCBFLAG1,255-TCBIRALL                                            
+         B     PUTX                                                             
+*                                                                               
+PUT10    GOTO1 ATCSYNCH,DUB,=C'END'                                             
+         CLI   0(R1),0                                                          
+         BE    *+6                                                              
+         DC    H'0'                                                             
+         XC    TCBIRDR,TCBIRDR                                                  
+         OI    TCBFLAG1,TCBIREND   SET IRDR ENDED BY TASK                       
+         B     PUTX                                                             
+*                                                                               
+PUT12    GOTO1 ATCSYNCH,DUB,=C'PUT',0(R4)                                       
+         CLI   0(R1),0                                                          
+         BE    *+6                                                              
+         DC    H'0'                                                             
+         OI    TCBFLAG1,TCBIRUSE   SET IRDR USED BY TASK                        
+         B     PUTX                                                             
+*                                                                               
+PUTX     LA    RF,TCBSJWRK                                                      
+         ICM   RE,15,12(R2)        TEST P4 PASSED                               
+         BZ    *+8                                                              
+         STCM  RF,15,0(RE)         YES - RETURN A(TASK SAVE AREA)               
+         B     POWX                                                             
+                                                                                
+***********************************************************************         
+* INITIALISE PQ REPORT IF FIRST TIME                                            
+***********************************************************************         
+SCH0     LA    R3,PQLINE           R3=A(PRINT LINE)                             
+         USING PQPLD,R3                                                         
+         L     R5,8(R2)                                                         
+         USING PQKEYD,R5                                                        
+         CLI   SSBJESIO,C' '       ARE WE RUNNING UNDER MONSOON                 
+         BNE   *+16                                                             
+         TM    TCBFLAG1,TCBSUBPQ   YES-TEST FIRST TIME                          
+         BZ    SCH1                                                             
+         B     SCH4                                                             
+         OC    TCBIRDR,TCBIRDR     TEST FIRST TIME CALL                         
+         BNZ   SCH4                                                             
+         TM    TCBFLAG1,TCBSUBPQ   TEST FIRST SCHEDULED JOB                     
+         BZ    *+6                                                              
+         DC    H'0'                                                             
+*                                                                               
+SCH1     TM    PQKTYPE,X'02'       LEAVE USER TABLE WELL ALONE                  
+         BO    SCH1H                                                            
+*                                                                               
+         ZIC   R1,TJOBSINQ                                                      
+         LA    R1,1(R1)            R1=CURRENT NUMBER OF JOBS+1                  
+         LA    R0,SRJOBMAX         R0=MAXIMUM NUMBER OF JOBS                    
+         CR    R1,R0               TEST QUEUE FULL                              
+         BH    SCH1F               YES                                          
+*                                                                               
+         CLI   SSBJESIO,C' '       ARE WE RUNNING WITH MONSOON                  
+         BNE   SCH1H                                                            
+         TM    SSBJFLG2,SSBJFSN    ARE SOON SUBMISSIONS DISABLED                
+         BO    SCH1F               YES                                          
+*                                                                               
+         XC    TOTTYPE,TOTTYPE     TOTAL SOONS OF THIS TYPE IN JOBTAB           
+         XC    TOTTERM,TOTTERM     TOTAL SOONS FOR TERMINAL IN JOBTAB           
+         XC    TOTUSRID,TOTUSRID   TOTAL SOONS FOR USERID IN JOBTAB             
+*                                                                               
+         ICM   R6,15,TCBSJENT      R6 = A(JOB TABLE ENTRY IN TABS)              
+         BZ    SCH1H                                                            
+SGL      USING TBJOBTAB,R6                                                      
+*                                                                               
+         XC    DUB,DUB             GET JOB TABLE HEADER                         
+         MVC   DUB(4),=AL4(DTJOB)                                               
+         MVI   DUB,X'20'           ENQUIRE ONLY                                 
+         GOTO1 ALOCKSPC,DUB                                                     
+         ICM   RF,15,4(R1)                                                      
+         MVC   DSPHD,0(RF)         DSPHD HOLDS COPY OF HEADER NOW               
+X        USING DMSPACED,DSPHD                                                   
+*                                                                               
+         BRAS  RE,ARSOFF           CLEAR AND SET ACCESS REGISTERS               
+         LAM   AR2,AR2,SSBTBLET                                                 
+         CPYA  AR6,AR2                                                          
+         ICM   R2,15,X.DSPTFRST                                                 
+         N     R2,=X'3FFFFFFF'     TURN OFF THE X'40' POST BIT                  
+         SAC   512                                                              
+*                                                                               
+         XR    RF,RF               JOB TABLE HAS A HEADER - GO PAST IT          
+         ICM   RF,3,TBJLHEAD-TABJOBS(R2)                                        
+         AR    R2,RF                                                            
+         USING TBJOBTAB,R2                                                      
+*                                                                               
+         LH    RE,X.DSPTWIDE       RE = L'ENTRY                                 
+         ICM   RF,15,X.DSPTEND     RF = A(TABLE END)                            
+*                                                                               
+SCH1C    TM    TBJSTAT,JOBSUSE     ENTRY IS USED?                               
+         BZ    SCH1D                                                            
+*                                                                               
+         MVC   HALF+0(1),TBJSTAT   COPY TYPE BITS FOR BOTH                      
+         NI    HALF+0,255-JOBSTYPB                                              
+         MVC   HALF+1(1),SGL.TBJSTAT                                            
+         NI    HALF+1,255-JOBSTYPB                                              
+         CLC   HALF(1),HALF+1      TEST SAME TYPE                               
+         BNZ   *+16                                                             
+         L     R0,TOTTYPE          TOTAL TYPE COUNTER                           
+         AHI   R0,1                                                             
+         ST    R0,TOTTYPE                                                       
+*                                                                               
+         CLC   TBJPQUSR,SGL.TBJPQUSR                                            
+         BNE   *+16                                                             
+         L     R0,TOTUSRID         INCREMENT USERID COUNTER                     
+         AHI   R0,1                                                             
+         ST    R0,TOTUSRID                                                      
+*                                                                               
+         CLC   TBJLUID,SGL.TBJLUID                                              
+         BNE   *+16                                                             
+         L     R0,TOTTERM          INCREMENT TERMINAL COUNTER                   
+         AHI   R0,1                                                             
+         ST    R0,TOTTERM                                                       
+*                                                                               
+SCH1D    BXLE  R2,RE,SCH1C                                                      
+         LAM   AR2,AR2,ARZERO                                                   
+         DROP  R2                                                               
+*                                                                               
+         TM    SGL.TBJSTAT,JOBSTYPB TEST LONG RUNNING SOON                      
+         BO    SCH1E                YES                                         
+         CLC   TOTTYPE,SSBJTABA                                                 
+         BH    SCH1F               TOO MANY SHORT JOBS                          
+         CLC   TOTUSRID,SSBJUSRA                                                
+         BH    SCH1F               TOO MANY SHORT JOBS FOR THIS USERID          
+         CLC   TOTTERM,SSBJTRMA                                                 
+         BH    SCH1F               TOO MANY SHORT JOBS FOR TERMINAL             
+         B     SCH1H               IT'S OK TO ADD TO PRINT QUEUE                
+*                                                                               
+SCH1E    CLC   TOTTYPE,SSBJTABB                                                 
+         BH    SCH1F               TOO MANY LONG JOBS                           
+         CLC   TOTUSRID,SSBJUSRB                                                
+         BH    SCH1F               TOO MANY LONG JOBS FOR THIS USERID           
+         CLC   TOTTERM,SSBJTRMB                                                 
+         BNH   SCH1H               IT'S OK TO ADD TO PRINT QUEUE                
+*                                                                               
+SCH1F    LAM   AR6,AR6,SSBTBLET    RELEASE JOB TABLE ENTRY                      
+         SAC   512                                                              
+         ICM   R6,15,TCBSJENT                                                   
+         BZ    *+8                                                              
+         MVI   SGL.TBJSTAT,JOBSAVA RELEASE JOB TABLE ENTRY                      
+         BRAS  RE,ARSOFF                                                        
+         DC    H'0',C'$JTFULL'     FORCE UNWIND WITH ERROR MESSAGE              
+         DROP  X,SGL                                                            
+*                                                                               
+SCH1H    BRAS  RE,ARSOFF                                                        
+         CLC   ACTION,END          EXIT IF INVALID ACTION SEQUENCE              
+         BE    POWX                                                             
+         CLC   ACTION,CLEAR                                                     
+         BE    POWX                                                             
+         XC    PQLINE,PQLINE                                                    
+         MVI   PLCC,X'00'          SET START OF REPORT                          
+         MVI   QLEXTRA,X'FF'       SET EXTRA DATA PASSED                        
+         MVC   QLSRCID,PQKSRCID                                                 
+         MVC   QLSUBID,PQKSUBID                                                 
+         MVC   QLCLASS,PQKCLASS                                                 
+         MVC   QLTYPE,PQKTYPE                                                   
+         NI    QLTYPE,QLTYUPDT+QLTYDL+QLTYSQL                                   
+         MVC   QLTYP1,PQKTYP1                                                   
+         MVC   QLSTAT,PQKSTA                                                    
+         MVC   QLDESC,DEFDESC      SET DESCRIPTION TO C'SCHEDULED'              
+         CLI   SSBJESIO,C' '       ARE WE RUNNING UNDER MONSOON                 
+         BNE   *+10                                                             
+         MVC   QLDESC,DEFDESCM     YES - DESCRIPTION IS C'SUBMITTED'            
+         MVC   QLRETNL,DEFRETNL                                                 
+         OC    PQKRETNL,PQKRETNL   USE LIVE RETAIN VALUE IF PASSED              
+         BZ    *+10                                                             
+         MVC   QLRETNL,PQKRETNL                                                 
+         MVC   QLRETND,DEFRETND                                                 
+         OC    PQKRETND,PQKRETND   USE DEAD RETAIN VALUE IF PASSED              
+         BZ    *+10                                                             
+         MVC   QLRETND,PQKRETND                                                 
+         TM    PQKTYPE,X'04'       SPECIAL OVERNIGHT SOON                       
+         BZ    *+8                                                              
+         OI    QLSTAT,QLSTHO       OPEN AS HOLD                                 
+         CLI   PQKRTY,C'A'                                                      
+         BL    *+10                                                             
+         MVC   QLREPTY,PQKRTY                                                   
+*&&US*&& TM    QLTYPE,QLTYDL+QLTYSQL                                            
+*&&US*&& BO    SCH1I               DO NOT ARCHIVE IF DOWN OR SQL                
+         CLI   PQKARC,C'A'         TEST VALID ARCHIVE CLASS                     
+         BL    *+10                                                             
+         MVC   QLARC,PQKARC        SET ARCHIVE CLASS                            
+*                                                                               
+         CLI   QLARC,C'A'          SET ARCHIVABLE IF VALID ARC CLASS            
+         BL    SCH1I                                                            
+         TM    QLTYP1,QLTYAE+QLTYAR+QLTYAD                                      
+         BNZ   SCH1I                                                            
+         OI    QLTYP1,QLTYAR                                                    
+*                                                                               
+SCH1I    MVC   QLPSWD,PQKPSWD      SET REPORT SECURITY DATA                     
+         MVC   QLSECF1,PQKSECF1                                                 
+         MVC   QLSECF2,PQKSECF2                                                 
+*                                                                               
+         GOTO1 VDMGR,DMCB,PRINT,PRTQUE,0,PQPLD,TCBTIA                           
+         CLI   8(R1),0                                                          
+         BE    SCH2                                                             
+         TM    8(R1),X'80'         TEST EOF                                     
+         BO    *+6                                                              
+         DC    H'0'                                                             
+*                                                                               
+         OI    TCBFLAG1,TCBIRNOT                                                
+         BRAS  RE,ARSOFF                                                        
+         ICM   R2,15,TCBSJENT      FORCE UNWIND WITH ERROR MSG ON EOF           
+         BZ    SCH1J                                                            
+         LAM   AR2,AR2,SSBTBLET                                                 
+         SAC   512                                                              
+         MVI   TBJSTAT-TBJNTRY(R2),JOBSAVA                                      
+*                                                                               
+SCH1J    BRAS  RE,ARSOFF                                                        
+         DC    H'0',C'$PQFULL'                                                  
+*                                                                               
+SCH2     BRAS  RE,ARSOFF                                                        
+         ICM   R2,15,TCBSJENT      PUT CREATE TIME IN JOB TABLE ENTRY           
+         BZ    SCH2A                                                            
+         LAM   AR2,AR2,SSBTBLET                                                 
+         SAC   512                                                              
+         USING TBJOBTAB,R2                                                      
+         MVC   TBJSTIME,TIMENOW                                                 
+         BRAS  RE,ARSOFF                                                        
+         DROP  R2                                                               
+*                                                                               
+SCH2A    L     RF,TCBTIA           CONTAINS OPENED PQ REPORT                    
+         ST    RF,TCBIRDR          SET A(TIA) AS A(IRDR)                        
+         NI    TCBFLAG1,255-TCBIRALL                                            
+         OI    TCBFLAG1,TCBIRALC+TCBSUBPQ                                       
+         XC    TCBSJKEY,TCBSJKEY   BUILD REPORT KEY IN TCB                      
+         MVC   TCBSJUSR,QLSRCID                                                 
+         MVC   TCBSJSUB,QLSUBID                                                 
+         MVC   TCBSJREP,QLREPRNO                                                
+         MVC   TCBSJCIA,QLREPRCI                                                
+         MVC   TCBSJCLS,PQKCLASS                                                
+         XC    TCBSJWRK,TCBSJWRK                                                
+*&&US                                                                           
+         SR    R0,R0               GET CREATION TIME IN (SECS*3)/4              
+         SR    R1,R1                                                            
+         ICM   R1,3,PQAGELT-PQRECD(RF)                                          
+         SLL   R1,2                                                             
+         D     R0,=F'3'            R1=SECONDS                                   
+         SR    R0,R0                                                            
+         D     R0,=F'60'                                                        
+         SR    R0,R0                                                            
+         D     R0,=F'60'           R0=MINS,R1=HOURS                             
+         STC   R1,HALF                                                          
+         STC   R0,HALF+1           HALF=X'HHMM'                                 
+         ICM   R0,3,HALF                                                        
+         SRDL  R0,6                SHIFT OUT MINUTE B'MMMMMM'                   
+         SRL   R0,2                                                             
+         SRDL  R0,5                SHIFT OUT HOUR B'HHHHH'                      
+         ICM   R0,3,PQAGELD-PQRECD(RF)                                          
+         SRDL  R0,5                SHIFT OUT DAY B'DDDDD'                       
+         SLDL  R0,16                                                            
+*&&                                                                             
+*&&UK                                                                           
+         SR    R0,R0                                                            
+         ICM   R0,3,PQTIMEL-PQRECD(RF)                                          
+         SRDL  R0,6                SHIFT OUT MINUTE B'MMMMMM'                   
+         SRL   R0,2                                                             
+         SRDL  R0,5                SHIFT OUT HOUR B'HHHHH'                      
+         ICM   R0,3,PQDATEL-PQRECD(RF)                                          
+         SRDL  R0,5                SHIFT OUT DAY B'DDDDD'                       
+         SLDL  R0,16                                                            
+*&&                                                                             
+         STCM  R0,3,TCBSJCTS       TIME STAMP=B'DDDDDHHHHHMMMMMM'               
+         B     SCH4                                                             
+         EJECT                                                                  
+*********************************************************************           
+* PROCESS CALLER ACTION                                                         
+*********************************************************************           
+SCH4     TM    TCBFLAG1,TCBSUBPQ   TEST PQ SCHEDULE                             
+         BNZ   *+6                                                              
+         DC    H'0'                                                             
+         CLC   ACTION,CLEAR        ABNORMAL TERMINATION CALL                    
+         BE    SCH6                                                             
+         CLC   ACTION,END          REGULAR END-OF-JOB                           
+         BE    SCH8                                                             
+         CLC   ACTION,ADDR         RETURN A(TASK SAVE AREA)                     
+         BE    SCHX                                                             
+         B     SCH20               ELSE IS PUT                                  
+*                                                                               
+SCH6     XC    TCBIRDR,TCBIRDR                                                  
+         NI    TCBFLAG1,255-TCBIRALL                                            
+         XC    TCBSJKEY,TCBSJKEY                                                
+         GOTO1 VDMGR,DMCB,CLOPUR,PRTQUE,0,PQPLD,TCBTIA                          
+         B     SCHX                                                             
+*                                                                               
+SCH8     TM    TCBFLAG1,TCBIRUSE   TEST ANY CARDS PUT                           
+         BZ    SCH6                NO - DELETE JOB                              
+         MVI   PQLINE,C' '         BUILD & PUT MVS EOJ CARD                     
+         MVC   PQLINE+1(L'PQLINE-1),PQLINE                                      
+         MVI   PLCC,X'09'                                                       
+         MVC   PQLINE+1(2),MVSCARD                                              
+         GOTO1 VDMGR,DMCB,PRINT,PRTQUE,0,PQPLD,TCBTIA                           
+         CLI   8(R1),0             TEST FOR ERRORS                              
+         BE    *+6                                                              
+         DC    H'0'                                                             
+         XC    PQLINE,PQLINE       CLOSE PQ REPORT                              
+         MVI   PLCC,X'FF'                                                       
+PQ       USING PQKEYD,RE                                                        
+         L     RE,PARMS+8          A(PQKEY)                                     
+         LA    R0,CLOJOB           ASSUME THIS WILL RUN VIA MONSOON             
+*&&US                                                                           
+         CLC   PQ.PQKSRCID,=AL2(13998)   MVREAD   H9                            
+         BE    SCH8F                                                            
+         CLC   PQ.PQKSRCID,=AL2(13997)   STAREAD  H9                            
+         BE    SCH8F                                                            
+         CLC   PQ.PQKSRCID,=AL2(13999)   SPAREAD  H9                            
+         BE    SCH8F                                                            
+         CLC   PQ.PQKSRCID,=AL2(14000)   MVNREAD  DU                            
+         BE    SCH8F                                                            
+*&&                                                                             
+         CLC   =C'TSO',PQ.PQKSUBID                                              
+         BNE   SCH8G               IF SUBID IS TSO DONT RUN SOON                
+         TM    TSTAT1,TSTATDDS                                                  
+         BZ    SCH8G                                                            
+SCH8F    LA    R0,CLO                                                           
+         DROP  PQ                                                               
+*                                                                               
+SCH8G    ST    R0,0(R1)            SET COMMAND PARAMETER TO DATAMGR             
+         GOTO1 (RF),(R1)                                                        
+         CLI   8(R1),0             TEST CLOSE OK                                
+         BE    *+6                                                              
+         DC    H'0'                                                             
+*&&DO                                                                           
+*======================================================================         
+* ADDED    APR24/02 BY DEIS                                                     
+* REMOVED  JUL16/02 BY DEIS (BECAUSE IT NEVER TOOK A HIT)                       
+*                                                                               
+* TRAP CODE TO TRY AND FIND A SPORADIC BUG IN WHICH A SOON REQUEST IS           
+* WRITTEN TO THE PRTQ IN WHICH THE C/I IS CORRECT, BUT THE INDEX ENTRY          
+* IS NOT, THEREBY PREVENTING THE SOON FROM RUNNING.                             
+*                                                                               
+*======================================================================         
+         L     RE,8(RD)            FORWARD POINTER: DMPRTQ                      
+         LA    RE,72(RE)           RE = A(DMPRTQ W/S)                           
+         CLC   =C'PQWSINFO',0(RE)  EYE-CATCHER MUST BE THERE                    
+         BE    *+6                                                              
+         DC    H'0'                W/S DESTROYED                                
+         LA    RF,X'6B8'(RE)       START OF CXREC IN DMPRTQ'S W/S               
+         LR    R0,RF                                                            
+         AHI   R0,14335            R0 = A(LAST BYTE OF CXREC)                   
+         L     R1,TCBTIA           A(C/I)                                       
+         CLC   0(7,R1),0(RF)       FIND THE INDEX ENTRY FOR THIS REPORT         
+         BE    *+16                                                             
+         LA    RF,24(RF)           BUMP TO NEXT INDEX ENTRY                     
+         CR    RF,R0                                                            
+         BNH   *-16                                                             
+         DC    H'0'                INDEX ENTRY NOT IN CXREC?!?                  
+         CLC   8(3,R1),8(RF)       DO TYPE/ATTB/STATUS BYTES MATCH?             
+         BE    *+6                 YES: INDEX ENTRY IS CORRECT IN W/S           
+         DC    H'0'                NO: THESE BYTES ARE INCORRECT IN W/S         
+         LA    R0,X'6B8'(RE)       START OF CXREC IN DMPRTQ'S W/S               
+         SR    RF,R0               DISPLACEMENT TO ENTRY IN INDEX PAGE          
+         LR    R0,RF               SAVE DISPLACEMENT TO INDEX ENTRY             
+*                                                                               
+         LA    R1,X'66B'(RE)       A(CFPQID)                                    
+         ST    R1,DMCB+4                                                        
+         LA    R1,X'688'(RE)       A(CXADDR)                                    
+         ST    R1,DMCB+8                                                        
+         GOTO1 VDMGR,DMCB,DMREAD,,,CXREC                                        
+         CLI   8(R1),0                                                          
+         BE    *+6                                                              
+         DC    H'0'                UNSUCCESSFUL READ OF INDEX RECORD            
+*                                                                               
+         LA    RF,CXREC            START OF CXREC WE JUST GOT FROM DISK         
+         AR    RF,R0               A(INDEX ENTRY)                               
+         L     R1,TCBTIA           A(C/I)                                       
+         CLC   0(7,R1),0(RF)       FIND THE INDEX ENTRY FOR THIS REPORT         
+         BNE   *+16                NO PQ KEY MATCH: IGNORE THIS ONE             
+         CLC   8(3,R1),8(RF)       DO TYPE/ATTB/STATUS BYTES MATCH?             
+         BE    *+6                                                              
+         DC    H'0'                NO: INDEX WASN'T UPDATED ON DISK!!!          
+*=== END OF TRAP CODE =================================================         
+*&&                                                                             
+*                                                                               
+         XC    TCBIRDR,TCBIRDR     DEQUEUE RESOURCE                             
+         OI    TCBFLAG1,TCBIREND   SET END CARD PROCESSED                       
+         TM    PQKTYPE,X'04'       SPECIAL OVERNIGHT SOON                       
+         BO    SCHX                YES - DON'T UPDATE USER JOBTAB               
+*                                                                               
+         CLI   SSBJESIO,C' '       ARE WE RUNNING UNDER MONSOON                 
+         BNE   *+8                                                              
+         NI    TCBFLAG1,255-TCBIRALL  YES-RESET JOB/INTRDR BITS                 
+*                                                                               
+         CLC   =C'NONENONE',TLUID  DUMMY TERMINALS DON'T UPDATE JOBTAB          
+         BE    *+14                                                             
+         CLC   =C'DUMMY',TLUID     YOU DUMMY                                    
+         BNE   SCH09                                                            
+*                                                                               
+         OI    SSBJFLAG,SSBJFINQ   SET SYSTEM/TERMINAL JOB-IN-Q FLAGS           
+         OI    TJOBFLAG,TJOBFINQ                                                
+         B     SCHX                                                             
+*                                                                               
+SCH09    TM    PQKTYPE,X'02'       LEAVE USER TABLE WELL ALONE                  
+         BO    SCHX                                                             
+*                                                                               
+         LA    R0,SRPAGENO         ADD ENTRY TO JOBQ IN S/R SAVE TWA            
+         SLL   R0,32-8                                                          
+         ICM   R0,3,TNUM                                                        
+         L     R6,TCBTIA                                                        
+         USING SRSD,R6                                                          
+         MVC   DMCB+20(2),=C'L='                                                
+         MVC   DMCB+22(2),SSBTWAL                                               
+         GOTO1 VDMGR,DMCB,(X'80',DMREAD),TEMPSTR,(R0),SRSD                      
+         XC    DUB,DUB                                                          
+         SR    RE,RE                                                            
+         ICM   RE,1,SRJOBINQ       RE=N'JOB ENTRIES IN QUEUE                    
+         BZ    SCH13                                                            
+*                                                                               
+         LA    R1,SRJOBQ           LOCATE A FREE JOB QUEUE ENTRY                
+         USING SRJOBQ,R1           R1=A(JOB QUEUE)                              
+SCH10    CLC   SRJOBCIA,TCBSJCIA   TEST THIS C/I ALREADY USED                   
+         BNE   *+8                                                              
+         MVI   SRJOBSTA,SRJOBERR   YES FLAG ENTRY AS AN ERROR                   
+         LA    RF,DUB+0            DUB+0(4)=A(ERROR ENTRY)                      
+         CLI   SRJOBSTA,SRJOBERR                                                
+         BE    SCH11                                                            
+         LA    RF,DUB+4            DUB+4(4)=A(NOTIFIED ENTRY)                   
+         TM    SRJOBSTA,SRJOBPUT+SRJOBOUT+SRJOBNOT                              
+         BNO   SCH12                                                            
+SCH11    OC    0(4,RF),0(RF)       TEST ADDRESS ALREADY SET                     
+         BNZ   SCH12                                                            
+         STCM  RE,1,0(RF)          SAVE NUMBER AND ADDRESS                      
+         STCM  R1,7,1(RF)                                                       
+SCH12    LA    R1,SRJOBQLN(R1)                                                  
+         BCT   RE,SCH10                                                         
+         DROP  R1                                                               
+*                                                                               
+         ICM   RE,1,DUB+0                                                       
+         ICM   R1,7,DUB+1          TEST ERROR ENTRY FOUND                       
+         BNZ   SCH14               YES - USE IT                                 
+*                                                                               
+SCH13    ZIC   RE,SRJOBINQ         NO ERROR SLOTS - TEST QUEUE FULL             
+         LA    RE,1(RE)                                                         
+         LA    R0,SRJOBMAX                                                      
+         CR    RE,R0                                                            
+         BNH   SCH16               NO - ADD A NEW ENTRY                         
+*                                                                               
+         ICM   RE,1,DUB+4          NO ERROR SLOTS & QUEUE FULL                  
+         ICM   R1,7,DUB+5          TEST NOTIFIED SLOT AVAILABLE                 
+         BNZ   SCH14               YES - USE IT                                 
+*                                                                               
+         L     R1,APARMS                                                        
+         MVI   8(R1),X'FE'         SET JOB QUEUE FULL                           
+         XC    DMCB(8),DMCB        UNLOCK S/R SAVE TWA                          
+         MVI   DMCB,X'F2'                                                       
+         GOTO1 ALOCKER,DMCB                                                     
+         LAM   AR2,AR2,SSBTBLET                                                 
+         SAC   512                                                              
+         ICM   R2,15,TCBSJENT      FORCE UNWIND WITH ERROR MESSAGE              
+         BZ    *+8                                                              
+         MVI   TBJSTAT-TBJNTRY(R2),JOBSAVA  RELEASE JOB TABLE ENTRY             
+         SAC   0                                                                
+         DC    H'0',C'$JTFULL'                                                  
+*                                                                               
+SCH14    SH    RE,=H'1'            SHUFFLE ENTRY TO BOTTOM OF QUEUE             
+         BZ    SCH18               UNLESS ALREADY THERE                         
+         MVC   0(SRJOBQLN,R1),SRJOBQLN(R1)                                      
+         LA    R1,SRJOBQLN(R1)                                                  
+         BCT   RE,*-10                                                          
+         B     SCH18                                                            
+*                                                                               
+SCH16    STC   RE,SRJOBINQ         ADD NEW ENTRY TO JOB QUEUE                   
+         BCTR  RE,0                                                             
+         LA    R1,SRJOBQLN                                                      
+         MR    R0,RE                                                            
+         LA    R1,SRJOBQ(R1)                                                    
+*                                                                               
+         USING SRJOBQ,R1           R1=A(JOB QUEUE ENTRY)                        
+SCH18    MVI   SRJOBSTA,SRJOBAVA   BUILD JOB QUEUE ENTRY                        
+*NOP     TM    PQKTYPE,X'80'       UPDATIVE JOBS START AS HOLD                  
+*NOP     BZ    *+8                 UNLESS RUNNING UNDER MONSOON                 
+*NOP     MVI   SRJOBSTA,SRJOBHLD                                                
+         CLI   SSBJESIO,C' '       ARE WE RUNNING UNDER MONSOON                 
+         BNE   *+12                                                             
+         MVI   SRJOBSTA,SRJOBPUT   YES - ALL JOBS ARE SUBMITTED                 
+         B     *+10                                                             
+         XC    SRJOBJES,SRJOBJES   JOB NUM DOESN'T EXIST UNDER MONSOON          
+         MVC   SRJOBUSR,TCBSJUSR                                                
+         MVC   SRJOBSUB,TCBSJSUB                                                
+         MVC   SRJOBREP,TCBSJREP                                                
+         MVC   SRJOBCIA,TCBSJCIA                                                
+         MVC   SRJOBCTS,TCBSJCTS   CREATED TIME STAMP                           
+         DROP  R1                                                               
+*                                                                               
+         LA    R0,SRPAGENO         WRITE UPDATED S/R SAVE TWA PAGE              
+         SLL   R0,32-8                                                          
+         ICM   R0,3,TNUM                                                        
+         GOTO1 VDMGR,DMCB,(X'00',DMWRT),TEMPSTR,(R0),SRSD                       
+*                                                                               
+         CLI   SSBJESIO,C' '       ARE WE RUNNING UNDER MONSOON                 
+         BE    SCH19               YES                                          
+         OI    SSBJFLAG,SSBJFINQ   SET SYSTEM/TERMINAL JOB-IN-Q FLAGS           
+         OI    TJOBFLAG,TJOBFINQ                                                
+*                                                                               
+SCH19    ZIC   R1,TJOBSINQ         BUMP N'JOBS TO BE SUBMITTED                  
+         LA    R1,1(R1)                                                         
+         STC   R1,TJOBSINQ                                                      
+         XC    DMCB(8),DMCB        UNLOCK TWA SAVE PAGE                         
+         MVI   DMCB,X'F2'                                                       
+         GOTO1 ALOCKER,DMCB                                                     
+         B     SCHX                                                             
+*                                                                               
+SCH20    BAS   RE,SCAN             SCAN THE INPUT CARD                          
+         BNE   SCHX                EXIT IF NOT WANTED                           
+         MVI   PQLINE,C' '                                                      
+         MVC   PQLINE+1(L'PQLINE-1),PQLINE                                      
+         MVI   PLCC,X'09'                                                       
+         MVC   PQLINE+1(80),0(R4)  MOVE CARD TO PRINT LINE                      
+         GOTO1 VDMGR,DMCB,PRINT,PRTQUE,0,PQPLD,TCBTIA                           
+         CLI   8(R1),0             TEST FOR ERRORS                              
+         BE    *+6                                                              
+         DC    H'0'                                                             
+         OI    TCBFLAG1,TCBIRUSE   SET CARD PUT                                 
+         B     SCHX                                                             
+*                                                                               
+SCHX     LA    RF,TCBSJWRK                                                      
+         ICM   RE,15,PARMS+12      TEST P4 PASSED                               
+         BZ    *+8                                                              
+         STCM  RF,15,0(RE)         YES - RETURN A(TASK SAVE AREA)               
+         LTR   R5,R5               TEST A(KEY) PASSED                           
+         BZ    POWX                                                             
+         MVC   PQKSRCID,TCBSJUSR   RETURN REPORT KEY VALUES                     
+         MVC   PQKSUBID,TCBSJSUB                                                
+         MVC   PQKCLASS,TCBSJCLS                                                
+         MVC   PQKREPNO,TCBSJREP                                                
+         B     POWX                                                             
+         EJECT                                                                  
+***********************************************************************         
+* SCAN AN INPUT CARD AND AMEND ANYTHING THATS NECESSARY               *         
+*                                                                     *         
+* NTRY - R4=A(INPUT CARD)                                             *         
+* EXIT - CC=EQUAL TO KEEP THE INPUT CARD                              *         
+*        CC=NOT EQUAL TO DISCARD THE INPUT CARD                       *         
+***********************************************************************         
+SCAN     NTR1  ,                                                                
+         CLC   0(2,R4),MVSCARD     TEST FOR MVS EOJ CARD                        
+         BNE   SCAN2                                                            
+         CLI   2(R4),C' '                                                       
+         BNE   SCAN2                                                            
+         CLC   3(77,R4),2(R4)      YES - PURGE                                  
+         BE    SCANPRGE                                                         
+*                                                                               
+SCAN2    CLC   0(7,R4),=C'DIRECT=' TEST FOR DIRECT CARD                         
+         BNE   SCAN3                                                            
+         MVC   34(3,R4),=C'ID='    ADD ON - ID=UUUUSSSSSSRRRRAAAA               
+         LA    R0,9                                                             
+         XOUT  TCBSJKEY,37(R4),(R0)                                             
+         B     SCANKEEP                                                         
+*                                                                               
+SCAN3    CLC   0(9,R4),=C'RECOVER=U' TEST FOR RECOVER=U                         
+         BNE   SCANKEEP                                                         
+         TM    PQKTYPE,X'80'       PURGE IF NOT UPDATIVE SOON                   
+         BZ    SCANPRGE                                                         
+         MVI   8(R4),C'W'          ELSE MAKE RECOVERY=W                         
+         B     SCANKEEP                                                         
+*                                                                               
+SCANKEEP CR    RB,RB                                                            
+         B     SCANX                                                            
+SCANPRGE LTR   RB,RB                                                            
+         B     SCANX                                                            
+*                                                                               
+SCANX    B     POWX                                                             
+         EJECT                                                                  
+***********************************************************************         
+* USEFUL ROUTINES                                                     *         
+***********************************************************************         
+ARSOFF   SAC   0                                                                
+         LAM   AR0,ARF,ARZERO                                                   
+         BR    RE                                                               
+*                                                                               
+EXITOK   CR    RB,RB                                                            
+         B     EXIT                                                             
+*                                                                               
+EXITL    CLI   *,255                                                            
+         B     EXIT                                                             
+*                                                                               
+EXIT     XIT1  ,                                                                
+         EJECT                                                                  
+***********************************************************************         
+* LITERALS AND CONSTANTS                                              *         
+***********************************************************************         
+         LTORG                                                                  
+*                                                                               
+ARZERO   DC    16F'0'                                                           
+OPEN     DC    C'OPN'              OPEN INTERNAL READER                         
+CLOSE    DC    C'CLS'              CLOSE INTERNAL READER                        
+ADDR     DC    C'ADR'              RETURN A(SAVE AREA)                          
+END      DC    C'EOJ'              REGULAR END-OF-JOB                           
+CLEAR    DC    C'END'              ABNORMAL TERMINATION                         
+PUT      DC    C'PUT'              SUBMIT A JOB NOW                             
+SCH      DC    C'SCH'              SCHEDULE JOB FOR LATER                       
+*                                                                               
+DEFDESC  DC    CL11'SCHEDULED'                                                  
+DEFDESCM DC    CL11'SUBMITTED'                                                  
+*&&UK                                                                           
+DEFRETNL DC    AL2(36)                                                          
+DEFRETND DC    AL2(18)                                                          
+*&&                                                                             
+*&&US                                                                           
+DEFRETNL DC    AL2(12)                                                          
+DEFRETND DC    AL2(03)                                                          
+*&&                                                                             
+PRINT    DC    C'DMPRINT '                                                      
+DMREAD   DC    C'DMREAD  '                                                      
+DMWRT    DC    C'DMWRT   '                                                      
+CLO      DC    C'CLOSE   '                                                      
+CLOPUR   DC    C'CLO/PUR '                                                      
+CLOJOB   DC    C'CLO/JOB '                                                      
+PRTQUE   DC    C'PRTQUE  '                                                      
+TEMPSTR  DC    C'TEMPSTR '                                                      
+MVSCARD  DC    C'//'                                                            
+*                                                                               
+*&&DO                                                                           
+CXREC    DS    14336X              NEEDED ONLY FOR DEIS TRAP CODE ABOVE         
+*&&                                                                             
+         EJECT                                                                  
+***********************************************************************         
+* WORKING STORAGE DSECTS                                              *         
+***********************************************************************         
+WORKD    DSECT                                                                  
+DUB      DS    D                                                                
+DMCB     DS    6F                                                               
+DSPHD    DS    XL64                                                             
+*                                                                               
+VDMGR    DS    V                   V(DATAMGR)                                   
+ALOCKSPC DS    V                                                                
+ALOCKER  DS    V                                                                
+*                                                                               
+APARMS   DS    A                                                                
+PARMS    DS    8F                                                               
+TOTTYPE  DS    F                   TOTAL SOONS OF THIS TYPE IN JOBTAB           
+TOTTERM  DS    F                   TOTAL SOONS FOR TERMINAL IN JOBTAB           
+TOTUSRID DS    F                   TOTAL SOONS FOR USERID IN JOBTAB             
+HALF     DS    H                                                                
+ACTION   DS    CL3                 ACTION NAME                                  
+TIMENOW  DS    CL3                 TIME NOW TUS                                 
+PQLINE   DS    CL133               PRINT LINE                                   
+WORKX    EQU   *                                                                
+                                                                                
+***********************************************************************         
+* INTERNAL PQ DSECT                                                             
+***********************************************************************         
+PQKEYD   DSECT                                                                  
+PQKSRCID DS    XL2                 USER-ID NUMBER                               
+PQKSUBID DS    CL3                 REPORT SUB-ID                                
+PQKCLASS DS    CL1                 REPORT CLASS                                 
+PQKREPNO DS    XL2                 RETURNED REPORT NUMBER                       
+PQKRETNL DS    XL2                 LIVE RETAIN HOURS                            
+PQKRETND DS    XL2                 DEAD RETAIN HOURS                            
+PQKTYPE  DS    XL1                 REPORT TYPE FLAGS                            
+PQKRET   DS    CL1                 REPORT RETAIN CLASS                          
+PQKSUB   DS    CL2                 REPORT SUBID (PQCLASS)                       
+PQKCPY   DS    XL1                 REPORT NUMBER OF COPIES                      
+PQKSTA   DS    XL1                 REPORT STATUS                                
+PQKRTY   DS    CL1                 REPORT TYPE                                  
+PQKARC   DS    CL1                 REPORT ARCHIVE CLASS                         
+PQKTYP1  DS    XL1                 REPORT TYPE FLAGS#1                          
+PQKPSWD  DS    CL4                 REPORT PID/PIN                               
+PQKSECF1 DS    XL1                 REPORT SECURITY FLAGS#1                      
+PQKSECF2 DS    XL1                 REPORT SECURITY FLAGS#2                      
+         DS    CL5                                                              
+PQKEYL   EQU   *-PQKEYD                                                         
+         EJECT                                                                  
+***********************************************************************         
+* OTHER INCLUDED DSECTS                                               *         
+***********************************************************************         
+* FADSECTS                                                                      
+         PRINT OFF                                                              
+       ++INCLUDE FADSECTS                                                       
+         PRINT ON                                                               
+* DMSPACED                                                                      
+         PRINT OFF                                                              
+       ++INCLUDE DMSPACED                                                       
+         PRINT ON                                                               
+* FATABSJOB                                                                     
+         PRINT OFF                                                              
+       ++INCLUDE FATABSJOB                                                      
+         PRINT ON                                                               
+* FATABSDEQU                                                                    
+         PRINT OFF                                                              
+       ++INCLUDE FATABSDEQU                                                     
+         PRINT ON                                                               
+* DMPRTQL                                                                       
+         PRINT OFF                                                              
+       ++INCLUDE DMPRTQL                                                        
+         PRINT ON                                                               
+* DMPRTQD                                                                       
+         PRINT OFF                                                              
+       ++INCLUDE DMPRTQD                                                        
+         PRINT ON                                                               
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'018FAPOWWOW  09/21/18'                                      
+         END                                                                    

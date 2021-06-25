@@ -1,0 +1,1118 @@
+*          DATA SET DDPNEQU    AT LEVEL 014 AS OF 10/22/13                      
+*PROCESS USING(WARN(15))                                                        
+*CATALP DDPNEQU                                                                 
+         TITLE 'DDPNEQU - DICTIONARY EQUATE-BOOK CONSTRUCTOR'                   
+**********************************************************                      
+*                                                        *                      
+* CONSTRUCTS A PANBOOK, __DDEQUSA, FROM DICTIONARY       *                      
+* MESSAGE RECORDS GIVEN A SPECIFIC SYSTEM.  THE __       *                      
+* REPRESENTS THE PREFIX OF THE GIVEN SYSTEM.             *                      
+*                                                        *                      
+* THE JCL IS IN GLEE.DDS.JCL(DDPNEQU)                    *                      
+*                                                        *                      
+* INPUT JCL CARD DATA LINES:                             *                      
+* REQUIRED:                                              *                      
+*   SYSTEM=<NAME OF FACPAK SYSTEM (SEE FASYSLST)>        *                      
+* OPTIONAL:                                              *                      
+*   TRACE=<Y> LIST RECORDS READ                          *                      
+*                                                        *                      
+**********************************************************                      
+         EJECT                                                                  
+***********************************************************************         
+*==================== MAIN (HIGHEST LEVEL ROUTINE) ===================*         
+*                                                                               
+DDPNEQU  CSECT                                                                  
+         PRINT NOGEN                                                            
+         NBASE 0,*PNEQU*,=V(REGSAVE),RA,R9                                      
+*                                                                               
+         L     R8,=V(CPRINT)                                                    
+         USING DPRINT,R8                                                        
+         B     MAIN                                                             
+         SPACE 1                                                                
+         ENTRY UTL                                                              
+         ENTRY SSB                                                              
+         EJECT                                                                  
+MAIN     MVI   RETCODE,0           ASSUME EVERYTHING WILL GO SMOOTHLY           
+         BAS   RE,VALCARDS         VALIDATE JCL CARD DATA LINES                 
+         BNE   BXIT                  EXIT IF ERROR                              
+*                                                                               
+MAIN10   BAS   RE,BLDPBKNM         BUILD THE PANBOOK NAME                       
+         BAS   RE,INITIAL          GENERAL INITIALIZATION                       
+         BAS   RE,PROCMESG         PROCESS DICTIONARY MESSAGE RECORDS           
+         BAS   RE,PUTPAN           PUT RECORDS FROM SORTER INTO DSECT           
+*                                                                               
+BXIT     BAS   RE,CHKERR                                                        
+*                                  EXIT WITH RETURN CODE=0 IF PAN               
+         XBASE RC=RETCODE,RL=1       BOOK CARDS ARE PRODUCED                    
+***********************************************************************         
+         SPACE 3                                                                
+***********************************************************************         
+*============ EXIT FOR NTR'S RETURNING CONDITION CODE (CC) ===========*         
+CCEQUAL  SR    RF,RF                                                            
+CCNEQUAL LTR   RF,RF                                                            
+EXIT     XIT1                                                                   
+***********************************************************************         
+         EJECT                                                                  
+***********************************************************************         
+*========= VALIDATE JCL CARD DATA LINES AS DEFINED IN CARDTBL ========*         
+VALCARDS NTR1                                                                   
+*                                                                               
+VC10     GOTO1 =V(CARDS),DMCB,LINEBUFF,=C'RE00'                                 
+         CLC   =C'/*',LINEBUFF     IF END OF JCL                                
+         BE    VCEND                 CHECK REQUIRED CARDS INPUT                 
+*                                                                               
+         CLI   LINEBUFF,C'*'       ASTERISK IN COLUMN 1 DENOTES COMMENT         
+         JE    VC10                                                             
+*                                                                               
+         LA    R2,CARDTBL          INITIALISE TABLE POINTER                     
+*                                                                               
+         MVI   ERROR,5             ASSUME CARD NOT IN CARDTBL                   
+VC20     CLI   0(R2),0             AT END OF TABLE YET?                         
+         BNE   VC30                 NO, CONTINUE                                
+         B     VC10                IGNORE INVALID CARDS                         
+*                                                                               
+VC30     ZIC   R1,CLENGTH(R2)           TRY TO IDENTIFY CARD                    
+         BCTR  R1,0                                                             
+         EXCLC R1,LINEBUFF,CSTRING(R2)  CARD MATCH WITH ANY IN TABLE?           
+         BE    VC40                      YEP, DO NEXT STEP                      
+         LA    R2,L'CARDTBL(R2)          NOPE, GET NEXT ENTRY                   
+         B     VC20                                                             
+*                                                                               
+VC40     MVC   ERROR,CERROR(R2)    GET ERROR CODE                               
+         ZIC   RF,CROUTINE(R2)     GET ROUTINE #                                
+         SLL   RF,2                RF=(ROUTINE #)*4                             
+         B     *+0(RF)             BRANCH TO PROCESSING ROUTINE                 
+*                                    FROM JUMP TABLE                            
+         B     VCSYS                                                            
+         B     VCTRAC                                                           
+         B     VCDDSIO                                                          
+         B     VCDSPACE                                                         
+*                                                                               
+VCEND    MVI   ERROR,6             ASSUME SYSTEM IS NOT SPECIFIED               
+         OC    SVPREF,SVPREF       CHECK IF SYSTEM IS DEFINED                   
+         BNZ   CCEQUAL              YEP, IT'S DEFINED                           
+         LA    RE,CCNEQUAL         SET RETURN ADDRESS                           
+         B     ERRPRNT              PRINT ERROR MESSAGE                         
+         EJECT                                                                  
+*                                                                               
+*============ ROUTINES TO PROCESS EACH JCL CARD DATA LINE ============*         
+*                                                                               
+*------------------------------ SYSTEM= ------------------------------*         
+*                                                                               
+VCSYS    XC    SVPREF,SVPREF       CLEAR PREFIX                                 
+         LA    R6,SYSLST           SYSTEM=<FASYSLST ENTRY>                      
+         USING SYSLSTD,R6                                                       
+         LH    R2,0(R6)            R2=LENGTH OF SYSTEM TABLE ENTRY              
+         LA    R3,EXSYSLX-1        R3=A(END OF TABLE), EXTENDED                 
+         LA    R6,6(R6)            R6-->FIRST ENTRY                             
+*                                                                               
+VCSLP1   CLC   LINEBUFF+7(7),SYSLNAME   CMPRE AGNST LONG EXPRSSN                
+         BE    XVCSYS1                                                          
+         CLC   LINEBUFF+7(3),SYSLSHRT   CMPRE AGNST SHRT EXPRSSN                
+         BE    XVCSYS1                                                          
+         BXLE  R6,R2,VCSLP1                                                     
+         LA    RE,VC10             ERROR, SET RETURN ADDRESS                    
+         B     PBADLINE             AND PRINT THE BAD LINE                      
+*                                                                               
+XVCSYS1  MVC   MID1(8),=C'SYSTEM ='                                             
+         MVC   MID1+9(L'SYSLNAME),SYSLNAME                                      
+         MVC   SVNSYS,SYSLNUM      SAVE NATIVE SYSTEM NUMBER (BINARY)           
+         MVC   SVSYSNME,SYSLNAME   SAVE NAME OF SYSTEM                          
+         ZIC   R1,SYSLNUM          GET SYSTEM PREFIX                            
+         LA    RF,PFXTABLF-PFXTABLE   RF=L(ENTRIES)                             
+         MR    RE,R1               RF=DISPL. INTO TABLE                         
+         LA    RF,PFXTABLE(RF)                                                  
+         C     RF,APFXTABX         MAKE SURE DON'T GO PAST                      
+         BL    *+6                 END OF TABLE                                 
+         DC    H'0'                                                             
+         MVC   SVPREF,0(RF)        SAVE SYSTEM PREFIX                           
+         B     VC10                                                             
+         DROP  R6                                                               
+*                                                                               
+*------------------------------- TRACE= ------------------------------*         
+*                                                                               
+VCTRAC   LA    R3,LINEBUFF+6                                                    
+         BAS   RE,TSTYESNO                                                      
+         BNE   VCTRAC02                                                         
+VCTRAC01 OI    SWITCH1,SWITRAC        TRAC=YES                                  
+         B     VC10                                                             
+*                                                                               
+VCTRAC02 NI    SWITCH1,X'FF'-SWITRAC  TRAC=NO                                   
+         B     VC10                                                             
+*                                                                               
+*------------------------------ DDSIO= -------------------------------*         
+*                                                                               
+VCDDSIO  ICM   RF,15,=V(DDSIO)                                                  
+         JZ    *+10                                                             
+         MVC   0(8,RF),LINEBUFF+6     DDSIO LOAD MODULE NAME                    
+         J     VC10                                                             
+*                                                                               
+*------------------------------ DSPACE= ------------------------------*         
+*                                                                               
+VCDSPACE LA    RF,SSB                                                           
+         MVC   SSODSPAC-SSOOFF(,RF),LINEBUFF+7  DSPACE IDENTIFIER               
+         J     VC10                                                             
+*                                                                               
+*------------------------- TEST YES/NO INPUT -------------------------*         
+*                                                                               
+TSTYESNO NTR1                                                                   
+*                                                                               
+*         ON ENTRY,                                                             
+*            R3-->STRING NEEDED TO BE CHECKED                                   
+*                                                                               
+         MVI   ERROR,4             ASSUME INPUT <> YES OR NO                    
+         CLC   0(3,R3),=C'YES'      CHECK FOR CORRECT INPUT                     
+         BE    CCEQUAL                                                          
+         CLI   0(R3),C'Y'           CHECK FOR CORRECT INPUT                     
+         BE    CCEQUAL                                                          
+         CLC   0(2,R3),=C'NO'       CHECK FOR CORRECT INPUT                     
+         BE    CCNEQUAL                                                         
+         CLI   0(R3),C'N'           CHECK FOR CORRECT INPUT                     
+         BE    CCNEQUAL                                                         
+*                                                                               
+         LA    RE,CCNEQUAL         NOT EQUAL TO ANY OF ABOVE                    
+         B     PBADLINE            TURN SWITCH OFF ANYWAY UPON RETURN           
+***********************************************************************         
+         EJECT                                                                  
+***********************************************************************         
+*========================= BUILD PANBOOK NAME ========================*         
+BLDPBKNM MVC   SVBKNM,SPACES                                                    
+         MVC   SVBKNM+2(6),=C'DDEQUS'                                           
+         MVC   SVBKNM(2),SVPREF        AFFIX PREFIX FOR SYSTEM                  
+         BR    RE                                                               
+***********************************************************************         
+         SPACE 3                                                                
+***********************************************************************         
+*========================== INITIALIZATION ===========================*         
+*                                                                               
+INITIAL  NTR1                                                                   
+*                                                                               
+         MVC   TITLE,SPACES                                                     
+         MVC   TITLE(40),=C'DATA DICTIONARY EQUATE BOOK CONSTRUCTION'           
+         ZAP   LINE,=P'75'                                                      
+*                                                                               
+XINITIAL B     EXIT                                                             
+***********************************************************************         
+         SPACE 3                                                                
+***********************************************************************         
+*=========================== CHECK ERRORS ============================*         
+*                                                                               
+CHKERR   NTR1                                                                   
+*                                                                               
+         MVC   P+52(L'ERRNFND),ERRNFND  ASSUME NO ERROR FOUND                   
+         TM    SWITCH1,SWIEROR                                                  
+         BZ    CHK10                                                            
+         MVI   RETCODE,2                ERROR FOUND                             
+         MVC   P,SPACES                                                         
+         MVC   P+53(L'ERRFND),ERRFND                                            
+CHK10    GOTO1 =V(PRINTER)                                                      
+         B     EXIT                                                             
+***********************************************************************         
+         EJECT                                                                  
+***********************************************************************         
+*==================== PROCESS DICTIONARY MESSAGES ====================*         
+PROCMESG NTR1                                                                   
+*         DURING ROUTINE,                                                       
+*           R2-->PANLINE                                                        
+*           R3-->PASSIVE KEY                                                    
+*           R6-->ELEMENTS                                                       
+*                                                                               
+         GOTO1 =V(SORTER),DMCB,SORTCARD,RECCARD                                 
+         XC    NUMMSG,NUMMSG       # OF MESSAGE RECORDS READ                    
+         XC    NUMPLINE,NUMPLINE   # OF PAN LINES                               
+         XC    GENCNT,GENCNT       # OF GENERAL ENTRIES                         
+         XC    NGENCNT,NGENCNT     # OF NON-GENERAL ENTRIES                     
+*                                                                               
+         GOTO1 =V(DATAMGR),DMCB,=C'DMOPEN',=C'CONTROL',FLIST,MSGREC             
+*                                                                               
+         XC    KEY,KEY             READ PSV POINTERS FOR EQUNAMES               
+         LA    R3,KEY                                                           
+         USING GMSGD,R3            BUILD KEY OF PSV MESSAGE RECORD              
+         MVI   GQKREC,GQKRECQ               RECORD TYPE                         
+         MVC   GQKQNAME(L'SVPREF),SVPREF    STARTING POINT                      
+         MVC   KEYSAVE,KEY                                                      
+         SPACE 1                                                                
+         GOTO1 =V(DATAMGR),DMCB,=C'DMRDHI',=C'GENDIR',KEYSAVE,KEY               
+         MVI   ERROR,11            ASSUME DMGR ERROR                            
+         CLI   DMCB+8,0                                                         
+         BE    PM5                                                              
+         BAS   RE,ERRPRNT                                                       
+         DC    H'0'                DON'T WANT ANY ERRORS                        
+         SPACE 1                                                                
+PM5      CLC   KEYSAVE(GQKQNAME-GMSGD+L'SVPREF),KEY   MATCH ON PREFIX?          
+         BNE   XPM                                   NO, EXIT ROUTINE           
+         MVC   KEYSAVE,KEY                           YES, SAVE KEY              
+*                                                                               
+** GET PASSIVE POINTER WRT LANGUAGE                                             
+*                                                                               
+PM10     XC    DFLTEDA,DFLTEDA     CLEAR TEMPORARY DISK ADDRESS                 
+         XC    DFLT1DA,DFLT1DA      STORAGE SPACE                               
+         XC    TARGTDA,TARGTDA                                                  
+         SPACE 1                                                                
+         GOTO1 =V(DATAMGR),DMCB,=C'DMREAD',=C'GENDIR',KEYSAVE,KEY               
+         CLI   DMCB+8,0                                                         
+         BE    *+6                                                              
+         DC    H'0'                                                             
+         MVC   DFLT1DA,GMDDA       DEFAULT TO 1ST RECORD                        
+         B     PM30                                                             
+*                                                                               
+PM20     GOTO1 =V(DATAMGR),DMCB,=C'DMRSEQ',=C'GENDIR',KEYSAVE,KEY               
+         MVI   ERROR,11            ASSUME DMGR ERROR                            
+         CLI   DMCB+8,0                                                         
+         BE    PM30                                                             
+         BAS   RE,ERRPRNT                                                       
+         DC    H'0'                DON'T WANT ANY ERRORS                        
+*                                                                               
+PM30     CLC   KEYSAVE(GQKMNUM-GMSGD),KEY   MATCH ON EQUNAME?                   
+         BNE   PM40                          NO, TIME TO EXIT LOOP              
+         MVC   KEYSAVE,KEY         SAVE KEY                                     
+         CLI   GQKLANG,X'FF'       LANGUAGE CODE MATCH?                         
+         BNE   PM30A                                                            
+         MVC   TARGTDA,GMDDA        YEP, SAVE D/A & FINISH LOOP                 
+         B     PM20                                                             
+PM30A    CLI   GQKLANG,X'FF'                                                    
+         BNE   PM20                                                             
+         MVC   DFLTEDA,GMDDA       DEFAULT TO ENGLISH RECORD                    
+         B     PM20                TRY NEXT PASSIVE RECORD                      
+*                                                                               
+PM40     OC    TARGTDA,TARGTDA     FIND THE TARGET RECORD?                      
+         BZ    PM40A                NO                                          
+         MVC   DISKADD,TARGTDA                                                  
+         B     PM45                                                             
+PM40A    OC    DFLTEDA,DFLTEDA     CAN WE DEFAULT TO ENGLISH?                   
+         BZ    PM40B                NO                                          
+         MVC   DISKADD,DFLTEDA                                                  
+         B     PM45                                                             
+PM40B    MVC   DISKADD,DFLT1DA     DEFAULT TO FIRST RECORD                      
+         SPACE 1                                                                
+PM45     B     PM50                                                             
+*                                                                               
+** GET RECORD FROM FILE                                                         
+*                                                                               
+PM50     GOTO1 =V(DATAMGR),DMCB,=C'GETREC',=C'GENFIL',DISKADD,MSGREC,  +        
+               DMWORK                                                           
+         MVI   ERROR,11                                                         
+         CLI   DMCB+8,0                                                         
+         BE    PM60                                                             
+         BAS   RE,ERRPRNT                                                       
+         DC    H'0'                                                             
+*                                                                               
+PM60     LH    R1,NUMMSG           INCREASE THE NUMBER OF MESSAGE               
+         LA    R1,1(R1)             RECORDS READ FROM FILE                      
+         STH   R1,NUMMSG                                                        
+         TM    SWITCH1,SWITRAC     USER WANT TRACE ON?                          
+         BZ    *+8                  NO, SO DON'T PRINT RECORD                   
+         BAS   RE,PRTRECD          PRINT 1ST 60 BYTES OF RECORD                 
+         SPACE 1                                                                
+         MVC   PANLINE,SPACES                                                   
+         LA    R2,PANLINE                                                       
+         USING PANLINED,R2                                                      
+         LA    R6,MSGREC                                                        
+         LA    R6,GMFIRST(R6)      R6-->1ST ELEMENT (THE TEXT ELEMENT)          
+*                                                                               
+** EQUATE INSTRUCTION                                                           
+*                                                                               
+         MVC   PANEQU,=C'EQU'                                                   
+*                                                                               
+** +GE#GEN/+DD#TABLE                                                            
+*                                                                               
+         MVC   MSGNUM,KEYSAVE+(GQKMNUM-GMSGD)   GET MSG# FROM PASSIVE           
+*                                POINTER (KEY-->NEXT RECD IN SEQNCE)            
+         MVC   PLUSDD,SPACES                                                    
+         TM    MSGNUM,GEGENQ          INDICATE GE#GEN?                          
+         BNO   PM60A                   NO NEED TO                               
+         MVC   PLUSDD,GENDC                                                     
+         NI    MSGNUM,X'FF'-GEGENQ                                              
+         LH    R1,GENCNT           INCREMENT # OF ENTRIES                       
+         LA    R1,1(R1)             FROM GENERAL                                
+         STH   R1,GENCNT                                                        
+         B     PM65                                                             
+*                                                                               
+PM60A    LH    R1,NGENCNT          INCREMENT # OF ENTRIES NOT                   
+         LA    R1,1(R1)             FROM GENERAL                                
+         STH   R1,NGENCNT                                                       
+*                                                                               
+PM65     MVC   PANPLUS,PLUSDD      FILL IN CORRECT WORD                         
+*                                                                               
+** EQUATED MESSAGE NUMBER                                                       
+*                                                                               
+         ZICM  R1,MSGNUM,(3)                                                    
+         EDIT  (R1),(5,PANEQNM),FILL=0                                          
+*                                                                               
+** COMMENT (R6-->TEXT ELEMENT)                                                  
+*                                                                               
+         XC    MESSAGE,MESSAGE                                                  
+         ZIC   RF,(GMSGELL-GMSGEL)(R6)    RF=L(MESSAGE ELEMENT)                 
+         LA    RE,GMSGFXDL                RE=OVERHEAD LENGTH                    
+         SR    RF,RE                      RF=L(ACTUAL TEXT OF MESSAGE)          
+         BCTR  RF,0                                                             
+         EXMVC RF,MESSAGE,(GMSGTXT-GMSGEL)(R6)    GET THE MESSAGE!              
+         SPACE 1                                                                
+         BAS   RE,MKCMMT           MAKE COMMENT FROM MESSAGE                    
+         EXMVC R1,PANCMMT,COMMENT  R1=L(COMMENT SAVED BY MKCMMT)                
+         OC    PANCMMT,SPACES      CAPITALIZE LETTERS                           
+*                                                                               
+PM65A    ZIC   RF,1(R6)            RF=L(ELEMENT)                                
+         AR    R6,RF                                                            
+         CLI   0(R6),GMQSYELC      GET EQUATE SYMBOL ELEMENT                    
+         BNE   PM65A                                                            
+*                                                                               
+** EQUATE SYMBOL (R6-->EQUATE SYMBOL ELEMENT)                                   
+*                                                                               
+         USING GMQSYD,R6                                                        
+         MVC   PANSYMB,GMQSYSYM                                                 
+         DROP  R6                                                               
+*                                                                               
+** FINISHED BUILDING PANLINE                                                    
+*                                                                               
+         MVI   PANSRTN,0           MAIN EQUATES HAVE PANSRTN=0                  
+         GOTO1 =V(SORTER),DMCB,=C'PUT',PANLINE                                  
+         LH    R1,NUMPLINE         # OF PAN LINES                               
+         LA    R1,1(R1)                                                         
+         STH   R1,NUMPLINE                                                      
+         LH    R1,MNEQCNT          # OF MAIN EQUATE LINES                       
+         LA    R1,1(R1)                                                         
+         STH   R1,MNEQCNT                                                       
+*                                                                               
+** CHECK FOR FULL-TEXT                                                          
+*                                                                               
+         LA    R6,MSGREC                                                        
+*                                                                               
+PM70     GOTO1 =V(HELLO),DMCB,(C'G',=C'GENFIL'),('GMTXTELC',(R6)),0,0           
+         CLI   DMCB+12,0                                                        
+         BNE   PM80                                                             
+         ZICM  R6,DMCB+13,(7)      GET A(ELEMENT)                               
+*                                                                               
+         USING GMTXTD,R6                                                        
+PM70A    CLI   GMTXTLNO,NMEQLIN    ONLY WANT THE EXTRA EQUATES                  
+         BH    PM70C                                                            
+         MVC   PANLINE(PANCMMT-PANLINED),SPACES  KEEP COMMENT FOR SORT          
+         ZIC   RF,GMTXTELL         RF=L(ELEMENT)                                
+         LA    RE,GMTXTFXD+1       RE=L(OVERHEAD PORTION)+1                     
+         SR    RF,RE               RF=EX LEN OF TEXT                            
+         LA    RE,PANCMMT-PANLINED DON'T WANT TO OVERWRITE THE COMMENT          
+         CR    RE,RF                                                            
+         BH    PM70B               EX LEN OF TEXT IS OKAY                       
+         LR    RF,RE               IF IT ISN'T, REPLACE IT                      
+         BCTR  RF,0                 WITH THE MAX LENGTH ALLOWED                 
+         BCTR  RF,0                ONCE MORE FOR EX INSTRUCTION                 
+PM70B    EXMVC RF,PANLINE,GMTXTLIN                                              
+         MVC   PANSRTN,GMTXTLNO    SORTER'S TIEBREAKER                          
+         SPACE 1                                                                
+         GOTO1 =V(SORTER),DMCB,=C'PUT',PANLINE                                  
+         LH    R1,NUMPLINE         # OF PAN LINES                               
+         LA    R1,1(R1)                                                         
+         STH   R1,NUMPLINE                                                      
+         LH    R1,SBEQCNT          # OF SUB-EQUATE LINES                        
+         LA    R1,1(R1)                                                         
+         STH   R1,SBEQCNT                                                       
+*                                                                               
+PM70C    ZIC   RE,1(R6)            RE=ELEMENT LENGTH                            
+         AR    R6,RE                SEE IF MORE FULL-TEXT ELEMENTS              
+         CLI   0(R6),0             AT END OF RECORD                             
+         BE    PM80                 WHICH MEANS NO MORE ELEMENTS                
+         CLI   0(R6),GMTXTELC      FULL-TEXT ELEMENT?                           
+         BNE   PM70C                                                            
+         B     PM70A               DO NEXT LINE OF FULL-TEXT                    
+         DROP  R6                                                               
+*                                                                               
+** CHECK IF WE'RE THROUGH                                                       
+*                                                                               
+PM80     CLC   KEYSAVE(GQKQNAME-GMSGD+L'SVPREF),KEY                             
+         BNE   XPM                                                              
+         MVC   KEYSAVE,KEY                                                      
+         B     PM10                REPEAT PROCESS                               
+         DROP  R2,R3                                                            
+*                                                                               
+XPM      ZAP   LINE,=P'99'                                                      
+         GOTO1 =V(PRINTER)                                                      
+*                                                                               
+         MVC   P(31),=C'# OF GENERAL ENTRIES READ     ='                        
+         EDIT  GENCNT,(5,P+33),ZERO=NOBLANK,COMMAS=YES                          
+         GOTO1 =V(PRINTER)                                                      
+         MVC   P(31),=C'# OF NON-GENERAL ENTRIES READ ='                        
+         EDIT  NGENCNT,(5,P+33),ZERO=NOBLANK,COMMAS=YES                         
+         GOTO1 =V(PRINTER)                                                      
+*                                                                               
+         MVC   P+32(7),=C'-------'                                              
+         GOTO1 =V(PRINTER)                                                      
+*                                                                               
+         MVC   P(18),=C'# OF MESSAGES READ'                                     
+         EDIT  NUMMSG,(5,P+33),COMMAS=YES,ZERO=NOBLANK                          
+         GOTO1 =V(PRINTER)                                                      
+         B     EXIT                                                             
+***********************************************************************         
+         EJECT                                                                  
+***********************************************************************         
+*===================== MAKE COMMENT FROM MESSAGE =====================*         
+MKCMMT   NTR1                                                                   
+*                                                                               
+*         WE WOULD LIKE TO HAVE COMMENTS IN THE EQUATE BOOK.                    
+*          REASONABLE CHOICES FOR COMMENTS ARE THE LONGEST LITERALS             
+*          WITHIN MESSAGE THAT CAN FIT IN THE COMMENT COLUMN.  BLANKS           
+*          BEFORE REAL TEXT IN LITERALS ARE OMITTED.                            
+*         AT ENTRY,                                                             
+*           MESSAGE    CONTAINS THE LITERAL(S)                                  
+*         AT EXIT,                                                              
+*           COMMENT    CONTAINS THE COMMENT                                     
+*           R1      =  LENGTH OF COMMENT  (SEE XMKC)                            
+*                                                                               
+         ZIC   R3,MESSAGE          R3=# OF LITERALS                             
+         SR    R1,R1               R1=DISPLACEMENT TO LONGEST LITERAL           
+         LA    RE,MESSAGE+1        RE-->BEGINNING OF LGTHS OF LITERALS          
+         LA    RF,0(R3,RE)         RF-->1ST LITERAL                             
+*                                                                               
+         LA    R4,X'80'                                                         
+         LCR   R4,R4                                                            
+         BCTR  R4,0                R4=X'FFFFFFFF'-X'00000080'                   
+*                                                                               
+MKC10    BCT   R3,MKC15            GETTING DISPLACEMENT TO                      
+         B     MKC20                FIRST LITERAL                               
+MKC15    ZIC   R0,0(RE)            R0=L(A LITERAL)                              
+         NR    R0,R4               TURN OFF ANY SPECIAL LENGTH                  
+         AR    R1,R0               INCREMENT DISPLACEMENT BY L(LITERAL)         
+         LA    RE,1(RE)            BUMP TO NEXT L(LITERAL)                      
+         B     MKC10               REPEAT PROCESS                               
+*                                                                               
+MKC20    AR    RF,R1               RF-->LONGEST LITERAL                         
+         XC    TEMPBUFF,TEMPBUFF                                                
+         LA    R2,TEMPBUFF         TEMPBUFF HAS ROOM TO BUILD COMMENT           
+         ZIC   R0,0(RE)                                                         
+         NR    R0,R4               TURN OFF ANY SPECIAL LENGTH                  
+         LR    R1,R0                                                            
+         LR    R3,R0               R3=L(ENTIRE LITERAL)                         
+         SRL   R1,1                R1=L(1ST HALF OF LITERAL)                    
+         SR    R0,R1               R0=L(2ND HALF OF LITERAL)                    
+         SPACE 1                                                                
+         OR    R1,R1               IN CASE R1=0                                 
+         BZ    MKC20A               DON'T MOVE FIRST HALF OF LITERAL            
+         BCTR  R1,0                                                             
+         EXMVC R1,0(R2),0(RF)      MOVE 1ST HALF OF LITERAL TO MSGREC           
+         LA    R2,1(R2,R1)         R2-->NEXT AVAILABLE POSITION                 
+         LA    RF,1(RF,R1)         RF-->TEXT TO MOVE NEXT                       
+MKC20A   TM    0(RE),X'80'         TEST SPECIAL LEN IN LONGEST LITRL            
+         BZ    *+16                                                             
+         MVI   0(R2),SPLTTR         IT'S SPECIAL LENGTH, MOVE IN                
+         LA    R2,1(R2)             SPLITTER, BUMP TO NEXT POSITION,            
+         LA    R3,1(R3)             AND INCREMENT L(LITERAL)                    
+         LR    R1,R0               R1=L(2ND HALF OF LITERAL)                    
+         BCTR  R1,R0                                                            
+         EXMVC R1,0(R2),0(RF)      MOVE 2ND HALF OF LITERAL TO MSGREC           
+*                                                                               
+         LA    RF,TEMPBUFF                                                      
+         LR    R0,R3               R3 IS NOW L(COMMENT)                         
+*                                                                               
+MKC40    CLI   0(RF),C' '          DELETE BLANKS IN FRONT                       
+         BH    MKC50                                                            
+         LA    RF,1(RF)            BUMP PAST BLANKS                             
+         BCTR  R3,0                DECREMENT L(LITERAL)                         
+         OR    R3,R3               BUT DON'T GO PASS END OF LITERAL             
+         BNZ   MKC40                                                            
+         LR    R3,R0               ENTIRE LITERAL IS BLANKS, GET LENGTH         
+         SR    RF,R3                POINT RF BACK TO START                      
+*                                                                               
+MKC50    MVC   COMMENT,SPACES                                                   
+         LA    R1,L'COMMENT        MAKE SURE R3 <= L'COMMENT (=36)              
+         CR    R1,R3                                                            
+         BNL   *+6                                                              
+         LR    R3,R1                                                            
+         BCTR  R3,0                                                             
+         EXMVC R3,COMMENT,0(RF)                                                 
+*                                                                               
+XMKC     LR    R1,R3                                                            
+         XIT1  REGS=(R1)                                                        
+***********************************************************************         
+         EJECT                                                                  
+***********************************************************************         
+*====================== PUT IN PANBOOK(DATASET) ======================*         
+PUTPAN   NTR1                                                                   
+*                                                                               
+         XC    GENCNT,GENCNT                                                    
+         XC    NGENCNT,NGENCNT                                                  
+         SPACE 1                                                                
+         OC    NUMMSG,NUMMSG       CHECK FOR ANY ENTRIES FOR BOOK               
+         BNZ   PUT02                                                            
+         MVI   RETCODE,1           PASS NO ENTRIES RETURN CODE                  
+         B     XPUTPAN1                                                         
+*                                                                               
+*------------------------- INITIALIZE PANFIL -------------------------*         
+*                                                                               
+PUT02    OPEN  (PANFIL,OUTPUT)                                                  
+         MVC   LINEBUFF,SPACES                                                  
+*                                                                               
+* FIRST CALL PANIC TO SEE IF THE MEMBER EXISTS IN THE PROGRAMMER'S              
+* PERSONAL PAN LIBRARY                                                          
+*                                                                               
+         GOTO1 =V(PANIC),DMCB,(X'20',=C'READ'),=C'DIR',SVBKNM,MSGREC            
+*                                  JUST GIVE PANIC A BIG IOAREA                 
+         TM    DMCB+8,X'10'                                                     
+         BO    PUT02C                                                           
+         MVC   LINEBUFF(8),=C'++UPDATE'                                         
+         MVC   LINEBUFF+9(L'SVBKNM),SVBKNM                                      
+         LA    R2,LINEBUFF+9                                                    
+PUT02A   CLI   0(R2),C' '                                                       
+         BE    PUT02B                                                           
+         LA    R2,1(R2)                                                         
+         B     PUT02A                                                           
+PUT02B   MVC   0(6,R2),=C',0,ALL'                                               
+         BAS   RE,PUTLINE                                                       
+         B     PUT04                                                            
+*                                                                               
+PUT02C   MVC   LINEBUFF(5),=C'++ADD'                                            
+         MVC   LINEBUFF+6(L'SVBKNM),SVBKNM                                      
+         LA    R2,LINEBUFF+6                                                    
+PUT02D   CLI   0(R2),C' '                                                       
+         BE    PUT02E                                                           
+         LA    R2,1(R2)                                                         
+         B     PUT02D                                                           
+PUT02E   MVC   0(4,R2),=C',BAL'                                                 
+         BAS   RE,PUTLINE                                                       
+*                                                                               
+PUT04    DS    0H                                                               
+         GOTO1 =V(PANIC),DMCB,(X'20',=C'CLOSE'),=C'PAN',0,0                     
+*                                                                               
+* READ *DICT CARDS FOR DICTIONARY PHASES AND WRITE THEM TO EQUATE BOOK          
+*                                                                               
+         OPEN  PHASES                                                           
+PUT06    GET   PHASES,LINEBUFF                                                  
+         BAS   RE,PUTLINE                                                       
+         B     PUT06                                                            
+PUT08    DS    0H                                                               
+         CLOSE PHASES                                                           
+*                                                                               
+* NOW CALL PANIC AGAIN TO READ THE DICTIONARY, FROM WHEREVER IT LIVES           
+*                                                                               
+         GOTO1 =V(PANIC),DMCB,(X'00',=C'READ'),=C'DIR',SVBKNM,MSGREC            
+*                                  JUST GIVE PANIC A BIG IOAREA                 
+         MVI   LINEBUFF,C'*'                                                    
+         BAS   RE,PUTLINE                                                       
+*                                                                               
+* NOTE:  THERE IS HARD CODE IN DDSCRGEN                                         
+*        WHICH LOOKS FOR THE FOLLOWING LITERAL!                                 
+*                                                                               
+         MVI   LINEBUFF,C'*'                                                    
+         MVC   LINEBUFF+22(33),=C'EQUATE BOOK FOR DATA DICTIONARY: '            
+         MVC   LINEBUFF+55(L'SVSYSNME),SVSYSNME                                 
+         BAS   RE,PUTLINE                                                       
+         MVI   LINEBUFF,C'*'                                                    
+         BAS   RE,PUTLINE                                                       
+*                                                                               
+*-------------------------- ESCAPE SEQUENCES -------------------------*         
+*                                                                               
+PUT10    BAS   RE,BLDSEQ                                                        
+         BNE   EXIT                                                             
+*                                                                               
+*---------------------------- DICT EQUATES ---------------------------*         
+*                                                                               
+PUT20    GOTO1 =V(SORTER),DMCB,=C'GET'                                          
+         ICM   R2,15,4(R1)                                                      
+         BZ    PUT100                                                           
+*                                                                               
+         CLI   0(R2),C'#'          FIGURE OUT WHAT KIND OF ENTRY                
+         BE    PUT25A                IT IS                                      
+*                                                                               
+         USING PANLINED,R2                                                      
+PUT20B   CLC   PANPLUS,SPACES      DOES IT CONTAIN GE#GEN OR DD#TABLE?          
+         BNE   PUT20C                                                           
+         LH    R1,NGENCNT          UPDATE COUNT OF NON-GENERALS                 
+         LA    R1,1(R1)                                                         
+         STH   R1,NGENCNT                                                       
+         PACK  DUB,PANEQNM         UPDATE HIGH MARK (LOW/HIGH MSG#)             
+         CVB   R1,DUB                                                           
+         LA    R0,2*GEGENQ         R0=X'80'                                     
+         SLL   R0,8                MOVE X'80' TO 3RD BYTE (R0 =X'8000')         
+         CR    R0,R1                                                            
+         BH    PUT20BA             IT IS A LOW-MSG#                             
+         SPACE 1                                                                
+         ZICM  R0,HHMSG,(3)        UPDATE HIGH HIGH-MSG# MARK OR                
+         CR    R0,R1                                                            
+         BH    PUT25                                                            
+         STH   R1,HHMSG                                                         
+         B     PUT25                                                            
+PUT20BA  ZICM  R0,HLMSG,(3)         HIGH LOW-MSG# MARK IF NECESSARY             
+         CR    R0,R1                                                            
+         BH    PUT25                                                            
+         STH   R1,HLMSG                                                         
+         B     PUT25                                                            
+*                                                                               
+PUT20C   CLC   PANPLUS,GENDC       IS IT GE#GEN THAT IT CONTAINS?               
+         BNE   PUT20D                                                           
+         LH    R1,GENCNT            YES, UPDATE GENERAL COUNT                   
+         LA    R1,1(R1)                                                         
+         STH   R1,GENCNT                                                        
+         PACK  DUB,PANEQNM         UPDATE HIGH MARK                             
+         CVB   R1,DUB                                                           
+         LA    R0,2*GEGENQ         R0=X'80'                                     
+         SLL   R0,8                MOVE X'80' TO 3RD BYTE (R0 =X'8000')         
+         CR    R0,R1                                                            
+         BH    PUT20CA             IT IS A LOW-MSG#                             
+         SPACE 1                                                                
+         ZICM  R0,HHMSGGEN,(3)     UPDATE HIGH HIGH-MSG# MARK                   
+         CR    R0,R1                                                            
+         BH    PUT25                                                            
+         STH   R1,HHMSGGEN                                                      
+         B     PUT25                                                            
+PUT20CA  ZICM  R0,HLMSGGEN,(3)     UPDATE HIGH LOW-MSG# MARK                    
+         CR    R0,R1                                                            
+         BH    PUT25                                                            
+         STH   R1,HLMSGGEN                                                      
+         B     PUT25                                                            
+*                                                                               
+PUT20D   DC    H'0'                                                             
+*                                                                               
+PUT25    CLC   OLDCMMT(1),PANCMMT       PUT AN '*' IN BETWEEN EACH              
+         BE    PUT25A                    GROUP OF COMMENTS WHICH                
+         MVC   LINEBUFF,SPACES           START WITH SAME CHARACTER              
+         MVI   LINEBUFF,C'*'                                                    
+         PUT   PANFIL,LINEBUFF                                                  
+         MVC   OLDCMMT(1),PANCMMT                                               
+         SPACE 1                                                                
+PUT25A   CLI   0(R2),C'#'          IF LINE IS NOT MAIN EQUATE,                  
+         BNE   *+10                                                             
+         MVC   PANCMMT,SPACES       CLEAR COMMENT SPACE OUT                     
+         MVI   PANSRTN,C' '                                                     
+         MVC   LINEBUFF,0(R2)                                                   
+         PUT   PANFIL,LINEBUFF                                                  
+         B     PUT20                                                            
+         DROP  R2                                                               
+*                                                                               
+*---------------------------- # OF ENTRIES ---------------------------*         
+*                                                                               
+PUT100   MVC   LINEBUFF,SPACES                                                  
+         MVI   LINEBUFF,C'*'                                                    
+         BAS   RE,PUTLINE                                                       
+*                                                                               
+         MVC   LINEBUFF(37),=C'* HIGH HIGH-MSG# MARK ==============>'           
+         ZICM  R1,HHMSG,(3)                                                     
+         EDIT  (R1),(5,FIVEBYTE),FILL=0                                         
+         CLC   FIVEBYTE,=5C'0'                                                  
+         BNE   *+10                                                             
+         MVC   FIVEBYTE,=CL5'NONE'                                              
+         MVC   LINEBUFF+39(L'FIVEBYTE),FIVEBYTE                                 
+         BAS   RE,PUTLINE                                                       
+         SPACE 1                                                                
+         MVC   LINEBUFF(37),=C'* HIGH HIGH-MSG# GE#GEN MARK =======>'           
+         ZICM  R1,HHMSGGEN,(3)                                                  
+         EDIT  (R1),(5,FIVEBYTE),FILL=0                                         
+         CLC   FIVEBYTE,=5C'0'                                                  
+         BNE   *+10                                                             
+         MVC   FIVEBYTE,=CL5'NONE'                                              
+         MVC   LINEBUFF+39(L'FIVEBYTE),FIVEBYTE                                 
+         BAS   RE,PUTLINE                                                       
+         SPACE 1                                                                
+         MVC   LINEBUFF,SPACES                                                  
+         MVI   LINEBUFF,C'*'                                                    
+         BAS   RE,PUTLINE                                                       
+         SPACE 1                                                                
+         MVC   LINEBUFF(37),=C'* HIGH LOW-MSG# MARK ===============>'           
+         ZICM  R1,HLMSG,(3)                                                     
+         EDIT  (R1),(5,FIVEBYTE),FILL=0                                         
+         CLC   FIVEBYTE,=5C'0'                                                  
+         BNE   *+10                                                             
+         MVC   FIVEBYTE,=CL5'NONE'                                              
+         MVC   LINEBUFF+39(L'FIVEBYTE),FIVEBYTE                                 
+         BAS   RE,PUTLINE                                                       
+         SPACE 1                                                                
+         MVC   LINEBUFF(37),=C'* HIGH LOW-MSG# GE#GEN MARK ========>'           
+         ZICM  R1,HLMSGGEN,(3)                                                  
+         EDIT  (R1),(5,FIVEBYTE),FILL=0                                         
+         CLC   FIVEBYTE,=5C'0'                                                  
+         BNE   *+10                                                             
+         MVC   FIVEBYTE,=CL5'NONE'                                              
+         MVC   LINEBUFF+39(L'FIVEBYTE),FIVEBYTE                                 
+         BAS   RE,PUTLINE                                                       
+*                                                                               
+* NOTE:  THERE IS HARD CODE IN DDSCRGEN                                         
+*        WHICH LOOKS FOR THE FOLLOWING LITERAL!                                 
+*                                                                               
+         MVI   LINEBUFF,C'*'                                                    
+         BAS   RE,PUTLINE                                                       
+         MVI   LINEBUFF,C'*'                                                    
+         MVC   LINEBUFF+22(34),=C'END OF DATA DICTIONARY EQUATE BOOK'           
+         BAS   RE,PUTLINE                                                       
+*                                                                               
+XPUTPAN  CLOSE (PANFIL,)                                                        
+*                                                                               
+XPUTPAN1 GOTO1 =V(SORTER),DMCB,=C'END'                                          
+         AP    LINE,=P'10'                                                      
+         GOTO1 =V(PRINTER)                                                      
+*                                                                               
+         MVC   P(34),=C'# OF GENERAL ENTRIES WRITTEN     ='                     
+         ZICM  R1,GENCNT,(3)                                                    
+         EDIT  (R1),(5,P+33),ZERO=NOBLANK,COMMAS=YES                            
+         GOTO1 =V(PRINTER)                                                      
+         SPACE 1                                                                
+         MVC   P(34),=C'# OF NON-GENERAL ENTRIES WRITTEN ='                     
+         ZICM  R1,NGENCNT,(3)                                                   
+         EDIT  (R1),(5,P+33),ZERO=NOBLANK,COMMAS=YES                            
+         GOTO1 =V(PRINTER)                                                      
+*                                                                               
+         MVC   P+32(7),=C'-------'                                              
+         GOTO1 =V(PRINTER)                                                      
+         ZICM  R0,GENCNT,(3)                                                    
+         ZICM  R1,NGENCNT,(3)                                                   
+         AR    R1,R0                                                            
+         EDIT  (R1),(5,P+33),ZERO=NOBLANK,COMMAS=YES                            
+         GOTO1 =V(PRINTER)                                                      
+         GOTO1 =V(PRINTER)                                                      
+*                                                                               
+         MVC   P(34),=C'# OF EQUATE SYMBOLS ENCOUNTERED  ='                     
+         ZICM  R1,MNEQCNT,(3)                                                   
+         EDIT  (R1),(5,P+33),ZERO=NOBLANK,COMMAS=YES                            
+         GOTO1 =V(PRINTER)                                                      
+         SPACE 1                                                                
+         MVC   P(34),=C'# OF OTHER EQUATES ENCOUNTERED   ='                     
+         ZICM  R1,SBEQCNT,(3)                                                   
+         EDIT  (R1),(5,P+33),ZERO=NOBLANK,COMMAS=YES                            
+         GOTO1 =V(PRINTER)                                                      
+*                                                                               
+         MVC   P+32(7),=C'-------'                                              
+         GOTO1 =V(PRINTER)                                                      
+         MVC   P(22),=C'# OF PANLINES PRODUCED'                                 
+         EDIT  NUMPLINE,(5,P+33),COMMAS=YES,ZERO=NOBLANK                        
+         GOTO1 =V(PRINTER)                                                      
+         B     EXIT                                                             
+         SPACE 3                                                                
+*====================== BUILD ESCAPE SEQUENCES =======================*         
+         SPACE 1                                                                
+PUTLINE  NTR1                                                                   
+         PUT   PANFIL,LINEBUFF                                                  
+         MVC   LINEBUFF,SPACES                                                  
+         B     EXIT                                                             
+***********************************************************************         
+         EJECT                                                                  
+***********************************************************************         
+*====================== BUILD ESCAPE SEQUENCES =======================*         
+BLDSEQ   NTR1                                                                   
+*                                                                               
+         NI    SWITCH1,X'FF'-SWISTRT                                            
+BSQ10    GOTO1 =V(PANIC),DMCB,(X'80',=C'READ'),=C'PAN',EQHDRNM,LINEBUFF         
+         TM    DMCB+8,X'40'        DISK ERROR?                                  
+         BZ    BSQ10A               NOPE                                        
+         MVI   ERROR,9              YEP, SET ERROR CODE                         
+         LA    RE,CCNEQUAL           AND RETURN ADDRESS                         
+         B     ERRPRNT                                                          
+BSQ10A   TM    DMCB+8,X'10'        BOOK IN LIBRARY?                             
+         BZ    BSQ10B               YEP                                         
+         MVI   ERROR,10             NOPE, SET ERROR CODE                        
+         LA    RE,CCNEQUAL           AND RETURN ADDRESS                         
+         B     ERRPRNT                                                          
+BSQ10B   TM    DMCB+8,X'80'        END OF BOOK?                                 
+         BO    XBLDSEQ                                                          
+         TM    SWITCH1,SWISTRT     FOUND START-OFF POINT YET?                   
+         BO    BSQ20                                                            
+*                                                                               
+         CLC   STARTOFF,LINEBUFF   FIND START-OFF POINT                         
+         BNE   BSQ10                                                            
+         OI    SWITCH1,SWISTRT                                                  
+         B     BSQ10                                                            
+*                                                                               
+BSQ20    CLC   LINEBUFF(3),=C'  #'          STICK PREFIX IN FRONT OF            
+         BNE   BSQ20B                        ESCAPE SEQUENCES                   
+         CLC   LINEBUFF(6),=C'  #GEN'       ONLY THE GENERAL DICT CAN           
+         BNE   BSQ20A                                                           
+         CLI   SVNSYS,15                     HAVE THE ??#GEN ENTRY              
+         BNE   BSQ20X                                                           
+BSQ20A   MVC   LINEBUFF(L'SVPREF),SVPREF    APPEND SYSTEM PREFIX                
+BSQ20B   PUT   PANFIL,LINEBUFF                                                  
+BSQ20X   B     BSQ10                                                            
+*                                                                               
+XBLDSEQ  GOTO1 =V(PANIC),DMCB,=C'CLOSE',=C'PAN',EQHDRNM,LINEBUFF                
+         B     CCEQUAL                                                          
+***********************************************************************         
+         EJECT                                                                  
+***********************************************************************         
+*======================= PRINT MESSAGE RECORD ========================*         
+         SPACE 1                                                                
+PRTRECD  DS    0H                                                               
+         ZICM  R1,MSGREC+(GMFLEN-GMSGD),(3)   PRINT THE WHOLE RECORD            
+         LA    R0,L'P                                                           
+         CR    R0,R1                                                            
+         BNL   *+6                                                              
+         LR    R1,R0                OR JUST THE AMOUNT THAT FITS                
+         BCTR  R1,0                                                             
+         EXMVC R1,P,MSGREC                                                      
+         ST    RE,SAVERE                                                        
+         GOTO1 =V(PRINTER)                                                      
+         L     RE,SAVERE                                                        
+         BR    RE                                                               
+***********************************************************************         
+         SPACE 3                                                                
+***********************************************************************         
+*========================== ERROR HANDLING ===========================*         
+PBADLINE ST    RE,SAVERE                                                        
+         MVC   P(L'LINEBUFF),LINEBUFF                                           
+         GOTO1 =V(PRINTER)                                                      
+         B     *+8                                                              
+ERRPRNT  ST    RE,SAVERE                                                        
+         LA    RE,ERRTAB                                                        
+         CLI   ERROR,0             ERROR = 0 IS UNDEFINED                       
+         BNE   *+6                                                              
+         DC    H'0'                                                             
+         ZIC   RF,ERROR                                                         
+         BCTR  RF,0                COMPENSATE FOR OFF-BY-1-ERROR                
+         MH    RF,=H'40'                                                        
+         AR    RE,RF                                                            
+         MVC   P,SPACES                                                         
+         MVC   P+7(9),=C'*** ERROR'                                             
+         MVC   P+17(L'ERRMSG0),0(RE)                                            
+         TM    SWITCH1,SWIGSUB     PROCSS SOMETHNG ELSE BEFORE PRTING?          
+         BZ    *+10                                                             
+         L     RF,AGOSUB                                                        
+         BASR  RE,RF                                                            
+         GOTO1 =V(PRINTER)                                                      
+         GOTO1 =V(PRINTER)                                                      
+         MVI   ERROR,0             RESET ERROR CODE                             
+         OI    SWITCH1,SWIEROR     ERROR ENCOUNTERED                            
+         L     RE,SAVERE           RESTORE RE                                   
+         BR    RE                                                               
+***********************************************************************         
+         EJECT                                                                  
+         LTORG                                                                  
+         EJECT                                                                  
+***********************************************************************         
+*============ OBJECT MODULE OUTPUT FILE DATA CONTROL BLOCK ===========*         
+         SPACE 1                                                                
+*&&UK                                                                           
+PANFIL   DCB   DDNAME=PANFIL,DSORG=PS,RECFM=FB,MACRF=PM                         
+*&&                                                                             
+*&&US                                                                           
+PANFIL   DCB   DDNAME=PANFIL,DSORG=PS,RECFM=FB,MACRF=PM,LRECL=80                
+*&&                                                                             
+PHASES   DCB   DDNAME=PHASES,DSORG=PS,RECFM=FB,MACRF=GM,LRECL=14,      +        
+               EODAD=PUT08                                                      
+***********************************************************************         
+         SPACE 3                                                                
+***********************************************************************         
+*============================= JCL CARDS =============================*         
+         SPACE 1                                                                
+*         CARDTBL DEFINES JOB CONTROL INPUT PARAMETER CARDS                     
+*         AL1    LENGTH OF CARD NAME                                            
+*         AL1    ACTION ROUTINE NUMBER                                          
+*         XL1    ACTION FLAGS                                                   
+*         CL8    CARD NAME                                                      
+*                                                                               
+CARDTBL  DS    0CL15                                                            
+         DC    AL1(07,01,1),X'00',CL11'SYSTEM='                                 
+         DC    AL1(06,02,2),X'00',CL11'TRACE='                                  
+         DC    AL1(05,03,0),X'00',CL11'DDSIO='                                  
+         DC    AL1(06,04,0),X'00',CL11'DSPACE='                                 
+CARDTBLX DC    AL1(00)                                                          
+CLENGTH  EQU   0                                                                
+CROUTINE EQU   1                                                                
+CERROR   EQU   2                                                                
+CFLAG    EQU   3                                                                
+CSTRING  EQU   4                                                                
+***********************************************************************         
+         EJECT                                                                  
+***********************************************************************         
+*====================== MISCELLANEOUS CONSTANTS ======================*         
+*                                                                               
+*--------------------------- SORTER'S CARDS --------------------------*         
+*                                                                               
+SORTCARD DC    CL80'SORT FIELDS=(36,37,A,16,5,A),FORMAT=BI'                     
+RECCARD  DC    CL80'RECORD TYPE=F,LENGTH=81'                                    
+*                                   THE 81ST BYTE IS FOR TIEBREAKER             
+*                                                                               
+*--------------------------- ERROR MESSAGES --------------------------*         
+*                                                                               
+ERRTAB   DS    0H                                                               
+ERRMSG0  DS    0CL40                                                            
+ERRMS01  DC    CL40'INVALID SYSTEM REQUESTED'                                   
+ERRMS02  DC    CL40'INVALID LANGUAGE REQUESTED'                                 
+ERRMS03  DC    CL40'APPEND "A", "B", OR "C" ONLY FOR TEST'                      
+ERRMS04  DC    CL40'OPTIONS ARE "YES" OR "NO" ONLY'                             
+ERRMS05  DC    CL40'UNKNOWN CARD SPECIFIED'                                     
+ERRMS06  DC    CL40'NO SYSTEM SPECIFIED'                                        
+ERRMS07  DC    CL40'NO SUBREF ELEMENT'                                          
+ERRMS08  DC    CL40'NO EQUATE SYMBOL FOR MSG #'                                 
+ERRMS09  DC    CL40'DISK ERROR WHILE READING PAN LIBRARY'                       
+ERRMS10  DC    CL40'EQUATE-HEADER BOOK NOT FOUND IN LIBRARY'                    
+ERRMS11  DC    CL40'DATAMGR ERROR'                                              
+ERRMS12  DC    CL40'CAN NOT FIND MESSAGE RECORD'                                
+*                                                                               
+*----------------------------- ADDRESSES -----------------------------*         
+*                                                                               
+APFXTABX DC    A(PFXTABLX)                                                      
+*---------------------------- DATAMANAGER ----------------------------*         
+*                                                                               
+UTL      DC    F'0',X'0A'                                                       
+*                                                                               
+         DS    0L                                                               
+         DC    CL16'*SSB*SSB*SSB*SSB'                                           
+* ++INCLUDE FASSBOFF                                                            
+         PRINT OFF                                                              
+       ++INCLUDE FASSBOFF                                                       
+         PRINT ON                                                               
+         ORG   SSOOFF                                                           
+SSB      DC    XL(SSOOFFX-SSOOFF)'00'                                           
+         ORG   SSOXTND                                                          
+         DC    X'FF'               SET EXTENDED OFFLINE SSB                     
+         ORG   SSOMTIND            SYSTEM DATAMGR FLAGS                         
+         DC    AL1(SSOWRTN)        WRITE=NO (DON'T OPEN FOR UPDATE)             
+         ORG   SSODSPAC                                                         
+         DC    C'N'                FORCE DSPACE=N                               
+         ORG                                                                    
+*                                                                               
+FLIST    DS    0H                                                               
+         DC    CL8'NGENDIR '                                                    
+         DC    CL8'NGENFIL '                                                    
+         DC    CL8'X       '                                                    
+*---------------------------------------------------------------------*         
+*                                                                               
+GENDC    DC    CL9'+GE#GEN'                                                     
+EQHDRNM  DC    CL10'DDDDEQHD'                                                   
+MXCMMTLN DC    AL2(L'COMMENT)      MAX LENGTH OF COMMENT LINE                   
+DELIM2   DC    CL2'>>'                                                          
+STAMPS   DC    CL23' '             LEVEL NUMBER AND DATE                        
+STARTOFF DC    C'* START OF SYMBOLS'                                            
+ERRFND   DC    CL26'*** ERRORS ENCOUNTERED ***'                                 
+ERRNFND  DC    CL28'*** NO ERRORS ENCOUNTERED ***'                              
+*                                                                               
+GEGENQ   EQU   X'40'               GE#GEN                                       
+DDTBLQ   EQU   X'60'               DD#TABLE                                     
+DELIM    EQU   C'>'                DELIMITER                                    
+SPLTTR   EQU   C':'                SPLITTER                                     
+NUMER    EQU   (DCTXEQXX+L'DCTXEQXX)-DCTXEQUH                                   
+DENOM    EQU   (DCTXEQUX+L'DCTXEQUX)-DCTXEQUH                                   
+NMEQLIN  EQU   NUMER/DENOM                                                      
+         EJECT                                                                  
+*                                                                               
+*------------------------------- TABLES ------------------------------*         
+*                                                                               
+       ++INCLUDE DDPFXTBLE                                                      
+         SPACE 1                                                                
+PFXTABLX EQU   *                                                                
+***********************************************************************         
+         EJECT                                                                  
+***********************************************************************         
+*=================== MISCELLANEOUS WORKING STORAGE ===================*         
+*                                                                               
+MYWORK   DS    0H                                                               
+*                                                                               
+*------------------------------ ADDRESSES ----------------------------*         
+*                                                                               
+AGOSUB   DS    A                   A(SUBRTNE TO GO TO)                          
+DISKADD  DS    F                   DISK ADDRESS FOR GETREC                      
+DFLTEDA  DS    A                   DISK ADDR OF ENGLISH DEFAULT RECORD          
+DFLT1DA  DS    A                   DISK ADDR OF DEFAULT TO 1ST RECORD           
+TARGTDA  DS    A                   DISK ADDR OF TARGET RECORD                   
+SAVERE   DS    A                   SAVE RE                                      
+*                                                                               
+*-------------------------------- MISC -------------------------------*         
+*                                                                               
+DMCB     DS    6F                                                               
+DMWORK   DS    12D                                                              
+DUB      DS    D                                                                
+DATE     DS    CL8                 DATE FROM DATCON                             
+ELCODE   DS    XL1                 ELEMENT CODE                                 
+ERROR    DS    XL1                 ERROR CODE (SEE ERRTAB ABOVE)                
+RETCODE  DS    XL1                 XBASE RETURN CODE                            
+HLMSG    DS    H                   HIGH LOW-MSG# MARK                           
+HLMSGGEN DS    H                   HIGH LOW-MSG# GE#GEN MARK                    
+HHMSG    DS    H                   HIGH HIGH-MSG# MARK                          
+HHMSGGEN DS    H                   HIGH HIGH-MSG# GE#GEN MARK                   
+MSGNUM   DS    H                   MESSAGE EQUATE NUMBER                        
+EQSYMB   DS    CL8                 EQUATE SYMBOL                                
+FIVEBYTE DS    CL5                 TEMP 5-BYTE STORAGE                          
+PLUSDD   DS    CL9                 FOR +DD#DISK ETC.                            
+WORK     DS    CL17                                                             
+*                                                                               
+*------------------------------ COUNTERS -----------------------------*         
+*                                                                               
+GENCNT   DS    H                   COUNTS # OF GENERAL ENTRIES                  
+NGENCNT  DS    H                   COUNTS # OF NON-GENERAL ENTRIES              
+NUMPLINE DS    H                   NUMBER OF PAN LINES                          
+NUMMSG   DS    H                   NUMBER OF MSG RECDS READ                     
+MNEQCNT  DS    H                   # OF MAIN EQUATES ENCOUNTERED                
+SBEQCNT  DS    H                   # OF SUB-MAIN EQUATES ENCOUNTERED            
+*                                                                               
+*------------------------------- FLAGS -------------------------------*         
+*                                                                               
+SWITCH1  DS    XL1                 DEFAULT OFF                                  
+SWITRAC  EQU   X'01'               IF ON THEN PRINT RECORDS READ                
+SWIGSUB  EQU   X'02'               IF ON THEN DO SOMETHING ELSE FIRST           
+SWISTRT  EQU   X'04'               IF ON THEN FOUND START-OFF POINT             
+SWINSPC  EQU   X'08'               AT LEAST 1 NON-BLNK CHAR                     
+SWIEROR  EQU   X'10'               AT LEAST 1 ERROR ENCOUNTERED                 
+*                                                                               
+*------------------------------ BUFFERS ------------------------------*         
+*                                                                               
+COMMENT  DS    CL36                                                             
+OLDCMMT  DS    CL36                                                             
+KEY      DS    CL48                                                             
+KEYSAVE  DS    CL48                                                             
+LINEBUFF DS    CL80                DATA LINE WORK BUFFER                        
+PANLINE  DS    CL84                PANBOOK OUTPUT LINE                          
+TEMPBUFF DS    CL128                                                            
+MESSAGE  DS    CL256               TEXT AS STORED IN MSG RECORDS                
+MSGREC   DS    CL4004                                                           
+MSHRTWKQ EQU   *-MYWORK                                                         
+*                                                                               
+*---------------------------- SAVE STORAGE ---------------------------*         
+*                                                                               
+SVNSYS   DS    XL1                 SYSTEM NUMBER                                
+SVBKNM   DS    CL10                NAME OF PANBOOK                              
+SVSYSNME DS    CL(L'SYSLNAME)      SYSTEM NAME                                  
+SVPREF   DS    CL2                 PANBOOK PREFIX FOR GIVEN SYSTEM              
+MYWRKQ   EQU   *-MYWORK                                                         
+***********************************************************************         
+         EJECT                                                                  
+***********************************************************************         
+*================ FACPAK'S SYSTEMS -- DSECT AND TABLE ================*         
+*                                                                               
+*------------------------------- DSECT -------------------------------*         
+       ++INCLUDE FASYSLSTD                                                      
+*                                                                               
+*------------------------------- TABLE -------------------------------*         
+DDPNEQU  CSECT                                                                  
+       ++INCLUDE FASYSLST                                                       
+* EXTENDED FACPAK SYSTEM TABLE ENTRIES                                          
+         ORG   SYSLSTX                                                          
+         DC    X'0F0F',C'GENERALGEN',C'  ',X'0000'                              
+EXSYSLX  DC    X'00'                                                            
+***********************************************************************         
+         EJECT                                                                  
+***********************************************************************         
+*=============== FACPAK'S LANGUAGES -- DSECT AND TABLE ===============*         
+*                                                                               
+*------------------------------- DSECT -------------------------------*         
+       ++INCLUDE FALANG                                                         
+*                                                                               
+*------------------------------- TABLE -------------------------------*         
+DDPNEQU  CSECT                                                                  
+       ++INCLUDE FALANGTAB                                                      
+***********************************************************************         
+         EJECT                                                                  
+***********************************************************************         
+*============================ DPRINT DSECT ===========================*         
+       ++INCLUDE DDDPRINT                                                       
+***********************************************************************         
+         EJECT                                                                  
+***********************************************************************         
+*======================== MESSAGE RECORD DSECT =======================*         
+       ++INCLUDE GEGENMSG                                                       
+***********************************************************************         
+         EJECT                                                                  
+***********************************************************************         
+*========================= MAINTENANCE SCREEN ========================*         
+SCREEN   DSECT                                                                  
+       ++INCLUDE CTGENE1D                                                       
+***********************************************************************         
+         EJECT                                                                  
+***********************************************************************         
+*========================= PANBOOK LINE DSECT ========================*         
+PANLINED DSECT                                                                  
+PANSYMB  DS    CL8                 EQUATE SYMBOL                                
+         DS    CL1                                                              
+PANEQU   DS    CL3                 EQU                                          
+         DS    CL3                                                              
+PANEQNM  DS    CL5                 EQUATE NUMBER                                
+PANPLUS  DS    CL7                 +GE#GEN                                      
+         DS    CL8                                                              
+PANCMMT  DS    CL36                COMMENT                                      
+PANSRTN  DS    XL1                 TIEBREAKER IN A SORT                         
+***********************************************************************         
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'014DDPNEQU   10/22/13'                                      
+         END                                                                    

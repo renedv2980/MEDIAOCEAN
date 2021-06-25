@@ -1,0 +1,196 @@
+/*                                                                              
+*CATALP CCHMAIN                                                                 
+                                                                                
+  This program reads input from a data file containing definitions of           
+  help text and builds help records to be written off to GENDIR-GENFIL.         
+  These records will be read from the service request $help when help           
+  is asked for on the on-line system.                                           
+                                                                                
+  The flow of control works as follows:                                         
+     1) Find a key defintion.                                                   
+     2) Validate the key.                                                       
+     3) Process one or more pages of help text pertaining to the given          
+        key until text for that key has run out.                                
+     4) Repeat steps 1, 2, and 3 until end of file is encountered.              
+                                                                                
+  The program will also generate a transaction report with one line             
+  for each key defintion. The report will show the fields of each key           
+  and a message about whether the key was validated or rejected and             
+  the reason why.                                                               
+                                                                                
+  The jcl options are:                                                          
+     1) RESTRICT - Don't process keys for which the screen or field             
+                   has not yet been created.                                    
+     2) PROTECT - Don't update help records which have been added by            
+                  the on-line help maintenance program.                         
+     3) WRITE - When set to no, GENFIL will not be updated, but all             
+                other processing will occur including the report.               
+     4) DEBUG - Used for debugging purposes. When set to yes, ioareas           
+                will be dumped to aid in maintenance of this program.           
+*/                                                                              
+                                                                                
+#include <standard.h>                                                           
+#include <stdio.h>                                                              
+#include <ctype.h>                                                              
+#include <dds.h>                                                                
+#include <help.h>                                                               
+#include <printd.h>                                                             
+                                                                                
+#define movchr(src,des) memcpy(des,src,strlen(src))                             
+                                                                                
+FILE *infile;       /* file pointer for input data file */                      
+                                                                                
+struct dmblock *bptr;      /* DSECT for datamgr routines */                     
+struct vald *val;        /* DSECT for validation routines */                    
+struct helpkeyd *helpkey;     /* DSECT for help record keys */                  
+struct stringsd *strings;    /* DSECT for input file parsing */                 
+struct jcld *jcl;        /* DSECT for jcl options */                            
+struct printd *print;     /* DSECT for report - points to cprint */             
+                                                                                
+struct replined *repline;    /* DSECTs for report heading lines */              
+struct syslined *sysline;                                                       
+struct proglined *progline;                                                     
+struct restlined *restline;                                                     
+struct writelined *writeline;                                                   
+                                                                                
+char dataline(:100:);       /* line of input data from input file */            
+char heading(:100:);        /* heading for help record */                       
+char pageheading(:100:);    /* heading for current page of help text */         
+char fieldname(:100:);      /* field lable found in screen */                   
+char program(:100:);        /* current program */                               
+char language;              /* current language */                              
+                                                                                
+extern char cprint(::);     /* print buffer for call to PRINTER */              
+                                                                                
+int pagesprocessed;         /* number of pages in a key definiton */            
+int datatype;               /* input data type from readdata() */               
+                                                                                
+main()                                                                          
+{                                                                               
+    FILE *fopen();                                                              
+    struct dmblock *dmopen();                                                   
+                                                                                
+    infile = fopen("INFILE","R");                                               
+                                                                                
+    bptr = dmopen("CON","GEN",'U');                                             
+                                                                                
+    /* initialize the structure pointers */                                     
+    val = malloc(sizeof(struct vald));                                          
+    helpkey = malloc(sizeof(struct helpkeyd));                                  
+    strings = malloc(sizeof(struct stringsd));                                  
+    jcl = malloc(sizeof(struct jcld));                                          
+    print = (struct printd *)cprint;                                            
+    repline = (struct replined *)print->p;                                      
+    sysline = (struct syslined *)print->mid1;                                   
+    progline = (struct proglined *)print->mid2;                                 
+    restline = (struct restlined *)print->mid3;                                 
+    writeline = (struct writelined *)print->mid4;                               
+                                                                                
+    language = 0xff;      /* initial language is ENGLISH */                     
+                                                                                
+    helpkey->keysys = keysysq;                                                  
+    helpkey->type = typeq;                                                      
+    helpkey->language = language;                                               
+                                                                                
+    reportjcl();                                                                
+                                                                                
+    if(jcl->debug == 'Y')                                                       
+        helpdump();                                                             
+                                                                                
+    processfile();                                                              
+                                                                                
+    if(jcl->debug == 'Y')                                                       
+        helpdump();                                                             
+}                                                                               
+                                                                                
+helpdump()                                                                      
+/*                                                                              
+  This module does a hexdump of all help records on GENFIL for the              
+  system specified in the JCL option SYSTEM.  It will be called before          
+  and after an update if the DEBUG option is set to YES.                        
+*/                                                                              
+{                                                                               
+    char start(:30:),end(:30:);                                                 
+    strcpy(start,"x'0002'20x'00'x'00'");                                        
+    chexout(&jcl->system,start+16,1);                                           
+    strcpy(end,"x'0002'20x'00'x'00ff'");                                        
+    chexout(&jcl->system,end+16,1);                                             
+    filedump(bptr,start,end);                                                   
+}                                                                               
+                                                                                
+#define KEYFOUND       1                                                        
+#define LANGFOUND      2                                                        
+#define COMMENTFOUND   3                                                        
+#define TEXTFOUND      4                                                        
+                                                                                
+processfile()                                                                   
+/*                                                                              
+  This is the driver routine for processing the help records. It calls          
+  valkey() to validate the key defintion and then calls processkey() if         
+  the key is valid. Otherwise it skips the processing of the key and            
+  proceeds to the next key defintion.                                           
+*/                                                                              
+{                                                                               
+    /* find first key */                                                        
+    for(readdata() ; datatype != KEYFOUND ; readdata())                         
+        if(datatype == EOF)                                                     
+            return;                                                             
+        else if(datatype == LANGFOUND)                                          
+            changelang();                                                       
+                                                                                
+    /* process file */                                                          
+    while(datatype != EOF){                                                     
+        /* O.K. to go ahead with processing */                                  
+        if(valkey()){                                                           
+            strcpy(pageheading,heading);                                        
+            processkey();                                                       
+            reportkey();                                                        
+        }                                                                       
+                                                                                
+        /* error in validation haults processing of key */                      
+        else{                                                                   
+            reportkey();                                                        
+            readdata();                                                         
+        }                                                                       
+                                                                                
+        /* find next key */                                                     
+        for( ; datatype != EOF && datatype != KEYFOUND ; readdata())            
+            if(datatype == LANGFOUND)                                           
+                changelang();                                                   
+    }                                                                           
+}                                                                               
+                                                                                
+readdata()                                                                      
+/*                                                                              
+  reads a card into dataline, stripping out trailing spaces, and                
+  assigns a value to datatype.                                                  
+*/                                                                              
+{                                                                               
+    char *strip(),*fgets();                                                     
+    if(strip(fgets(dataline,100,infile)) == NULL)                               
+        datatype = EOF;                                                         
+    else if(memcmp(dataline,"<KEY>",5) == 0    ºº                               
+            memcmp(dataline,"<key>",5) == 0     )                               
+        datatype = KEYFOUND;                                                    
+    else if(memcmp(dataline,"<LANG>",6) == 0    ºº                              
+            memcmp(dataline,"<lang>",6) == 0     )                              
+        datatype = LANGFOUND;                                                   
+    else if(memcmp(dataline,"<COMMENT>",9) == 0    ºº                           
+            memcmp(dataline,"<comment>",9) == 0     )                           
+        datatype = COMMENTFOUND;                                                
+    else                                                                        
+        datatype = TEXTFOUND;                                                   
+}                                                                               
+                                                                                
+changelang()                                                                    
+{                                                                               
+    if((language = getlangcode(dataline+6)) == 0){                              
+        movchr("* ERROR * invalid language name",print->p);                     
+        cprinter();                                                             
+        movchr(dataline,print+5);                                               
+        cprinter();                                                             
+        cprinter();                                                             
+    }                                                                           
+    else                                                                        
+        helpkey->language = language;                                           
+}                                                                               

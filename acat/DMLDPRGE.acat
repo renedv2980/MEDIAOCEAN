@@ -1,0 +1,218 @@
+*          DATA SET DMLDPRGE   AT LEVEL 002 AS OF 11/02/16                      
+*CATALP DMLDPRGE                                                                
+         TITLE 'DMLDPRGE - LOAD/DUMP MODEL PURGE ROUTINE'                       
+* PARAMETER LIST                                                                
+*                                                                               
+* P1=A(RECORD)      PASS FIRST BYTE X'01'= RECORD IN CORE                       
+*                   RETURN VALUE    X'00'= KEEP RECORD                          
+*                                   X'FF'= PURGE RECORD                         
+*                                   X'FE'= CHANGED RECORD (RECOVERY)            
+*                                   X'FD'= ADD NEW BLOCKED RECORD               
+*                                   X'FC'= ADD NEW UNBLOCKED RECORD             
+* P2=A(PEELDATE)                                                                
+* P3=A(LAST DSKADR) PASS FIRST BYTE C'Y' = YOU ASKED ME TO RETURN               
+*                   RETURN VALUE    C'R' = RETURN BACK TO EXTERNAL              
+* P4=A(FILE DEFN)                                                               
+* P5=XL1            PASS FIRST BYTE X'10'= RECORD IS INDIRECT POINTER           
+                                                                                
+         PRINT NOGEN                                                            
+LDPURGE  CSECT                                                                  
+         NMOD1 WORKX-WORKD,LDPURGE                                              
+         USING WORKD,RC                                                         
+                                                                                
+* CONTROL FLOW LOGIC                                                            
+*                                                                               
+PRGCTL   ST    R1,APARM            SAVE PARAMETERS                              
+         MVC   PLIST,0(R1)                                                      
+         L     R2,0(R1)            R2=A(RECORD)                                 
+         LA    R2,0(R2)                                                         
+         USING MYRECD,R2                                                        
+         L     RA,=V(CPRINT)       RA=A(CPRINT) FOR PRINTING                    
+         USING DPRINT,RA                                                        
+         L     RE,=V(UPSIVAL)                                                   
+         MVC   UPSI,0(RE)          UPSI=00000001 TO PURGE DELETED RECS          
+*                                                                               
+PRGISREC TM    PLIST+16,X'10'      TEST IF INDIRECT POINTER                     
+         BZ    PRGDAREC                                                         
+         TM    L'MYKEY(R2),X'80'   YES-STATUS BYTE AFTER KEY                    
+         BZ    PRGKEEP                                                          
+         TM    UPSI,X'01'          TEST IF PURGING X'80' DELETES                
+         BO    PRGPURGE                                                         
+         B     PRGKEEP                                                          
+                                                                                
+PRGDAREC CLI   PLIST+8,C'Y'        RETURN CALL AS REQUESTED LAST TIME           
+         BE    RETREC                                                           
+         CLI   PLIST,X'01'         NORMAL CALL TO PROCESS RECORD                
+         BNH   PROREC                                                           
+         B     PRGXIT                                                           
+                                                                                
+PRGKEEP  L     R1,APARM            KEEP RECORD EXIT                             
+         MVI   0(R1),0                                                          
+         MVI   8(R1),0                                                          
+         B     PRGXIT                                                           
+                                                                                
+PRGPURGE L     R1,APARM            PURGE RECORD EXIT                            
+         MVI   0(R1),X'FF'                                                      
+         MVI   8(R1),0                                                          
+         B     PRGXIT                                                           
+                                                                                
+PRGPGRET L     R1,APARM            PURGE RECORD AND RETURN TO ME                
+         MVI   0(R1),X'FF'                                                      
+         MVI   8(R1),C'R'                                                       
+         B     PRGXIT                                                           
+                                                                                
+PRGCHG   L     R1,APARM            CHANGED RECORD (FOR RECOVERY)                
+         MVI   0(R1),X'FE'                                                      
+         MVI   8(R1),0                                                          
+         B     PRGXIT                                                           
+                                                                                
+PRGADD   L     R1,APARM            ADDED RECORD BLOCKED (NORMAL)                
+         MVI   0(R1),X'FD'                                                      
+         MVI   8(R1),0                                                          
+         B     PRGXIT                                                           
+                                                                                
+PRGADDU  L     R1,APARM            ADDED RECORD UNBLOCKED                       
+         MVI   0(R1),X'FC'                                                      
+         MVI   8(R1),0                                                          
+         B     PRGXIT                                                           
+                                                                                
+PRGXIT   XMOD1 1                                                                
+         EJECT                                                                  
+* PROCESS RECORD LOGIC - RECORD IN AREC - RETURN ALLOWED                        
+* THIS SAMPLE CODE COMES FROM THE PERSON SYSTEM WHERE THE RECORD                
+* X'0101',X'NNNN' IS A RECORD THAT CAN HAVE SLEEPERS - NNNN IS SEQ NUM          
+* X'0102',X'0000' IS NEXT RECORD AFTER X'0101'                                  
+* THIS ROUTINE WILL ADD 140 UNBLOCKED RECORDS OF FIXED LEN 256                  
+* THIS LENGTH WILL PRODUCE X'3D'=61 RECORDS/TRACK                               
+* IT WILL ADD AN EXTRA RECORD WITH DETAILS OF SLEEPER RECORDS ADDED             
+                                                                                
+PROREC   TM    UPSI,X'01'          PURGE DELETED RECORDS                        
+         BZ    PROREC1                                                          
+         TM    MYSTAT,X'80'                                                     
+         BO    PRGPURGE            EXIT TO PURGE THIS DELETED RECORD            
+                                                                                
+PROREC1  MVC   SVLASTK,SVTHISK     SAVE LAST AND THIS RECORD KEYS               
+         MVC   SVTHISK,MYKEY                                                    
+         CLC   SLEEPKEY,MYKEY      TEST IF RECORD HAS SLEEPERS                  
+         BE    PROREC2                                                          
+         CLC   SLEEPEND,MYKEY      TEST IF RECORD END SLEEPERS                  
+         BE    PROREC3                                                          
+         B     PRGKEEP             NORMAL EXIT TO KEEP RECORD                   
+                                                                                
+PROREC2  MVC   SVLAST#,MYKEY+2     SAVE LAST SEQUENCE NUMBER                    
+         B     PRGKEEP             NORMAL EXIT                                  
+                                                                                
+PROREC3  MVC   SVREC,MYKEY         SAVE RECORD THAT ENDED SLEEPERS              
+         B     PRGPGRET            PURGE THIS RECORD AND RETURN TO ME           
+         EJECT                                                                  
+* REQUESTED RETURN - DATA IN AREC AS LEFT PREVIOUSLY                            
+*                                                                               
+RETREC   CLC   ADDCNT,ADDMAX       TEST IF ADDED THE MAX                        
+         BL    RETREC1             NO ADD THE NEXT                              
+         BE    RETREC4             YES ADD ONE MORE WITH SLEEPER INFO           
+         XC    ADDCNT,ADDCNT                                                    
+         MVC   MYKEY(L'SVREC),SVREC RESTORE ORIGINAL RECORD                     
+         L     R1,APARM                                                         
+         MVI   0(R1),0             SET NORMAL RETURN                            
+         MVI   8(R1),0             END OF REQUESTED RETURN                      
+         B     PRGXIT                                                           
+*                                                                               
+RETREC1  LH    RF,ADDCNT           BUMP NUMBER OF ADDED SLEEPERS                
+         AHI   RF,1                                                             
+         STH   RF,ADDCNT                                                        
+         CHI   RF,2                TEST IF ADDING SECOND NEW SLEEPER            
+         BNE   RETREC2                                                          
+         MVC   SVFRST#,SVLAST#     SAVE FIRST SEQNUM                            
+         L     RF,PLIST+8                                                       
+         LA    RF,0(RF)                                                         
+         MVC   SVFRSTDA,0(RF)      SAVE FIRST DSKADR                            
+*                                                                               
+RETREC2  LH    RF,SVLAST#          BUMP SEQNUM                                  
+         AHI   RF,1                                                             
+         STH   RF,SVLAST#          SET NEW SEQNUM FOR SLEEPER                   
+         XC    MYKEY,MYKEY                                                      
+         MVC   MYKEY(L'SLEEPKEY),SLEEPKEY                                       
+         STCM  RF,3,MYKEY+2                                                     
+         MVI   MYKEY+4,C'S'        SET SLEEPER RECORD                           
+*                                                                               
+RETREC3  L     R1,APARM            EXIT AND REQUEST A RETURN                    
+         MVI   0(R1),X'FC'         SET TO ADD AN UNBLOCKED RECORD               
+         MVI   8(R1),C'R'          REQUEST A RETURN                             
+         B     PRGXIT                                                           
+*                                                                               
+RETREC4  L     RF,PLIST+8          ADD EXTRA RECORD WITH SLEEPER INFO           
+         LA    RF,0(RF)                                                         
+         MVC   SVLASTDA,0(RF)      SAVE LAST DSKADR                             
+*                                                                               
+RETREC5  MVC   MYKEY(L'SVREC),SVREC BUILD SLEEPER INFO RECORD                   
+         XC    MYKEY,MYKEY                                                      
+         MVC   MYKEY(L'SLEEPKEY),SLEEPKEY                                       
+         MVC   MYKEY+2(2),SVLAST#                                               
+         MVI   MYKEY+4,C'X'        SET SLEEPER INFO RECORD                      
+         LH    RF,SVFRST#                                                       
+         STCM  RF,15,MYELSEQF      SET FRST SEQNUM                              
+         LH    RF,SVLAST#                                                       
+         STCM  RF,15,MYELSEQL      SET LAST SEQNUM                              
+         MVC   MYELDSKF,SVFRSTDA   SET FRST DSKADR                              
+         MVC   MYELDSKL,SVLASTDA   SET LAST DSKADDR                             
+         LH    RF,ADDCNT           BUMP RECORDS ADDED                           
+         AHI   RF,1                                                             
+         STH   RF,ADDCNT                                                        
+         B     RETREC3             SET TO RETURN ONCE MORE                      
+         EJECT                                                                  
+         DS    0D                                                               
+         DC    C'SLEEPERS'                                                      
+ADDMAX   DC    H'140'              MAX NUMBER OF SLEEPERS TO ADD                
+ADDCNT   DC    H'0'                NUMBER SLEEPERS ADDED THIS TIME              
+SLEEPKEY DC    XL2'0101'           KEY OF RECORD THAT HAS SLEEPERS              
+SLEEPEND DC    XL2'0102'           KEY OF RECORD THAT ENDS SLEEPERS             
+SVFRST#  DC    XL2'0000'           SEQ NUMBER OF FRST NEW SLEEPER               
+SVLAST#  DC    XL2'0000'           SEQ NUMBER OF LAST SLEEPER                   
+SVFRSTDA DC    XL4'00'             DSKADR OF FRST NEW SLEEPER                   
+SVLASTDA DC    XL4'00'             DSKADR OF LAST NEW SLEEPER                   
+UPSI     DC    X'00'               UPSI FLAG - 01=PURGE DELETED RECORDS         
+FLAGS    DC    XL3'00'                                                          
+SVLASTK  DC    XL36'00'            KEY OF LAST RECORD                           
+SVTHISK  DC    XL36'00'            KEY OF THIS RECORD                           
+*                                                                               
+         LTORG                                                                  
+*                                                                               
+SVREC    DC    XL256'00'           SAVE SLEEPEND RECORD FOR RESTORE             
+                                                                                
+WORKD    DSECT                                                                  
+DUB      DS    D                                                                
+DMCB     DS    6F                                                               
+APARM    DS    A                                                                
+*                                                                               
+PLIST    DS    0XL20                                                            
+AREC     DS    A                                                                
+ADSKADR  DS    A                                                                
+APARAMC  DS    A                                                                
+VLDDEFN  DS    A                                                                
+RECTYPE  DS    XL1                 X'10'=INDIRECT POINTER                       
+         DS    XL3                                                              
+*                                                                               
+WORKX    EQU   *                                                                
+                                                                                
+MYRECD   DSECT                                                                  
+MYKEY    DS    XL36                REC KEY                                      
+MYLEN    DS    XL2                 REC LEN                                      
+MYSTAT   DS    XL2                 REC STAT - X'80' DELETED                     
+MYCTRL   DS    XL4                                                              
+MYDATA   DS    0X                  REC DATA                                     
+MYELID   DS    XL1                 ELM ID                                       
+MYELLEN  DS    XL1                 ELM LEN                                      
+MYELSEQF DS    XL4                 SEQ NUM OF FRST SLEEPER                      
+MYELSEQL DS    XL4                 SEQ NUM OF LAST SLEEPER                      
+MYELDSKF DS    XL4                 DSK ADR OF FRST SLEEPER                      
+MYELDSKL DS    XL4                 DSK ADR OF LAST SLEEPER                      
+         EJECT                                                                  
+*DMLDDEFN                                                                       
+       ++INCLUDE DMLDDEFN                                                       
+         EJECT                                                                  
+*DDDPRINT                                                                       
+       ++INCLUDE DDDPRINT                                                       
+                                                                                
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'002DMLDPRGE  11/02/16'                                      
+         END                                                                    

@@ -1,0 +1,2318 @@
+*          DATA SET DEGETCAB   AT LEVEL 097 AS OF 02/28/20                      
+*PROCESS USING(WARN(15))                                                        
+*CATALP DEGETCAB                                                                
+DEGETCAB TITLE '- CABLE FILE READER'                                            
+***********************************************************************         
+* READER FOR REGULAR CABLE(+WEIGHTED), AND CABLE MOVIE GOER                     
+*                                                                               
+* - REGULAR CABLE: RECORDS HAVE THREE LEVELS     - NO BTYPE -                   
+*     1. PROGRAM AVERAGE (MAY BE MISSING=NO DEMOS)                              
+*     2. TRACK AVERAGES (MAY BE MISSING)                                        
+*     3. TELECASTS/EPISODES (NEVER! MISSING)                                    
+*   THE TIME FILTERING IS DONE ONLY AT THE TELECAST LEVEL.                      
+*   ONE LEVEL WILL ALWAYS FIT ON THE SAME RECORD (ONLY 1 MKT BREAK).            
+*   COVERAGE UNIVERSES ARE ON THE CONTROL RECORD. (WITH '04' ELEM)              
+*   (WEIGHTED CABLE HAS THE SAME EXACT FORMAT, BUT GETS A BTYPE OF 'E')         
+*                                                                               
+* - CABLE NAD:  - BTYPE 'N' -                                                   
+*   A) REGULAR DATA (NON BREAKOUTS/SPECIALS) HAS TWO LEVELS                     
+*      1. PROGRAM AVERAGE (MAY BE MISSING)                                      
+*      2. TRACK AVERAGES (MAY BE MISSING)                                       
+*   B) BREAKOUTS AND SPECIALS ARE THE ONLY TELECAST INFORMATION. THEY           
+*      COME ON SEPARATE RECODS (DIFF STYP) AND ARE NEVER TOGETHER WITH          
+*      THE PROGRAM OR TRACK AVERAGE.                                            
+*   THE TIME FILTERING IS DONE AT THE DEEPEST LEVEL OF DETAIL (TRACK            
+*   OR PROG AVERAGE) AND ON THE TELECAST LEVEL.                                 
+*   ONE LEVEL WILL SPAN MULTIPLE RECORDS (MULTIPLE MKT BREAKS).                 
+*   NO UNIVERSES ARE SAVED ON THE CONTROL OR ACTUAL RECORD.                     
+*                                                                               
+* - CABLE MOVIE GOER:  - BTYPE 'M' -                                            
+*   REGULAR DATA AND BREAKOUTS/SPECIALS ARE ON THE SAME RECORD                  
+*     1. PROGRAM AVERAGE (MAY BE MISSING)                                       
+*     2. TELECASTS/EPISODES (ONLY IF BREAKOUTS OR SPECIALS)                     
+*     3. TRACK AVERAGES (MAY BE MISSING)                                        
+*   THE TIME FILTERING IS DONE AT THE DEEPEST LEVEL OF DETAIL (TRACK            
+*   OR PROG AVERAGE) AND ON THE TELECAST LEVEL.                                 
+*   ONE LEVEL MAY SPAN MULTIPLE RECORDS (3 MKT BREAKS).                         
+*   COVERAGE UNIVERSES ARE AT THE PROGRAM LEVEL ON THE ACTUAL RECORD.           
+***********************************************************************         
+GETCAB   CSECT                                                                  
+         PRINT NOGEN                                                            
+*        NMOD1 200,**GETCAB,RA,CLEAR=YES                                        
+         NMOD1 GETCABX,**GETCAB,RA,CLEAR=YES                                    
+         LR    R7,RC               SAVE SPANNING WORK AREAS                     
+         USING GETCABD,R7          LOCAL W/S                                    
+         L     RC,0(R1)                                                         
+         USING DEGETD,RC           RC=A(W/S)                                    
+         USING COMFACSD,R8                                                      
+         USING DBLOCKD,R6                                                       
+         STCM  R7,15,DBSPANAD      1ST 150 BYTES IS W/S OF SPANNED RECS         
+         LA    RE,CBLUNV                                                        
+         STCM  RE,15,ACBLUNV       NEXT 170 BYTES IS CBL UNVS                   
+*                                                                               
+         XC    DBNDXDA,DBNDXDA                                                  
+         XC    DBNDXDA2,DBNDXDA2                                                
+*                                                                               
+         MVC   SVDBASRC,DBACTSRC   SAVE INCOMING VALUES                         
+         MVC   SVDBIMED,DBINTMED   (CHANGED IN THE HOOK)                        
+         MVC   SVDBIFIL,DBINTFIL                                                
+*                                                                               
+         BAS   RE,GETNLIV                                                       
+*                                                                               
+         CLI   0(R1),0             1ST TIME IN?                                 
+         BNE   CBL4                                                             
+         L     R9,DBAREC           CLEAR IO AREA                                
+         XC    0(30,R9),0(R9)                                                   
+         ZIC   R9,DBFUNCT          SAVE THE REQUESTED FUNCTION                  
+         MVI   DBFUNCT,DBTSTACS    SET FOR VALIDATE                             
+         GOTO1 ATSTACS             CALL TO VALIDATE ACCESS                      
+         STC   R9,DBFUNCT          RESTORE ORIGINAL REQUEST                     
+         CLI   DBERROR,0           EXIT IF NOT VALID                            
+         BNE   GETX                                                             
+*                                                                               
+         LA    R1,DBSELBK          SET THE CONTOL TABLE                         
+         L     RF,AGETCTRL                                                      
+         OC    ACONHDR,ACONHDR                                                  
+         BNZ   *+6                                                              
+         BASR  RE,RF                                                            
+         XC    ACTPTT,ACTPTT       INITIALIZE                                   
+*                                                                               
+         CLI   DBBTYPE,C'N'        CABLE NAD                                    
+         BNE   CBL0                GET 1ST WK OF MONTH IN NADBOOK               
+*                                                                               
+         ICM   RF,15,DBCOMFCS                                                   
+         ICM   RF,15,CDEMTABS-COMFACSD(RF)                                      
+         GOTO1 (RF),DMCB,NENACWKS  GET NIELSEN MONTH<->WEEK TABLE               
+         ICM   RE,15,DMCB          A(TABLE) RETURNED IN P1                      
+         BNZ   *+6                 TEMP                                         
+         DC    H'0'                BAD TABLEID PASSED                           
+*                                                                               
+         USING NEWKSD,RE           MONTH TO WEEK TABLE                          
+NADBK1   CLC   DBSELBK(1),NEWKSYR  COMPARE ON YEAR                              
+         BNE   NADBK2                                                           
+         CLC   DBSELBK+1(1),NEWKSLST COMPARE ON END WK OF THE MONTH             
+         BH    NADBK2                                                           
+         CLC   DBSELBK+1(1),NEWKSFRS COMPARE ON FRST WK OF THE MONTH            
+         BL    NADBK2                                                           
+         MVC   NADBOOK(1),DBSELBK                                               
+         MVC   NADBOOK+1(1),NEWKSFRS FIRST WEEK OF THE MONTH                    
+         ZIC   R1,DBSELBK+1        REQUESTED WEEK                               
+         ZIC   R0,2(RE)            FIRST WEEK OF THE MONTH                      
+         SR    R1,R0                                                            
+         AHI   R1,1                                                             
+         STC   R1,NADWKNO          WEEK NUMBER: 1 THROUGH 8                     
+         B     CBL0                                                             
+NADBK2   LA    RE,NEWKSQ(RE)                                                    
+         CLI   0(RE),X'FF'                                                      
+         BNE   NADBK1                                                           
+         MVC   NADBOOK,DBSELBK     SAVE GIVEN WEEK                              
+         MVI   NADWKNO,0                                                        
+*                                                                               
+CBL0     DS    0H                                                               
+         XC    AODTLIST,AODTLIST                                                
+         ICM   RE,15,ADTLIST      'DYTM' EXTEND RECEIVED?                       
+         BNZ   *+8                 USE IT                                       
+         BAS   RE,GETODYT          LOOK FOR EXTENSION 'ODYT'                    
+*                                                                               
+         CLI   DBBTYPE,C'D'        DIARY ONLY                                   
+         BNE   *+8                                                              
+         MVI   DBBTYPE,0           CHANGE TO REGULAR BOOK                       
+*                                                                               
+         OC    DBSEL1WK,DBSEL1WK   DBSEL1WK'S DAY REPLACES DBSELDAY             
+         BZ    CBL4                                                             
+         GOTO1 CDATCON,DMCB,(2,DBSEL1WK),(0,WORK)                               
+         GOTO1 CGETDAY,DMCB,WORK,DUB                                            
+         MVC   DBSELDAY,0(R1)      USE DAY RETURNED BY GETDAY                   
+*                                                                               
+CBL4     DS    0H                                                               
+         XC    DBFACTOR,DBFACTOR                                                
+         CLI   DBSELPTT,X'00'      IS IT SET?                                   
+         BNE   *+8                                                              
+         MVI   DBSELPTT,C'P'       OUTPUT PROGRAM SUMMARY ONLY                  
+         MVI   SVSELPTT,0          CLEAR REPORTING OPTION SAVE AREA             
+         MVC   ORIGPTT,DBSELPTT                                                 
+         CLI   DBLSTNXT,1          TEST FOR RENTRY-ALL PRGS FOR BK/STA          
+         BE    GETQREC             RD ALL Q-RECDS' IN JFILTAB FIRST             
+*                                                                               
+CBL4RST  MVI   JFLAG,0             INIT FOR START OF REQUEST                    
+         OC    DBSELDAY(5),DBSELDAY TEST FOR DAY/TIME                           
+         BZ    CBL5                 FILTERING LOGIC                             
+         ICM   RE,15,AODTLIST                                                   
+         BNZ   CBL4A               HAVE DAY/TIME LIST                           
+         GOTO1 AGETDQ,0            SET DAY/TIME FIELDS                          
+         BAS   RE,SETADJ                                                        
+*                                                                               
+CBL4A    OC    AUSERRTN,AUSERRTN   TEST FOR USER HOOK                           
+         BNZ   *+6                                                              
+         DC    H'0'                                                             
+CBL5     B     BLDJTAB                                                          
+         EJECT                                                                  
+         DROP  RE                                                               
+**********************************************************************          
+*BLDJTAB - READ J-RECDS.  PICK OFF FILE NUMBERS AND PUT INTO TABLE              
+**********************************************************************          
+BLDJTAB  DS    0H                                                               
+         CLI   JFLAG,X'02'                                                      
+         BE    GETEOF              DONE READING                                 
+         LA    RE,JFILTAB          J-RECD W/FILE #'S TABLE                      
+         LA    RF,L'JFILTAB        CLEAR TABLE                                  
+         XCEF                                                                   
+         XC    FILPTR,FILPTR                                                    
+         MVI   DDSTYP,0                                                         
+         MVI   PRGFOUND,C'N'                                                    
+         LA    R3,JFILTAB                                                       
+         CLI   JFLAG,X'01'         CONTINUE TABLE WHERE LEFT OFF                
+         BE    *+18                                                             
+         XC    LASTDDS,LASTDDS     CLEAR LAST DDS NUMBER IN TABLE               
+         MVI   LASTDDS+1,X'01'     BYPASS HIGHEST FILE# RECD                    
+         B     BLDJ15                                                           
+*                                                                               
+BLDJ10   SR    RE,RE                                                            
+         ICM   RE,3,LASTDDS                                                     
+         LA    RE,1(RE)                                                         
+         STCM  RE,3,LASTDDS        READ HI FOR NEXT DDS NUMBER                  
+*                                                                               
+BLDJ15   DS    0H                                                               
+         MVI   JFLAG,X'01'         CONTINUE WHERE WE LEAVE OFF                  
+         LA    R2,DBKEY                                                         
+         USING PJKEY,R2                                                         
+         XC    DBKEY,DBKEY                                                      
+         MVI   PJCODE,PJCODEQU     READHI J-REC FOR STAT/BOOK                   
+         MVC   PJMEDIA,INTMED                                                   
+         MVC   PJSRC,DBACTSRC                                                   
+*                                                                               
+         CLI   SVOOHLIV,0          SET IF OOH/OOHC SOURCE                       
+         JE    *+10                                                             
+         MVC   PJSRC,SVOOHLIV                                                   
+*                                                                               
+         MVC   PJSTAT(4),DBCABNUM                                               
+         MVI   PJSTAT+4,C'C'                                                    
+         MVC   PJBOOK,DBSELBK                                                   
+*                                                                               
+         CLI   DBBTYPE,C'E'                                                     
+         BE    *+8                                                              
+         CLI   DBBTYPE,C'N'        FOR NAD AND MOVG, FILL IN BTYP               
+         BE    *+8                                                              
+         CLI   DBBTYPE,C'M'                                                     
+         BNE   *+10                                                             
+         MVC   PJBTYPE,DBBTYPE                                                  
+*                                  - CABLE NAD IS MONTHLY FILE -                
+         CLI   DBBTYPE,C'N'                                                     
+         BNE   BLDJ18                                                           
+         MVC   PJEXTNUM(1),DDSTYP                                               
+         CLI   DDSTYP,0            STYP=0 IS REALLY MONTHLY DATA                
+         BNE   *+10                                                             
+         MVC   PJBOOK,NADBOOK      SHIFT TO 1ST WEEK OF MONTH                   
+*                                                                               
+BLDJ18   TM    SPNETFLG,SPCBLQ                                                  
+         BNO   *+12                                                             
+         MVI   PJMEDIA,C'C'                                                     
+         MVI   PJSRC,C'N'                                                       
+         MVI   IOFLAG,DIR+HIGH                                                  
+         MVC   PJEXTNUM+3(2),LASTDDS  EITHER 0 OR NEXT DDS PRG#                 
+         OC    DBSELPRG,DBSELPRG      READ FOR A PARTICULAR PRG?                
+         BZ    *+10                                                             
+         MVC   PJEXTNUM+3(2),DBSELPRG                                           
+*                                                                               
+BLDJ20   MVC   KEYSAVE(L'PJKEY),PJKEY                                           
+         GOTO1 AIO,IOFLAG                                                       
+         BNE   GETX                PROBLEMS READING FILE                        
+*                                                                               
+         CLC   PJKEY(PJEXTNUM-PJKEY),KEYSAVE   MATCH ON STATION/BK?             
+         BNE   BLDJEOF                                                          
+         CLI   DBBTYPE,C'N'        FOR CABLE NAD, COMPARE ON STYP               
+         BNE   *+14                                                             
+         CLC   PJEXTNUM(1),KEYSAVE+PJEXTNUM-PJKEY                               
+         BNE   BLDJEOF                                                          
+*                                                                               
+BLDJ25   OC    DBSELPRG,DBSELPRG                                                
+         BZ    BLDJ26                                                           
+         CLC   PJKEY(PJINTNUM-PJKEY),KEYSAVE  MATCH ON PRG # TOO?               
+         BE    BLDJ26                                                           
+         CLI   DBBTYPE,C'N'        FOR CABLE NAD,                               
+         BE    BLDJEOF             GO TRY NEXT STYP                             
+         B     GETEOF                                                           
+*                                                                               
+BLDJ26   CLI   DBBTYPE,C'N'                                                     
+         BNE   *+8                                                              
+         MVI   PRGFOUND,C'Y'       MATCH ON PROGRAM #                           
+         MVC   DBMINKEY,PJINTNUM   FILE NUMBER                                  
+         MVC   DIRSAVE,PJKEY       SAVE J-RECD KEY                              
+         MVC   0(2,R3),PJINTNUM    SAVE FILE NUMBER IN TABLE                    
+         CLI   DBBTYPE,C'N'                                                     
+         BNE   *+10                                                             
+         MVC   2(1,R3),PJEXTNUM    STATION TYPE                                 
+         MVC   LASTDDS,PJEXTNUM+3  SAVE ACTUAL DDS NUMBER                       
+         CLI   DBBTYPE,C'N'                                                     
+         BE    *+14                                                             
+         OC    DBSELPRG,DBSELPRG   PRG FOUND                                    
+         BNZ   BLDJEOF             ONLY ONE J-REC PER PRG/BOOK                  
+         LA    R3,2(R3)            NEXT ENTRY IN TABLE                          
+         LA    RE,JFILTAB+L'JFILTAB-2                                           
+         CLI   DBBTYPE,C'N'                                                     
+         BNE   *+12                                                             
+         LA    R3,1(R3)            NEED EXTRA BYTE FOR STATION TYPE             
+         SHI   RE,1                                                             
+         CR    R3,RE               TABLE FULL?                                  
+*        BL    BLDJ10              READ NEXT J-REC INTO TABLE                   
+         BNL   BLDJDONE                                                         
+         OC    DBSELPRG,DBSELPRG                                                
+         BZ    BLDJ10                                                           
+*                                                                               
+BLDJEOF  DS    0H                                                               
+         CLI   DBBTYPE,C'N'                                                     
+         BNE   BLDJDONE                                                         
+         XC    LASTDDS,LASTDDS     CLEAR LAST DDS NUMBER IN TABLE               
+         MVI   LASTDDS+1,X'01'     BYPASS HIGHEST FILE# RECD                    
+         MVC   DDSTYP,KEYSAVE+PJEXTNUM-PJKEY                                    
+         CLI   DDSTYP,0                                                         
+         BNE   *+12                                                             
+         MVI   DDSTYP,C'B'       GO READ BREAKOUTS                              
+         B     BLDJ15                                                           
+         CLI   DDSTYP,C'B'                                                      
+         BNE   *+12                                                             
+         MVI   DDSTYP,C'S'       GO READ SPECIALS                               
+         B     BLDJ15                                                           
+         CLI   DDSTYP,C'S'                                                      
+         BE    *+6                 DONE FILLING TABLE                           
+         DC    H'0'                                                             
+BLDJDONE OC    JFILTAB(2),JFILTAB  ANY RECDS IN TABLE?                          
+         BZ    BLDPREC             NO, DONE                                     
+         CLI   DBBTYPE,C'N'                                                     
+         BNE   *+12                                                             
+         CLI   PRGFOUND,C'Y'       MATCH ON PROGRAM NUMBER?                     
+         BNE   GETEOF                                                           
+         MVI   JFLAG,X'02'         DONE READING J'S                             
+         LA    RE,JFILTAB          SET PTR TO 1ST TABLE ENTRY                   
+         ST    RE,FILPTR           TABLE PTR                                    
+         XC    DBNDXDA,DBNDXDA                                                  
+         XC    DBNDXDA2,DBNDXDA2                                                
+         MVI   LASTSTYP,0                                                       
+         B     GETQREC                                                          
+*                                                                               
+BLDPREC  CLI   DBFUNCT,DBVLNBK                                                  
+         BNE   GETEOF                                                           
+         XC    DBKEY,DBKEY                                                      
+         USING PRKEY,R2                                                         
+         MVC   PRKEY(3),=C'PCN'                                                 
+         MVC   PRSTAT(4),DBCABNUM                                               
+         MVI   PRSTAT+4,C'C'                                                    
+         MVC   PRBOOK,DBSELBK                                                   
+*                                                                               
+         CLI   DBBTYPE,C'E'                                                     
+         BE    *+8                                                              
+         CLI   DBBTYPE,C'N'                                                     
+         BE    *+8                                                              
+         CLI   DBBTYPE,C'M'                                                     
+         BNE   *+10                                                             
+         MVC   PRBTYP,DBBTYPE                                                   
+*                                                                               
+         MVC   KEYSAVE(L'DBKEY),PRKEY                                           
+         MVI   IOFLAG,DIR+HIGH                                                  
+         GOTO1 AIO,IOFLAG                                                       
+         BNE   GETX                                                             
+         CLC   PRKEY(PRSTYP-PRKEY),KEYSAVE  MATCH ON STATION/BK                 
+         BNE   GETEOF                                                           
+         MVC   DBSTA2,DBSTATUS                                                  
+         MVI   DBRECTYP,DBRECNBK                                                
+         MVI   DBMODE,DBMFRST                                                   
+         B     GETX                                                             
+         EJECT                                                                  
+**********************************************************************          
+*GETQREC - WITH FILE NUMBER IN DBMINKEY, READ Q-RECD                            
+**********************************************************************          
+GETQREC  DS    0H                                                               
+         L     R2,FILPTR           PT TO TABLE ENTRY                            
+         OC    0(2,R2),0(R2)       ZERO=END OF TABLE                            
+         BZ    BLDJTAB             RDHI J-RECDS AND RE-FILL TABLE               
+         LA    R3,DBKEY            BUILD Q-RECD IN DBKEY                        
+         USING PMKEY,R3                                                         
+         XC    DBKEY,DBKEY                                                      
+         XC    DBLSTDIR(L'DBKEY),DBLSTDIR                                       
+         MVI   PMCODE,PMCODEQU                                                  
+         MVC   PMMEDIA,INTMED                                                   
+         CLI   DBMEDOVR,0          OVERRIDE MEDIA                               
+         BE    *+10                                                             
+         MVC   PMMEDIA,DBMEDOVR                                                 
+         MVC   PMSRC,DBACTSRC                                                   
+*                                                                               
+         CLI   SVOOHLIV,0          SET IF OOH/OOHC SOURCE                       
+         JE    *+10                                                             
+         MVC   PMSRC,SVOOHLIV                                                   
+*                                                                               
+         TM    SPNETFLG,SPCBLQ                                                  
+         BNO   *+12                                                             
+         MVI   PMMEDIA,C'C'                                                     
+         MVI   PMSRC,C'N'                                                       
+*                                                                               
+         MVC   PMBOOK,DBSELBK                                                   
+         MVC   PMSTAT(4),DBCABNUM                                               
+         MVI   PMSTAT+4,C'C'                                                    
+*                                                                               
+         CLI   DBBTYPE,C'E'                                                     
+         BE    *+8                                                              
+         CLI   DBBTYPE,C'N'                                                     
+         BE    *+8                                                              
+         CLI   DBBTYPE,C'M'                                                     
+         BNE   *+10                                                             
+         MVC   PMBTYP,DBBTYPE                                                   
+*                                                                               
+GETQ10   L     R2,FILPTR           PT TO ENTRY                                  
+         MVC   DBMINKEY,0(R2)      FILE NUMBER - FROM JFILTAB                   
+         XC    DBMINKEY,=X'FFFF'   PJINTNUM HAS FILE# IN REV ORDER              
+         MVC   PMPNUM,DBMINKEY                                                  
+         MVC   DBNDXDA,DBNDXDA2                                                 
+         MVC   DBSTATUS,DBSTA2                                                  
+*                                                                               
+         CLI   DBBTYPE,C'N'        FOR CABLE NAD,                               
+         BNE   GETQ15                                                           
+         MVC   PMSTYP,2(R2)        GET STYP                                     
+         CLC   PMSTYP,LASTSTYP                                                  
+         BE    *+10                                                             
+         XC    DBNDXDA,DBNDXDA                                                  
+         MVC   LASTSTYP,PMSTYP                                                  
+         CLI   PMSTYP,0            IF MONTHLY DATA (STYP=0),                    
+         BNE   *+10                                                             
+         MVC   PMBOOK,NADBOOK      SWITCH TO FIRST WEEK OF THE MONTH            
+*                                                                               
+GETQ15   MVI   IOFLAG,FILE+READ                                                 
+         GOTO1 AIO,IOFLAG                                                       
+         BNE   RESETJ              DISK ERROR - TRY NEXT J                      
+*                                                                               
+GETQ20   MVC   DBNDXDA2,DBNDXDA                                                 
+         MVC   DBSTA2,DBSTATUS                                                  
+         LA    R2,2(R2)                                                         
+         CLI   DBBTYPE,C'N'                                                     
+         BNE   *+8                                                              
+         LA    R2,1(R2)            1 BYTE EXTRA FOR STYP                        
+         ST    R2,FILPTR           PT TO NEXT ENTRY                             
+         B     TSTIME                                                           
+*                                                                               
+RESETJ   LA    R2,2(R2)                                                         
+         CLI   DBBTYPE,C'N'                                                     
+         BNE   *+8                                                              
+         LA    R2,1(R2)            1 EXTRA BYTE FOR STYPE                       
+         ST    R2,FILPTR           PT TO NEXT ENTRY                             
+         B     GETQREC                                                          
+         DROP  R3                                                               
+         EJECT                                                                  
+**********************************************************************          
+*TSTIME  - GET ALL PROGRAMS FOR REQUESTED DAYS AND TIMES                        
+**********************************************************************          
+TSTIME   DS    0H                  TEST DAYS AND TIMES FILTERS FOR PRGM         
+         CLI   DBLSTNXT,1          TEST FOR RENTRY-ALL PRGS FOR BK/STA          
+         BE    TSTIM5                                                           
+         GOTO1 ATSTMRKT            PROCESS Q-(PROGRAM)-RECD                     
+         BNE   GETX                                                             
+*                                                                               
+TSTIM5   MVC   DBNDXDA2,DBNDXDA                                                 
+         MVC   DBSTA2,DBSTATUS                                                  
+         XC    DBAQUART,DBAQUART                                                
+         SR    R0,R0                                                            
+         L     RF,DBAREC                                                        
+         AH    RF,DBDTADSP                                                      
+         CLI   0(RF),X'01'         MKT ELEMENT?                                 
+         BNE   *+10                                                             
+         IC    R0,1(RF)                                                         
+         AR    RF,R0               BUMP PAST IT                                 
+         CLI   0(RF),X'04'         CNTL RECD- TELEC TIMES BITS                  
+         BNE   GETQREC             BYPASS THIS RECD - NEXT RECD                 
+         OC    DBSELDAY(1),DBSELDAY                                             
+         BNZ   TSTIM10             FILTER DAYS PRESENT                          
+         OC    DBSELTIM(4),DBSELTIM TIME FILTER?                                
+         BZ    TSTIM20                                                          
+*                                                                               
+TSTIM10  LA    R5,=C'ACT'                                                       
+         ICM   R4,15,AODTLIST                                                   
+         BNZ   TSTIM10O                                                         
+         ICM   R5,8,DBSELDAY                                                    
+         GOTO1 =V(DETABQH),DMCB,(R5),2(RF),DBSELTIM,DBSELTIM+2,RR=RELO          
+         OC    DMCB+16(4),DMCB+16     ANY MATCHING TIMES?                       
+         BZ    GETQREC             NO-BYPASS THIS Q-REC, RD NEXT ONE            
+         B     TSTIM20                                                          
+*                                                                               
+         USING DBXTLD,R4           DAY/TIME OPTIMIZATION                        
+TSTIM10O LA    R9,DBXTLIST         LIST OF DAYS AND TIMES                       
+TSTIM15O ICM   R5,8,0(R9)          DAY                                          
+         BZ    GETQREC             NO MATCH FOUND ON DAY/TIME                   
+         LR    R0,RF                                                            
+         GOTO1 =V(DETABQH),DMCB,(R5),2(RF),1(R9),3(R9),RR=RELO                  
+         OC    DMCB+16(4),DMCB+16     ANY MATCHING TIMES?                       
+         BNZ   TSTIM20                                                          
+         LA    R9,5(R9)            CK NEXT DAY/TIME COMBINATION                 
+         LR    RF,R0                                                            
+         B     TSTIM15O                                                         
+         DROP  R4                                                               
+*                                                                               
+TSTIM20  DS    0H                  GOOD RECD                                    
+         LA    RE,CBLUNV           SAVE OFF UNV ELEMS IN DBSPANAD               
+         L     RF,DBAREC                                                        
+         AH    RF,DBDTADSP                                                      
+         SR    R1,R1                                                            
+TSTIM25  IC    R1,1(RF)                                                         
+         AR    RF,R1               BUMP TO NEXT ELEM                            
+         CLI   0(RF),0             EOR                                          
+         BE    TSTIM20H            DONE,MOVE ON TO HISPANIC CABLE               
+         CLI   0(RF),X'05'         CNTL RECD                                    
+         BNE   *+12                                                             
+         CLI   CNTREPR-CNTELEM(RF),C'2'  2=RECORD DELETED                       
+         BE    GETQREC             IF DELETED, BYPASS THIS RECD                 
+         CLI   DBBTYPE,C'M'                                                     
+         BE    TSTIM30             CABLE MVGO HAS UNVS ON ACTUAL RECORD         
+         CLI   DBBTYPE,C'N'        CABLE NAD - NO UNIVERSES ON RECD             
+         BE    TSTIM30                                                          
+*                                                                               
+TSTIM26  CLI   0(RF),X'57'         REGULAR CABLE UNIVERSES                      
+         BE    *+12                                                             
+         CLI   0(RF),X'59'                                                      
+         BNE   TSTIM25                                                          
+*        B     TSTIM27                                                          
+TSTIM27  IC    R1,1(RF)            LENGTH OF ELEM                               
+         BCTR  R1,0                                                             
+         EXMVC R1,0(RE),0(RF)      SAVE AWAY                                    
+         LA    RE,1(R1,RE)         BUMP SAVE AREA PTR                           
+         B     TSTIM25                                                          
+*                                                                               
+TSTIM20H DS    0H                  SAME RECD                                    
+*        CLI   DBBTYPE,C'M'                                                     
+*        BE    TSTIM30                                                          
+         MVC   HCBLBL,=C'HCAB'     LABEL THE BUFFER AREA HISPANIC CABLE         
+         LA    RE,HCBUNV           SAVE OFF HISPANIC UNIVERSE                   
+         L     RF,DBAREC                                                        
+         AH    RF,DBDTADSP         POINT TO THE FIRST ELEMENT                   
+         SR    R1,R1                                                            
+TSTIM25H IC    R1,1(RF)                                                         
+         AR    RF,R1               BUMP TO NEXT ELEM                            
+         CLI   0(RF),0             EOR                                          
+         BE    TSTIM30             DONE                                         
+         CLI   0(RF),X'4B'         ONLY CARE FOR 4B AND 4C ELEMENTS             
+         BE    *+12                                                             
+         CLI   0(RF),X'4C'                                                      
+         BNE   TSTIM25H                                                         
+         IC    R1,1(RF)            LENGTH OF ELEM                               
+         BCTR  R1,0                                                             
+         EXMVC R1,0(RE),0(RF)      SAVE AWAY                                    
+         LA    RE,1(R1,RE)         BUMP SAVE AREA PTR                           
+         B     TSTIM25H                                                         
+*                                                                               
+TSTIM30  MVI   IOFLAG,FILE+SEQ     RD 1ST PRG REC (RECD AFTER CNTL REC)         
+         GOTO1 AIO,IOFLAG                                                       
+         BAS   RE,PROCQ            READ PRG INFO INTO DUB FROM ELEMNTS          
+         B     SPANCBL             PROCESS PROGRAM LEVELS                       
+         EJECT                                                                  
+*********************************************************************           
+*SPANCBL - PROCESS NEW CABLE FILE FORMAT                                        
+*********************************************************************           
+SPANCBL  DS    0H                                                               
+         L     RE,DBAREC                                                        
+         MVC   SVKEY,0(RE)                                                      
+         MVC   SVMINKEY,PMKMINOR-PMKEY(RE)                                      
+         MVI   PAVGSENT,C'N'       INITIALIZE FLAG                              
+*                                                                               
+         BAS   RE,RESTDT                                                        
+*                                                                               
+         ICM   RF,15,DBSPANAD      SET UP FOR SPANNED RECORDS                   
+         USING SPANADD,RF                                                       
+         XC    SPANADD(SPDANADL),SPANADD   CLEAR STORAGE                        
+         MVC   SPDID,=C'CAB'                                                    
+         CLI   DBBTYPE,C'M'                                                     
+         BE    *+8                                                              
+         CLI   DBBTYPE,C'N'                                                     
+         BNE   *+10                                                             
+         MVC   SPDID,=C'CB2'       CABLE NAD AND MVGO                           
+         DROP  RF                                                               
+*                                                                               
+         L     RF,DBAREC           SET UP FOR PROGRAM                           
+         AH    RF,DBDTADSP                                                      
+         CLI   0(RF),1             BYPASS MARKET ELEMENT                        
+         BNE   SPANCBLX                                                         
+         ZIC   R0,1(RF)                                                         
+         AR    RF,R0                                                            
+         CLI   0(RF),X'08'         BYPASS DTELEM IF ANY                         
+         BNE   SPAN05                                                           
+         ZIC   R0,1(RF)                                                         
+         AR    RF,R0                                                            
+SPAN05   CLI   0(RF),X'0F'                                                      
+         BNE   SPANCBLX                                                         
+*                                                                               
+         BAS   RE,VIEWTYP          PUT VIEWING TYPE IN SPAN AREA                
+*                                                                               
+*-- TO IMPLEMENT COVERAGE UNIVERSES HERE --                                     
+*        CLI   DBBTYPE,C'M'                                                     
+*        BNE   *+8                 SAVE MOVIE GOER UNIVERSES                    
+*        BAS   RE,MVGOUNVS         (FROM PROG LEVEL)                            
+*                                                                               
+         ST    RF,DBAQUART                                                      
+         CLI   2(RF),X'00'         PROGRAM LEVEL?                               
+         BNE   *+8                                                              
+         BAS   RE,SVTRK                                                         
+         MVI   PVNORMAL,1          SET TO DO PROGRAM/TRACKAGE                   
+         L     RF,DBAQUART                                                      
+         BAS   RE,CABSPAN                                                       
+*                                  CHECK IF ANY DEMOS ON THIS LEVEL             
+         MVI   NONUNVD,C'N'        INIT FLAG                                    
+         MVI   RESFLAG,0                                                        
+SPAN30   IC    R0,1(RF)                                                         
+         AR    RF,R0                                                            
+**CHECK EOR**                                                                   
+         CLI   DBBTYPE,C'M'                                                     
+         BE    *+8                                                              
+         CLI   DBBTYPE,C'N'                                                     
+         BNE   SPAN31                                                           
+         CLI   0(RF),0                                                          
+         BNE   SPAN31                                                           
+         BAS   RE,NEXTFILE                                                      
+         BE    *+6                 IGNORE IF NO DEMS ON THIS LEVEL              
+         DC    H'0'                AN '0F' ELEM SHOULD BE FOUND FIRST           
+         L     RF,AFRSTEL          A(FIRST ELEMENT)                             
+**                                                                              
+SPAN31   CLI   0(RF),X'0F'         FOUND TRACK/TEL BEFORE PROG DEMOS            
+         BNE   *+12                (I.E. NO '5E' FOUND YET)                     
+         MVI   PVNORMAL,2          SET TO DO TELECAST IF NO PROG DEMOS          
+         B     SPAN33                                                           
+SPAN32   CLI   0(RF),X'5E'         FOUND PROG DEMOS IGNORE TELECASTS            
+         BE    SPAN32A                                                          
+         CLI   DBBTYPE,C'M'        MOVIE GOER RECORDS ALWAYS HAVE UNVS          
+         BNE   SPAN30               ON PROGRAM LEVEL.COUNT ONLY NON-UNV         
+         CLI   0(RF),X'57'          DEMOS. E'57'=UNIVERSES BY COVERAGE          
+         BE    SPAN30                                                           
+         CLI   0(RF),X'30'                                                      
+         BL    SPAN30                                                           
+         MVI   NONUNVD,C'Y'        IS NON-UNVS DEMO                             
+         B     SPAN30                                                           
+SPAN32A  CLI   DBBTYPE,C'M'                                                     
+         BNE   SPAN33                                                           
+         CLI   NONUNVD,C'Y'                                                     
+         BE    *+8                                                              
+         MVI   PVNORMAL,2          SET TO DO TELECAST IF NO NON-UNVS            
+*                                                                               
+SPAN33   DS    0H                                                               
+         CLI   DBBTYPE,C'M'                                                     
+         BE    *+8                                                              
+         CLI   DBBTYPE,C'N'                                                     
+         BNE   *+8                                                              
+         CLI   RESFLAG,1                                                        
+         BNE   *+8                                                              
+         BAS   RE,RESETSQ                                                       
+         L     RF,DBAQUART           PROGRAM DEMOS                              
+*                                                                               
+SPAN35   ST    RF,DBAQUART                                                      
+SPAN37   BAS   RE,CABSPAN          SAVE SPANNING INFO                           
+         MVI   HOOKFLAG,C'N'                                                    
+*NEW LOGIC                                                                      
+         CLI   DBBTYPE,C'M'                                                     
+         BE    *+8                                                              
+         CLI   DBBTYPE,C'N'                                                     
+         BNE   SPAN39                                                           
+         OC    SVSPAN,SVSPAN                                                    
+         BZ    SPAN39                                                           
+         ICM   RF,15,DBSPANAD                                                   
+         USING SPANADD,RF                                                       
+         CLC   SPDPRNUM,SVSPAN+SPDPRNUM-SPANADD DID THE PRG NUM CHANGE?         
+         BE    *+14                    NO                                       
+         MVC   DBSELPTT,ORIGPTT        RESET TO ORIGINAL REPORTING OPTN         
+         B     SPAN39                                                           
+SPAN37T  CLI   SVSELPTT,C'T'           NEED TO SWITCH BACK TO TRCK REQ?         
+         BNE   SPAN39                                                           
+         CLC   SPDTRNUM,SVSPAN+SPDTRNUM-SPANADD IF DIFF TRK FOR SAME PG         
+         BE    SPAN39                                                           
+SPAN38   MVC   DBSELPTT,SVSELPTT       SWITCH BACK TO TRACK REQUEST             
+         MVI   SVSELPTT,0                                                       
+         DROP  RF                                                               
+*END NEW                                                                        
+SPAN39   L     RF,DBAQUART                                                      
+         SR    R0,R0                                                            
+         MVI   PRGONLY,0           CLEAR FLAG                                   
+         MVI   NONUNVD,C'N'                                                     
+*                                                                               
+         MVI   RESFLAG,0                                                        
+SPAN40   ICM   R0,1,1(RF)         -FIND DEMOS ON THIS LEVEL,IF ANY-             
+         BZ    SPAN65                                                           
+         AR    RF,R0                                                            
+SPAN41   CLI   0(RF),X'0F'         IGNORE IF NO DEMS ON THIS LEVEL              
+*NEW LOGIC                                                                      
+         BNE   SPAN42                                                           
+         CLI   DBBTYPE,C'M'                                                     
+         BE    *+8                                                              
+         CLI   DBBTYPE,C'N'                                                     
+         BNE   SPAN65                                                           
+*                                                                               
+         CLI   RESFLAG,1           DID WE CHANGE THE SEQUENCE?                  
+         BNE   *+8                                                              
+         BAS   RE,RESETSQ          YES. RESTORE IT.                             
+*                                                                               
+         MVI   TCASTNXT,C'N'                                                    
+         CLI   2(RF),2             NEXT LEVEL IS TELECAST                       
+         BNE   *+8                                                              
+         MVI   TCASTNXT,C'Y'                                                    
+*                                                                               
+         BAS   RE,SHIFTOPT         SHIFT TO LOWER REPORTING OPTION              
+         B     SPAN65                                                           
+*END NEW                                                                        
+**CHECK EOR**                                                                   
+SPAN42   CLI   DBBTYPE,C'M'                                                     
+         BE    *+8                                                              
+         CLI   DBBTYPE,C'N'                                                     
+         BNE   SPAN43                                                           
+         CLI   0(RF),0             END OF RECORD. CONTINUE CHECKING             
+         BNE   SPAN43              ON RECD WITH NEXT FILE NUMBER                
+         BAS   RE,NEXTFILE                                                      
+         BNE   SPAN65              IGNORE IF NO DEMS ON THIS LEVEL              
+         L     RF,AFRSTEL          A(FIRST ELEMENT)                             
+         B     SPAN41                                                           
+**                                                                              
+SPAN43   CLI   0(RF),X'5E'         FOUND DEMOS ON THIS LEVEL                    
+         BE    SPAN43A                                                          
+         CLI   DBBTYPE,C'M'        MOVIE GOER RECORDS ALWAYS HAVE UNVS          
+         BNE   SPAN40               ON PROGRAM LEVEL.COUNT ONLY NON-UNV         
+         CLI   0(RF),X'57'          DEMOS. E'57'=UNIVERSES BY COVERAGE          
+         BE    SPAN40                                                           
+         CLI   0(RF),X'30'                                                      
+         BL    SPAN40                                                           
+         MVI   NONUNVD,C'Y'        IS NON-UNVS DEMO                             
+         B     SPAN40                                                           
+*                                                                               
+SPAN43A  CLI   DBBTYPE,C'M'        FOR MVGO,                                    
+         BNE   SPAN44                                                           
+         CLI   NONUNVD,C'Y'        IF NO NON-UNVS DEMOS, SHIFT OPTION           
+         BE    SPAN44                                                           
+         BAS   RE,SHIFTOPT                                                      
+*                                                                               
+SPAN44   LR    R9,RF               SAVE LAST DEMO ELEMENT                       
+         L     RF,DBAQUART         NOW CHECK FOR DUPLICATE DEMOS                
+         CLI   0(RF),X'0F'                                                      
+         BNE   SPAN60                                                           
+         CLI   2(RF),0             ONLY IF PROGRAM LEVEL                        
+         BNE   SPAN60                                                           
+         CLI   DBSELPTT,C'E'                                                    
+         BE    SPAN65              REPORTING ON PROGRAM OR TRACK                
+*                                                                               
+         MVI   RESFLAG,0           - FIND NEXT LEVEL -                          
+SPAN45   ICM   R0,1,1(R9)                                                       
+         BZ    SPAN65                                                           
+         AR    R9,R0                                                            
+**CHECK EOR**                                                                   
+         CLI   DBBTYPE,C'M'                                                     
+         BE    *+8                                                              
+         CLI   DBBTYPE,C'N'                                                     
+         BNE   SPAN46                                                           
+         CLI   0(R9),0             END OF RECORD. CONTINUE CHECKING             
+         BNE   SPAN46              ON RECD WITH NEXT FILE NUMBER                
+         BAS   RE,NEXTFILE                                                      
+         BE    *+6                 ALL RECORDS HAVE TO END WITH 0F-FF           
+         DC    H'0'                                                             
+         L     R9,AFRSTEL          A(FIRST ELEMENT)                             
+**                                                                              
+SPAN46   CLI   0(R9),X'0F'                                                      
+         BNE   SPAN45                                                           
+         CLI   DBBTYPE,C'M'                                                     
+         BE    SPAN47                                                           
+* FOR CABLE NAD,                                                                
+         CLI   DBBTYPE,C'N'                                                     
+         BNE   SPAN49                                                           
+*                                                                               
+         CLI   2(R9),X'FF'         ONLY PROGRAM LEVEL?                          
+         BNE   *+8                                                              
+         MVI   PRGONLY,1           SIGNAL PROGRAM LEVEL ONLY                    
+*                                                                               
+         CLI   RESFLAG,1           RESET SEQUENCE IF BROKEN                     
+         BNE   *+8                                                              
+         BAS   RE,RESETSQ                                                       
+         B     SPAN60              DO NOT COMPARE FOR DUPLICATE DEMOS           
+*                                  (RECDS TOO BIG)                              
+* FOR CABLE MOVIE GOER,                                                         
+SPAN47   DS    0H                  PRG LEVEL MAY BE FOLLOWED BY SPEC/BK         
+*        CLI   RESFLAG,1                                                        
+*        BNE   *+8                                                              
+*        BAS   RE,RESETSQ          RESTORE ORIGINAL SEQUENCE                    
+*                                                                               
+         L     R9,DBAQUART                                                      
+         BAS   RE,CKFORTRK         CHECK IF ANY TRACKS FOLLOW                   
+         BE    *+8                                                              
+         MVI   PRGONLY,1           SIGNAL PROGRAM LEVEL ONLY(PLUS MAYBE         
+         B     SPAN60              SPECS/BKOUTS)                                
+*                                                                               
+SPAN49   CLI   2(R9),1             NO TRACK - IT'S OK                           
+         BNE   SPAN60                                                           
+         CLI   DBSELPTT,C'T'       ONLY WANT TRACKS                             
+         BE    SPAN65               ZIP PAST PROGRAM                            
+         CLI   DBSELPTT,C'E'       ONLY WANT TELECASTS                          
+         BE    SPAN65               ZIP PAST PROGRAM                            
+*                                                                               
+SPAN50   ICM   R0,1,1(RF)         -CHECK IF DEMOS MATCH BTW LEVELS-             
+         BZ    SPAN60                                                           
+         AR    RF,R0                                                            
+SPAN50C  CLI   0(RF),X'57'         REGULAR CABLE UNIVERSE                       
+         BE    SPAN65               ON FIRST ONLY                               
+         CLI   0(RF),X'5E'         DEMOS MATCH - BYPASS PROGRAM                 
+         BE    SPAN65                                                           
+SPAN53   CLI   0(RF),X'30'         1ST TIME - POS TO 1ST DEMO ELEM              
+         BL    SPAN50                                                           
+*                                                                               
+         MVI   RESFLAG,0                                                        
+SPAN55   ICM   R0,1,1(R9)          GET DEMO ELEM FROM NEXT LEVEL                
+         BZ    SPAN60              NO MATCH                                     
+         AR    R9,R0                                                            
+**CHECK EOR**                                                                   
+         CLI   DBBTYPE,C'M'                                                     
+         BE    *+8                                                              
+         CLI   DBBTYPE,C'N'                                                     
+         BNE   SPAN56                                                           
+         CLI   0(R9),X'00'                                                      
+         BNE   SPAN56                                                           
+         BAS   RE,NEXTFILE                                                      
+         BE    *+6                                                              
+         DC    H'0'                                                             
+         L     R9,AFRSTEL                                                       
+**                                                                              
+SPAN56   CLI   0(R9),X'30'         1ST TIME - POS. TO 1ST DEMO ELEM             
+         BL    SPAN55                                                           
+         CLI   DBBTYPE,C'N'                                                     
+         BE    *+8                                                              
+         CLI   DBBTYPE,C'M'        FOR MOVIGOER, SKIP ELEM '5E' BECAUSE         
+         BNE   *+12                 OF MULTIPLE MKT BRKS                        
+         CLI   0(R9),X'5E'                                                      
+         BE    SPAN55                                                           
+         ZIC   R1,1(RF)            GET ELEMENT LENGTH                           
+         BCTR  R1,0                                                             
+         EX    R1,*+8              COMPARE ELEMENT DATA                         
+         B     *+10                                                             
+         CLC   0(0,RF),0(R9)       **EXECUTED**                                 
+         BNE   *+8                                                              
+         B     SPAN50                                                           
+*                                                                               
+* -PICK LEVEL TO FILTER ON-                                                     
+* REGULAR CABLE FILTERS ON TELECAST LEVEL.                                      
+* CABLE NAD AND MOVIE GOER FILTER ON THE DEEPEST LEVEL OF DETAIL (TRACK         
+* OR PROGRAM) AND ON THE TELECAST LEVEL (SPECS/BKOUTS).                         
+SPAN60   MVC   DMCB,DBAQUART                                                    
+         BAS   RE,PROCQ                                                         
+         L     RF,DMCB                                                          
+         ST    RF,DBAQUART                                                      
+*        CLI   DBSELPTT,C'P'       PROGRAM TIME FILTER AREADY DONE              
+*        BE    SPAN63              ACCEPT PRM                                   
+         CLI   DBBTYPE,C'M'                                                     
+         BNE   SPANNAD                                                          
+SPANMVG  CLI   2(RF),0             FOR MOVIE GOER, USE PROG LEVEL ONLY          
+         BNE   *+12                IF IT HAS NON-UNV DEMOS                      
+         CLI   NONUNVD,C'Y'                                                     
+         BNE   SPAN68                                                           
+         B     *+12                                                             
+SPANNAD  CLI   DBBTYPE,C'N'                                                     
+         BNE   SPAN60A                                                          
+         CLI   PRGONLY,1          IF ONLY PROG LEVEL(PLUS SPECS/BKTS),          
+         BE    SPAN60C             GO FILTER ON IT                              
+         CLI   2(RF),1            ELSE FILTER ON TRACKS AND TCASTS              
+         BE    SPAN60C                                                          
+SPAN60A  CLI   2(RF),2            FOR REG CABLE, FILTER ON TELC LEVEL           
+         BNE   SPAN68                                                           
+*                                                                               
+SPAN60C  ICM   RE,15,AODTLIST                                                   
+         BZ    SPAN60D             CHECK FILTERS PRESENT                        
+         OC    DBSELDAY(5),DBSELDAY                                             
+         BZ    SPAN61                                                           
+         BAS   RE,SAVELV           SAVE LEVEL WE'RE WORKING ON (RF)             
+         MVI   TRBFSEQ,0           CLEAR FLAG                                   
+         BAS   RE,GETODQ           SET DAY/TIME FIELDS (DBSELDAY/TIM)           
+         BAS   RE,SETADJ           SET ADJUSTED TIME FIELDS                     
+*                                                                               
+SPAN60D  OC    DBSELTIM(4),DBSELTIM   TIME FILTER?                              
+         BZ    SPAN61                                                           
+*                                                                               
+         OC    DBSELTIM+2(2),DBSELTIM+2                                         
+         BZ    SPAN60D1               BREAK AVERAGE, FILTER ON QH'S             
+         CLI   2(RF),2                                                          
+         BNE   SPAN60D1               AT THE TELECAST LEVEL,                    
+         OC    MILSTRT,MILSTRT        FILTER ON MILITARY TIMES ONLY             
+         BNZ   SPAN60D3                                                         
+*                                                                               
+SPAN60D1 CLI   DBPRGDUR,C'M'       FOR METHOD=SOURCE,MINUTE WEIGHTING           
+         BNE   *+14                                                             
+         CLC   DUB(1),DBDQSQH      EXCLUDE PROGS THAT STARTED BEFORE            
+         BL    SPAN68DT            THE BEGINNING OF PERIOD                      
+*                                                                               
+         CLC   DUB+6(1),DBDQSQH                                                 
+         BL    SPAN68DT                                                         
+         CLC   DUB(1),DBDQEQH                                                   
+         BH    SPAN68DT                                                         
+*                                                                               
+* CHECK AGAINST MILITARY TIME ALSO                                              
+SPAN60D3 OC    MILSTRT,MILSTRT                                                  
+         BZ    SPAN61                                                           
+         CLI   DBPRGDUR,C'M'       FOR METHOD=SOURCE,MINUTE WEIGHTING           
+         BNE   *+14                                                             
+         CLC   MILSTRT,DBMSADJ     EXCLUDE PROGS THAT STARTED BEFORE            
+         BL    SPAN68DT            THE BEGINNING OF PERIOD                      
+*                                                                               
+         CLC   DBMSADJ,DBMEADJ        FOR SINGLE TIME,                          
+         BNE   SPAN60E                                                          
+         CLC   DBMSADJ,MILSTRT        NEED REQ TIME >= RECD START TIME          
+         BL    SPAN68DT                                                         
+         CLC   DBMSADJ,MILEND         NEED REQ TIME < RECD END TIME             
+         BNL   SPAN68DT                                                         
+         B     SPAN61                                                           
+SPAN60E  CLC   DBMSADJ(2),MILEND      FOR A PERIOD OF TIME,                     
+*        BH    SPAN68DT                                                         
+         BNL   SPAN68DT               NEED REQ ST TIME < RECD END TIME          
+         OC    DBSELTIM+2(2),DBSELTIM+2                                         
+         BZ    SPAN61                                                           
+         CLC   DBMEADJ(2),MILSTRT                                               
+*        BL    SPAN68DT               NEED REQ END TIME > RECD ST TIME          
+         BNH   SPAN68DT                                                         
+*                                                                               
+SPAN61   CLI   DBSELDAY,X'00'                                                   
+         BE    *+20                                                             
+         MVC   DBACTDAY,DBSELDAY   REQUESTED DAY                                
+         NC    DBACTDAY,DUB+2                                                   
+         BZ    SPAN68DT                                                         
+*                                  REQUESTED WEEK                               
+         CLI   DBBTYPE,C'N'        FOR CABLE NAD ONLY - MONTHLY FILE            
+         BNE   SPAN62                                                           
+         CLI   ACTWKS,0            NO ACTIVE WEEK BITS                          
+         BE    SPAN62                                                           
+         ZIC   R0,NADWKNO                                                       
+         LTR   R0,R0                                                            
+         BZ    SPAN62                                                           
+         LHI   R1,X'80'                                                         
+         CHI   R0,1                                                             
+         BNH   *+12                DONE TESTING ALL WEEKS                       
+         SRL   R1,1                SHIFT WEEK BIT                               
+         BCT   R0,*-12                                                          
+*                                                                               
+         EX    R1,*+8              TEST WEEK BIT                                
+         B     *+8                                                              
+         TM    ACTWKS,(0)                                                       
+         BZ    SPAN68                                                           
+*                                                                               
+SPAN62   OC    DBSELPRG,DBSELPRG   SPECIFIC PROGRAM REQUESTED?                  
+         BNZ   SPAN63              YES- ACCEPT ALL DURATIONS                    
+         CLC   DBCABNUM(4),=C'7801'                                             
+         BE    SPAN63              MSNB FORCE 15=Y ALL THE TIME                 
+         CLC   DBCABNUM(4),=C'6523'                                             
+         BE    SPAN63              TWC? FORCE 15=Y ALL THE TIME                 
+         CLC   DBCABNUM(4),=C'6199'                                             
+         BE    SPAN63              HLN? FORCE 15=Y ALL THE TIME                 
+         CLC   DBCABNUM(4),=C'6477'                                             
+         BE    SPAN63              TVGC? FORCE 15=Y ALL THE TIME                
+*        CLI   DUB+3,1             DUR > 1 QH?                                  
+*        BNH   *+16                                                             
+*        CLI   DBSELDUR,X'FE'      YES.                                         
+*        BE    SPAN68                                                           
+*        B     SPAN63                                                           
+*                                  NO.                                          
+*        CLI   DBSELDUR,X'FF'      ACCEPT ALL PROGRAMS                          
+*        BE    SPAN63              YES                                          
+*        CLI   DBSELDUR,X'FE'      DUR OF LESS 15 MIN ONLY?                     
+*        BE    SPAN63              YES                                          
+*        B     SPAN68              NO, DEFAULT TO PROGRAMS > 15MINS             
+*CHANGE TO ACCEPT DURATION >= MINDUR (DBSELDUR)                                 
+         LA    R1,X'D0'            DEFAULT IS PROGRAM OF OVER 15 MIN.           
+         CLI   DBSELDUR,X'FE'      TEST SELECT PROGRAMS LE 15 MIN.              
+         BNE   *+8                                                              
+         LA    R1,X'20'            YES-SET REJECTION BRANCH MASK TO BH          
+         CLI   DBSELDUR,X'FF'      TEST SELECT ALL PROGRAMS                     
+         BNE   *+8                                                              
+         LA    R1,X'00'            YES-NOOP REJECTION BRANCH                    
+         CLI   DBSELDUR,0                                                       
+         BE    MINDUR2                                                          
+         CLI   DBSELDUR,240                                                     
+         BH    MINDUR2                                                          
+         LA    R1,X'50'                                                         
+         CLC   ACTDUR1,DBSELDUR    TEST FOR GIVEN DURATION                      
+         EX    R1,CABBRAN1                                                      
+         B     MINDUR3                                                          
+MINDUR2  CLI   ACTDUR1,15          TEST FOR 15 MINUTE PROGRAM                   
+         EX    R1,CABBRAN1         BRANCH TO REJECT USING MASK                  
+MINDUR3  DS    0H                                                               
+*                                                                               
+SPAN63   DS    0H                                                               
+         ST    RF,TMPQUART         SAVE ADDR OF EPIS/TRK ETC PTD TO             
+         MVC   TMPAREC,DBAREC                                                   
+*NEW LOGIC - APPLIES ONLY TO BKOUTS AND SPECS FOR NAD/MVG                       
+TRBF1    CLI   DBBTYPE,C'M'        FOR CABLE MOVIE GOER,                        
+         BNE   TRBF5               -IF TRACK OR TELECAST REQUEST-               
+         CLI   DBSELPTT,C'T'       JUST PRINT THE LEVELS WE FILTERED ON         
+         BE    SPAN63A                                                          
+         CLI   DBSELPTT,C'E'                                                    
+         BE    SPAN63A             -IF PROGRAM AVG REQUEST-                     
+         LR    R9,RF                                                            
+         CLI   2(R9),2             USE THE TELECAST LEVEL                       
+         BE    SPAN63A                                                          
+         CLI   2(R9),1             GO SEE IF PROG LEVEL SAVED IN TRKBUF         
+         BE    TRBF15                                                           
+         B     SPAN63A             USE THE PROGRAM LEVEL                        
+*                                                                               
+TRBF5    CLI   DBBTYPE,C'N'        FOR CABLE NAD,                               
+         BNE   TRBF15                                                           
+         CLI   DBSELPTT,C'P'       IF SPECIALS OR BKOUTS, AND NOT PROG          
+         BE    TRBF15              AVG REQUEST, USE THEM                        
+         BAS   RE,CKSPECBT         OTHERWISE, RELEASE LEVEL IN TRKBUFF          
+         BE    SPAN63A                                                          
+         CLI   2(RF),2             TCAST NOT A BKOUT OR SPEC                    
+         BE    SPAN63A                                                          
+*END NEW                                                                        
+*                                PROCESS LEV IN TRKBUFF,IF DEMOS EXIST          
+TRBF15   CLI   DBSELPTT,C'P'       ACTUAL PROG REQUEST?                         
+         BE    *+8                                                              
+         CLI   DBSELPTT,C'T'       ACTUAL TRACK REQUEST?                        
+         BNE   SPAN63A                                                          
+         CLI   TRDEMS,C'Y'                                                      
+         BNE   SPAN63A             NO DEMOS RELEASE CURRENT LEVEL               
+         CLI   DBBTYPE,C'N'                                                     
+         BE    *+8                                                              
+         CLI   DBBTYPE,C'M'                                                     
+         BE    TRBF20                                                           
+         LA    RF,TRKBUFF          PASS BACK TRACK INFO                         
+         AH    RF,DBDTADSP                                                      
+         SR    R0,R0                                                            
+         CLI   0(RF),X'01'         MKT ELEMENT?                                 
+         BNE   *+10                                                             
+         IC    R0,1(RF)                                                         
+         AR    RF,R0               BUMP PAST IT                                 
+         ST    RF,DBAQUART                                                      
+         MVC   TMPAREC,DBAREC                                                   
+         LA    RE,TRKBUFF                                                       
+         ST    RE,DBAREC           PT TO MY BUFFER WITH TRACK RECD              
+         BAS   RE,CABSPAN          SET PRG TIMES ETC FIELDS                     
+         B     SPAN63A                                                          
+*                                  FOR CABLE NAD AND MOVG,                      
+TRBF20   MVC   DBKEY,TRKBUFF       READ IN THE ACTUAL RECORD                    
+         MVC   DBMINKEY,TRKBUFF+PMKMINOR-PMKEY                                  
+         MVI   IOFLAG,FILE+READ    (RECD TOO BIG TO SAVE IN TRKBUFF)            
+         GOTO1 AIO,IOFLAG                                                       
+         BE    *+6                                                              
+         DC    H'0'                                                             
+         MVI   TRBFSEQ,1           FLAG CHANGE OF SEQUENCE                      
+*                                                                               
+         LA    RF,TRKBUFF          PASS BACK TRACK INFO                         
+         AH    RF,DBDTADSP                                                      
+         SR    R0,R0                                                            
+         CLI   0(RF),X'01'         MKT ELEMENT?                                 
+         BNE   *+10                                                             
+         IC    R0,1(RF)                                                         
+         AR    RF,R0               BUMP PAST IT                                 
+*                                                                               
+         L     RE,DBAREC                                                        
+         AH    RE,DBDTADSP                                                      
+         SR    R0,R0                                                            
+TRBF25   CLI   0(RE),X'0F'                                                      
+         BE    TRBF30                                                           
+         CLI   0(RE),0                                                          
+         BNE   *+6                                                              
+         DC    H'0'                LEVEL SHOULD BE THERE                        
+         IC    R0,1(RE)                                                         
+         AR    RE,R0                                                            
+         B     TRBF25                                                           
+*                                                                               
+TRBF30   SR    R1,R1                                                            
+         LR    R9,RF               POINT TO 0F-LEVEL IN BUFFER                  
+         SR    R0,R0                                                            
+*                                                                               
+         IC    R0,1(R9)                                                         
+         CLI   0(R9),X'23'                                                      
+         BNL   *+12                                                             
+         AR    R1,R0              ACCUMULATE LENGTH OF NON-DEMO ELEMS           
+         AR    R9,R0                                                            
+         B     *-16                                                             
+         BCTR  R1,0                                                             
+         EX    R1,*+8                                                           
+         B     *+10                                                             
+         CLC   0(0,RE),0(RF)                                                    
+         BE    *+14                                                             
+         IC    R0,1(RE)                                                         
+         AR    RE,R0                                                            
+         B     TRBF25                                                           
+*                                                                               
+         ST    RE,DBAQUART                                                      
+         BAS   RE,CABSPAN                                                       
+TRBFX    DS    0H                                                               
+*                                                                               
+SPAN63A  DS    0H                  SEND RECORD TO HOOK                          
+         MVC   DBACTDAY,DUB+2                                                   
+         MVC   DBACTSQC,DUB        CURRENT RECORD SQH                           
+         MVC   DBACTEQC,DUB+6      CURRENT RECORD EQH                           
+         MVI   DBRECTYP,DBRECNTI                                                
+         MVI   DBMODE,DBMNEXT                                                   
+         ZIC   R1,DUB+6                                                         
+         ZIC   R0,DUB                                                           
+         SR    R1,R0                                                            
+         LTR   R1,R1                                                            
+         BM    SPAN64                                                           
+         JNZ   *+8                                                              
+         LA    R1,1(R1)                                                         
+         STH   R1,DBFACTOR                                                      
+         AH    R1,DBDIVSOR                                                      
+         STH   R1,DBDIVSOR                                                      
+         CLI   DBBTYPE,C'M'                                                     
+         BE    *+8                                                              
+         CLI   DBBTYPE,C'N'                                                     
+         BE    *+18                                                             
+         CLC   DBSELBK,=X'5E24'    SEP5/94 AND AFTER                            
+         BL    *+8                                                              
+         BAS   RE,REPLBK           REPLACE BK IN '5E' ELEM W/ACT BK             
+*                                                                               
+         L     RF,DBAREC                                                        
+         MVC   SVKEY,0(RF)         SAVE CURRENT VALUES                          
+         MVC   SVMINKEY,PMKMINOR-PMKEY(RF)                                      
+         MVC   SVAQUART,DBAQUART                                                
+         MVI   RESFLAG,0                                                        
+*                                                                               
+HOOK     BAS   RE,GETX             <------ USER HOOK  ------>                   
+*                                                                               
+         ICM   RE,15,AODTLIST                                                   
+         BZ    NXTNREC                                                          
+         OC    DBSELDAY(5),DBSELDAY                                             
+         BZ    NXTNREC                                                          
+*                                                                               
+         L     RE,DBAQUART         SKIP SPANNING RECDS                          
+         CLI   0(RE),X'0F'                                                      
+         BNE   NXTNREC                                                          
+*                                                                               
+         MVI   HOOKFLAG,C'Y'       MAIN RECORD (W/ CONTROL INFO)                
+*                                                                               
+*-IN ORDER TO CORRECTLY RETURN THE RECORD MULTIPLE TIMES IF DIFFERENT           
+*TRACKS OR TELECASTS MATCH ON DIFFERENT DAYS/TIMES, WE NEED TO KEEP             
+*TRACK OF THE DAYS/TIMES THAT WE ALREADY MATCHED ON                             
+*-WE DO IT BY TURNING ON THE HIGH ORDER BIT OF THE DAY THAT WAS FOUND           
+         CLI   DBBTYPE,C'N'        FOR CABLE NAD                                
+         BE    *+8                                                              
+         CLI   DBBTYPE,C'M'        AND MOVIE GOER,                              
+         BNE   MARKDAY             DON'T NEED TO MARK TCASTS (S/B)              
+         CLI   2(RE),2             THEY'RE ALWAYS OUTSIDE THE TRACKS            
+         BE    SKIPMARK                                                         
+         CLI   2(RE),0             DON'T MARK PROG AVG IF NO TRACKS             
+         BNE   MARKDAY             (ONLY PROG AVG + POSSIBLE S/B)               
+         CLI   PRGONLY,1                                                        
+         BE    SKIPMARK                                                         
+*                                                                               
+MARKDAY  CLI   DBSELPTT,C'T'                                                    
+         BE    *+8                                                              
+         CLI   DBSELPTT,C'P'                                                    
+         BNE   *+8                                                              
+         BAS   RE,DTFOUND          MARK DAY/TIME AS FOUND                       
+SKIPMARK DS    0H                                                               
+*                                                                               
+         MVC   DBAREC,TMPAREC      RESTORE                                      
+NXTNREC  CLI   DBBTYPE,C'M'                                                     
+         BE    *+8                                                              
+         CLI   DBBTYPE,C'N'        FOR CABLE NAD, NEED TO READ IN ALL           
+         BNE   NXTNRECX            MKT BREAKS (SPANNING MULTPL RECDS)           
+         L     R9,DBAREC                                                        
+         MVI   ELCODE,X'0F'        NEXT LEVEL REACHED YET?                      
+         BAS   RE,GETEL                                                         
+         BNE   NXTNR10             (FIND FIRST '0F'ELEM AFTER DBAQUART)         
+NXTNR5   L     RF,DBAQUART                                                      
+         CR    R9,RF                                                            
+         BH    NXTNR30             YES. ALL MKT BRKS HAVE BEEN READ             
+         BAS   RE,NEXTEL                                                        
+         BE    NXTNR5                                                           
+NXTNR10  MVI   RESFLAG,1                                                        
+         MVI   IOFLAG,FILE+SEQ     NO. READ NEXT RECD                           
+         GOTO1 AIO,IOFLAG                                                       
+         BNE   NXTNR30                                                          
+         L     RF,DBAREC                                                        
+         AH    RF,DBDTADSP                                                      
+         CLI   0(RF),X'0F'         NEXT LEVEL STARTS HERE. STOP                 
+         BE    NXTNR30                                                          
+         ST    RF,DBAQUART                                                      
+         B     HOOK                                                             
+NXTNR30  CLI   RESFLAG,1                                                        
+         BNE   *+14                                                             
+         BAS   RE,RESETSQ          GET FIRST RECD BACK IN DBAREC                
+         MVC   DBAQUART,SVAQUART   RESTORE AQUART                               
+NXTNRECX DS    0H                                                               
+*                                                                               
+         ICM   RE,15,AODTLIST                                                   
+         BZ    SPAN63B                                                          
+         BAS   RE,NXTDYTM          ADVANCE TO NEXT DAY/TIME                     
+         BNE   *+12                                                             
+         BAS   RE,RESTLV           RF -> ORIGINAL LEVEL                         
+         B     SPAN60C             TEST IF RAN ON THIS DAY AND TIME             
+*                                                                               
+         CLI   DBSELPTT,C'P'                                                    
+         BE    *+8                                                              
+         CLI   DBSELPTT,C'T'                                                    
+         BNE   NOPT1                                                            
+*                                                                               
+         BAS   RE,ANYDT            ANY DAYS'TIMES LEFT UNFOUND?                 
+         BE    *+12                                                             
+         BAS   RE,RESTDT           RESTORE DAY/TIME TABLE                       
+         B     NODTRET                                                          
+*                                  YES.CONTINUE SEARCHING W/ NEXT TCAST         
+         BAS   RE,RESTLV           RF -> ORIGINAL LEVEL                         
+         B     SPAN68                                                           
+NOPT1    DS    0H                                                               
+*                                                                               
+NODTRET  DS    0H                  RETURN HERE WHEN NO MORE DAY/TIMES           
+         MVI   HOOKFLAG,C'N'                                                    
+*                                                                               
+SPAN63B  L     RF,DBAQUART                                                      
+         CLI   DBSELPTT,C'P'       ONLY WANT PROGRAM                            
+         BNE   SPAN64                                                           
+         CLI   DBBTYPE,C'M'                                                     
+         BNE   SPAN63C                                                          
+         CLI   2(RF),0                                                          
+         BNE   SPAN65                                                           
+         MVI   PAVGSENT,C'Y'       PROG AVG SENT                                
+         CLI   PRGONLY,1           ONLY PRG AVG (PLUS MAYBE S/B)                
+         BE    SPAN65              S/B NOT RELEASED YET                         
+SPAN63C  DS    0H                                                               
+*                                  PROG AVG & SPECL/BKT FOLLOWING IT            
+         MVC   DBAREC,TMPAREC      PROG LEVEL FOUND. EXIT                       
+         MVC   DBAQUART,TMPQUART                                                
+         B     SPANCBLX                                                         
+*                                                                               
+SPAN64   CLI   DBSELPTT,C'T'       ACTUAL TRACK REQUEST                         
+         BE    *+8                 NO, BUMP TO NEXT RECD                        
+         CLI   DBSELPTT,C'P'       ACTUAL PROGRAM REQUEST                       
+         BNE   SPAN68              NO, BUMP TO NEXT RECD                        
+         BAS   RE,RESTRK           RESTORE PTRS TO RECD AND NEXT TRK            
+         BZ    SPANNXL             GO PROCESS NEW TRK LEVEL                     
+         B     SPANCBLX            NO TRK FOUND BEFORE EOR DONE W/PRGM          
+         EJECT                                                                  
+*                                                                               
+SPAN65   L     RF,DBAQUART         BUMP TO NEXT '0F' LEVEL                      
+         CLI   0(RF),X'0F'         SEGMENT HEADER                               
+         BNE   SPAN68              *!*                                          
+         CLI   2(RF),X'FF'         LAST SEGMENT - GET NEXT PROG                 
+         BE    SPANCBLX                                                         
+         BAS   RE,CABSPAN                                                       
+         B     SPAN68                                                           
+*                                                                               
+SPAN68DT DS    0H                -TRY IT FOR NEXT DAY/TIME COMBINATION-         
+         ICM   RE,15,AODTLIST                                                   
+         BZ    SPAN68                                                           
+         BAS   RE,NXTDYTM                                                       
+         BNE   *+12                                                             
+         BAS   RE,RESTLV           RF -> ORIGINAL LEVEL                         
+         B     SPAN60C                                                          
+*                                                                               
+         CLI   DBSELPTT,C'P'                                                    
+         BE    *+8                                                              
+         CLI   DBSELPTT,C'T'                                                    
+         BNE   NOPT2                                                            
+*                                                                               
+         BAS   RE,ANYDT          ANY DAYS/TIMES LEFT UNFOUND?                   
+         BE    *+12                                                             
+         BAS   RE,RESTDT           RESTORE DAY/TIME TABLE                       
+         B     NODTRET                                                          
+*                                                                               
+         BAS   RE,RESTLV           RF -> ORIGINAL LEVEL                         
+         B     SPAN68                                                           
+NOPT2    DS    0H                                                               
+*                                                                               
+         CLI   HOOKFLAG,C'Y'     DO STUFF AFTER HOOK                            
+         BE    NODTRET                                                          
+*                                                                               
+SPAN68   BAS   RE,RESINDX        RESET INDEX IN DAY/TIME LIST                   
+         ZIC   R0,1(RF)                                                         
+         AR    RF,R0                                                            
+SPAN70   CLI   0(RF),0                                                          
+         BE    SPAN85                                                           
+SPAN72   CLI   0(RF),X'0F'         SEGMENT HEADER                               
+         BNE   SPAN68                                                           
+         CLI   2(RF),X'FF'         LAST SEGMENT - GET NEXT PROG                 
+         BE    SPANCBLX                                                         
+         ST    RF,DBAQUART         SAVE ADDRESS OF NEXT 0F-LEVEL                
+         BAS   RE,CABSPAN                                                       
+         L     RF,DBAQUART                                                      
+         CLI   DBSELPTT,C'P'       PROGRAM REQ?                                 
+         BE    SPAN73               DON'T SAVE TRACK                            
+         CLI   2(RF),1             TRACK LEVEL?                                 
+         BNE   *+12                                                             
+         BAS   RE,SVTRK            SAVE TRACK IN TRKBUFF                        
+         BAS   RE,RESTDT           RESTORE DAY/TIME TABLE                       
+*                                                                               
+SPAN73   BAS   RE,CKSPECBT         CHECK IF BREAKOUT OR SPECIAL                 
+         BE    SPANNXL             USE SPECIALS AND BREAKOUTS                   
+         CLI   DBBTYPE,C'M'                                                     
+         BNE   *+12                FOR MOVIEGOER,                               
+         CLI   PAVGSENT,C'Y'       PROG AVG (PLUS S/B) WAS RELEASED             
+         BE    SPANCBLX            DONT SEND AGAIN. EXIT                        
+*                                                                               
+SPAN80   DS    0H                                                               
+         CLI   DBSELPTT,C'P'       PROGRAM REQUEST?                             
+         BE    SPANNXL             ACCEPT ALL LEVELS                            
+         CLI   DBSELPTT,C'T'       TRACK REQUEST?                               
+         BE    SPANNXL             ACCEPT ALL LEVELS                            
+         CLI   DBSELPTT,C'E'       EPISODES(TELECASTS) ONLY?                    
+         BNE   SPAN82                                                           
+         CLI   2(RF),2             IS THIS A TELECAST LEVEL?                    
+         BNE   SPAN68              NO- TRY NEXT                                 
+         B     SPANNXL                                                          
+*                                                                               
+SPAN82   CLC   2(1,RF),PVNORMAL    DO I WANT THIS SEGMENT LEVEL                 
+         BH    SPAN68               NO - TRY NEXT                               
+         B     SPANNXL                                                          
+*                                                                               
+SPAN85   DS    0H                  GET NEXT RECORD ON FILE                      
+*        CLI   DBBTYPE,C'M'                                                     
+*        BE    *+8                                                              
+*        CLI   DBBTYPE,C'N'                                                     
+*        BNE   *+8                                                              
+*        BAS   RE,RESETSQ                                                       
+*                                                                               
+         MVI   IOFLAG,FILE+SEQ                                                  
+         GOTO1 AIO,IOFLAG                                                       
+         BNE   SPANCBLX                                                         
+         L     RF,DBAREC                                                        
+         MVC   SVKEY,0(RF)                                                      
+         MVC   SVMINKEY,PMKMINOR-PMKEY(RF)                                      
+         AH    RF,DBDTADSP         SET UP FOR NEXT RECORD                       
+         B     SPAN70                                                           
+*                                                                               
+SPANNXL  DS    0H                     GO SPAN NEXT LEVEL                        
+*NEW LOGIC                                                                      
+         CLI   DBBTYPE,C'M'                                                     
+         BE    *+8                                                              
+         CLI   DBBTYPE,C'N'                                                     
+         BNE   SPAN35                                                           
+         ICM   RE,15,DBSPANAD                                                   
+         MVC   SVSPAN,0(RE)                                                     
+*END NEW                                                                        
+         B     SPAN35                                                           
+*                                                                               
+SPANCBLX DS    0H                                                               
+         B     GETQREC                                                          
+         SPACE 2                                                                
+CABBRAN1 BC    0,SPAN68            EXECUTED                                     
+         EJECT                                                                  
+**********************************************************************          
+*GETNLIV - LOOK FOR EXTEND 'NLIV'                                               
+*          USED FOR OOH/OOHC SOURCES                                            
+**********************************************************************          
+GETNLIV  NTR1                                                                   
+         MVI   SVOOHLIV,0                                                       
+         USING DBXLIVD,RE                                                       
+         ICM   RE,15,DBEXTEND                                                   
+GETNL5   BZ    GETNLIVX           GO THROUGH LIST STARTING AT DBEXTEND          
+         CLC   =C'NLIV',0(RE)     AND LOOK FOR ID                               
+         BE    GETNL10                                                          
+         ICM   RE,15,4(RE)                                                      
+         B     GETNL5                                                           
+*                                                                               
+GETNL10  CLI   DBXLIVE,SRCLOLQ                                                  
+         JE    GETNL15                                                          
+         CLI   DBXLIVE,SRCLOSQ                                                  
+         JE    GETNL15                                                          
+         CLI   DBXLIVE,SRCLO3Q                                                  
+         JE    GETNL15                                                          
+         CLI   DBXLIVE,SRCLO7Q                                                  
+         JE    GETNL15                                                          
+         CLI   DBXLIVE,SRCLOCLQ                                                 
+         JE    GETNL15                                                          
+         CLI   DBXLIVE,SRCLOCSQ                                                 
+         JE    GETNL15                                                          
+         CLI   DBXLIVE,SRCLOC3Q                                                 
+         JE    GETNL15                                                          
+         CLI   DBXLIVE,SRCLOC7Q                                                 
+         JNE   GETNLIVX                                                         
+GETNL15  MVC   SVOOHLIV,DBXLIVE                                                 
+*                                                                               
+GETNLIVX B     XIT                                                              
+         DROP  RE                                                               
+         EJECT                                                                  
+**********************************************************************          
+*GETODYT - LOOK FOR EXTEND 'ODYTM'                                              
+*          USED FOR OPTIMIZING DAY/TIME FILTERING                               
+*          EXTEND IS SET UP IN THE RESEARCH WRITER (NEPOD01)                    
+**********************************************************************          
+GETODYT  NTR1                                                                   
+         ICM   RE,15,DBEXTEND                                                   
+GETODT5  BZ    GETODTX            GO THROUGH LIST STARTING AT DBEXTEND          
+         CLC   =C'ODYT',0(RE)     AND LOOK FOR ID                               
+         BE    GOTODT                                                           
+         ICM   RE,15,4(RE)                                                      
+         B     GETODT5                                                          
+*                                                                               
+GOTODT   ST    RE,AODTLIST        EXTENSION FOUND, PASS BACK ADDRESS            
+*                                                                               
+GETODTX  B     XIT                                                              
+         EJECT                                                                  
+**********************************************************************          
+*GETODQ - SET DBSELDAY/DBSELTIM USING 'ODYT' TABLE                              
+*         CALLS GETDQ(FROM DEGET), EXCEPT IT USES 'ODYT', NOT 'DYTM'            
+**********************************************************************          
+GETODQ   NTR1                                                                   
+         MVC   DBACTSRC,SVDBASRC   RESTORE VALUES CHANGED IN THE HOOK           
+         MVC   DBINTMED,SVDBIMED   THEY ARE USED IN GETDQ                       
+         MVC   DBINTFIL,SVDBIFIL                                                
+*                                                                               
+         MVC   ADTLIST,AODTLIST    FAKE IT. SEND 'ODYT' TABLE INSTEAD           
+         MVC   DUB1,DUB            CHANGED IN GETDQ                             
+*                                                                               
+         GOTO1 AGETDQ,0    --->    SET DAY/TIME FIELDS (DBSELDAY/TIM)           
+*                                                                               
+         XC    ADTLIST,ADTLIST                                                  
+         MVC   DUB,DUB1                                                         
+*                                                                               
+         B     XIT                                                              
+         EJECT                                                                  
+**********************************************************************          
+*NEXTDYTM - GET NEXT DAY AND TIME FROM EXTENSION 'DYTM' IN DBEXTEND             
+**********************************************************************          
+NXTDYTM  NTR1                                                                   
+         ICM   RE,15,AODTLIST       ANY DAY/TIME LIST                           
+         BZ    NODYTM                                                           
+         USING DBXTLD,RE                                                        
+NXTDYTM2 ZIC   R1,DBXTLIDX         BUMP THE INDEX                               
+         LA    R1,1(R1)                                                         
+         STC   R1,DBXTLIDX                                                      
+         MH    R1,=H'5'                                                         
+         AR    R1,RE                                                            
+         CLI   DBXTLIST-DBXTLID(R1),0  END OF LIST                              
+         BNE   NXTDYTM5                                                         
+         BAS   RE,RESINDX          RESET INDEX TO FIRST D/T NOT FOUND           
+         B     NODYTM                                                           
+*                             WAS THIS DAY/TIME FOUND ALERADY?                  
+NXTDYTM5 TM    DBXTLIST-DBXTLID(R1),X'80'                                       
+         BNO   YESDYTM                                                          
+         B     NXTDYTM2       YES.GET NEXT DAY/TIME                             
+*                          (THIS WILL BE ON ONLY FOR TRACK OR PROG REQ)         
+NODYTM   CHI   RB,0                                                             
+         B     NXTDYTMX                                                         
+YESDYTM  CR    RB,RB                                                            
+         B     NXTDYTMX                                                         
+NXTDYTMX B     XIT                                                              
+         EJECT                                                                  
+**********************************************************************          
+*RESINDX - RESET INDEX TO FIRST DAY/TIME THAT WASN'T FOUND                      
+**********************************************************************          
+RESINDX  NTR1                                                                   
+         ICM   RE,15,AODTLIST       ANY DAY/TIME LIST                           
+         BZ    RESINDXX                                                         
+         USING DBXTLD,RE                                                        
+         MVI   DBXTLIDX,0                                                       
+*                                                                               
+         SR    R0,R0               BUMP THE INDEX                               
+RESIND2  LR    R1,R0                                                            
+         MH    R1,=H'5'                                                         
+         LA    RF,0(R1,RE)                                                      
+         CLI   DBXTLIST-DBXTLID(RF),0  END OF LIST                              
+         BE    RESINDXX                                                         
+         TM    DBXTLIST-DBXTLID(RF),X'80'   ALREADY FOUND?                      
+         BNO   RESIND5                                                          
+         AHI   R0,1                YES. CONTINUE                                
+         B     RESIND2                                                          
+*                                                                               
+RESIND5  STC   R0,DBXTLIDX         FIRST NOT FOUND DAY/TIME                     
+*                                                                               
+RESINDXX B     XIT                                                              
+**********************************************************************          
+*DTFOUND - TURN ON HIGH ORDER BIT OF DAY                                        
+*        - THIS INDICATES THAT DAY/TIME COMBINATION WAS FOUND                   
+*        - IN THE CASE OF TRACK OR PROG-AVG REQUEST, WE WILL CHECK              
+*          THE OTHER TELECASTS ONLY FOR THE REMAINING DAYS AND TIMES            
+**********************************************************************          
+DTFOUND  NTR1                                                                   
+         ICM   RE,15,AODTLIST       ANY DAY/TIME LIST                           
+         BZ    DTFOUNDX                                                         
+         USING DBXTLD,RE                                                        
+         ZIC   R1,DBXTLIDX         BUMP THE INDEX                               
+         MH    R1,=H'5'                                                         
+         AR    R1,RE                                                            
+         OI    DBXTLIST-DBXTLD(R1),X'80'                                        
+*                                                                               
+DTFOUNDX B     XIT                                                              
+         EJECT                                                                  
+**********************************************************************          
+*ANYDT - CHECK IF ANY DAYS/TIMES THAT WEREN'T FOUND YET                         
+**********************************************************************          
+ANYDT    NTR1                                                                   
+         ICM   RE,15,AODTLIST       ANY DAY/TIME LIST                           
+         BZ    NODT                                                             
+         USING DBXTLD,RE                                                        
+         SR    R0,R0                                                            
+ANYDT5   LR    R1,R0                                                            
+         MH    R1,=H'5'                                                         
+         LA    RF,0(R1,RE)                                                      
+         CLI   DBXTLIST-DBXTLID(RF),0  END OF LIST                              
+         BE    NODT                                                             
+         TM    DBXTLIST-DBXTLID(RF),X'80'                                       
+         BNO   YESDT                                                            
+         AHI   R0,1                                                             
+         B     ANYDT5                                                           
+                                                                                
+NODT     CHI   RB,0                                                             
+         B     ANYDTX                                                           
+YESDT    CR    RB,RB                                                            
+         B     ANYDTX                                                           
+ANYDTX   B     XIT                                                              
+         EJECT                                                                  
+**********************************************************************          
+*SETADJ - SET ADJUSTED TIME FIELDS DBMSADJ,DBMEADJ USING DBSELTIM               
+**********************************************************************          
+SETADJ   NTR1                                                                   
+         MVC   DBMSADJ(4),DBSELTIM                                              
+         CLC   DBMSADJ,=H'559'                                                  
+         BH    *+16                                                             
+         LH    RE,DBMSADJ                                                       
+         AH    RE,=H'2400'                                                      
+         STH   RE,DBMSADJ                                                       
+         OC    DBMEADJ,DBMEADJ                                                  
+         BZ    SETADJX                                                          
+         CLC   DBMEADJ,=H'559'                                                  
+         BH    *+16                                                             
+         LH    RE,DBMEADJ                                                       
+         AH    RE,=H'2400'                                                      
+         STH   RE,DBMEADJ                                                       
+SETADJX  B     XIT                                                              
+         EJECT                                                                  
+**********************************************************************          
+*MVGOUNVS - SAVE MOVIE GOER UNIVERSES IN CBLUNV                                 
+*         - RF POINTS TO FIRST LEVEL                                            
+*(THIS SUBOUTINE IS NOT USED YET. 3 MKT BRK UNVS DON'T FIT IN CBLUNV)           
+**********************************************************************          
+MVGOUNVS NTR1                                                                   
+         CLI   2(RF),0             UNIVERSES ARE ALWAYS ON PROGRAM LEVL         
+         BNE   MVGOUNVX                                                         
+*                                                                               
+         MVC   SVKEY,0(RF)         SAVE CURRENT VALUES                          
+         MVC   SVMINKEY,PMKMINOR-PMKEY(RF)                                      
+*                                                                               
+         LA    R9,CBLUNV                                                        
+         MVI   RESFLAG,0                                                        
+MVGO10   ZIC   R0,1(RF)                                                         
+         AR    RF,R0                                                            
+         CLI   0(RF),X'0F'                                                      
+         BE    MVGODONE                                                         
+**CHECK EOR**                                                                   
+         CLI   0(RF),0                                                          
+         BNE   MVGO15                                                           
+         BAS   RE,NEXTFILE                                                      
+         BE    *+6                                                              
+         DC    H'0'                                                             
+         L     RF,AFRSTEL                                                       
+**                                                                              
+MVGO15   CLI   0(RF),X'23'         MKT BREAK INDICATOR                          
+         BE    MVGOADD                                                          
+         CLI   0(RF),X'57'         MOVIE GOER UNIVERSES BY COVERAGE             
+         BE    MVGOADD                                                          
+         B     MVGO10                                                           
+*                                                                               
+MVGOADD  ZIC   R1,1(RF)                                                         
+         AR    R1,R9                                                            
+         LA    RE,CBLUNV+CBLULNQ   BYTE AFTER END OF UNVS SAVE AREA             
+         CR    RE,R1                                                            
+         BH    *+6                                                              
+         DC    H'0'                OUT OF BOUNDS                                
+         ZIC   R1,1(RF)                                                         
+         BCTR  R1,0                                                             
+         EX    R1,*+8                                                           
+         B     *+10                                                             
+         MVC   0(0,R9),0(RF)                                                    
+         LA    R9,1(R1,R9)         NEXT AVAILABLE SAVE AREA                     
+         B     MVGO10                                                           
+*                                                                               
+MVGODONE CLI   RESFLAG,1                                                        
+         BNE   *+8                                                              
+         BAS   RE,RESETSQ          RESTORE RECORD IN DBAREC                     
+*                                                                               
+MVGOUNVX B     XIT                                                              
+         EJECT                                                                  
+**********************************************************************          
+*SHIFTOPT - SHIFT THE REQUEST OPTION ONE STEP DOWN IF EMPTY LEVEL               
+*           PROGRAM AVG REQUEST --> TRACK AVG REQUEST                           
+*           TRACK AVG REQUEST --> TELECAST(EPISODE) REQUEST                     
+*           R9 POINTS TO EMPTY LEVEL (EX:LEVEL WITH NO DEMOS)                   
+**********************************************************************          
+SHIFTOPT DS    0H                                                               
+         L     R9,DBAQUART         DEMOS MISSING FOR THIS LEVEL                 
+         CLI   2(R9),0             IS IT THE PROGRAM DEMOS?                     
+         BNE   SHIFT10                                                          
+         CLI   DBSELPTT,C'P'       AND REPORTING ON PROGRAM LEVEL?              
+         BNE   *+12                                                             
+         MVI   DBSELPTT,C'T'       SHIFT TO TRACK REPORTING                     
+         B     SHIFTX                                                           
+*                                                                               
+         CLI   DBSELPTT,C'T'       REPORTING ON TRACK LEVEL?                    
+         BNE   SHIFTX                                                           
+         CLI   TCASTNXT,C'Y'       NO DEMOS ON PROG LEV AND NXT LEV IS          
+         BNE   SHIFTX              TCAST LEVEL                                  
+         MVI   DBSELPTT,C'E'       SHIFT TO TELECAST REPORTING                  
+         B     SHIFTX                                                           
+*                                                                               
+SHIFT10  CLI   2(R9),1             OR IS IT THE TRACKAGE DEMOS?                 
+         BNE   SHIFTX                                                           
+         CLI   DBSELPTT,C'T'       AND REPORTING ON TRACK LEVEL?                
+         BNE   SHIFTX                                                           
+         MVC   SVSELPTT,DBSELPTT   SWITCH TO LOWER REPORTING OPTION             
+         MVI   DBSELPTT,C'E'                                                    
+SHIFTX   BR    RE                                                               
+         EJECT                                                                  
+**********************************************************************          
+*CKSPECBT - CHECK IF SPECIAL OR BREAKOUT                                        
+*         - RF POINTS TO '0F' ELEMENT = BEGINNING OF LEVEL                      
+*         - RETURNS CC=EQUAL IF SPECIAL OR BREAKOUT                             
+**********************************************************************          
+CKSPECBT LR    R9,RF                                                            
+CKSPBT5  IC    R0,1(R9)                                                         
+         AR    R9,R0                                                            
+         CLI   0(R9),0             END OF RECOD                                 
+         BE    CKSPBTN                                                          
+         CLI   0(R9),X'0F'         NEXT LEVEL                                   
+         BE    CKSPBTN                                                          
+         CLI   0(R9),X'10'                                                      
+         BH    CKSPBTN             ELEM NOT FOUND                               
+         BNE   CKSPBT5                                                          
+         USING PHTELEM,R9                                                       
+         TM    PHTRSF,X'01'                                                     
+         BNZ   *+8                 USE BREAKOUT TELECAST                        
+         TM    PHTDTYP,X'04'                                                    
+         BZ    CKSPBTN             USE SPECIAL TELECAST                         
+*                                                                               
+CKSPBTY  CR    R0,R0               SET CC                                       
+         B     *+8                                                              
+CKSPBTN  CHI   RB,0                                                             
+*                                                                               
+CKSPBTX  BR    RE                                                               
+         DROP  R9                                                               
+         SPACE 2                                                                
+**********************************************************************          
+*CKFORTRK - CHECK IF ANY TRACKS FOLLOW THIS LEVEL                               
+*         - R9 POINTS AFTER PROG OR SPEC/BRKOUT LEVEL                           
+**********************************************************************          
+CKFORTRK NTR1                                                                   
+*        MVI   RESFLAG,0            ALREADY SET                                 
+**CHECK EOR**                                                                   
+CKTRK1   CLI   0(R9),0                                                          
+         BNE   CKTRK10                                                          
+         BAS   RE,NEXTFILE                                                      
+         BE    *+6                                                              
+         DC    H'0'                ALL RECDS SHOULD END WITH '0F' ELEM          
+         L     R9,AFRSTEL          A(FIRST ELEMENT)                             
+**                                                                              
+CKTRK10  CLI   0(R9),X'0F'                                                      
+         BNE   CKTRK20                                                          
+         CLI   2(R9),X'FF'         END OF PROGRAM                               
+         BE    CKTRKX                                                           
+         CLI   2(R9),1             OR TRACK FOUND                               
+         BE    CKTRKX                                                           
+CKTRK20  ZIC   R0,1(R9)                                                         
+         AR    R9,R0                                                            
+         B     CKTRK1                                                           
+*                                                                               
+CKTRKX   ZIC   R0,2(R9)                                                         
+         CLI   RESFLAG,1                                                        
+         BNE   *+8                                                              
+         BAS   RE,RESETSQ          RESET READ SEQUENCE                          
+*                                                                               
+         CHI   R0,1                CC=1 IF TRACK FOUND                          
+         B     XIT                                                              
+         EJECT                                                                  
+**********************************************************************          
+*NEXTFILE - READ RECORD WITH NEXT FILE NUMBER                                   
+**********************************************************************          
+NEXTFILE NTR1                                                                   
+         CLI   RESFLAG,0           SEQUENCE RESET?                              
+         BNE   NEXTF10             YES. GO READ SEQUENTIAL                      
+         BAS   RE,RESETSQ          OTHERWISE, RESET SEQUENCE                    
+         MVI   RESFLAG,1                                                        
+*                                                                               
+NEXTF10  DS    0H                                                               
+NEXTF40  MVI   IOFLAG,FILE+SEQ                                                  
+         GOTO1 AIO,IOFLAG                                                       
+         BNE   NEXTFILX                                                         
+         L     RF,DBAREC                                                        
+         AH    RF,DBDTADSP                                                      
+         ST    RF,AFRSTEL                                                       
+         CR    RF,RF               SET CONDITION CODE                           
+NEXTFILX B     XIT                                                              
+         SPACE 2                                                                
+**********************************************************************          
+*RESETSQ - RESET READ SEQUENCE AFTER A READ SEQUENTIAL HAS BEEN DONE            
+**********************************************************************          
+RESETSQ  NTR1                                                                   
+         OC    SVKEY,SVKEY                                                      
+         BZ    RESETSQX                                                         
+         OC    SVMINKEY,SVMINKEY                                                
+         BZ    RESETSQX                                                         
+         MVC   DBKEY,SVKEY                                                      
+         MVC   DBMINKEY,SVMINKEY                                                
+         MVI   IOFLAG,FILE+READ                                                 
+         GOTO1 AIO,IOFLAG                                                       
+         BE    *+6                                                              
+         DC    H'0'                                                             
+RESETSQX B     XIT                                                              
+         EJECT                                                                  
+**********************************************************************          
+*SAVELV - SAVE LEVEL CURRENTLY WORKING ON                                       
+*         RF -> A(START OF LEVEL) IN DBAREC                                     
+**********************************************************************          
+SAVELV   NTR1                                                                   
+         ST    RF,ALEVEL                                                        
+         L     RE,DBAREC            SAVE KEY FOR LATER RESTORE                  
+         MVC   LVKEY,0(RE)                                                      
+         MVC   LVMINKEY,PMKMINOR-PMKEY(RE)                                      
+SAVELVX  B     XIT                                                              
+                                                                                
+**********************************************************************          
+*RESTLV - RESTORE LEVEL ORIGINALY WORKING ON                                    
+*         POINT RF TO ORIGINAL LEVEL                                            
+**********************************************************************          
+RESTLV   NTR1                                                                   
+         CLI   DBBTYPE,C'N'         FOR CNAD AND CMVGO, NEED TO RESTORE         
+         BE    *+12                   RECOD                                     
+         CLI   DBBTYPE,C'M'         REGULAR CABLE IS OK BECAUSE ALL             
+         BNE   RESTLVX                LEVELS FIR ON THE SAME RECD               
+*                                                                               
+         CLI   TRBFSEQ,1            TEST SEQUENCE CHANGED                       
+         BNE   RESTLVX                                                          
+*                                                                               
+         OC    LVKEY,LVKEY                                                      
+         BZ    RESTLVX                                                          
+         OC    LVMINKEY,LVMINKEY                                                
+         BZ    RESTLVX                                                          
+         MVC   DBKEY,LVKEY                                                      
+         MVC   DBMINKEY,LVMINKEY                                                
+         MVI   IOFLAG,FILE+READ                                                 
+         GOTO1 AIO,IOFLAG           RESTORE RECORD IN DBAREC                    
+         BE    *+6                                                              
+         DC    H'0'                                                             
+RESTLVX  XC    LVKEY,LVKEY                                                      
+         XC    LVMINKEY,LVMINKEY                                                
+         L     RF,ALEVEL            A(START OF LEVEL) IN DBAREC                 
+         XIT1  REGS=(RF)            RETURN POINTER TO LEVEL                     
+         EJECT                                                                  
+**********************************************************************          
+*RESTRK- RESTORE FIELDS AND PTRS AFTER A DBSELPTT=T TRACK WAS RETURNED          
+*        BUMP THE (RF) PTR TO THE NEXT TRACK LEVEL (1) SAVE IN                  
+*        DBAQUART.                                                              
+*        INPUT:  TMPQUART = A(LAST EPISODE PROCESSED)                           
+*                TMPAREC  = A(DBAREC)                                           
+*        OUTPUT: CC =  0  = NO ERRORS, NEXT LEVEL FOUND                         
+*                CC <> 0  = END OF RECD, NO NEW TRK LEVEL (GET NXT Q)           
+*                (RF)     = PTS TO NEW '0F' EVEL (OR OLD IF ERROR)              
+**********************************************************************          
+RESTRK   NTR1                                                                   
+*                                                                               
+*        CLI   DBSELPTT,C'T'       FOR TRACK REQUESTS                           
+*        BNE   *+8                                                              
+         BAS   RE,RESTDT           RESTORE DAY/TIME TABLE                       
+*                                                                               
+         L     RF,TMPQUART         YES,RE-POINT TO EPISODE LEVEL PROCD          
+         ST    RF,DBAQUART                                                      
+         MVC   DBAREC,TMPAREC      RESTORE PTR TO ACTUAL RECD                   
+*                                                                               
+         SR    R0,R0                                                            
+         CLI   DBBTYPE,C'N'        FOR NAD AND MOVG,                            
+         BE    *+8                                                              
+         CLI   DBBTYPE,C'M'        SKIP FIRST '0F' ELEMENT                      
+         BNE   REST10              (BECAUSE THERE ARE NO TELECASTS BTW          
+         CLI   0(RF),0              TRACKS, IT IS POINTING AT A LEVEL           
+         BE    RESTNXT              ALREADY PROCESSED)                          
+         B     REST12                                                           
+REST10   CLI   0(RF),0             EOR?                                         
+         BE    RESTNXT             READ SEQ NEXT RECD                           
+         CLI   0(RF),X'0F'         BUMP TO NEXT TRACK LEVEL                     
+         BE    REST15                                                           
+REST12   IC    R0,1(RF)            BUMP TO NEXT ELEMENT                         
+         AR    RF,R0                                                            
+         B     REST10                                                           
+*                                                                               
+REST15   CLI   2(RF),X'FF'         END OF PROGRAM                               
+         BNE   *+12                EXIT WITH END OF RECD                        
+         LA    RE,1                SET CC <> 0                                  
+         B     RESTRKX                                                          
+         CLI   2(RF),1             NEXT TRACK?                                  
+*NEW LOGIC                                                                      
+         BE    REST20                                                           
+         CLI   DBBTYPE,C'N'        FOR MOVIE GOER AND NAD,                      
+         BE    *+8                 ACCEPT UNTRACKED TELECASTS THAT ARE          
+         CLI   DBBTYPE,C'M'        BREAKOUTS AND SPECIALS                       
+         BNE   REST12                                                           
+         BAS   RE,CKSPECBT                                                      
+         BNE   REST12                                                           
+*        BE    REST20                                                           
+*END NEW                                                                        
+*                                                                               
+REST20   ST    RF,DBAQUART         SAVE NEW LEVEL                               
+         BAS   RE,CABSPAN                                                       
+         BAS   RE,SVTRK            SAVE TRK LEVEL IN TRKBUFF                    
+         SR    RE,RE               SET CC = ZERO                                
+         B     RESTRKX                                                          
+*                                                                               
+RESTNXT  DS    0H                                                               
+*        CLI   DBBTYPE,C'M'                                                     
+*        BE    *+8                                                              
+*        CLI   DBBTYPE,C'N'                                                     
+*        BNE   *+8                                                              
+*        BAS   RE,RESETSQ                                                       
+         MVI   IOFLAG,FILE+SEQ                                                  
+         GOTO1 AIO,IOFLAG                                                       
+         L     RF,DBAREC           SET UP FOR NEXT RECORD                       
+         MVC   SVKEY,0(RF)                                                      
+         MVC   SVMINKEY,PMKMINOR-PMKEY(RF)                                      
+         AH    RF,DBDTADSP                                                      
+         SR    R0,R0                                                            
+         B     REST10                                                           
+RESTRKX  L     RF,DBAQUART         SET RF TO NEW LEVEL                          
+         LTR   RE,RE                                                            
+         XIT1  REGS=(RF)                                                        
+         EJECT                                                                  
+**********************************************************************          
+*RESTDT - RESTORE DAY/TIME TABLE BY TURNING OFF HIGH ORDER BITS OF DAY          
+**********************************************************************          
+RESTDT   NTR1                                                                   
+         ICM   RE,15,AODTLIST       ANY DAY/TIME LIST                           
+         BZ    RESTDTX                                                          
+         USING DBXTLD,RE                                                        
+         MVI   DBXTLIDX,0                                                       
+*                                                                               
+         SR    R0,R0                                                            
+RESTDT5  LR    R1,R0                                                            
+         MH    R1,=H'5'                                                         
+         LA    RF,0(R1,RE)        TURN OFF HIGH ORDER BIT OF DAY                
+         CLI   DBXTLIST-DBXTLID(RF),0  END OF LIST                              
+         BE    RESTDTX                                                          
+         NI    DBXTLIST-DBXTLID(RF),X'7F'                                       
+         AHI   R0,1                                                             
+         B     RESTDT5                                                          
+RESTDTX  B     XIT                                                              
+         EJECT                                                                  
+**********************************************************************          
+*SVTRK - SAVE TRACKAGE INFORMATION INCL RECD KEY, MKT ELEM, DEMO ELEMS          
+*        INPUT: 0(RF) - PTS TO THE TRK/PROGRAM LEVEL TO COPY IN                 
+*        EXIT : TRKBUFF WILL CONTAIN A 'RECD' WITH THE COPIED LEVEL             
+**********************************************************************          
+SVTRK    NTR1                                                                   
+         LR    R5,RF               R5 PTS TO TRACK TO COPY                      
+*                                                                               
+         CLI   DBSELPTT,C'P'                                                    
+         BNE   *+12                                                             
+         CLI   2(R5),0                                                          
+         BNE   SVTRKX                                                           
+*                                                                               
+         L     RF,DBAREC           FOR PRGM, SAVE KEY & MKT ELEMENT             
+         LA    R1,TRKBUFF          R1= SAVED TRACK BUFFER (TRKBUF)              
+         CLI   2(R5),X'00'         SAVE PRG RECD INCL MKT ELEMENT?              
+         BE    SVTRK5              YES                                          
+         CLI   DBBTYPE,C'N'        FOR NAD AND MOVG,                            
+         BE    *+8                 SAVE KEY FOR ACTUAL TRACK BECAUSE IT         
+         CLI   DBBTYPE,C'M'        MAY NOT BE ON SAME RECD AS PRG LEVEL         
+         BE    SVTRK5                                                           
+         AH    R1,DBDTADSP         BUMP PAST KEY IN TRKBUFF                     
+         SR    R0,R0                                                            
+         CLI   0(R1),X'01'         MKT ELEMENT PRESENT?                         
+         BNE   *+10                                                             
+         IC    R0,1(R1)                                                         
+         AR    R1,R0                                                            
+         SR    RE,RE                                                            
+         B     SVTRK10             GO TEST DEMO ELEMENTS PRESENT                
+*                                                                               
+SVTRK5   MVI   TRDEMS,C'N'         INIT TO NO DEMS ON LEVEL                     
+         LH    RE,DBDTADSP         SAVE KEY OF PRM RECD & MKT ELEMENT           
+         BCTR  RE,0                                                             
+         EXMVC RE,0(R1),0(RF)      MOVE IN KEY                                  
+         AH    R1,DBDTADSP         BUMP PAST KEY IN TRKBUFF                     
+         AH    RF,DBDTADSP         PT PAST KEY IN DBAREC                        
+         SR    RE,RE                                                            
+         CLI   0(RF),X'01'         MARKET ELEMENT?                              
+         BNE   SVTRK19                                                          
+         ZIC   RE,1(RF)                                                         
+         BCTR  RE,0                                                             
+         EXMVC RE,0(R1),0(RF)                                                   
+         LA    RE,1(RE)            RESTORE LENGTH                               
+         AR    R1,RE               BUMP PAST MKT ELEMENT                        
+         SR    RE,RE                                                            
+         XC    0(10,R1),0(R1)      CLEAR SOME SPACE AFTER MKT ELEM              
+*                                                                               
+SVTRK10  MVI   NONUNVD,C'N'                                                     
+         LR    RE,R5               ANY DEMOS ON THIS LEVEL?                     
+         SR    R0,R0                                                            
+SVTRK12  IC    R0,1(RE)                                                         
+         AR    RE,R0               BUMP TO NEXT ELEMENT                         
+SVTRK13  CLI   0(RE),0             END OF RECD. NO DEMOS ON PREV LEV            
+         BE    SVTRK15                                                          
+         CLI   0(RE),X'0F'         NEXT LEVEL. NO DEMOS ON PREV LEV             
+         BE    SVTRK15                                                          
+         CLI   0(RE),X'5E'         DEMO ELEMENTS END MARKER?                    
+         BE    SVTRK14                                                          
+         CLI   DBBTYPE,C'M'                                                     
+         BNE   SVTRK12                                                          
+         CLI   0(RE),X'57'       FOR MOVIEGOER,COUNT ONLY NON-UNV DEMOS         
+         BE    SVTRK12             E'57'=UNIVERSES BY COVERAGE                  
+         CLI   0(RE),X'30'                                                      
+         BL    SVTRK12                                                          
+         MVI   NONUNVD,C'Y'        IS NON-UNVS DEMO                             
+         B     SVTRK12                                                          
+SVTRK14  SR    RE,RE               RESET PTR                                    
+         CLI   DBBTYPE,C'M'                                                     
+         BNE   *+12                                                             
+         CLI   NONUNVD,C'Y'        ANY NON-UNVS DEMOS?                          
+         BNE   *+8                                                              
+         MVI   TRDEMS,C'Y'         DEMOS FOUND. GO SAVE THEM                    
+         B     SVTRK19                                                          
+SVTRK15  CLI   2(R5),0             WAS THIS THE PRG AVG LEV?                    
+         BE    SVTRK50             YES, SAVE LENGTH                             
+         B     SVTRKX              NO, DON'T SAVE ANYTING                       
+*                                                                               
+SVTRK19  DS    0H                                                               
+SVTRK20  ZIC   RE,1(R5)            SAVE ELEMS ON LEVEL                          
+         BCTR  RE,0                                                             
+         EXMVC RE,0(R1),0(R5)      MOVE IN TRK DATA                             
+*                                                                               
+         ZIC   RE,1(R5)                                                         
+         AR    R1,RE                                                            
+         AR    R5,RE                                                            
+         LA    R0,TRKBUFF           CHECK OUT OF BOUNDS                         
+         AHI   R0,L'TRKBUFF                                                     
+         CR    R1,R0                                                            
+         BL    *+6                                                              
+         DC    H'0'                                                             
+*                                                                               
+         CLI   DBBTYPE,C'N'         NAD AND MOVG HAVE MULTIPLE MKT BRKS         
+         BE    *+8                                                              
+         CLI   DBBTYPE,C'M'                                                     
+         BNE   *+12                                                             
+         CLI   0(R5),X'5E'          COPY FIRT MKT BRK ONLY                      
+         BE    SVTRK50                                                          
+SVTRK25  CLI   0(R5),0             END OF RECD?                                 
+         BE    SVTRK50                                                          
+         CLI   0(R5),X'0F'         COPY TRK LEVEL                               
+         BNE   SVTRK20             FOUND NEXT LEVEL                             
+*                                                                               
+SVTRK50  XC    0(10,R1),0(R1)      CLEAR OUT ANY GARBAGE IN TRKBUFF             
+         LA    RE,TRKBUFF          PT TO START OF BUFFER                        
+         SR    R1,RE               LENGTH OF RECD                               
+         STCM  R1,3,PMRLEN-PMKEY(RE)   SAVE LENGTH OF RECD IN TRKBUFF           
+SVTRKX   B     XIT                                                              
+         EJECT                                                                  
+**********************************************************************          
+*REPLBK - REPLACE BOOK IN '5E' ELEMENT WITH ACTUAL BOOK OF RECORD               
+* FOR BOOKS BETW SEP/94 - APR/95.                                               
+**********************************************************************          
+REPLBK   DS    0H                                                               
+         LR    R9,RE                                                            
+         L     R1,DBAQUART                                                      
+         SR    R0,R0                                                            
+*                                                                               
+REPLBK5  DS    0H                                                               
+         CLI   0(R1),0             EOF?                                         
+         BE    REPLBKX                                                          
+         CLI   0(R1),X'5E'                                                      
+         BNE   *+10                                                             
+         MVC   5(2,R1),DBSELBK     MOVE IN BOOK OF THIS RECORD                  
+         IC    R0,1(R1)                                                         
+         AR    R1,R0                                                            
+         B     REPLBK5                                                          
+*                                                                               
+REPLBKX  LR    RE,R9                                                            
+         BR    RE                                                               
+*                                                                               
+         EJECT                                                                  
+**********************************************************************          
+*CABSPAN- FIND PRG/TRACK/EPISODE NAMES DEPENDING ON LEVEL                       
+**********************************************************************          
+CABSPAN  NTR1                      DIG OUT AND FORMAT NAMES                     
+         L     RF,DBAQUART                                                      
+         ICM   R1,15,DBSPANAD                                                   
+         CLI   0(RF),X'0F'                                                      
+         BNE   XIT                                                              
+*                                                                               
+         LR    RE,RF               SAVE RF                                      
+         CLI   DBBTYPE,C'M'                                                     
+         BE    *+8                                                              
+         CLI   DBBTYPE,C'N'        STORE KEY + DESCRIPTIVE ELEMS                
+         BNE   CABSPAN1             (10,20,22)                                  
+         MVC   NADLBL,=C'NDEF'     LABEL CABLE NAD INFO                         
+         XC    NADINFO,NADINFO     (FOR DEDEFINE)                               
+         L     R9,DBAREC                                                        
+         LH    RE,DBDTADSP                                                      
+         BCTR  RE,0                                                             
+         EX    RE,*+8                                                           
+         B     *+10                                                             
+         MVC   NADINFO(0),0(R9)                                                 
+         LA    R4,NADINFO                                                       
+         AH    R4,DBDTADSP         PAST KEY                                     
+         LR    R9,RF               DBAQUART                                     
+         ZIC   RE,1(R9)                                                         
+         AR    R9,RE               ZIP PAST '0F'                                
+CABSPAN0 CLI   0(R9),X'0F'         REACHED NEXT LEVEL                           
+         BE    CABSPN0B                                                         
+         CLI   0(R9),0                                                          
+         BE    CABSPN0B                                                         
+         CLI   0(R9),X'10'                                                      
+         BE    *+8                                                              
+         CLI   0(R9),X'20'                                                      
+         BE    *+12                                                             
+         CLI   0(R9),X'22'                                                      
+         BH    CABSPN0B                                                         
+         BNE   CABSPN0A                                                         
+         ZIC   RE,1(R9)                                                         
+         BCTR  RE,0                                                             
+         EX    RE,*+8                                                           
+         B     *+10                                                             
+         MVC   0(0,R4),0(R9)                                                    
+         ZIC   RE,1(R9)                                                         
+         AR    R4,RE                                                            
+CABSPN0A ZIC   RE,1(R9)                                                         
+         AR    R9,RE                                                            
+         B     CABSPAN0                                                         
+CABSPN0B LR    RE,RF               RESTORE RE                                   
+*                                                                               
+         USING SPANADD,R1                                                       
+CABSPAN1 MVC   SPDLEVEL,2(RF)                                                   
+         CLI   2(RF),1             SET FOR UNTITLED TRACKS                      
+         BNE   CABSPAN2                                                         
+         XC    SPDTRNAM,SPDTRNAM                                                
+         MVC   SPDTRNAM(15),=C'UNTITLED TRACKS'                                 
+*                                                                               
+CABSPAN2 ZIC   R0,1(RE)                                                         
+         AR    RE,R0                                                            
+         CLI   0(RE),X'10'                                                      
+         BE    CABSPAN7                                                         
+         CLI   0(RE),X'21'                                                      
+         BE    CABSPAN3                                                         
+         CLI   0(RE),X'22'                                                      
+         BE    CABSPN10                                                         
+         CLI   0(RE),X'00'                                                      
+         BE    XIT                                                              
+         CLI   0(RE),X'0F'                                                      
+         BE    XIT                                                              
+         B     CABSPAN2                                                         
+*                                                                               
+CABSPAN3 MVC   SPDLEVEL,2(RF)                                                   
+         CLI   2(RF),0                                                          
+         BNE   CABSPAN4                                                         
+         CLI   DBBTYPE,C'N'        *!*                                          
+         BE    *+8                                                              
+         CLI   DBBTYPE,C'M'        NOTE: MAY NEED TO DO THIS ALLWAYS            
+         BNE   *+10                                                             
+         XC    SPDTRNUM,SPDTRNUM   *!* CLEAR TRACK NUMBER                       
+         XC    SPDPRNAM,SPDPRNAM   CLEAR PROGRAM NAME                           
+         XC    SPDTRNAM,SPDTRNAM   CLEAR TRACK NAME                             
+         XC    SPDTCNAM,SPDTCNAM   CLEAR TELECAST NAME                          
+         XC    SPDTCNUM,SPDTCNUM   CLEAR TELECAST NUMBER                        
+         ZIC   R5,1(RE)                                                         
+         SH    R5,=H'3'                                                         
+         EX    R5,CABM1                                                         
+         EX    R5,CABM2                                                         
+         EX    R5,CABM3                                                         
+         B     CABSPAN2                                                         
+CABSPAN4 CLI   2(RF),1                                                          
+         BNE   CABSPAN5            *!*                                          
+         CLI   DBBTYPE,C'N'                                                     
+         BE    *+8                                                              
+         CLI   DBBTYPE,C'M'        NOTE: MAY NEED TO DO THIS ALLWAYS            
+         BNE   *+16                                                             
+         XC    SPDTCNUM,SPDTCNUM   *!* CLEAR TELECAST NUMBER                    
+         XC    SPDTCNAM,SPDTCNAM   *!* CLEAR EPISODE NAME                       
+         XC    SPDTRNAM,SPDTRNAM   GET TRACKAGE NAME                            
+         ZIC   R5,1(RE)                                                         
+         SH    R5,=H'3'                                                         
+         EX    R5,CABM2                                                         
+         B     CABSPAN2                                                         
+CABSPAN5 CLI   2(RF),2                                                          
+         BNE   CABSPAN2                                                         
+         XC    SPDTCNAM,SPDTCNAM                                                
+         ZIC   R5,1(RE)                                                         
+         SH    R5,=H'3'                                                         
+         EX    R5,CABM3                                                         
+         B     CABSPAN2                                                         
+*                                                                               
+CABM1    MVC   SPDPRNAM(0),2(RE)                                                
+CABM2    MVC   SPDTRNAM(0),2(RE)                                                
+CABM3    MVC   SPDTCNAM(0),2(RE)                                                
+*                                                                               
+         USING PHTCODE,RE          DIG OUT NTI/TRK/EPIS NUMBER                  
+CABSPAN7 DS    0H                                                               
+         CLI   2(RF),0                                                          
+         BNE   CABSPAN8                                                         
+         MVC   WORK(5),PHTNTI      NTI PROGRAM NUMBER: 5 CHAR PWOS              
+         MVI   WORK+5,X'0F'                                                     
+         UNPK  WORK+6(11),WORK(6)                                               
+         MVC   SPDPRNUM,WORK+6                                                  
+         B     CABSPAN2                                                         
+*                                                                               
+CABSPAN8 ICM   R0,15,PHTNTI+1      TRACK NUMBER & EPIS # ARE BINARY             
+         CVD   R0,DUB1                                                          
+         OI    DUB1+7,X'0F'                                                     
+         UNPK  WORK(10),DUB1+3(5)                                               
+         LR    R0,R0                                                            
+         ZIC   R0,2(RF)                                                         
+         MH    R0,=H'10'                                                        
+         LA    R5,SPDPRNUM                                                      
+         AR    R5,R0                                                            
+         MVC   0(10,R5),WORK        TRACK NUMBER                                
+         B     CABSPAN2                                                         
+         DROP  RE                                                               
+*                                                                               
+         USING NTELEM,RE                                                        
+CABSPN10 CLI   2(RF),2                                                          
+         BNE   XIT                                                              
+         ICM   R0,15,NTTNUM        TELECAST NUMBER                              
+         CVD   R0,DUB1                                                          
+         OI    DUB1+7,X'0F'                                                     
+         UNPK  WORK(10),DUB1+3(5)                                               
+         MVC   SPDTCNUM,WORK                                                    
+         B     XIT                                                              
+         DROP  RE,R1                                                            
+*                                                                               
+XIT      XIT1                                                                   
+                                                                                
+* STORE VIEWING TYPE IN SPAN AREA (DBSPANAD)                                    
+VIEWTYP  NTR1                      FILL IN VIEWING TYPE(LIVE/LIVE+SD..)         
+                                                                                
+*        ICM   RF,15,DBCOMFCS                                                   
+*        ICM   RF,15,CDEMTABS-COMFACSD(RF)                                      
+*        GOTO1 (RF),DMCB,VWDESCTB  GET A(VIEWING TYPES DESCRIPTION)             
+*        ICM   R5,15,DMCB          A(TABLE) RETURNED IN P1                      
+*        BNZ   *+6                 TEMP                                         
+*        DC    H'0'                BAD TABLEID PASSED                           
+         LA    R5,VWDESCT          TEMP UNTIL STEWARD GETS A IN COMFACS         
+         USING VWDESCD,R5                                                       
+                                                                                
+         ICM   R3,15,DBSPANAD                                                   
+         USING SPANADD,R3                                                       
+         MVC   SPDVIEWT,VWDSRC      LIVE IS DEFAULT (FIRST ENTRY)               
+                                                                                
+         L     R9,DBAREC                                                        
+         MVI   ELCODE,DTCODEQ      DATA TYPE ELEMENT                            
+         BAS   RE,GETEL                                                         
+         BNE   VIEWTYPX            NO ELEMENT. USE DEFAULT                      
+         USING DTELEM,R9                                                        
+VTYP10   CLI   0(R5),X'FF'                                                      
+         BE    VTYP30              INVALID DATA IN ELEMENT                      
+         ZIC   R1,DTLEN                                                         
+         SHI   R1,DTLENQ                                                        
+         BCTR  R1,0                                                             
+         EX    R1,*+8                                                           
+         B     *+10                                                             
+         CLC   DTTYPE(0),VWDSCP                                                 
+         BE    VTYP20                                                           
+         LA    R5,VWDESCL(R5)                                                   
+         B     VTYP10                                                           
+                                                                                
+VTYP20   MVC   SPDVIEWT,VWDSRC     VIEWING TYPE INDICATOR                       
+         B     VIEWTYPX                                                         
+VTYP30   MVI   SPDVIEWT,X'FF'      INVALID DATA TYPE ELEMENT                    
+         B     VIEWTYPX                                                         
+         DROP  R9,R5,R3                                                         
+                                                                                
+VIEWTYPX B     XIT                                                              
+                                                                                
+         EJECT                                                                  
+**********************************************************************          
+* PROCQ - PROCESS Q-RECD. READ ELEMENTS AND SAVE SOME INFO IN DUB:              
+* ON EXIT DUB+0(1)=START QTR HOUR OF THIS RECORD                                
+*         DUB+2(1)=DAY CODE FOR RECORD                                          
+*         DUB+3(1)=DURATION IN QTR HOURS                                        
+*         DUB+6(1)=END QTR HOUR OF RECORD                                       
+*         DUB+7(1)=DATA TYPE (BIT0 1=OPTIONAL)                                  
+**********************************************************************          
+PROCQ    L     RF,DBAREC                                                        
+         MVC   DBACTPRG,PMPNUM-PMKEY(RF)                                        
+         XC    MILSTRT,MILSTRT                                                  
+         XC    MILEND,MILEND                                                    
+         ICM   RF,15,DBAQUART                                                   
+         BNZ   *+16                                                             
+         L     RF,DBAREC                                                        
+         AH    RF,DBDTADSP                                                      
+         ST    RF,DBAQUART         <-----INITIALIZE                             
+         MVI   DUB+3,1             <-----INITIALIZE                             
+         SR    R0,R0                                                            
+         USING PHTELEM,RF                                                       
+PROCQ2   CLI   0(RF),0             FIND 3 ELEMENTS                              
+         BNE   *+12                                                             
+         MVI   DBERROR,EOF                                                      
+         B     GETX                                                             
+** CODE TO PREVENT BAD DBAQUART CAUSING LOOP CONDITION                          
+         CLI   1(RF),0             ARE WE IN A LOOP CONDITION                   
+         BNE   *+12                NO                                           
+         MVI   DBERROR,EOF         YES, ERROR AND GET OUT                       
+         B     GETX                                                             
+         CLI   PHTCODE,PHTCODEQ    FIND PROGRAM TYPE ELEMENT (X'10')            
+         BNE   PROCQ3                                                           
+         MVC   DUB+7(1),PHTDTYP    DATA TYPE (BIT 0 - 1=OPTIONAL)               
+         B     PROCQ5                                                           
+         USING PHELEM,RF                                                        
+PROCQ3   CLI   PHCODE,PHCODEQ      FIND QTR HOUR ELEMENT (X'20')                
+         BNE   PROCQ4                                                           
+         ST    RF,DBAQUART                                                      
+         MVC   DUB+3(1),PHDUR      QUARTER HOUR DURATION                        
+         B     PROCQ5                                                           
+         USING NTELEM,RF                                                        
+PROCQ4   CLI   NTCODE,NTCODEQU     FIND RUN TIME ELEMENT (X'22')                
+         BE    PROCQ6                                                           
+PROCQ5   IC    R0,1(RF)                                                         
+         AR    RF,R0                                                            
+         B     PROCQ2                                                           
+*                                                                               
+PROCQ6   MVC   DUB(1),NTSQH                                                     
+         MVC   DUB+6(1),NTEQH                                                   
+         MVC   DUB+2(1),NTDAY                                                   
+*                                                                               
+         MVC   ACTDUR1,NTDUR      1-BYTE DURATION IN MINUTES                    
+         CLI   DBBTYPE,C'N'                                                     
+         BNE   *+10                                                             
+         MVC   ACTWKS,NTWKS2      SAVE ACTIVE WEEKS (1 THROUGH 8)               
+*                                                                               
+         MVC   MILSTRT,NTSTIM                                                   
+         MVC   MILEND,NTETIM                                                    
+         CLC   MILSTRT,=H'559'                                                  
+         BH    *+16                                                             
+         LH    RF,MILSTRT                                                       
+         AH    RF,=H'2400'                                                      
+         STH   RF,MILSTRT                                                       
+         CLC   MILEND,=H'600'                                                   
+         BH    PROCQ8                                                           
+         LH    RF,MILEND                                                        
+         AH    RF,=H'2400'                                                      
+         STH   RF,MILEND                                                        
+*                                                                               
+PROCQ8   BR    RE                                                               
+         DROP  RF                                                               
+         EJECT                                                                  
+**********************************************************************          
+*GETX -  EXIT PROGRAM                                                           
+**********************************************************************          
+*                                                                               
+GETEOF   MVI   DBERROR,EOF         SET TO EXIT                                  
+*NEW LOGIC                                                                      
+         CLI   DBBTYPE,C'M'                                                     
+         BE    *+8                                                              
+         CLI   DBBTYPE,C'N'                                                     
+         BNE   *+10                                                             
+         MVC   DBSELPTT,ORIGPTT    RESTORE REQUEST                              
+*END NEW                                                                        
+*                                                                               
+GETX     DS    0H                                                               
+         CLI   DBERROR,0           TEST IF ERROR SET                            
+         BE    *+14                                                             
+         XC    DBAQUART,DBAQUART   YES - CLEAR QTR HOUR ADDRESS                 
+         MVI   DBMODE,DBMFRST      AND RESET SEQUENTIAL MODE                    
+         MVC   DBLSTFNC,DBFUNCT    EQUATE LAST FUNCTION TO THIS                 
+         OC    AUSERRTN,AUSERRTN   TEST IF USER HOOK SUPPLIED                   
+         BZ    GETXX               NO - RETURN TO CALLER                        
+         CLI   DBERROR,0           TEST IF ERROR SET                            
+         BNE   GETXX               YES - RETURN TO CALLER                       
+         CLI   DBMODE,DBMNEXT      TEST IF SEQUENTIAL MODE                      
+         BE    *+8                                                              
+         LA    RE,GETXX            NO - SET RETURN TO EXIT                      
+*                                                                               
+         NTR1                                                                   
+         L     RF,AUSERRTN         SAVE REGS & GO TO USER HOOK                  
+         L     RE,ROOTRD                                                        
+         LR    R0,RE               R0=A(CALLER'S RD)                            
+         LM    R1,RC,24(RE)        R1-RC=CALLERS REGISTERS                      
+         BASR  RE,RF               GO TO USER HOOK                              
+         XIT1  ,                                                                
+*                                                                               
+GETXX    ICM   RE,15,AODTLIST       ANY DAY/TIME LIST                           
+         BZ    GETXX5                                                           
+         USING DBXTLD,RE                                                        
+         MVI   DBXTLIDX,0     -->  RESET INDEX TO 0                             
+         B     GETXXX                                                           
+         DROP  RE                                                               
+*                                                                               
+GETXX5   ICM   RE,15,ADTLIST       ANY 'DYTM' LIST                              
+         BZ    GETXXX                                                           
+         USING DBXTLD,RE                                                        
+         ZIC   R1,DBXTLIDX         BUMP THE INDEX                               
+         LA    R1,1(R1)                                                         
+         STC   R1,DBXTLIDX                                                      
+         MH    R1,=H'5'                                                         
+         AR    R1,RE                                                            
+         CLI   DBXTLIST-DBXTLID(R1),0  END OF LIST                              
+         BE    GETXXX                                                           
+         MVI   DBERROR,0           RESET ERROR                                  
+         MVI   DBLSTNXT,0          RESET FIRST TIME                             
+         MVI   JFLAG,0             RESET FIRST TIME J RECORDS                   
+         B     CBL4RST                                                          
+*                                                                               
+GETXXX   XIT1  ,                                                                
+**********************************************************************          
+         LTORG                                                                  
+         EJECT                                                                  
+         PRINT GEN                                                              
+* LITERALS ETC.                                                                 
+         GETEL R9,DBDTADSP,ELCODE                                               
+*                                                                               
+**** THIS TABLE IS TBL_VWDESCTB FROM DEMTABS                                    
+VWDESCT  DC    AL1(SRCLIVE),AL1(4),CL20'LIVE'                                   
+         DC    AL1(SRCLIVSD),AL1(7),CL20'LIVE+SD'                               
+         DC    AL1(SRCLIVE7),AL1(6),CL20'LIVE+7'                                
+         DC    AL1(SRCLIVE1),AL1(6),CL20'LIVE+1'                                
+         DC    AL1(SRCLIVE2),AL1(6),CL20'LIVE+2'                                
+         DC    AL1(SRCLIVE3),AL1(6),CL20'LIVE+3'                                
+         DC    AL1(SRCLOLQ),AL1(8),CL20'OOH LIVE'                               
+         DC    AL1(SRCLOSQ),AL1(8),CL20'OOH L+SD'                               
+         DC    AL1(SRCLO3Q),AL1(7),CL20'OOH L+3'                                
+         DC    AL1(SRCLO7Q),AL1(7),CL20'OOH L+7'                                
+         DC    AL1(SRCLOCLQ),AL1(9),CL20'OOHC LIVE'                             
+         DC    AL1(SRCLOCSQ),AL1(9),CL20'OOHC L+SD'                             
+         DC    AL1(SRCLOC3Q),AL1(8),CL20'OOHC L+3'                              
+         DC    AL1(SRCLOC7Q),AL1(8),CL20'OOHC L+7'                              
+         DC    X'FF'                                                            
+*                                                                               
+GETCABD  DSECT                                                                  
+*--------------------- RESERVED---------------------------------------          
+SPAND    DS    150C                DBSPANAD SAVE AREA                           
+CBLUNV   DS    170C                SAVED CABLE UNIVS                            
+CBLULNQ  EQU   *-CBLUNV                                                         
+HCBLBL   DS    CL4                 TAG LABEL                                    
+HCBUNV   DS    170C                SAVED HISPANIC CABLE UNIVERSE                
+         ORG   HCBLBL                                                           
+NADLBL   DS    CL4                 TAG LABEL                                    
+NADINFO DS     170C                NAD DESCRIPTIVE ELEMS (10,20,22)             
+*--------------------- RESERVED---------------------------------------          
+*                                                                               
+ACBLUNV  DS    F                   TEMP SAVED ADDR OF CBLUNV                    
+TMPQUART DS    F                   SAVED ADDR OF EPIS PROCD IN RECD             
+TMPAREC  DS    F                   SAVED ADDR OF RECD IN DBAREC                 
+FILPTR   DS    A                   PTR TO JFILTAB                               
+DUB1     DS    D                                                                
+DBMSADJ  DS    CL2                 DBLOCK MILITARY START TIME (ADJ)             
+DBMEADJ  DS    CL2                 DBLOCK MILITARY END TIME   (ADJ)             
+MILSTRT  DS    CL2                 MILITARY START TIME        (ADJ)             
+MILEND   DS    CL2                 MILITARY END TIME          (ADJ)             
+DBSTA2   DS    C                   STATUE BYTE FOR FILE                         
+ACTPTT   DS    X                   ACTUAL DBSELPTT REQUESTED                    
+ACTWKS   DS    XL(L'NTWKS2)                                                     
+ACTDUR1  DS    HL1                 DURATION IN MINUTES                          
+NADWKNO  DS    HL1                                                              
+*-FLAGS-                                                                        
+PRGONLY  DS    X                   1= PROGRAM LEVEL ONLY                        
+RESFLAG  DS    X                   1= READ SEQUNCE HAS TO BE RESET              
+NONUNVD  DS    C                   Y= NON-UNIVERSE DEMOS ON RECRD(MVGO)         
+PRGFOUND DS    C                   Y= MATCH ON PROGRAM NUMBER                   
+PAVGSENT DS    C                   Y= PROG AVG LEVEL WAS SENT TO HOOK           
+JFLAG    DS    X                   J-RECD FLAG:'00'- RDHI WITH 0 IN KEY         
+*                                  '01' - USE LASTDDS+1 IN KEY                  
+*                                  '02' - ALL J-RECDS READ INTO TABLE           
+ELCODE   DS    X                                                                
+LASTDDS  DS    XL2                 LAST FILE# IN TABLE'S DDS#                   
+JFILTAB  DS    XL1000                                                           
+DDSTYP   DS    X                                                                
+LASTSTYP DS    X                                                                
+SVSPAN   DS    XL150                                                            
+SVAQUART DS    XL(L'DBAQUART)                                                   
+SVSELPTT DS    C                                                                
+ORIGPTT  DS    C                                                                
+SVKEY    DS    XL(L'DBKEY)                                                      
+SVMINKEY DS    XL(L'DBMINKEY)                                                   
+AFRSTEL  DS    A                                                                
+NADBOOK  DS    XL(L'DBSELBK)                                                    
+TRDEMS   DS    C                   INDIC IF DEMOS PRESENT IN TRKBUFF            
+SVDBASRC DS    C                   DBACTSRC                                     
+SVDBIMED DS    C                   DBINTMED                                     
+SVDBIFIL DS    C                   DBINTFIL                                     
+SVOOHLIV DS    C                   OOH DBXLIVE                                  
+ALEVEL   DS    A                                                                
+LVKEY    DS    XL(L'DBKEY)                                                      
+LVMINKEY DS    XL(L'DBMINKEY)                                                   
+HOOKFLAG DS    C                                                                
+TCASTNXT DS    C                                                                
+AODTLIST DS    A                                                                
+TRBFSEQ  DS    X                                                                
+TRKBUFF  DS    XL800                SAVED TRACKAGE LEVEL(ONE MKT BREAK)         
+GETCABX  EQU   *-GETCABD                                                        
+*                                                                               
+         EJECT                                                                  
+       ++INCLUDE DEGETD                                                         
+         SPACE 1                                                                
+       ++INCLUDE DEDBEXTRAD                                                     
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'097DEGETCAB  02/28/20'                                      
+         END                                                                    

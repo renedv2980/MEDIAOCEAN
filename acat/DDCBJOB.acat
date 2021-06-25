@@ -1,0 +1,962 @@
+*          DATA SET DDCBJOB    AT LEVEL 002 AS OF 04/24/17                      
+*CATALP CBJOB                                                                   
+        TITLE 'COMSCORE BATCH JOB TABLE INTERFACE'                              
+        ENTRY  CBJOB                                                            
+***********************************************************************         
+* INPUT PARAMETERS                                                              
+*----------------------------------------------------------------------         
+*  PARAMETER 1   AL1   ACTION                                                   
+*                AL3   AL3(44 BYTE REQUEST/RESPONSE DATA SET NAME)              
+*                                                                               
+*  PARAMETER 2   AL1   ON EXIT, RETURN CODE                                     
+*                AL3(0)                                                         
+*                                                                               
+*                FOR ACTION=JOBWAIT                                             
+*                 AL1   TIMER POP ACTION                                        
+*                 AL3   A(FULLWORD WAIT TIME)                                   
+*                                                                               
+*  PARAMETER 3   AL4(0)                                                         
+*                                                                               
+*----------------------------------------------------------------------         
+* INPUT ACTIONS                                                                 
+*----------------------------------------------------------------------         
+*  JOBREG    01  REGISTER THIS JOB IN THE DATA SPACE                            
+*  JOBNREQ   02  SET THE PROCESS FOR THE NEW REQUEST                            
+*  JOBWAIT   03  WAIT FOR COMSCORE RESPONSE                                     
+*  JOBPOST   04  WAKE UP WAITING JOB                                            
+*  JOBCOMP   05  MARK JOB COMPLETED                                             
+*  JOBCLEAN  06  REMOVE COMPLETED JOBS FROM TABLE                               
+*  JOBDEL    07  REMOVES AN ENTRY FROM THE TABLE                                
+*  JOBGET    08  GET DATA SET NAME FOR REQUEST/RESPONSE                         
+*  JOBERR    09  MARK JOB IN ERROR                                              
+***********************************************************************         
+         TITLE 'COMSCORE BATCH JOB TABLE INTERFACE'                             
+         PRINT NOGEN                                                            
+CBJOB    CSECT                                                                  
+         NMOD1 CBJWORKX-CBJWORKD,**CBJB**,RR=RA                                 
+         USING CBJWORKD,RC                                                      
+         ST    RA,RELO                                                          
+         LARL  RA,COMMON                                                        
+         USING COMMON,RA                                                        
+*                                                                               
+         BRAS  RE,INIT ----------- INITIALIZE                                   
+         BNE   CBJOBX                                                           
+*                                                                               
+         BRAS  RE,LOCKNSET ------- LOCK TABLE, SET REGISTERS AND JOB            
+*                                                                               
+         L     RF,AACTR                                                         
+         BASR  RE,RF ------------- CALL ACTION PROCESSING ROUTINE               
+*                                                                               
+CBJOBX   BRAS  RE,ERRORS --------- HANDLE POSSIBLE RETURN CODES                 
+         B     EXIT                                                             
+                                                                                
+***********************************************************************         
+* INITIALIZATION ROUTIINE                                                       
+***********************************************************************         
+INIT     NTR1                                                                   
+*                                                                               
+         MVC   PARMS(PARMSLN),0(R1) SAVE PARAMETERS                             
+         ST    R1,APARMS           SAVE A(PARAMETERS)                           
+         MVI   LOCKEDJB,NO         INIT LOCKED JOB TABLE INDICATOR              
+         MVI   RETCODE,0           AND RETURN CODE                              
+         XC    NOWDTTM,NOWDTTM                                                  
+*                                                                               
+         GOTO1 VDATCON,DMCB,(5,0),(1,NOWDATE),RR=RELO                           
+         TIME  BIN                                                              
+         ST    R0,NOWTIME                                                       
+*                                                                               
+         CLC   VLOCKSPC,ARZERO     DO WE HAVE LOCKSPC                           
+         JE    *+2                 NO: THAT'S A BIG PROBLEM                     
+*                                                                               
+         CLC   DSPCJOB,ARZERO      DO WE HAVE THE TABS TABLE HEADER             
+         BNE   INI010              YES: CONTINUE                                
+*                                                                               
+         XC    DUB,DUB             NO: GET JOB TABLE HEADER FROM TABS           
+         LAY   RF,DTCOMJOB                                                      
+         ST    RF,DUB                                                           
+         OI    DUB,X'20'                                                        
+         GOTO1 VLOCKSPC,DUB                                                     
+         ICM   RF,15,4(R1)                                                      
+         JZ    *+2                                                              
+         MVC   DSPCJOB,0(RF)       SAVE COMSCORE BATCH JOB HEADER               
+*                                                                               
+JOB      USING DMSPACED,DSPCJOB                                                 
+         NI    JOB.DSPTFRST,X'3F'  CLEAR TABLE ECB                              
+         BRAS  RE,ARSOFF                                                        
+         DROP  JOB                                                              
+*                                                                               
+         ICM   RF,15,VSSB          ADDRESS OF SSB                               
+         JZ    *+2                                                              
+         MVC   TBLET,SSOTBLET-SSOOFF(RF) SAVE ALET FOR TABS DATA SPACE          
+*                                                                               
+INI010   LLC   R1,PACTION          ANALYZE PARAMETERS                           
+         LA    RE,ACTTAB                                                        
+         MHI   R1,ACTTABLN                                                      
+         AHI   R1,-(ACTTABLN)      DISPLACEMENT TO ACTION TABLE ENTRY           
+         LA    R2,ACTTAB                                                        
+         AR    R2,R1               A(ACTION TABLE ENTRY)                        
+         ST    R2,AACTN                                                         
+         USING ACTTABD,R2                                                       
+*                                                                               
+         LARL  RE,CBJOB            A(CBJOB CSECT)                               
+         L     RF,ACTROUT          DISPLACEMENT TO ACTION ROUTINE               
+         AR    RE,RF                                                            
+         ST    RE,AACTR            SET A(ACTION ROUTINE)                        
+*                                                                               
+         TM    ACTIND,ACTIJOB      DO WE NEED THIS JOB'S INFORMATION            
+         BO    *+10                YES: KEEP WHAT WE HAVE                       
+         XC    JBINFO(JBINFOL),JBINFO NO: CLEAR DOWN JOB INFORMATION            
+*                                                                               
+         TM    ACTIND,ACTIWTT      DOES THIS ACTION ACCEPT A WAIT TIME          
+         BZ    INI015              NO: CONTINUE                                 
+         XR    RE,RE                                                            
+         ICM   RE,7,PAWTTM         A(TIME TO WAIT)                              
+         BZ    INI015                                                           
+         MVC   WAITTIME,0(RE)                                                   
+         MVC   WAITACTN,PWAITACT   WHAT ACTION TO TAKE AFTER WAIT               
+*                                                                               
+INI015   TM    ACTIND,ACTIJOP      DOES THIS ACTION REQUIRE A DSN               
+         BZ    INI040              NO: CONTINUE                                 
+*                                                                               
+         XR    RE,RE               YES: MAKE SURE A DSN WAS PROVIDED            
+         ICM   RE,7,PADSN          A(44 BYTE DATA SET NAME)                     
+         BZ    INIXE1              NO: THAT'S A PROBLEM                         
+         MVC   JBDSN,0(RE)                                                      
+*                                                                               
+         TM    ACTIND,ACTIJOB      IS ACTION ON THIS JOB                        
+         BO    INI040              YES: DON'T PULL JOB ID FROM DSN              
+*                                                                               
+         LHI   RF,L'JBDSN          SCAN DSN FOR JOB ID                          
+INI020   CLC   0(4,RE),=C'.JOB'                                                 
+         BE    INI030                                                           
+         LA    RE,1(,RE)                                                        
+         BCT   RF,INI020                                                        
+         B     INIXE1              NO JOB NUMBER FOUND IN DATASET               
+INI030   MVC   JBJOBID,1(RE)       SAVE JOB ID FROM DATASET                     
+*                                                                               
+INI040   TM    ACTIND,ACTIJOB      DO WE NEED THIS JOB'S INFORMATION            
+         BO    INI045              YES: DIG OUT JOB INFORMATION                 
+         TM    ACTIND,ACTIJOP      DID WE PASS A DSN WITH JOB ID                
+         BO    INI050              YES: PROCESS JOB ID                          
+         B     INIX                ELSE: WE'RE DONE HERE                        
+*                                                                               
+INI045   CLC   JBSTOKEN,ARZERO     ALREADY HAVE JOB INFORMATION?                
+         BNE   INIX                YES: DON'T NEED TO GET IT AGAIN              
+*                                                                               
+         ALESERV EXTRACTH,STOKEN=JBSTOKEN GET STOKEN                            
+         LOCASCB STOKEN=JBSTOKEN   ASCB RETURNED IN R1                          
+         SAM31                                                                  
+         USING ASCB,R1                                                          
+         L     R1,ASCBASSB         A(ASSB)                                      
+         USING ASSB,R1                                                          
+         L     R1,ASSBJSAB                                                      
+         USING JSAB,R1                                                          
+         MVC   JBJOBID,JSABJBID    JOB ID                                       
+         MVC   JBNAME,JSABJBNM     JOB NAME                                     
+         MVC   JBJOBSTT,JSABESTK   JOB START TIME                               
+         XC    JBREQN,JBREQN       INIT REQUEST NUMBER                          
+         SAM24                                                                  
+         DROP  R1                                                               
+*                                                                               
+INI050   LA    RE,JBJOBID+3        CHECK JOB NUMBER VALID NUMERIC               
+         LHI   RF,5                FIVE DIGITS OF JOB NUMBER                    
+INI052   CLI   0(RE),C'0'          MUST BE 0-9                                  
+         BL    INIXE1              INVALID JOB NUMBER                           
+         CLI   0(RE),C'9'                                                       
+         BH    INIXE1              INVALID JOB NUMBER                           
+         LA    RE,1(,RE)                                                        
+         BCT   RF,INI052                                                        
+*                                                                               
+         PACK  DUB,JBJOBID+3(5)    CONVERT JOB NUMBER                           
+         CVB   R1,DUB                                                           
+         STCM  R1,3,JBNUMBER       JOB NUMBER                                   
+*                                                                               
+         MVC   FULL,=XL4'4000'     CALCULATE JOB TABLE ENTRY                    
+         XR    RE,RE                                                            
+         XR    RF,RF                                                            
+         ICM   RF,3,JBNUMBER                                                    
+         D     RE,FULL             DIVIDE JOB NUMBER BY 16384                   
+         ST    RE,JBSLOT           JOB SLOT NUMBER IN DATA SPACE                
+         MHI   RE,CJBNLNQ                                                       
+         STCM  RE,15,JBDISENT      DISPLACEMENT TO JOB ENTRY                    
+*                                                                               
+INIX     J     EXITEQ                                                           
+*                                                                               
+INIXE1   MVI   RETCODE,CBRCE0      INITIALIZATION ERROR                         
+         J     EXITNE                                                           
+         DROP  R2                                                               
+                                                                                
+***********************************************************************         
+*  R2=A(TABLE HEADER), R3=A(JOB ENTRY), R4= W/ ACCESS REGISTER SET              
+***********************************************************************         
+         USING CJHDRD,R2                                                        
+         USING CJBNTRYD,R3                                                      
+                                                                                
+***********************************************************************         
+* REGISTER THE BATCH JOB IN THE DATA SPACE TABLE                                
+***********************************************************************         
+JOBREG   NTR1                                                                   
+*                                                                               
+         CLC   CJHEYE,CBJEYE       *COMSCORE BATCH*                             
+         BE    JREG005                                                          
+         MVC   CJHEYE,CBJEYE       SET EYECATCHER ON FIRST REGISTER             
+*                                                                               
+JREG005  CLC   CJBNAME,SPACES      CHECK IF ENTRY IS EMPTY                      
+         BH    *+14                                                             
+         CLC   CJBSTOKN,ARZERO                                                  
+         BE    JREG050             YES: ENTRY EMPTY, ADD INFO                   
+         MVI   RETCODE,CBRC90      NO: THAT SHOULDN'T HAPPEN                    
+         BRAS  RE,JOBDEL           DELETE WHAT'S IN THERE                       
+*                                                                               
+JREG050  MVC   CJBNAME,JBNAME      JOB NAME                                     
+         MVC   CJBNUMBER,JBNUMBER  JOB ID NUMBER                                
+         MVC   CJBREQN,JBREQN      REQUEST NUMBER                               
+         MVC   CJBSTOKN,JBSTOKEN   JOB STOKEN                                   
+         MVC   CJBSDTTM,NOWDTTM    DATE AND TIME                                
+         MVC   CJBECB,ALERTECB     A(ECB)                                       
+         MVI   CJBSTAT,CJBSREGR    MARK STATUS REGISTERED                       
+*                                                                               
+         ICM   R5,15,CJHHEAD       IS THIS THIS ONLY ENTRY?                     
+         BNZ   JREG060             NO                                           
+         MVC   CJHHEAD,JBAENTRY    YES: UPATE THE HEAD                          
+         MVC   CJHTAIL,JBAENTRY    AND THE TAIL                                 
+         B     JREG100                                                          
+*                                                                               
+JREG060  L     R4,CJHTAIL          A(TAIL OF THE LINKED LIST)                   
+         MVC   CJHTAIL,JBAENTRY    THIS IS NOW THE TAIL                         
+         LTR   R4,R4               WAS THERE A TAIL BEFORE                      
+         BZ    JREG100             NO: WE ARE SET                               
+TAIL     USING CJBNTRYD,R4                                                      
+         MVC   TAIL.CJBFWLNK,JBAENTRY YES: POINT PREVIOUS TO CURRENT            
+         ST    R4,JBAPREV          SAVE PREVIOUS                                
+         DROP  TAIL                                                             
+*                                                                               
+JREG100  L     RE,CJHREGS          UPDATE CURRENT REGISTERED COUNT              
+         AHI   RE,1                                                             
+         ST    RE,CJHREGS                                                       
+*                                                                               
+         L     RE,CJHTOREQ         UPDATE TOTAL REQUESTS                        
+         AHI   RE,1                                                             
+         ST    RE,CJHTOREQ                                                      
+*                                                                               
+         L     RE,CJHTOREG         UPDATE TOTAL REGISTERED COUNT                
+         AHI   RE,1                                                             
+         ST    RE,CJHTOREG                                                      
+*                                                                               
+         CLI   PACTION,CBJREG      ACTION REGISTER                              
+         BNE   EXITRC              NO: BRANCHED HERE FROM INTERNAL CALL         
+         BRAS  RE,UNLKJOB                                                       
+         J     EXITRC              CONDITION CODE ON EXIT                       
+                                                                                
+***********************************************************************         
+* SET THE PROCESS FOR THE NEXT REQUEST                                          
+***********************************************************************         
+JOBNREQ  NTR1                                                                   
+*                                                                               
+         CLC   CJBNAME,JBNAME      MAKE SURE IT'S THE SAME JOB                  
+         BNE   *+14                                                             
+         CLC   CJBSTOKN,JBSTOKEN   AND THE SAME STOKEN                          
+         BE    JNRE020                                                          
+         MVI   RETCODE,CBRC91      DIFFERENT JOB MEANS SOMETHINGS WRONG         
+         BRAS  RE,JOBREG           REGISTER CURRENT JOB                         
+*                                                                               
+JNRE020  XR    RE,RE                                                            
+         ICM   RE,3,CJBREQN        NEXT REQUEST NUMBER                          
+         AHI   RE,1                                                             
+         STCM  RE,3,CJBREQN                                                     
+         MVC   JBREQN,CJBREQN                                                   
+*                                                                               
+         MVC   CJBDSN,JBDSN        DSN                                          
+         MVI   CJBSTAT,CJBSNREQ    STATUS REGISTERED FOR NEW REQUEST            
+         MVC   CJBSDTTM,NOWDTTM    DATE AND TIME                                
+*                                                                               
+         L     RE,CJHTOREQ         UPDATE TOTAL REQUESTS                        
+         AHI   RE,1                                                             
+         ST    RE,CJHTOREQ                                                      
+*                                                                               
+         BRAS  RE,UNLKJOB                                                       
+         J     EXITRC              CONDITION CODE ON EXIT                       
+                                                                                
+***********************************************************************         
+* ACTIVATE THE WAIT CYCLE AND DEAL WITH AN  OPERATOR, TIMER OR POST             
+***********************************************************************         
+JOBWAIT  NTR1                                                                   
+*                                                                               
+         MVI   CJBSTAT,CJBSWAIT    MARK STATUS WAITING                          
+*                                                                               
+         L     RE,CJHWAIT          UPDATE CURRENT WAITING COUNT                 
+         AHI   RE,1                                                             
+         ST    RE,CJHWAIT                                                       
+*                                                                               
+         BRAS  RE,UNLKJOB          UNLOCK TABLE                                 
+*                                                                               
+JWAI010  STIMERM SET,ID=STIMERID,BINTVL=WAITTIME,EXIT=TIMRXIT                   
+         LTR   RF,RF               WAIT THE REQUESTED INTERVAL                  
+         JNZ   *+2                 COULDN'T SET THE TIMER?                      
+*                                                                               
+         WAIT  1,ECBLIST=ECBLST    WAIT FOR COMPLETION/OPERATOR                 
+*                                                                               
+         TM    LERTECB,X'40'       IS IT A PROGRAMMATIC INTERRUPT?              
+         BO    JWAI040             YES                                          
+*                                                                               
+         TM    LARMECB,X'40'       TIMER ECB?                                   
+         JZ    *+2                 THOSE WERE THE ONLY TWO OPTIONS              
+         XC    LARMECB,LARMECB     CLEAR ALARM ECB                              
+*                                                                               
+         CLI   WAITACTN,CBJTRE     DOES CALLER WANT CONTROL OF TIMEOUT?         
+         BNE   JWAI030             NO: LEAVE IT TO THE OPERATOR                 
+         MVI   RETCODE,CBRC03      SET RETURN CODE FOR TIMEOUT                  
+         MVI   BYTE,CJBSTOUT       SET FOR TIMEOUT                              
+         B     JWAI050                                                          
+*                                  ASSUME OPERATOR RESPONSE WANTED              
+JWAI030  MVC   OPMSGJOB,JBNAME     JOB NAME                                     
+         MVC   OPMSGJON,JBJOBID    AND JOB ID IN MESSAGE                        
+         MVC   REPLY,SPACES                                                     
+         XC    REPLYECB,REPLYECB                                                
+         WTOR  TEXT=(OPMSG,REPLY,L'REPLY,REPLYECB,ROUTCDE=(1))                  
+         WAIT  ECB=REPLYECB                                                     
+         XC    REPLYECB,REPLYECB                                                
+*                                                                               
+         CLI   REPLY,C'Y'          WAIT AGAIN?                                  
+         BE    JWAI010             YES: WAIT FOR SAME LENGTH AS BEFORE          
+         CLI   REPLY,C'N'          DON'T WAIT ANYMORE?                          
+         BNE   JWAI032                                                          
+JWAI031  MVI   RETCODE,CBRC03      SET RETURN CODE                              
+         MVI   BYTE,CJBSTOUT       SET BYTE WITH TIMEOUT STATUS                 
+         B     JWAI050                                                          
+*                                                                               
+JWAI032  LA    RE,REPLY            REPLY IS NUMBER OF MINUTES                   
+         LHI   RF,L'REPLY          VALIDATE AND CONVERT TO DECIMAL              
+JWAI034  CLI   0(RE),C' '                                                       
+         BE    JWAI036                                                          
+         CLI   0(RE),C'0'          MUST BE 0-9                                  
+         BL    JWAI030             NO: INVALID REPLY, ASK AGAIN                 
+         CLI   0(RE),C'9'                                                       
+         BH    JWAI030             NO: INVALID REPLY, ASK AGAIN                 
+         LA    RE,1(,RE)                                                        
+         BCT   RF,JWAI034                                                       
+JWAI036  LHI   RE,L'REPLY                                                       
+         SR    RE,RF               ANYTHING ENTERED?                            
+         BNP   JWAI030             HUH, NOTHING: ASK AGAIN                      
+         AHI   RE,-1                                                            
+         EX    RE,*+8                                                           
+         B     *+10                                                             
+         PACK  DUB,REPLY(0)                                                     
+         CVB   R1,DUB                                                           
+         MHI   R1,60*100           MULTIPLY TO MINUTES                          
+         ST    R1,WAITTIME                                                      
+         B     JWAI010             GO BACK TO WAITING WITH NEW TIME             
+*                                                                               
+JWAI040  STIMERM CANCEL,ID=STIMERID CANCEL TIMER                                
+         LTR   RF,RF                                                            
+         JNZ   *+2                 UNSUCCESSFUL TIMER CANCEL?                   
+         MVI   BYTE,CJBSPEND       SUCCESSFUL POST                              
+         XC    LERTECB,LERTECB     CLEAR PROGRAMMATIC ECB                       
+*                                                                               
+JWAI050  XC    LARMECB,LARMECB     CLEAR TIMER ECB                              
+*                                                                               
+         BRAS  RE,LOCKNSET         LOCK TABLE AND SET REGISTERS                 
+*                                                                               
+         MVC   CJBSTAT,BYTE        MARK STATUS                                  
+         MVC   JBDSN,CJBDSN        FILL IN DSN IN DATA SPACE                    
+*                                                                               
+         BRAS  RE,UNLKJOB          UNLOCK TABLE                                 
+*                                                                               
+         L     RF,APARMS           CALLERS PARAMETERS                           
+         XR    RE,RE                                                            
+         ICM   RE,7,1(RF)          A(DSN)                                       
+         MVC   0(L'JBDSN,RE),JBDSN PASS BACK DATA SET NAME                      
+         J     EXITRC              EXIT                                         
+                                                                                
+***********************************************************************         
+* WAKE UP THE JOB AND CHANGE THE STATUS AND TIMES IN THE DATA SPACE             
+***********************************************************************         
+JOBPOST  NTR1                                                                   
+*                                                                               
+         CLC   JBNUMBER,CJBNUMBER  MAKE SURE THIS IS THE CORRECT JOB            
+         BNE   JPOSXE1             NO: THAT'S A PROBLEM                         
+         CLI   CJBSTAT,CJBSWAIT    JOB WAITING FOR A POST?                      
+         BE    JPOS010             POST                                         
+         CLI   CJBSTAT,CJBSTOUT    JOB IN A TIMEOUT STATUS?                     
+         BE    JPOS010             POST ANYWAY                                  
+         CLI   CJBSTAT,CJBSNREQ    JOB IN NEW REQUEST STATUS?                   
+         BE    JPOS010             A LITTLE EARLY, BUT POST                     
+         B     JPOSXE2                                                          
+*                                                                               
+JPOS010  MVC   CJBDSN,JBDSN        FILL IN DSN IN DATA SPACE                    
+         MVI   CJBSTAT,CJBSPEND    MARK STATUS PENDING                          
+*                                                                               
+         L     RE,CJHWAIT          REDUCE CURRENT WAITING COUNT                 
+         AHI   RE,-1                                                            
+         ST    RE,CJHWAIT                                                       
+*                                                                               
+         L     RE,CJHPEND          UPDATE PENDING COUNT                         
+         AHI   RE,1                                                             
+         ST    RE,CJHPEND                                                       
+*                                                                               
+         MVC   JBAECB,CJBECB       A(ECB LIST)                                  
+         MVC   JBSTOKEN,CJBSTOKN   STOKEN OF JOB TO POST                        
+*                                                                               
+         BRAS  RE,UNLKJOB          UNLOCK JOB TABLE                             
+*                                                                               
+         LOCASCB STOKEN=JBSTOKEN                                                
+         LTR   RF,RF               MAKE SURE WE WERE ABLE TO GET ASCB           
+         BNZ   JPOSXE3             NO: THAT'S A PROBLEM                         
+         LR    R4,R1                                                            
+         USING ASCB,R4                                                          
+         CLC   ASCBASCB,=C'ASCB'                                                
+         BNE   JPOSXE3             BE SURE IT IS AN ASCB                        
+         DROP  R4                                                               
+*                                                                               
+         L     R3,JBAECB           A(ECB LIST)                                  
+         POST  (R3),99,ASCB=(R4),LINKAGE=SYSTEM,ECBKEY=8,MF=(E,POSTPA)          
+         LTR   RF,RF               POST SUCCESSFUL                              
+         JZ    JPOSX                                                            
+         CHI   RF,4                ASYNCHRONOUS RETURN CODE IS OK               
+         BE    JPOSX                                                            
+*                                                                               
+         MVI   RETCODE,CBRCA4      POSTING ERROR                                
+         B     JPOSX                                                            
+JPOSXE1  MVI   RETCODE,CBRCA1      TRYING TO POST, BUT NOT THE SAME JOB         
+         B     JPOSX                                                            
+JPOSXE2  MVI   RETCODE,CBRCA2      WANT TO POST BUT WRONG STATUS                
+         B     JPOSX                                                            
+JPOSXE3  MVI   RETCODE,CBRCA3      POSTING ERROR JOB NOT FOUND                  
+JPOSX    BRAS  RE,UNLKJOB          UNLOCK JOB TABLE                             
+         J     EXITRC                                                           
+                                                                                
+***********************************************************************         
+* MARK THE JOB IN THE DATA SPACE AS COMPLETED                                   
+***********************************************************************         
+JOBCOMP  NTR1                                                                   
+*                                                                               
+         MVC   CJBEDTTM,NOWDTTM    DATE AND TIME                                
+         MVI   CJBSTAT,CJBSCOMP    MARK STATUS COMPLETED                        
+*                                                                               
+         L     RE,CJHTOCOM         UPDATE COMPLETED COUNT                       
+         AHI   RE,1                                                             
+         ST    RE,CJHTOCOM                                                      
+*                                                                               
+         BRAS  RE,UNLKJOB          UNLOCK TABLE                                 
+         J     EXITRC                                                           
+                                                                                
+***********************************************************************         
+* CLEANS UP JOB TABLE OF ANY COMPLETED JOBS                                     
+***********************************************************************         
+JOBCLEAN NTR1                                                                   
+*                                                                               
+         LT    R3,CJHHEAD          PICK UP HEAD OF LIST                         
+         BZ    JCLEX               NOTHING HERE                                 
+         MVC   JBJOBID(3),=C'JOB'  FOR PRINTING                                 
+*                                                                               
+JCLE010  MVC   JBFWLNK,CJBFWLNK    SAVE FORWARD LINK                            
+         MVC   JBNAME,CJBNAME                                                   
+         MVC   JBNUMBER,CJBNUMBER                                               
+         EDIT  JBNUMBER,(5,JBJOBID+3),ZERO=NOBLANK,FILL=0                       
+*                                                                               
+         CLC   CJBSDATE,ARZERO     ANY START TIME?                              
+         BE    JCLE020             THIS DOESN'T MAKE SENSE, CLEAN IT            
+         CLC   NOWDATE,CJBSDATE    COMPARE THE DATE NOW TO ENTRY DATE           
+         BNH   JCLE030             STARTED TODAY, THEN LEAVE IT                 
+         CLC   NOWTIME,CJBSTIME    COMPARE THE TIME NOW TO ENTRY TIME           
+         BNH   JCLE030             IF NOT AT LEAST 24 HOURS, LEAVE IT           
+         CLI   CJBSTAT,CJBSCOMP    IS JOB MARKED COMPLETED                      
+         BE    JCLE040             YES: CLEAN IT                                
+         CLI   CJBSTAT,CJBSERR     IS JOB MARKED IN ERROR                       
+         BE    JCLE040             YES: CLEAN IT                                
+*                                                                               
+JCLE020  MVI   RETCODE,CBRC01      CLEANING PROBLEM - JOB NOT COMP/ERR          
+         B     JCLE040                                                          
+*                                                                               
+JCLE030  ST    R3,JBAPREV          SAVE THIS ENTRY AS PREVIOUS                  
+         B     JCLE050                                                          
+*                                                                               
+JCLE040  LR    R4,R2               YES: IT CAN BE WIPED                         
+         SR    R4,R3               CALCULATE DISPLACEMENT TO ENTRY              
+         ST    R4,JBDISENT         AND SET IT FOR JOBDEL CALL                   
+         BRAS  RE,JOBDEL           DELETE JOB ENTRY                             
+         BE    JCLE050                                                          
+         BRAS  RE,ARSTOP                                                        
+         BRAS  RE,ERRORS           OUTPUT ERROR IF NECESSARY                    
+         BRAS  RE,ARGO                                                          
+         MVI   RETCODE,0           RESET RETURN CODE                            
+*                                                                               
+JCLE050  LT    R3,JBFWLNK          IS THERE A NEXT IN THE LIST                  
+         BNZ   JCLE010             YES: KEEP GOING                              
+*                                                                               
+JCLEX    BRAS  RE,UNLKJOB                                                       
+         B     EXITRC                                                           
+                                                                                
+***********************************************************************         
+* REMOVES AN ENTRY FROM THE TABLE                                               
+***********************************************************************         
+JOBDEL   NTR1                                                                   
+         CLI   PACTION,CBJCLN      ARE WE COMING FROM CLEAN ACTION?             
+         BE    JDEL010             YES: WE ALREADY HAVE PREVIOUS ENTRY          
+*                                                                               
+         XC    JBAPREV,JBAPREV     CLEAR AND FIND PREVIOUS ENTRY                
+JOB      USING CJBNTRYD,R4                                                      
+         L     R4,CJHHEAD          FIND JOB IN THE LIST                         
+JDEL005  LTR   R4,R4               END OF LIST?                                 
+         BZ    JDEL171             YES: DIDN'T FIND THE JOB                     
+         CR    R4,R3               IS THIS IT?                                  
+         BE    JDEL010             YES: CONTINUE                                
+         ST    R4,JBAPREV          NO: SAVE AS PREVIOUS AND                     
+         L     R4,JOB.CJBFWLNK     AND TRY NEXT                                 
+         B     JDEL005                                                          
+         DROP  JOB                                                              
+                                                                                
+JDEL010  LT    R4,CJHHEAD          HEAD OF LIST                                 
+         BZ    JDEL172             ERROR: DELETING, BUT NO ENTRIES              
+         CR    R3,R4               IS THIS ENTRY THE HEAD                       
+         BNE   JDEL020             NO                                           
+         MVC   CJHHEAD,CJBFWLNK    YES: NEXT IN LIST IS NOW THE HEAD            
+*                                                                               
+JDEL020  LT    R4,CJHTAIL          LAST ENTRY IN LIST                           
+         BZ    JDEL173             ERROR: SOMETHING WRONG HERE                  
+         CR    R3,R4               IS THIS THE LAST ENTRY?                      
+         BNE   JDEL030             NO                                           
+         MVC   CJHTAIL,JBAPREV     YES: PREVIOUS IS NOW THE TAIL                
+*                                                                               
+JDEL030  LT    R4,JBAPREV          A(PREVIOUS ENTRY IN THE LIST)                
+         BZ    JDEL100             NO PREVIOUS: DON'T ADJUST LINKS              
+PREV     USING CJBNTRYD,R4                                                      
+         MVC   PREV.CJBFWLNK,CJBFWLNK SKIP OVER ENTRY WE'RE DELETING            
+         DROP  PREV                                                             
+*                                                                               
+JDEL100  MVC   BYTE,CJBSTAT                                                     
+         SELECT CLI,BYTE,EQ                                                     
+          WHEN (CJBSREGR)          JOB REGISTERED                               
+          WHEN (CJBSNREQ)          NEW REQUEST FOR JOB                          
+          WHEN (CJBSWAIT)          JOB WAITING                                  
+           L     RE,CJHWAIT        REDUCE WAITING COUNT                         
+           AHI   RE,-1                                                          
+           ST    RE,CJHWAIT                                                     
+          WHEN (CJBSPEND)          JOB POSTED AND PENDING PROCESSING            
+           L     RE,CJHPEND        REDUCE PENDING COUNT                         
+           AHI   RE,-1                                                          
+           ST    RE,CJHPEND                                                     
+          WHEN (CJBSTOUT)          TIMEOUT WHILE WAITING FOR DATA               
+          WHEN (CJBSCOMP)          JOB COMPLETED                                
+          WHEN (CJBSERR)           JOB IN ERROR                                 
+          OTHRWISE                                                              
+           B     JDEL200           UNKNOWN STATUS                               
+         ENDSEL                                                                 
+*                                                                               
+         L     RE,CJHREGS          REDUCE NUMBER OF JOBS REGISTERED             
+         AHI   RE,-1                                                            
+         ST    RE,CJHREGS                                                       
+*                                                                               
+         L     RE,CJHTOREM         UPDATE TOTAL REMOVED COUNT                   
+         AHI   RE,1                                                             
+         ST    RE,CJHTOREM                                                      
+         B     JDEL200                                                          
+*                                                                               
+JDEL171  MVI   RETCODE,CBRC71      DELETING BUT CAN'T FIND IN LIST              
+         B     JDEL200                                                          
+JDEL172  MVI   RETCODE,CBRC72      DELETING BUT NO TAIL OF LINKED LIST          
+         B     JDEL200                                                          
+JDEL173  MVI   RETCODE,CBRC73      DELETING BUT NOT IN LINKED LIST              
+*                                                                               
+JDEL200  XC    CJBNTRYD(CJBNLNQ),CJBNTRYD REMOVE ENTRY                          
+*                                                                               
+JDELX    CLI   PACTION,CBJDEL      ACTION DELETE?                               
+         BNE   EXITRC              NO: BRANCHED HERE FROM INTERNAL CALL         
+         BRAS  RE,UNLKJOB          UNLOCK JOB TABLE                             
+         B     EXITRC                                                           
+                                                                                
+***********************************************************************         
+* GET DATA SET NAME FROM JOB TABLE ENTRY                                        
+***********************************************************************         
+JOBGET   NTR1                                                                   
+*                                                                               
+         XR    RE,RE                                                            
+         ICM   RE,7,PADSN                                                       
+         MVC   0(L'CJBDSN,RE),CJBDSN                                            
+*                                                                               
+         BRAS  RE,UNLKJOB          UNLOCK JOB TABLE                             
+         J     EXITRC                                                           
+                                                                                
+***********************************************************************         
+* MARK THE JOB TABLE ENTRY IN ERROR                                             
+***********************************************************************         
+JOBERR   NTR1                                                                   
+*                                                                               
+         MVC   CJBEDTTM,NOWDTTM    DATE AND TIME                                
+         MVI   CJBSTAT,CJBSERR     MARK STATUS IN ERROR                         
+*                                                                               
+         BRAS  RE,UNLKJOB          UNLOCK JOB TABLE                             
+         J     EXITRC                                                           
+                                                                                
+***********************************************************************         
+* CJHDRD AND CJBNTRYD ARE NO LONGER ACTIVE USINGS BEYOND THIS POINT             
+***********************************************************************         
+         DROP  R2,R3,RB                                                         
+                                                                                
+***********************************************************************         
+* ERROR REPORTING AND MESSAGING                                                 
+***********************************************************************         
+ERRORS   NTR1  BASE=*,LABEL=*                                                   
+         MVC   MSGWTXT,SPACES                                                   
+*                                                                               
+         SELECT CLI,RETCODE,EQ                                                  
+          WHEN (0)                                                              
+           B     ERRORSX                                                        
+          WHEN (CBRC01)                                                         
+           MVC   MSGWDET,=CL30'Deleting, but not C/E status  '                  
+           OI    ERRFLAG,ERRCSV      STORE RETURN CODE IN DATA SPACE            
+          WHEN (CBRC03)                                                         
+           MVC   MSGWDET,=CL30'comScore data ignored         '                  
+           OI    ERRFLAG,ERRCSV                                                 
+          WHEN (CBRC71)                                                         
+           MVC   MSGWDET,=CL30'Deleting, but not in link list'                  
+          WHEN (CBRC72)                                                         
+           MVC   MSGWDET,=CL30'Deleting, but no head of list '                  
+          WHEN (CBRC73)                                                         
+           MVC   MSGWDET,=CL30'Deleting, but no tail of list '                  
+          WHEN (CBRC90)                                                         
+           MVC   MSGWDET,=CL30'Job register error            '                  
+           OI    ERRFLAG,ERRCSV                                                 
+          WHEN (CBRC91)                                                         
+           MVC   MSGWDET,=CL30'New request error             '                  
+           OI    ERRFLAG,ERRCSV                                                 
+          WHEN (CBRCA1)                                                         
+           MVC   MSGWDET,=CL30'Posting job does not match    '                  
+           OI    ERRFLAG,ERRCSV                                                 
+          WHEN (CBRCA2)                                                         
+           MVC   MSGWDET,=CL30'Posting to job w/ wrong status'                  
+           OI    ERRFLAG,ERRCSV                                                 
+          WHEN (CBRCA3)                                                         
+           MVC   MSGWDET,=CL30'Posting but job not found     '                  
+           OI    ERRFLAG,ERRCSV                                                 
+          WHEN (CBRCA4)                                                         
+           MVC   MSGWDET,=CL30'Unable to post                '                  
+           OI    ERRFLAG,ERRCSV                                                 
+          WHEN (CBRCE0)                                                         
+           MVC   MSGWDET,=CL30'Action invalid/missing job ID '                  
+          OTHRWISE                                                              
+           MVC   MSGWDET,=CL30'UNKNOWN ERROR                 '                  
+         ENDSEL                                                                 
+*                                                                               
+         MVC   MSGWJOB,JBNAME                                                   
+         MVC   MSGWJID,JBJOBID                                                  
+*                                                                               
+         MVC   MSGWMSG,=CL30' - Warning - '                                     
+         CLI   RETCODE,CBRC80      HIGH RETURN CODES RESULT IN AUTONOTE         
+         BNH   *+10                RETURN CODE NOT SEVERE                       
+         MVC   MSGWMSG,=CL30'AUTONOTE*AWIL:*CBJOB ALERT*'                       
+*                                                                               
+         LHI   R1,L'MSGWTXT                                                     
+         STCM  R1,3,MSGWLEN                                                     
+         WTO   TEXT=MSGW                                                        
+         MVC   MSGWTXT,SPACES                                                   
+*                                                                               
+         TM    ERRFLAG,ERRCSV      RETURN CODE STORED IN DATA SPACE?            
+         BZ    ERRORSX             NO: SKIP IT                                  
+         BRAS  RE,LOCKNSET                                                      
+         USING CJBNTRYD,R3                                                      
+         LTR   R3,R3               A(JOB TABLE ENTRY)                           
+         BZ    *+10                SKIP IF NO ENTRY ADDRESS                     
+         MVC   CJBLRC,RETCODE                                                   
+         BRAS  RE,UNLKJOB                                                       
+         DROP  R3                                                               
+*                                                                               
+ERRORSX  L     R1,APARMS                                                        
+         MVC   PRETURN-PARMS(L'PRETURN,R1),RETCODE                              
+         B     EXITRC                                                           
+                                                                                
+***********************************************************************         
+* LOCK JOB TABLE AND SET ACCESS REGISTERS AND JOB ENTRY                         
+***********************************************************************         
+LOCKNSET NTR1  BASE=*,LABEL=*                                                   
+*                                                                               
+         BRAS  RE,LOCKJOB          LOCK THE JOB TABLE                           
+*                                                                               
+JOB      USING DMSPACED,DSPCJOB                                                 
+         LAM   AR2,AR2,TBLET                                                    
+         CPYA  AR3,AR2                                                          
+         CPYA  AR4,AR2                                                          
+         ICM   R2,15,JOB.DSPTFRST                                               
+         ICM   R4,15,JOB.DSPTEND                                                
+         SAC   512                 TURN ON ACCESS REGISTER MODE                 
+         DROP  JOB                                                              
+*                                                                               
+         LA    R3,CJHDLNQ(,R2)     BUMP PAST HEADER                             
+         A     R3,JBDISENT                                                      
+         ST    R3,JBAENTRY                                                      
+*                                                                               
+         XIT1  REGS=(R2,R4)                                                     
+                                                                                
+***********************************************************************         
+* LOCK COMSCORE BATCH JOB TABLE                                                 
+* ON EXIT R2 = A(COMSCORE BATCH JOB TABLE IN DATA SPACE)                        
+***********************************************************************         
+LOCKJOB  NTR1  BASE=*,LABEL=*                                                   
+         BRAS  RE,ARSOFF                                                        
+*                                                                               
+         CLI   LOCKEDJB,YES        TABLE LOCKED?                                
+         BE    LOCKJOBX            YES                                          
+*                                                                               
+         XC    DUB,DUB             COMSCORE BATCH JOB TABLE                     
+         LAY   RF,DTCOMJOB                                                      
+         ST    RF,DUB                                                           
+         GOTOR VLOCKSPC,DUB                                                     
+         ICM   RF,15,4(R1)         LOCK COMSCORE BATCH JOB TABLE                
+         MVI   LOCKEDJB,YES                                                     
+*                                                                               
+LOCKJOBX BRAS  RE,ARSOFF                                                        
+         J     EXIT                                                             
+                                                                                
+***********************************************************************         
+* UNLOCK COMSCORE BATCH JOB TABLE                                               
+***********************************************************************         
+UNLKJOB  NTR1  BASE=*,LABEL=*                                                   
+         BRAS  RE,ARSOFF                                                        
+*                                                                               
+         CLI   LOCKEDJB,NO         LOCKED TABLE?                                
+         JE    EXIT                NO, SO DON'T UNLOCK                          
+*                                                                               
+         XC    DUB,DUB             COMSCORE BATCH JOB TABLE                     
+         LAY   RF,DTCOMJOB                                                      
+         ST    RF,DUB                                                           
+         OI    DUB,X'10'                                                        
+         GOTOR VLOCKSPC,DUB                                                     
+         MVI   LOCKEDJB,NO         UNLOCKED                                     
+         J     EXIT                                                             
+                                                                                
+***********************************************************************         
+* SAVE ACCESS REGISTERS AND TURN OFF ACCESS REGISTER MODE                       
+***********************************************************************         
+ARSTOP   STAM  AR0,ARF,ARSAVE                                                   
+         J     ARSOFF                                                           
+                                                                                
+***********************************************************************         
+* GO BACK INTO ACCESS REGISTER MODE WITH SAVED ACCESS REGISTERS                 
+***********************************************************************         
+ARGO     LAM   AR0,ARF,ARSAVE                                                   
+         SAC   512                                                              
+         BR    RE                                                               
+                                                                                
+***********************************************************************         
+* EXIT ACCESS REGS MODE & CLEAR ACCESS REGS                                     
+***********************************************************************         
+ARSOFF   SAC   0                                                                
+         LAM   AR0,ARF,ARZERO                                                   
+         BR    RE                                                               
+                                                                                
+***********************************************************************         
+* THE TIMER EXIT ROUTINE.  IT POSTS AN ECB.                                     
+***********************************************************************         
+TIMRXIT  SAVE  (14,12),,*                                                       
+         LR    RB,RF                                                            
+         USING TIMRXIT,RB                                                       
+         LARL  R2,LARMECB                                                       
+         POST  (R2)                                                             
+         LM    RE,RC,12(RD)                                                     
+         BR    RE                                                               
+         DROP  RB                                                               
+                                                                                
+***********************************************************************         
+* COMMON STORAGE                                                                
+***********************************************************************         
+COMMON   DS    0D             COMMON CODE AND STORAGE                           
+*                                                                               
+EXITRC   CLI   RETCODE,0      EXIT AND SET CONDITION CODE                       
+         J     EXIT                                                             
+EXITNE   DS    0H             EXIT NOT EQUAL                                    
+EXITHI   MVI   EXITC,HI       EXIT HIGH                                         
+         J     EXITCC                                                           
+EXITLO   MVI   EXITC,LO       EXIT LOW                                          
+         J     EXITCC                                                           
+EXITEQ   MVI   EXITC,EQ       EXIT EQUAL                                        
+EXITCC   CLI   EXITC,EQ       EXIT AND TEST CONDITION CODE                      
+EXIT     XIT1                                                                   
+*                                                                               
+VLOCKSPC DC    V(LOCKSPC)                                                       
+VDATCON  DC    V(DATCON)                                                        
+VSSB     DC    V(SSB)                                                           
+TBLET    DC    A(0)           TABS ALET                                         
+*                                                                               
+DSPCJOB  DC    XL64'00'       COMSCORE JOB TABLE IN DATA SPACE                  
+*                                                                               
+JBINFO   DS    0D             JOB INFORMATION BLOCK                             
+JBSTOKEN DS    D              JOB STOKEN                                        
+JBJOBSTT DS    D              JOB START DATE AND TIME                           
+JBAECB   DS    A              A(JOB ECB)                                        
+JBAENTRY DS    A              A(ENTRY IN JOB TABLE)                             
+JBAPREV  DS    A              A(PREVIOUS ENTRY IN JOB TABLE)                    
+JBDISENT DS    F              DISPLACEMENT TO JOB ENTRY TABLE                   
+JBSLOT   DS    F              JOB TABLE ENTRY SLOT NUMBER                       
+JBFWLNK  DS    F              JOB ENTRY FORWARD LINK                            
+JBREQN   DS    H              REQUEST NUMBER                                    
+JBNUMBER DS    H              JOB NUMBER                                        
+JBNAME   DS    CL8            JOB NAME                                          
+JBJOBID  DS    CL8            JOB ID                                            
+JBSDATE  DS    CL8            JOB START DATE AND TIME                           
+JBDSN    DS    CL44           JOB REQUEST/RESPONSE DSN                          
+JBINFOL  EQU   *-JBINFO                                                         
+*                                                                               
+POSTPA   POST  ECBKEY=YES,MF=L                                                  
+*                                                                               
+AECBLST  DC    A(ECBLST)                                                        
+*                                                                               
+ECBLST   DS    0D                                                               
+ALERTECB DC    X'00',AL3(LERTECB)  A(RESPONSE ECB)                              
+ALARMECB DC    X'80',AL3(LARMECB)  A(TIMER ECB)                                 
+LERTECB  DC    F'0'                ECB FOR RESPONSE                             
+LARMECB  DC    F'0'                ECB OF TIMER                                 
+*                                                                               
+REPLYECB DC    F'0'                OPERATOR REPLY ECB                           
+STIMERID DC    F'0'                                                             
+WAITTIME DC    AL4(15*MINUTES)     DEFAULT                                      
+WAITACTN DC    C'O'                TIMER ACTION DEFAULT IS OPERATOR             
+REPLY    DC    CL3' '              OPERATOR REPLY                               
+*                                                                               
+OPMSG    DC    0H                                                               
+OPLEN    DC    AL2(OPMSGLN)                                                     
+OPMSGTXT DC    0C                                                               
+OPMSGJOB DC    CL8'XXXXXXXX'                                                    
+         DC    C' '                                                             
+OPMSGJON DC    CL8'JOB00000'                                                    
+         DC    C' '                                                             
+         DC    C'WAITING ON COMSCORE, KEEP WAITING? (YES/NO/MINS #)'            
+OPMSGLN  EQU   *-OPMSGTXT                                                       
+*                                                                               
+ARZERO   DC    16F'0'         USED TO CLEAR ACCESS REGISTERS                    
+ARSAVE   DC    16F'0'         USED TO SAVE ACCESS REGISTERS                     
+FFS      DC    16X'FF'                                                          
+SPACES   DC    128C' '                                                          
+CBJEYE   DC    CL16'*COMSCORE BATCH*'  DATA SPACE EYE CATCHER                   
+         LTORG                                                                  
+*                                                                               
+EQ       EQU   1                                                                
+LO       EQU   0                                                                
+HI       EQU   2                                                                
+NE       EQU   2                                                                
+YES      EQU   C'Y'                                                             
+NO       EQU   C'N'                                                             
+EOT      EQU   X'FF'                                                            
+SECONDS  EQU   100                                                              
+MINUTES  EQU   60*100                                                           
+HOURS    EQU   60*60*100                                                        
+                                                                                
+***********************************************************************         
+* ACTION TABLE (COVERED BY ACTTABD)                                             
+***********************************************************************         
+ACTTAB   DS    0F                                                               
+         DC    AL1(CBJREG)                                 REGISTER 01          
+         DC    AL1(ACTIJOB+ACTIWTT),AL2(0),AL4(JOBREG-CBJOB)                    
+         DC    AL1(CBJNREQ)                             NEW REQUEST 02          
+         DC    AL1(ACTIJOB+ACTIJOP+ACTIWTT),AL2(0),AL4(JOBNREQ-CBJOB)           
+         DC    AL1(CBJWAIT)                                    WAIT 03          
+         DC    AL1(ACTIJOB+ACTIWTT),AL2(0),AL4(JOBWAIT-CBJOB)                   
+         DC    AL1(CBJPOST)                                    POST 04          
+         DC    AL1(ACTIJOP),AL2(0),AL4(JOBPOST-CBJOB)                           
+         DC    AL1(CBJCOMP)                               COMPLETED 05          
+         DC    AL1(ACTIJOB),AL2(0),AL4(JOBCOMP-CBJOB)                           
+         DC    AL1(CBJCLN)                                    CLEAN 06          
+         DC    AL1(0),AL2(0),AL4(JOBCLEAN-CBJOB)                                
+         DC    AL1(CBJDEL)                                   DELETE 07          
+         DC    AL1(ACTIJOP),AL2(0),AL4(JOBDEL-CBJOB)                            
+         DC    AL1(CBJGET)                                     GET 08           
+         DC    AL1(ACTIJOB),AL2(0),AL4(JOBGET-CBJOB)                            
+         DC    AL1(CBJERR)                                   ERROR 09           
+         DC    AL1(ACTIJOB),AL2(0),AL4(JOBERR-CBJOB)                            
+         DC    AL1(EOT)                                                         
+                                                                                
+***********************************************************************         
+* WORKING STORAGE DSECT                                               *         
+***********************************************************************         
+CBJWORKD DSECT                                                                  
+APARMS   DS    A                                                                
+RELO     DS    A                                                                
+SAVERE   DS    A                                                                
+AACTN    DS    A              A(ACTION TABLE ENTRY)                             
+AACTR    DS    A              A(ACTION ROUTINE)                                 
+*                                                                               
+DMCB     DS    6F                                                               
+DUB      DS    D                                                                
+FULL     DS    F                                                                
+HALF     DS    H                                                                
+BYTE     DS    X                                                                
+EXITC    DS    X                                                                
+WORK     DS    XL64                                                             
+*                                                                               
+NOWDTTM  DS    0XL8           CURRENT DATE AND TIME                             
+         DS    X                                                                
+NOWDATE  DS    XL3                                                              
+NOWTIME  DS    XL4                                                              
+*                                                                               
+PARMS    DS    3F             SAVED INPUT PARAMETERS                            
+         ORG   PARMS                                                            
+P1       DS    0F             PARAMETER 1                                       
+PACTION  DS    X              . ACTION                                          
+PADSN    DS    AL3            . A(RESPONSE DSN)                                 
+P2       DS    0F             PARAMETER 2                                       
+PRETURN  DS    0X             . ON EXIT, RETURN CODE                            
+PWAITACT DS    C              . ON ENTRY, TIMER POP ACTION                      
+PAWTTM   DS    AL3            . AL3(WAIT TIME)                                  
+P3       DS    0F             PARAMETER 3                                       
+         DS    A              . A(0)                                            
+PARMSLN  EQU   *-PARMS                                                          
+*                                                                               
+RETCODE  DS    X              RETURN CODE                                       
+LOCKEDJB DS    C              COMSCORE JOB TABLE LOCKED Y/N                     
+ERRFLAG  DS    X              ERRORS ROUTINE FLAG                               
+ERRCSV   EQU   X'80'          . SAVE RETURN CODE IN DATA SPACE                  
+*                                                                               
+MSGW     DS    0CL82          WTO OUTPUT MESSAGE                                
+MSGWLEN  DS    XL2                                                              
+MSGWTXT  DS    0CL80                                                            
+MSGWMSG  DS    CL30                                                             
+MSGWDET  DS    CL30                                                             
+MSGWJOB  DS    CL8,CL2                                                          
+MSGWJID  DS    CL8,CL2                                                          
+*                                                                               
+CBJWORKX EQU   *                                                                
+                                                                                
+***********************************************************************         
+* ACTION TABLE DSECT                                                            
+***********************************************************************         
+ACTTABD  DSECT                                                                  
+ACTION   DS    X            ACTION TO BE PERFORMED                              
+ACTIND   DS    X            ACTION INDICATORS                                   
+ACTIJOB  EQU   X'80'        . NEED TO RETRIEVE JOB INFORMATION                  
+ACTIJOP  EQU   X'40'        . DATA SET NAME REQUIRED AS A PARAMETER             
+ACTIWTT  EQU   X'20'        . WAIT TIME AND TIMER POP ACTION REQUIRED           
+         DS    XL2                                                              
+ACTROUT  DS    XL4          ACTION EXECUTION ROUTINE                            
+ACTTABLN EQU   *-ACTTABD                                                        
+                                                                                
+***********************************************************************         
+* OTHER DSECTS                                                                  
+***********************************************************************         
+       ++INCLUDE DMDSYSHDR                                                      
+       ++INCLUDE DMSPACED                                                       
+       ++INCLUDE DDCBJOBD                                                       
+       ++INCLUDE FATABCBJ                                                       
+       ++INCLUDE FATABSDEQU                                                     
+* FATCB                                                                         
+         PRINT OFF                                                              
+       ++INCLUDE FATCB                                                          
+         PRINT ON                                                               
+* FASSBOFF                                                                      
+         PRINT OFF                                                              
+SSBOFFD  DSECT                                                                  
+       ++INCLUDE FASSBOFF                                                       
+         PRINT ON                                                               
+* IHAASCB                                                                       
+         PRINT OFF                                                              
+         IHAASCB LIST=YES                                                       
+         PRINT ON                                                               
+* IHAASSB                                                                       
+         PRINT OFF                                                              
+         IHAASSB LIST=YES                                                       
+         PRINT ON                                                               
+* IHAJSAB                                                                       
+         PRINT OFF                                                              
+         IAZJSAB LIST=YES                                                       
+         PRINT ON                                                               
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'002DDCBJOB   04/24/17'                                      
+         END                                                                    

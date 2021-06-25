@@ -1,0 +1,1003 @@
+*          DATA SET DMRCVUSS   AT LEVEL 005 AS OF 01/09/13                      
+*CATALP DMRCVUSS                                                                
+         TITLE 'Put copy/change records out via USS message queue'              
+***********************************************************************         
+* Create or bind to Unix System Service message queue.                          
+* Check if passed recovery data should go to queue based on SE & file.          
+* Pointer changes are ignored and never sent to the queue.                      
+* Either put recovery data to queue                                             
+* or     put COMMIT or ROLLBACK message to queue.                               
+* Also allows an command interface to allow a caller to stop or restart         
+* a system or request a status report.                                          
+*                                                                               
+***********************************************************************         
+* Message queue description.                                                    
+*                                                                               
+* Message queue key is dspace id & SE number, so separate queue per SE.         
+*                                                                               
+* Format of COPY/CHANGE recovery data message on queue.                         
+* First record is a copy record, second record is its change record.            
+*   XL3 command - 'RCV'                                                         
+*   AL2(Total length of data including this field)                              
+*   AL2(Total length of copy record including this field)                       
+*   XLn copy record including header and trailer                                
+*   AL2(Total length of change record including this field)                     
+*   XLn change record including header and trailer                              
+*                                                                               
+* Format of CHANGE recovery data message on queue when no COPY record.          
+* First record is a change record. No second record or length.                  
+*   XL3 command - 'RCV'                                                         
+*   AL2(Total length of data including this field)                              
+*   AL2(Total length of change record including this field)                     
+*   XLn change record including header and trailer                              
+*                                                                               
+* Format of ADD recovery data message on queue:                                 
+* First record is an add record. No second record or length.                    
+*   XL3 command - 'RCV'                                                         
+*   AL2(Total length of data including this field)                              
+*   AL2(Total length of add record including this field)                        
+*   XLn add record including header and trailer                                 
+*                                                                               
+* Format of command message on queue:                                           
+*   XL3 command - Only 'EOT' and 'RBK' supported so far                         
+*   AL8(Global input number)                                                    
+*   XL1 'N' for normal or 'R' for replay.                                       
+*                                                                               
+***********************************************************************         
+*                                              Parameters..../                  
+         EJECT                                                                  
+***********************************************************************         
+* Parameters                                                                    
+*                                                                               
+* Note1:Addresses are assumed to be 31 bit address so ensure high order         
+*       is clear when calling with 24 bit address                               
+* Note2:Lengths should not be more than 32K-1 (signed halfwords)                
+* Note3:Byte 1 of P2 set to FF indicates called by a batch process, as          
+*       opposed to recovery handlers, in order to 'REPLAY' a recovery           
+*       backup through USS. It causes global system test to be skipped,         
+*       suppresses adding extension to end of record (on assumption             
+*       that it's already there), clears RSIN in recovery headers and           
+*       flags command records with R (Replay) rather than N (Normal).           
+*                                                                               
+*                                                                               
+* Put copy/change recovery data                                                 
+* P1 = A(Copy record, with header) If zero, there's no copy record.             
+* P2 = length of copy record, ignored if P1 zero.                               
+* P3 = A(Change record)                                                         
+* P4 = length of change record                                                  
+* P5 = A(Trailer)                                                               
+* P6 = length of trailer                                                        
+*                                                                               
+* Put add recovery data                                                         
+* P1 = A(0)                                                                     
+* P2 = Ignored                                                                  
+* P3 = A(Add record, with header)                                               
+* P4 = length of add record                                                     
+* P5 = A(Trailer)                                                               
+* P6 = length of trailer                                                        
+*                                                                               
+* Put command (Commit, Rollback, etc)                                           
+* P1 = A(1) = Send EOT (Commit) command                                         
+*      A(2) = Send RBK (Rollback) command                                       
+* P2 = SE# (first three bytes ignored)                                          
+* P3 = A(GIN) If zero, DMRCVUSS will get it from SSOGIN/TGIN as below           
+* P4 = Ignored                                                                  
+* P5 = Ignored                                                                  
+* P6 = Ignored                                                                  
+* Note that COMMIT will not be sent if SSOGIN/TGIN is zero.                     
+*                                                                               
+* Action (start, stop, etc)                                                     
+* P1 = A(128+1) = STOP putting USS data for a system                            
+*      A(128+2) = START putting USS data for a stopped system                   
+*      A(128+3) = Request a status report                                       
+* P2 = SE# to be stopped or started (first three bytes ignored). Not            
+*      used for status.                                                         
+* P3 = Ignored                                                                  
+* P4 = Ignored                                                                  
+* P5 = Ignored                                                                  
+* P6 = Ignored                                                                  
+*                                                                               
+***********************************************************************         
+*                                              Parameters..../                  
+         EJECT                                                                  
+***********************************************************************         
+* GIN is Global input number and is set by DDGETGIN.,,                          
+*     (a) off-line it's found in SSOGIN                                         
+*     (b) on-line  in TGIN                                                      
+*                                                                               
+* GIN is acquired via DDGETGIN first time a recovery record is written          
+* by a task.                                                                    
+*                                                                               
+* So, if SSOGIN/TGIN is zero, no recovery records have been written yet         
+* so COMMIT will be supressed.                                                  
+*                                                                               
+* A non zero GIN means recovery records have been written by the task,          
+* although they need not have been sent to USS.                                 
+*                                                                               
+* Special case is a GIN of all FFs. That could be because the GIN is            
+* just about to wrap to zero (extremely unlikely), or else GETGIN was           
+* unable to find a GIN becuase it could not locate the dataspace. In            
+* either case, the only option is to die. The latter can only happen            
+* off-line and is becuase the program is not set up to support sending          
+* recovery records to USS.                                                      
+*                                                                               
+*---------------------------------------------------------------------*         
+* Note that this module checks DMFILES to see if the file is enabled            
+* for USS. If it isn't, no USS recovery data message will be written.           
+*                                                                               
+***********************************************************************         
+         EJECT                                                                  
+         PRINT NOGEN                                                            
+         USING WORKD,RC                                                         
+         USING RCVRHDRD,R2                                                      
+DMRCVUSS CSECT                                                                  
+DMRCVUSS AMODE 31                                                               
+DMRCVUSS RMODE ANY                                                              
+         NMOD1 WORKLNQ,*RCVUSS*,CLEAR=Y                                         
+         SAM31                                                                  
+         LARL  RA,GLOBALS                                                       
+         USING GLOBALS,RA                                                       
+*                                                                               
+         MVC   PARMS,0(R1)                                                      
+         LM    R2,R5,0(R1)                                                      
+         NILH  GR3,X'00FF'         Clear flag                                   
+*                                                                               
+         MVI   COMMAND,0           Posit not a command                          
+         CHI   R2,QMAXACTN         Test R2 is a command, action or zero         
+         BH    USS08               No, so should be Copy/Change pair            
+*                                                                               
+         STC   R2,COMMAND          Store command, action or zero                
+         CHI   R2,QMINACTN         Test R2 is an action                         
+         BL    USS06               No, should be a command or zero              
+         AHI   R2,-QMINACTN        adjust to zero offset                        
+         SLL   R2,2                times 4                                      
+         L     RF,ACTIONS(R2)      get address of action processor              
+         STC   R3,SE#              Set SE#                                      
+         BR    RF                  go do action                                 
+*                                                                               
+USS06    CHI   R2,QMAXCOMM         Should be a command or zero                  
+         BNH   *+6                                                              
+         DC    H'0'                Invalid command (could return error)         
+         LTR   R2,R2               If R2 is not zero,                           
+         BNZ   USS20               it must be a Command                         
+         LR    R2,R4               Else an Add, or a Change w/out Copy          
+         LR    R3,R5               Copy Add/Change as first record              
+         XR    R4,R4               Indicate no second record                    
+*                                                                               
+USS08    TM    1(R2),X'80'         Test this is a pointer copy                  
+         BNZ   EXITOK              Yes, never send those to USS q               
+*                                                                               
+*                                                                               
+* Either R2=A(Copy), R3=Copy len, R4=A(Change), R5=Change len                   
+*     or R2=A(Change), R3=Change len, R4=0 (Change w/out Copy)                  
+*     or R2=A(Add), R3=Add len, R4=0                                            
+*     or R2=Command, R3=SE#, R4=A(GIN) or zero                                  
+*                                                                               
+USS20    BRAS  RE,INIT                                                          
+         BNE   EXITCC                                                           
+         BRAS  RE,SET_USSQ                                                      
+         BNE   EXITCC                                                           
+         BRAS  RE,PUT_MSG                                                       
+         BNE   EXITCC                                                           
+                                                                                
+EXITOK   MVI   ERR#,ERR#NONE                                                    
+                                                                                
+EXITCC   CLI   ERR#,ERR#NONE       Any errors set in ERR#                       
+                                                                                
+EXIT     XIT1  ,                                                                
+         EJECT ,                                                                
+***********************************************************************         
+* Initialisation                                                      *         
+***********************************************************************         
+INIT     NTR1  ,                                                                
+         XC    RV,RV                                                            
+         XC    RCV,RCV                                                          
+         XC    RSN,RSN                                                          
+         STC   R3,SE#              Set SE# if command                           
+         CLI   COMMAND,0           Command type action                          
+         BNE   INIT12              yes                                          
+         MVC   SE#,RSYS            System number                                
+         MVC   FILE#,RFILTY        File   number                                
+                                                                                
+INIT12   MVC   MQMGEYEQ,=CL8'MQIDMSG>'                                          
+         MVC   MQIDEYEQ,=CL12'MQIDKEY====>'                                     
+         MVC   MQHNEYEQ,=CL12'HANDLE=====>'                                     
+         MVC   PLSTEYEQ,=CL12'PLIST======>'                                     
+         MVI   ERR#,ERR#IACT                                                    
+         CLI   ACTIVE,C'I'         First time to initialize                     
+         BNE   INIT20              Yes so see if on                             
+         MVI   ACTIVE,C'N'         Set to not be active yet                     
+         MVI   ERR#,ERR#NSSB                                                    
+                                                                                
+         USING SSBD,RE                                                          
+         ICM   RE,15,=V(SSB)                                                    
+         BZ    INITXIT                                                          
+         MVI   ONLINE,YES                                                       
+         MVC   DSPACE,SSBDSPAC                                                  
+         MVC   DSPALET,SSBALET                                                  
+         OC    SSBCNTL,SSBCNTL     On-line?                                     
+         BNZ   INIT18              Yes                                          
+         MVI   ONLINE,NO           No                                           
+         CLI   SSOXTND,X'FF'       Off-line                                     
+         BE    *+6                 Must be extended                             
+         DC    H'00'                                                            
+         MVC   DSPACE,SSODSPAC                                                  
+         MVC   DSPALET,SSOALET                                                  
+         DROP  RE                                                               
+*                                                                               
+INIT18   CLI   DSPACE,C' '                                                      
+         BNE   *+6                                                              
+         DC    H'00'               No DSPACE                                    
+         CLI   DSPACE,C'A'         ADVs                                         
+         BE    INIT22              Yes                                          
+*&&US                                                                           
+         CLI   DSPACE,C'R'         US REPs                                      
+         BE    INIT22              Yes                                          
+*&&                                                                             
+         CLI   DSPACE,C'C'         CSC                                          
+         BE    INIT22              Yes                                          
+         CLI   DSPACE,C'T'         UK TST/TTS/NEW, US TST/MEL                   
+         BE    INIT22              Yes                                          
+         CLI   DSPACE,C'F'         FQA                                          
+         BE    INIT22              Yes                                          
+*&&UK                                                                           
+         CLI   DSPACE,C'B'         UK BARB test system                          
+         BE    INIT22              Yes                                          
+*&&                                                                             
+         MVI   ERR#,ERR#DSPC                                                    
+         B     INITXIT                                                          
+*                                                                               
+INIT20   CLI   ACTIVE,C'Y'                                                      
+         BNE   INITXIT                                                          
+                                                                                
+INIT22   MVC   AMSGHDR,AMSGHDRO    Off-line area                                
+         XC    ASVUTL,ASVUTL       zero UTL address offline                     
+*                                                                               
+         L     RE,=V(SSB)                                                       
+         USING SSBD,RE                                                          
+         MVC   GIN,SSOGIN          Get offline GIN                              
+*                                                                               
+         CLI   ONLINE,YES          Online?                                      
+         BNE   INIT30              No                                           
+         ICM   R7,15,SSBTKADR                                                   
+         USING TCBD,R7                                                          
+         MVC   AMSGHDR,TCBUSQBF    On-line area/ one per task                   
+         L     R1,TCBUTL           R1 = UTL                                     
+         USING UTLD,R1                                                          
+         ST    R1,ASVUTL                                                        
+         MVC   GIN,TGIN           Get online GIN from UTL                       
+         DROP  R1,R7                                                            
+*                                                                               
+INIT30   OC    ABPX1QSN,ABPX1QSN   Was this set?                                
+         BNZ   INITOK              Yes                                          
+*                                                                               
+         CLI   ONLINE,YES          Still initializing                           
+         BE    INIT32                                                           
+         LHI   R7,RCVBKSZQ                                                      
+         STORAGE OBTAIN,ADDR=AMSGHDRO,LENGTH=(R7),COND=NO,BNDRY=PAGE            
+         MVC   AMSGHDR,AMSGHDRO    Off-line area                                
+*                                                                               
+INIT32   MVI   ERR#,ERR#QGT        Get                                          
+         LOAD  EP=BPX1QGT          USS MQ Get or create message queue           
+         LTR   R3,RF                                                            
+         BNZ   INITXIT                                                          
+         ST    R0,ABPX1QGT                                                      
+*                                                                               
+         MVI   ERR#,ERR#QSN        Send                                         
+         LOAD  EP=BPX1QSN          USS MQ send routine                          
+         LTR   R3,RF                                                            
+         BNZ   INITXIT                                                          
+         ST    R0,ABPX1QSN                                                      
+         MVI   ACTIVE,C'Y'                                                      
+                                                                                
+INITOK   L     RE,AMSGHDR                                                       
+         LA    RF,1                                                             
+         ST    RF,0(,RE)           Set to 1 (not sure yet why)                  
+         LA    RE,4(,RE)                                                        
+         ST    RE,AMSGBUF                                                       
+         XC    0(8,RE),0(RE)                                                    
+         MVI   ERR#,ERR#NONE                                                    
+*                                                                               
+INITXIT  J     EXITCC                                                           
+         EJECT ,                                                                
+***********************************************************************         
+* Find and/or Create and bind to queue.                               *         
+* Code will set bit on in DTF if recovery records are to be sent      *         
+* This sets MQIDKEY and MQHANDLE                                      *         
+* Exit not equal not to put and/or error (see ERR# if error)          *         
+***********************************************************************         
+SET_USSQ NTR1                                                                   
+                                                                                
+SETUSQ00 MVI   ERR#,ERR#NOSE       No SE# (not the one on your face)            
+         XR    R4,R4                                                            
+         XC    AMQHANDL,AMQHANDL                                                
+         ICM   R4,1,SE#                                                         
+         BZ    SETUSQNO            Error no SE#                                 
+         MVI   ERR#,ERR#NONE                                                    
+         ST    R4,MQIDKEY          Set MQ ID key to SE#                         
+         MVC   MQIDKEY+1(1),DSPACE Make unique for dataspace                    
+         SLL   R4,2                Multiple by 4                                
+         LR    R6,R4                                                            
+         A     R4,=A(HANDLES)      Index into table                             
+         A     R6,=A(SYSLIST)      Index into table                             
+         LR    R7,R6               Save off location in R7                      
+         ICM   R3,15,0(R4)         Was USS MQ create/bind?                      
+         BZ    SETUSQ08            No, so go setup                              
+         ST    R4,AMQHANDL                                                      
+         CL    R3,=X'FFFFFF00'     Is system stopped or disabled?               
+         BNL   SETUSQNO            yes                                          
+                                                                                
+***********************************************************************         
+* Have queue so do we want to put this one for the file                         
+***********************************************************************         
+         USING SYSFLSTD,R6                                                      
+         L     R6,0(,R6)           A(Start of system file list)                 
+         CLC   SE#,SYSFSYS#        Make sure system matches                     
+         BE    *+6                                                              
+         DC    H'00'               SYSLIST table error. SE must agree!          
+         CLI   COMMAND,0           A command function                           
+         BNE   SETUSQ07            Yes send command, regardless of file         
+         CLI   P2FLAG,X'FF'        Test replay                                  
+         BE    *+12                yes, skip global check                       
+         TM    SYSFSTAT,SYSFUGBL                                                
+         BZ    SETUSQNO            exit if not global updative.                 
+                                                                                
+         XR    RF,RF                                                            
+         ICM   RF,3,SYSF#FLS                                                    
+         BZ    SETUSQ05                                                         
+         LA    R6,SYSFLIST         Run down files and find a match              
+SETUSQ04 CLC   FILE#,SYSFILE#                                                   
+         BE    SETUSQ06                                                         
+         LA    R6,SYSFLNQ(,R6)                                                  
+         BRCT  RF,SETUSQ04                                                      
+SETUSQ05 DC    H'00'               Where did it go                              
+*                                                                               
+SETUSQ06 TM    SYSFIND2,SFUSSMQ                                                 
+         BZ    SETUSQNO            This file must be excluded                   
+                                                                                
+SETUSQ07 ST    R3,MQHANDLE         Set handle for put/send call                 
+         B     SETUSQOK                                                         
+                                                                                
+***********************************************************************         
+* No queue setup yet so find if need one and if so setup then try again         
+***********************************************************************         
+         USING SYSFLSTD,R6                                                      
+SETUSQ08 MVI   ERR#,ERR#NSYS       Failed to find system                        
+         ICM   R6,15,=V(SYSFLES)   Find system                                  
+         BZ    SETUSQNO                                                         
+*                                                                               
+SETUSQ10 CLI   SYSFSYS#,X'FF'      End of list                                  
+         BE    SETUSQNO            Failed to find system                        
+         XR    RF,RF                                                            
+         ICM   RF,3,SYSF#FLS       Number of files in system                    
+         CLC   SE#,SYSFSYS#        Match on system number                       
+         BE    SETUSQ20                                                         
+         MHI   RF,SYSFLNQ                                                       
+         LA    R6,SYSFLIST(RF)     Point to next system                         
+         B     SETUSQ10                                                         
+*                                                                               
+SETUSQ20 ST    R6,0(,R7)           Save location of this system                 
+         L     R3,=X'FFFFFF00'     Preset not used as not global system         
+         CLI   P2FLAG,X'FF'        Test replay                                  
+         BE    *+12                yes, skip global check                       
+         TM    SYSFSTAT,SYSFUGBL                                                
+         BZ    SETUSQ50            needs to be global updative.                 
+*                                                                               
+         XR    R0,R0               Count how many files enabled                 
+         LTR   RF,RF               Test if any files in system                  
+         BZ    SETUSQ30            none                                         
+         LA    R6,SYSFLIST         A(Start of file list)                        
+SETUSQ22 TM    SYSFIND2,SFUSSMQ    File is MQ enabled file?                     
+         BZ    SETUSQ28            No, skip                                     
+         ICM   R7,15,SYSFADTF-1                                                 
+         BZ    SETUSQ28            No DTF!                                      
+         AHI   R0,1                Got one                                      
+SETUSQ28 LA    R6,SYSFLNQ(,R6)                                                  
+         BRCT  RF,SETUSQ22         Next file                                    
+         DROP  R6                                                               
+                                                                                
+SETUSQ30 L     R3,=X'FFFFFF01'     Preset not used as no MQ files               
+         LTR   R0,R0                                                            
+         BZ    SETUSQ50                                                         
+*                                                                               
+SETUSQ40 MVI   S_TYPE,IPC_CREAT    Get queu handle (May already exist)          
+         MVI   S_MODE1,0           Not used                                     
+         MVI   S_MODE2,S_IRUSR     All read and write permission                
+         MVI   S_MODE3,S_IWUSR+S_IRGRP+S_IWGRP+S_IROTH+S_IWOTH                  
+*                                                                               
+         L     RF,ABPX1QGT                                                      
+         CALL  (15),(MQIDKEY,S_MODE,RV,RCV,RSN),VL,MF=(E,PLIST)                 
+         ICM   R3,15,RV            get handle                                   
+         BNM   SETUSQ50                                                         
+         MVI   ERR#,ERR#QERR       Error in negative                            
+         L     R3,=X'FFFFFFFF'     Set not enabled as USS MQ init error         
+*                                                                               
+*****    Should send email         *****                                        
+*                                                                               
+*                                                                               
+SETUSQ50 MVI   ERR#,ERR#NONE                                                    
+         ST    R3,0(,R4)           Store handle in A(HANDLE) by SE#             
+         ST    R3,MQHANDLE                                                      
+         CL    R3,=X'FFFFFF00'                                                  
+         BL    SETUSQ00            Go back and resolve for file                 
+         B     SETUSQNO            No don't want queue input/output             
+                                                                                
+SETUSQOK XR    RE,RE                                                            
+                                                                                
+SETUSQNO LTR   RE,RE                                                            
+         J     EXIT                                                             
+         EJECT ,                                                                
+***********************************************************************         
+* Put message or command to a queue                                             
+*                                                                               
+* If command:                                                                   
+* R2 = command, also in COMMAND                                                 
+* R3 = SE#, also in SE#                                                         
+* R4 = A(User supplied GIN) or zero                                             
+*                                                                               
+* If message:                                                                   
+* R2 = A(Add), A(Copy) or A(Change) if no copy present                          
+* R3 = length of add, copy or change record                                     
+* R4 = A(Change) if copy present else zero                                      
+* R5 = length of change record                                                  
+* P5/P6 has A(Trailer)/length of trailer                                        
+* R7 will keep running total of full length of message                          
+***********************************************************************         
+         USING RCVRHDRD,R2                                                      
+PUT_MSG  NTR1  ,                                                                
+         L     R6,AMSGBUF          A(Buffer)                                    
+         XR    R1,R1                                                            
+         ICM   R1,1,COMMAND        Is this a command                            
+         BZ    PUTQ20              No, skip                                     
+*                                                                               
+*                                  Process command                              
+PUTQ10   LTR   R4,R4               Test GIN was passed                          
+         BZ    *+10                no, use active GIN                           
+         MVC   GIN,0(R4)           else use GIN as passed                       
+         OC    GIN,GIN                                                          
+         BZ    EXIT                Zero means no messages sent yet              
+         MVC   3(8,R6),GIN         Set GIN                                      
+*                                                                               
+PUTQ14   ICM   RE,15,ASVUTL        Check anything put to q at all               
+         BZ    PUTQ16              if we have a UTL                             
+         USING UTLD,RE                                                          
+         TM    TSTATC,TSTCUSSQ                                                  
+         BZ    EXIT                                                             
+         DROP  RE                                                               
+*                                                                               
+PUTQ16   BCTR  R1,0                Command less one base 0                      
+         SLL   R1,2                Multiply by 4                                
+         LA    RE,COMMANDS(R1)                                                  
+         MVC   0(3,R6),0(RE)       move in command                              
+         MVI   11(R6),C'N'         normal command (current activity)            
+         CLI   P2FLAG,X'FF'        Test replay                                  
+         BNE   *+8                 no, skip                                     
+         MVI   11(R6),C'R'         replay command (old activity)                
+         LA    R7,12               total length 12 bytes                        
+         B     PUTQ50              Now put to queue                             
+*                                                                               
+*                                  Process message                              
+PUTQ20   L     RE,P5               point to trailer                             
+         OI    RGESTAT-RECVEXT(RE),RGESUSSS indicate sent to USS                
+         MVC   GIN,RGIN-RECVEXT(RE) Copy GIN from trailer                       
+*                                                                               
+         MVC   0(3,R6),=C'RCV'     Command                                      
+         LA    R6,5(,R6)           First record area                            
+         LHI   R7,5                Init total length of message                 
+*                                                                               
+PUTQ22   LR    RE,R2               Record source for MVCL                       
+         LR    RF,R3               Record length                                
+         LA    R0,2(,R6)           Record target                                
+         LR    R1,R3               Record length                                
+         MVCL  R0,RE               Copy record                                  
+         CLI   P2FLAG,X'FF'        Test replay                                  
+         BNE   PUTQ23              no, go add trailer                           
+         XC    RSIN-RECVHDR+2(,R6),RSIN-RECVHDR+2(R6) else clear SIN            
+         B     PUTQ24                                                           
+PUTQ23   LM    RE,RF,P5            Get addr/length of trailer                   
+         LR    R1,RF               trailer length                               
+         MVCL  R0,RE               Copy trailer to end of record                
+         A     R3,P6               Add length of trailer                        
+PUTQ24   AHI   R3,2                Add length of length                         
+         STCM  R3,3,0(R6)          Store total length first record              
+         AR    R7,R3               Add to total length                          
+         AR    R6,R3               Bump to next buffer area                     
+*                                                                               
+PUTQ26   LTR   RE,R4               Record source for MVCL                       
+         BZ    PUTQ30              No second record                             
+         LR    RF,R5               Record length                                
+         LA    R0,2(,R6)           Record target                                
+         LR    R1,R5               Record length                                
+         MVCL  R0,RE               Copy record                                  
+         CLI   P2FLAG,X'FF'        Test replay                                  
+         BNE   PUTQ27              no, go add trailer                           
+         XC    RSIN-RECVHDR+2(,R6),RSIN-RECVHDR+2(R6) else clear SIN            
+         B     PUTQ28                                                           
+PUTQ27   LM    RE,RF,P5            Get addr/length of trailer                   
+         LR    R1,RF               trailer length                               
+         MVCL  R0,RE               Copy trailer to end of record                
+         A     R5,P6               Add length of trailer                        
+PUTQ28   AHI   R5,2                Add length of length                         
+         STCM  R5,3,0(R6)          Store total length first record              
+         AR    R7,R5               Add to total length                          
+*                                                                               
+PUTQ30   L     RE,AMSGBUF                                                       
+         STCM  R7,3,3(RE)          Save total length                            
+*                                                                               
+PUTQ50   ST    R7,FULL                                                          
+*                                                                               
+         CLC   GIN,=8X'FF'         If GIN is all FFs, GETGIN was not            
+         BNE   *+6                 able to obtain a GIN (offline)               
+         DC    H'0'                Need to die in that case.                    
+*                                                                               
+         L     RF,ABPX1QSN                                                      
+         CALL  (15),(MQHANDLE,                                         +        
+               AMSGHDR,                                                +        
+               =A(0),                                                  +        
+               FULL,                                                   +        
+               =A(IPC_NOWAIT),                                         +        
+               RV,RCV,RSN),                                            +        
+               VL,MF=(E,PLIST)                                                  
+*                                                                               
+         ICM   RF,15,RV                                                         
+         JNM   PUTQ52              Sent ok                                      
+*                                                                               
+         CLI   COMMAND,0           Send failed                                  
+         BNE   *+12                Skip trailer if command                      
+         L     RE,P5               Point to trailer                             
+         NI    RGESTAT-RECVEXT(RE),255-RGESUSSS NOT sent to USS                 
+*                                                                               
+         MVI   ERR#,ERR#PUTE                                                    
+         BRAS  RE,PUTERR                                                        
+         LTR   RE,RE                                                            
+         J     EXIT                                                             
+*                                                                               
+PUTQ52   ICM   R1,15,ASVUTL        Indicate that we put to queue                
+         BZ    PUTQ54              if we have a UTL                             
+         USING UTLD,R1                                                          
+         OI    TSTATC,TSTCUSSQ                                                  
+         DROP  R1                                                               
+*                                                                               
+PUTQ54   CR    RE,RE                                                            
+         J     EXIT                                                             
+         EJECT ,                                                                
+***********************************************************************         
+* Put out error message and turn off or shut off for system           *         
+***********************************************************************         
+PUTERR   NTR1                                                                   
+         ICM   RF,15,RCV           Return code                                  
+         CVD   RF,DUB                                                           
+         OI    DUB+L'DUB-1,X'0F'                                                
+         UNPK  MSGRCV#,DUB                                                      
+         BAS   RE,GETSYSNM         GET SYSNAME                                  
+         MVC   MSGSEN,SYSNAME      Move in SE name                              
+         L     R3,=X'FFFFFFFE'     set stopped due to general put error         
+         CHI   RF,EAGAIN           Message could not be sent                    
+         BNE   PUTERR10                                                         
+         L     R3,=X'FFFFFFF1'     set stopped due to queue full error          
+         MVC   MSGXTRA,MSGQFULL    queue full or msg too big                    
+         B     PUTERR80            Put out error                                
+                                                                                
+PUTERR10 MVC   MSGXTRA,MSGQERR                                                  
+*                                                                               
+PUTERR80 L     R4,AMQHANDL         Turn off putting messages to queue           
+         ST    R3,0(,R4)           set stopped                                  
+         LA    R1,MSGERR           Send E-mail                                  
+         BAS   RE,WTO                                                           
+         J     EXIT                                                             
+         EJECT ,                                                                
+***********************************************************************         
+* Handle actions (exit program on completion)                                   
+***********************************************************************         
+ACTSTRT  EQU   ACTSTOP                                                          
+ACTSTOP  MVI   ERR#,ERR#NOSE       No SE#                                       
+         XR    R4,R4                                                            
+         ICM   R4,1,SE#                                                         
+         BZ    EXITCC              Error no SE#                                 
+         MVI   ERR#,ERR#ALRD       Already set                                  
+         SLL   R4,2                Multiply by 4                                
+         A     R4,=A(HANDLES)      Index into table                             
+         CLI   COMMAND,ACTSTRTQ    test START command                           
+         BE    ACTSTRT1            yes, skip                                    
+ACTSTOP1 CLC   0(4,R4),=X'FFFFFF00' Is it already stopped?                      
+         BNL   EXITCC               yes, already set                            
+         MVC   0(4,R4),=X'FFFFFFF0' no, stop it (set by command)                
+         MVI   ERR#,ERR#NONE                                                    
+         B     EXITOK                                                           
+ACTSTRT1 CLC   0(4,R4),=X'FFFFFF00' Is it stopped?                              
+         BL    EXITCC               no, already set                             
+         XC    0(4,R4),0(R4)        yes, restart it                             
+         MVI   ERR#,ERR#NONE                                                    
+         B     EXITOK                                                           
+*                                                                               
+ACTSTAT  CLI   ACTIVE,C'Y'         Test Active                                  
+         BE    ACTSTA10            yes, do full status                          
+         LA    R1,MSGINACT         Inactive message                             
+         CLI   ACTIVE,C'I'         Test Inactive                                
+         BE    *+8                 yes, skip                                    
+         LA    R1,MSGINERR         Error message                                
+         BAS   RE,WTO                                                           
+         B     EXITOK                                                           
+*                                                                               
+ACTSTA10 L     R2,=A(HANDLES)      POINT TO HANDLES                             
+         XR    R3,R3               SE#                                          
+         MVC   MSGSTAT(2),=Y(16)                                                
+         MVC   MSGSTAT+2(16),=CL16'USS Active :None'                            
+         LA    R4,MSGSTAT+2+12     FIRST SPACE ON LINE                          
+ACTSTA12 OC    0(4,R2),0(R2)       HAS THIS ONE BEEN ACTIVE?                    
+         BZ    ACTSTA16            NO                                           
+         CLC   0(4,R2),=X'FFFFFF00' IS IT STOPPED?                              
+         BNL   ACTSTA16            YES                                          
+         LA    R0,MSGSTAT+MSGSTATL                                              
+         CR    R4,R0               ROOM ON LINE?                                
+         BL    ACTSTA14            YES, SKIP                                    
+         MVC   MSGSTAT(2),=Y(MSGSTATL-2)                                        
+         LA    R1,MSGSTAT                                                       
+         BAS   RE,WTO                                                           
+         LA    R4,MSGSTAT+2+12     FIRST SPACE ON LINE                          
+ACTSTA14 STC   R3,SE#              SET SE                                       
+         BAS   RE,GETSYSNM         GET SYSNAME                                  
+         MVC   0(7,R4),SYSNAME                                                  
+         MVI   7(R4),C' '                                                       
+         LA    R4,8(,R4)                                                        
+         XC    MSGSTAT(2),MSGSTAT  INDICATE DATA TO SHOW                        
+ACTSTA16 LA    R2,4(,R2)           NEXT HANDLE                                  
+         LA    R3,1(,R3)           NEXT SE#                                     
+         CHI   R3,255                                                           
+         BNH   ACTSTA12            DO 255                                       
+         LA    R1,MSGSTAT                                                       
+         SR    R4,R1                                                            
+         SHI   R4,2                                                             
+         OC    MSGSTAT(2),MSGSTAT  DID WE DO ANY AT ALL?                        
+         BNZ   *+8                 NO, SKIP, LENGTH ALREADY SET                 
+         STH   R4,MSGSTAT                                                       
+         BAS   RE,WTO                                                           
+*                                                                               
+ACTSTA20 L     R2,=A(HANDLES)      POINT TO HANDLES                             
+         XR    R3,R3               SE#                                          
+         MVC   MSGSTAT(2),=Y(16)                                                
+         MVC   MSGSTAT+2(16),=CL16'USS Stopped:None'                            
+         LA    R4,MSGSTAT+2+12     FIRST SPACE ON LINE                          
+ACTSTA22 CLC   0(4,R2),=X'FFFFFFF0' IS IT STOPPED BY COMMAND                    
+         BNE   ACTSTA26            NO                                           
+         LA    R0,MSGSTAT+MSGSTATL                                              
+         CR    R4,R0               ROOM ON LINE?                                
+         BL    ACTSTA24            YES, SKIP                                    
+         MVC   MSGSTAT(2),=Y(MSGSTATL-2)                                        
+         LA    R1,MSGSTAT                                                       
+         BAS   RE,WTO                                                           
+         LA    R4,MSGSTAT+2+12     FIRST SPACE ON LINE                          
+ACTSTA24 STC   R3,SE#              SET SE                                       
+         BAS   RE,GETSYSNM         GET SYSNAME                                  
+         MVC   0(7,R4),SYSNAME                                                  
+         MVI   7(R4),C' '                                                       
+         LA    R4,8(,R4)                                                        
+         XC    MSGSTAT(2),MSGSTAT  INDICATE DATA TO SHOW                        
+ACTSTA26 LA    R2,4(,R2)           NEXT HANDLE                                  
+         LA    R3,1(,R3)           NEXT SE#                                     
+         CHI   R3,255                                                           
+         BNH   ACTSTA22            DO 255                                       
+         LA    R1,MSGSTAT                                                       
+         SR    R4,R1                                                            
+         SHI   R4,2                                                             
+         OC    MSGSTAT(2),MSGSTAT  DID WE DO ANY AT ALL?                        
+         BNZ   *+8                 NO, SKIP, LENGTH ALREADY SET                 
+         STH   R4,MSGSTAT                                                       
+         BAS   RE,WTO                                                           
+*                                                                               
+ACTSTA30 L     R2,=A(HANDLES)      POINT TO HANDLES                             
+         XR    R3,R3               SE#                                          
+         MVC   MSGSTAT(2),=Y(16)                                                
+         MVC   MSGSTAT+2(16),=CL16'USS Q Full :None'                            
+         LA    R4,MSGSTAT+2+12     FIRST SPACE ON LINE                          
+ACTSTA32 CLC   0(4,R2),=X'FFFFFFF1' IS IT STOPPED BY QUEUE FULL                 
+         BNE   ACTSTA36            NO                                           
+         LA    R0,MSGSTAT+MSGSTATL                                              
+         CR    R4,R0               ROOM ON LINE?                                
+         BL    ACTSTA34            YES, SKIP                                    
+         MVC   MSGSTAT(2),=Y(MSGSTATL-2)                                        
+         LA    R1,MSGSTAT                                                       
+         BAS   RE,WTO                                                           
+         LA    R4,MSGSTAT+2+12     FIRST SPACE ON LINE                          
+ACTSTA34 STC   R3,SE#              SET SE                                       
+         BAS   RE,GETSYSNM         GET SYSNAME                                  
+         MVC   0(7,R4),SYSNAME                                                  
+         MVI   7(R4),C' '                                                       
+         LA    R4,8(,R4)                                                        
+         XC    MSGSTAT(2),MSGSTAT  INDICATE DATA TO SHOW                        
+ACTSTA36 LA    R2,4(,R2)           NEXT HANDLE                                  
+         LA    R3,1(,R3)           NEXT SE#                                     
+         CHI   R3,255                                                           
+         BNH   ACTSTA32            DO 255                                       
+         LA    R1,MSGSTAT                                                       
+         SR    R4,R1                                                            
+         SHI   R4,2                                                             
+         OC    MSGSTAT(2),MSGSTAT  DID WE DO ANY AT ALL?                        
+         BNZ   *+8                 NO, SKIP, LENGTH ALREADY SET                 
+         STH   R4,MSGSTAT                                                       
+         BAS   RE,WTO                                                           
+*                                                                               
+ACTSTA40 L     R2,=A(HANDLES)      POINT TO HANDLES                             
+         XR    R3,R3               SE#                                          
+         MVC   MSGSTAT(2),=Y(16)                                                
+         MVC   MSGSTAT+2(16),=CL16'USS Error  :None'                            
+         LA    R4,MSGSTAT+2+12     FIRST SPACE ON LINE                          
+ACTSTA42 CLC   0(4,R2),=X'FFFFFFF1' IS IT STOPPED BY ERROR?                     
+         BNH   ACTSTA46            NO                                           
+         LA    R0,MSGSTAT+MSGSTATL                                              
+         CR    R4,R0               ROOM ON LINE?                                
+         BL    ACTSTA44            YES, SKIP                                    
+         MVC   MSGSTAT(2),=Y(MSGSTATL-2)                                        
+         LA    R1,MSGSTAT                                                       
+         BAS   RE,WTO                                                           
+         LA    R4,MSGSTAT+2+12     FIRST SPACE ON LINE                          
+ACTSTA44 STC   R3,SE#              SET SE                                       
+         BAS   RE,GETSYSNM         GET SYSNAME                                  
+         MVC   0(7,R4),SYSNAME                                                  
+         MVI   7(R4),C' '                                                       
+         LA    R4,8(,R4)                                                        
+         XC    MSGSTAT(2),MSGSTAT  INDICATE DATA TO SHOW                        
+ACTSTA46 LA    R2,4(,R2)           NEXT HANDLE                                  
+         LA    R3,1(,R3)           NEXT SE#                                     
+         CHI   R3,255                                                           
+         BNH   ACTSTA42            DO 255                                       
+         LA    R1,MSGSTAT                                                       
+         SR    R4,R1                                                            
+         SHI   R4,2                                                             
+         OC    MSGSTAT(2),MSGSTAT  DID WE DO ANY AT ALL?                        
+         BNZ   *+8                 NO, SKIP, LENGTH ALREADY SET                 
+         STH   R4,MSGSTAT                                                       
+         BAS   RE,WTO                                                           
+         B     EXITOK                                                           
+         EJECT                                                                  
+***********************************************************************         
+* Convert SE number (hex) to SE Name                                            
+***********************************************************************         
+GETSYSNM NTR1  ,                   LOOK UP SE NAME FROM NUMBER                  
+         XC    SYSNAME,SYSNAME                                                  
+*                                                                               
+         STAR  LABEL=Y,CLEAR=Y,ARS=ON                                           
+         LAM   AR2,AR2,DSPALET                                                  
+         XR    R2,R2                                                            
+         L     R1,0(,R2)           A(ECB TABLE) = UPPER LIMIT                   
+         IC    R2,SE#                                                           
+         SLL   R2,6                SE# * 64 (L'RESOURCE HEADER)                 
+         CR    R2,R1               ENSURE NOT PASSED UPPER LIMIT                
+         BNL   GTSYN02                                                          
+         USING DMSPACED,R2                                                      
+         MVC   SYSNAME,DSPNAME                                                  
+         DROP  R2                  FASSBG                                       
+GTSYN02  REAR  ARS=OFF                                                          
+*                                                                               
+         CLI   SYSNAME,C' '        DID WE GET A NAME                            
+         BH    EXIT                YES                                          
+         MVC   SYSNAME,=CL7'SE#='  UNKNOWN SE                                   
+         LLC   R1,SE#                                                           
+         SRL   R1,4                                                             
+         LA    R2,HEXIT(R1)                                                     
+         MVC   SYSNAME+4(1),0(R2)  Move in first hex char                       
+         LLC   R1,SE#                                                           
+         NILL  GR1,X'000F'                                                      
+         LA    R2,HEXIT(R1)                                                     
+         MVC   SYSNAME+5(1),0(R2)  Move in other hex char                       
+         B     EXIT                                                             
+***********************************************************************         
+* Write message to Operator console. R1=message address                         
+***********************************************************************         
+WTO      NTR1  ,                   WRITE TO CONSOLE                             
+         LR    R2,R1                                                            
+         WTO   TEXT=(R2),MCSFLAG=HRDCPY                                         
+         B     EXIT                                                             
+         EJECT ,                                                                
+***********************************************************************         
+* COMMANDS supported                                                            
+***********************************************************************         
+COMMANDS DS    0CL4                USS COMMANDS                                 
+         DC    CL3'EOT',XL1'00'    Transaction end or commit                    
+         DC    CL3'RBK',XL1'00'    Transaction failed and unwound               
+QMAXCOMM EQU   (*-COMMANDS)/L'COMMANDS          Max command                     
+*                                                                               
+ACTIONS  DS    0A                  USS ACTIONS                                  
+ACTSTRTQ EQU   (*-ACTIONS)/L'ACTIONS+QMINACTN   START ACTION CODE               
+         DC    A(ACTSTRT)  (128+1) RESTART AN SE                                
+         DC    A(ACTSTOP)  (128+2) STOP AN SE                                   
+         DC    A(ACTSTAT)  (128+3) LIST ACTIVE OR STOPPED SES                   
+QMINACTN EQU   128+1                            MIN ACTION                      
+QMAXACTN EQU   (*-ACTIONS)/L'ACTIONS+QMINACTN   Max action                      
+                                                                                
+***********************************************************************         
+* Error and status messages                                                     
+***********************************************************************         
+MSGQFULL DC    CL25'Queue full, turned off'                                     
+MSGQERR  DC    CL25'Queue error, turned off'                                    
+MSGQSTOP DC    CL25'Unix Q turned off'                                          
+MSGQSTRT DC    CL25'Unix Q restarted'                                           
+*                                                                               
+MSGERR   DC    AL2(MSGERLNQ-2)                                                  
+*&&US*&& DC    C'AUTONOTE*AATKN,AHYDN:'                                         
+*&&DO*&& DC    C'AUTONOTE*US-MF_Fac_Team_NY:'                                   
+*&&UK*&& DC    C'AUTONOTE*EU_Fac Team:'                                         
+MSGNOTE  DC    C'Unix put Q error '                                             
+         DC    C'Return code='                                                  
+MSGRCV#  DS    CL8                                                              
+MSGOPER  DS    0C                                                               
+MSGSEN   DS    CL7                                                              
+         DC    C' '                                                             
+MSGXTRA  DS    CL25                                                             
+MSGERLNQ EQU   *-MSGERR                                                         
+MSGOPLNQ EQU   *-MSGOPER                                                        
+*                                                                               
+MSGINACT DC    AL2(MSGINACL-2),C'USS Not initialised'                           
+MSGINACL EQU   *-MSGINACT                                                       
+MSGINERR DC    AL2(MSGINERL-2),C'Error in USS initialisation'                   
+MSGINERL EQU   *-MSGINERR                                                       
+         EJECT                                                                  
+***********************************************************************         
+* Literals and constants                                              *         
+***********************************************************************         
+GLOBALS  DS    0D                                                               
+         DC    CL12'USS Q Get==>'                                               
+ABPX1QGT DC    F'0'                Create/Get routine USS MQ                    
+         DC    CL12'USS Q Send=>'                                               
+ABPX1QSN DC    F'0'                Send routine USS MQ                          
+         DC    CL12'Ofln Buff==>'                                               
+AMSGHDRO DC    F'0'                Offline AMSGHDR (dynamic)                    
+         DC    CL7'Active='        Process is active                            
+ACTIVE   DC    C'I'                I=Init, Y=Active, N=init failed              
+         DC    CL7'DSpace='        DSpace attached to                           
+DSPACE   DC    C' '                                                             
+         DC    CL8'ALET===='       Alet for attached DSpace                     
+DSPALET  DC    F'0'                                                             
+         DC    CL7'Online='          Yes/No                                     
+ONLINE   DC    C' '                                                             
+         DC    CL4'RV=='                                                        
+RV       DC    F'0',F'0'           Returned value                               
+         DC    CL4'RCV='                                                        
+RCV      DC    F'0',F'0'           Return code                                  
+         DC    CL4'RSN='                                                        
+RSN      DC    F'0',F'0'           Reason code                                  
+*                                                                               
+HEXIT    DC    C'0123456789ABCDEF'                                              
+*                                                                               
+         LTORG                                                                  
+***********************************************************************         
+* USS handle based on SE#.                                                      
+*     HANDLES - Handle value if < FFFFFF00, or as follows:                      
+*               FFFFFF00 - Not used as system not global                        
+*               FFFFFF01 - Not used as system has no eligible files             
+*               FFFFFFF0 - Stopped by command                                   
+*               FFFFFFF1 - Stopped due to queue full error on put               
+*               FFFFFFFE - Stopped due to other error on put                    
+*               FFFFFFFF - Stopped due to error opening queue                   
+*     SYSLIST - Address into SYSFLIST of files DTFs                             
+***********************************************************************         
+         DC    0F'0'                                                            
+         DC    CL16'***USS HANDLE***'                                           
+HANDLES  DC    256F'0'                                                          
+         DC    CL16'***END HANDLE***'                                           
+                                                                                
+         DC    CL16'****SYS LIST****'                                           
+SYSLIST  DC    256A(0)                                                          
+         DC    CL16'***END SYSLST***'                                           
+         EJECT ,                                                                
+***********************************************************************         
+*                                                                               
+***********************************************************************         
+         BPXYIPCP                                                               
+         BPXYFTYP DSECT=NO                                                      
+         BPXYOPNF DSECT=NO                                                      
+         BPXYMSG                                                                
+         EJECT ,                                                                
+***********************************************************************         
+* DCBS and ADCONS                                                     *         
+***********************************************************************         
+*TFUSSMQ EQU   X'80'                                                            
+RCVBKSZQ EQU   13682               Recovery max size (2 x 6K records)           
+ERR#NONE EQU   0                                                                
+ERR#NSYS EQU   1                   No system found                              
+ERR#NSSB EQU   2                   No SSB, you got to have it                   
+ERR#QGT  EQU   3                   Failed to load create/get queue rtn          
+ERR#QSN  EQU   5                   Failed to load send/put message rtn          
+ERR#NOSE EQU   8                   No SE#                                       
+ERR#DSPC EQU   9                   Not valid dataspace                          
+ERR#IACT EQU   10                  Inactive                                     
+ERR#ALRD EQU   11                  Already set                                  
+ERR#QERR EQU   128                 Failed to obtain/create queue                
+ERR#PUTE EQU   130                 Failed to put to queue                       
+*                                                                               
+EAGAIN   EQU   112                 IBM error code (resource not avail)          
+         EJECT                                                                  
+***********************************************************************         
+* Working storage                                                     *         
+***********************************************************************         
+WORKD    DSECT                                                                  
+YES      EQU   C'Y'                                                             
+NO       EQU   C'N'                                                             
+QCOMMIT  EQU   1                   Send Commit                                  
+QROLLBCK EQU   2                   Send Rollback                                
+                                                                                
+MQMGEYEQ DS    CL8                                                              
+AMSGHDR  DS    A                                                                
+AMSGBUF  DS    A                                                                
+AMQHANDL DS    A                   Address within table                         
+ASVUTL   DS    A                   A(UTL)                                       
+MQIDEYEQ DS    CL12                                                             
+MQIDKEY  DS    F                   Current message queue ID                     
+MQHNEYEQ DS    CL12                                                             
+MQHANDLE DS    F                   Current handle                               
+                                                                                
+DUB      DS    D                                                                
+FULL     DS    F                                                                
+GIN      DS    XL8                 Global input number                          
+COMMAND  DS    AL1                 Command or zero                              
+ERR#     DS    X                   ERROR# > 128 then USS MQ error               
+SE#      DS    X                   System number                                
+FILE#    DS    X                   File nunber in SYSLIST                       
+*                                                                               
+SYSNAME  DS    CL7                                                              
+*                                                                               
+         DS    0D                                                               
+PLSTEYEQ DS    CL12                                                             
+PLIST    DS    16A                                                              
+*                                                                               
+PARMS    DS    0XL24               Callers parameters                           
+P1       DS    A                                                                
+P2FLAG   DS    0C                  0=normal, FF=replay                          
+P2       DS    A                                                                
+P3       DS    A                                                                
+P4       DS    A                                                                
+P5       DS    A                                                                
+P6       DS    A                                                                
+*                                                                               
+MSGSTAT  DS    H,CL12,6CL8                                                      
+MSGSTATL EQU   *-MSGSTAT                                                        
+*                                                                               
+         BPXYMODE DSECT=NO                                                      
+*                                                                               
+WORKLNQ  EQU   *-WORKD                                                          
+         EJECT                                                                  
+*************************************************************                   
+*        Other DSECTS                                       *                   
+*************************************************************                   
+* FAUTL                                                                         
+         PRINT OFF                                                              
+       ++INCLUDE FAUTL                                                          
+         PRINT ON                                                               
+* FASSB                                                                         
+         PRINT OFF                                                              
+       ++INCLUDE FASSB                                                          
+         PRINT ON                                                               
+* FASSBOFF                                                                      
+         PRINT OFF                                                              
+         ORG   SSBCNTL                                                          
+       ++INCLUDE FASSBOFF                                                       
+         PRINT ON                                                               
+* FATCB                                                                         
+         PRINT OFF                                                              
+       ++INCLUDE FATCB                                                          
+         PRINT ON                                                               
+* DMSYSFD                                                                       
+         PRINT OFF                                                              
+       ++INCLUDE DMSYSFD                                                        
+         PRINT ON                                                               
+* DMDSYSHDR                                                                     
+         PRINT OFF                                                              
+       ++INCLUDE DMDSYSHDR                                                      
+         PRINT ON                                                               
+* DMSPACED                                                                      
+         PRINT OFF                                                              
+       ++INCLUDE DMSPACED                                                       
+         PRINT ON                                                               
+* DMRCVRHDR                                                                     
+RCVRHDRD DSECT                                                                  
+         PRINT OFF                                                              
+       ++INCLUDE DMRCVRHDR                                                      
+         PRINT ON                                                               
+* DMRCVREXT                                                                     
+RCVREXTD DSECT                                                                  
+         PRINT OFF                                                              
+       ++INCLUDE DMRCVREXT                                                      
+         PRINT ON                                                               
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'005DMRCVUSS  01/09/13'                                      
+         END                                                                    

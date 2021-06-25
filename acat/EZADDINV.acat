@@ -1,0 +1,945 @@
+*          DATA SET EZADDINV   AT LEVEL 058 AS OF 05/01/02                      
+*CATALP EZADDINV                                                                
+         TITLE 'EASI - ADD INVOICES TO SPOTFILE'                                
+***********************************************************************         
+*                                                                     *         
+* USED WITH SPZ502 - LINK WITH LKSPZ502                               *         
+*                                                                     *         
+***********************************************************************         
+*                                                                     *         
+*  LVE 37-38 JAN29/90 FIX COMPARE TO SVINV AND OC INV NO TO BLANKS    *         
+*  LEV 39    FEB28/91 EXPAND BUFFER TO 32760 FROM 19360               *         
+*  LEV 40    JUN13/91 NET OUT RATE FOR SPOTS, IF RATE, DB/CR = ZERO   *         
+*                     SPOT RATE = ZERO                                *         
+*  LEV 41    JAN24/92 GET 2 CLEAR COPIES                              *         
+*  LEV 42    APR22/92 SAVE HI-ORDER BYTE OF RATE                      *         
+*  LEV 43    FEB16/93 LIMIT MAX REC SIZE TO 1960                      *         
+*  LEV 44    APR29/93 ADD SOURCE, SET ON RESPONSE FLAG FOR BDS 0 $    *         
+*  LEV 45    MAY18/93 ERROR OUT ANY SPOT LENS = ZERO                  *         
+*  LEV 46    JUL02/93 FIX IRNY EQ INV #'S FOR JUN16/17/93             *         
+*  LEV 47    SEP30/93 CK DUPES ON MANUAL INV, CK STATION CALL LETTERS *         
+*                     REMOVE IRNY SPECIAL FIX                         *         
+*  LEV 48    NOV08/93 LIMIT STATION CALL LETTER CK TO MINUSES, ADD    *         
+*                      MEDIA L AS OK (LOCAL CABLE)                    *         
+*  LEV 49    DEC10/93 ADD SPOTS TO EXISTING INVOICES IF MORE THAN 255 *         
+*  LEV 50    JAN04/94 FLAG COMBINED INVOICES - EZIHCCMB               *         
+*  LEV 51    JAN19/94 FIX BAD COMPARE TO EZSPLCM2 AT PRA6 TO EZSPCML2 *         
+*  LEV 52    AUG19/94 ADD NWK                                         *         
+*  LEV 53    JAN27/94 MORE NWK                                        *         
+*  LEV 54    MAY18/96 ADD BVS TO BDS FOR RESPONSE CTS                 *         
+*  LEV 55    JUL29/96 FIX SECOND RANDOM                               *         
+*  LEV 56    AUG06/96 FIX CATALP, EZBLOCK                             *         
+*  LEV 57    AUG09/96 FIX ORDER #                                     *         
+*                                                                     *         
+***********************************************************************         
+         PRINT NOGEN                                                            
+EZADDINV CSECT                                                                  
+         NMOD1 EZADDDL,**EZADD                                                  
+         LA    RA,COMSUBS                                                       
+         USING COMSUBS,RA                                                       
+         USING EZADDD,RC                                                        
+         ST    RC,SAVWORK          SAVE WORK AREA ADDRESS                       
+         L     R7,0(R1)            A(EZBLOCK)                                   
+         USING EZBLOCKD,R7                                                      
+         L     R8,4(R1)            A(SPWORK)                                    
+         LA    R9,2048(R8)                                                      
+         LA    R9,2048(R9)                                                      
+         USING SPWORKD,R8,R9                                                    
+*                                                                               
+         MVI   EZERRCD,0           CLEAR ERROR                                  
+*                                                                               
+         CLI   EZMODE,EZINVP       PROC INV                                     
+         BE    PRINV                                                            
+         CLI   EZMODE,EZSPTP       PROCESS SPOT DETAIL                          
+         BE    PRANN                                                            
+         CLI   EZMODE,EZINVL       LAST FOR INVOICE                             
+         BE    LINV                                                             
+*                                                                               
+EXIT     DS    0H                                                               
+         XIT1                                                                   
+         EJECT                                                                  
+*        PROCESS INVOICE HEADER                                                 
+         SPACE 2                                                                
+PRINV    DS    0H                                                               
+         SPACE                                                                  
+         XC    EZIHCINV,EZIHCINV                                                
+         BAS   RE,CKSTA            GO CK STATION CALL LETTERS VALID             
+         SPACE                                                                  
+         OC    EZIHLADB,EZIHLADB   TEST HAVE ADVERTISER                         
+         BZ    PRI10                                                            
+         TM    EZIHLKST,EZIHLANF   AND IS OK SPOTPAK CODE                       
+         BZ    PRI14                                                            
+*                                                                               
+PRI10    DS    0H                                                               
+         MVI   EZERRCD,EZERRANF                                                 
+         BAS   RE,GETERRM                                                       
+         MVI   EZMODE,EZINVL       SET TO SKIP TO NEXT INV                      
+         B     EXIT                                                             
+*                                                                               
+PRI14    DS    0H                                                               
+         CLI   EZIHLPRB,0          TEST INVOICE PRD OK                          
+         BE    PRI16                (MISSING OR VARIOUS, ETC = FF)              
+         TM    EZIHLKST,EZIHLPNF   AND IS OK SPOTPAK CODE                       
+         BZ    PRI18                                                            
+*                                                                               
+PRI16    DS    0H                                                               
+         MVI   EZERRCD,EZERRPNF                                                 
+         BAS   RE,GETERRM                                                       
+         MVI   EZMODE,EZINVL       SET TO SKIP TO NEXT INV                      
+         B     EXIT                                                             
+*                                                                               
+PRI18    DS    0H                                                               
+         L     RE,EZWKRREC         SAVE INVOICE HEADER RECORD                   
+         LH    R1,0(RE)                                                         
+         CH    R1,=Y(L'SAVINVH)                                                 
+         BNH   *+6                                                              
+         DC    H'0'                INVOICE HEADER RECORD TOO LONG               
+         LA    RF,SAVINVH                                                       
+         MOVE  ((RF),(R1)),(RE)                                                 
+*                                                                               
+         BAS   RE,SAVBUF           ALSO SAVE WRKR BUFFER                        
+*                                                                               
+         MVC   BUFFER(4),=X'00020000'   INITIALIZE BUFFER LENGTH                
+*                                                                               
+*                                  READ FOR ANY EXISTING INVOICES               
+         LA    RE,DIRTAB           CLEAR KEY TABLE                              
+         LA    RF,DIRTABL*MAXRECS                                               
+         XCEF                                                                   
+*                                                                               
+         XC    KEY,KEY                                                          
+         MVI   KEY,X'0B'                                                        
+         MVC   KEY+1(1),BAGYMD                                                  
+         MVC   KEY+2(3),BSTA                                                    
+         MVC   KEY+5(2),EZIHLADB   CLIENT                                       
+         MVC   KEY+7(2),EZIHCMST   MONDAY START OF MONTH                        
+         MVC   SVINVKEY,KEY                                                     
+         MVI   SVID,0                                                           
+         MVI   SVIDHI,0                                                         
+         MVI   SVPRDID,0                                                        
+         MVI   MULTISW,0                                                        
+*                                                                               
+         GOTO1 HIGH                                                             
+         B     PRI24                                                            
+*                                                                               
+PRI20    DS    0H                                                               
+         GOTO1 SEQ                                                              
+PRI24    DS    0H                                                               
+         CLC   KEY(9),KEYSAVE      AG/STA/CLT/MOS                               
+         BNE   PRI50                                                            
+*                                                                               
+         MVC   SVIDHI,KEY+9        SAVE HIGHEST INV/CON ID                      
+*        CLI   KEY+9,0             SKIP IF NO INV/CON ID                        
+*        BE    PRI20                                                            
+         CLI   KEY+10,0            READ ONLY 1ST OF SET                         
+         BNE   PRI20                                                            
+*                                                                               
+         MVC   AREC,ADBUY                                                       
+         GOTO1 GET                                                              
+*                                                                               
+         L     R2,AREC                                                          
+         LA    R2,24(R2)                                                        
+*                                                                               
+         LR    R1,R2                                                            
+PRI26    DS    0H                                                               
+         CLI   0(R1),0             EOR                                          
+         BE    PRI30               SKIP RECORD                                  
+         CLI   0(R1),X'B1'         INVOICE ITEM                                 
+         BNE   PRI28                                                            
+         SPACE                                                                  
+* SEE IF SAME PRODUCT, AND IF SO, SAVE ID                                       
+         SPACE                                                                  
+         CLC   INVPRD-INVELEM(R1),EZIHLPRB                                      
+         BNE   PRI28                                                            
+         MVC   SVPRDID,KEY+9       SAVE ID OF THIS REC                          
+         B     PRI29                                                            
+         SPACE                                                                  
+PRI28    CLI   0(R2),X'FA'         IS THIS A MULTI INVOICE                      
+         BNE   *+8                                                              
+         MVI   MULTISW,1                                                        
+         SPACE                                                                  
+PRI29    DS    0H                                                               
+         ZIC   R0,1(R2)                                                         
+         AR    R1,R0                                                            
+         B     PRI26                                                            
+*                                                                               
+PRI30    DS    0H                                                               
+         CLI   0(R2),0             EOR                                          
+         BE    PRI20               SKIP RECORD                                  
+         CLI   0(R2),5             IHDELEM                                      
+         BE    PRI34                                                            
+         ZIC   R0,1(R2)                                                         
+         AR    R2,R0                                                            
+         B     PRI30                                                            
+*                                                                               
+PRI34    DS    0H                                                               
+         USING IHDELEM,R2                                                       
+         SPACE                                                                  
+         OC    IHDINV,SPACES                                                    
+         OC    EZIHINV,SPACES                                                   
+         CLC   IHDINV,EZIHINV      TEST SAME INV                                
+         BNE   PRI20                NO,SKIP RECORD                              
+         CLI   EZCONOPT,C'Y'       TEST TO DO CONTRACT                          
+         BNE   PRI36                                                            
+         CLI   EZIHRORD,C' '       USE REP FIRST                                
+         BNH   *+18                                                             
+         CLC   IHDCON,EZIHRORD     CONTRACT/ORDER                               
+         BNE   PRI20                NO,SKIP RECORD                              
+         B     PRI36                                                            
+         CLC   IHDCON,EZIHSORD     ELSE USE STATION                             
+         BNE   PRI20                NO,SKIP RECORD                              
+*                                                                               
+         DROP  R2                                                               
+*                                                                               
+PRI36    DS   0H                                                                
+         CLI   MULTISW,1           IS THIS A MULTI-INVOICE                      
+         BE    PRI38                                                            
+         CLI   EZRPLOPT,C'Y'       TEST OK TO REPLACE                           
+         BE    PRI40                                                            
+*                                                                               
+         MVI   EZERRCD,EZERRDUP    DUPLICATE INVOICE                            
+         BAS   RE,GETERRM                                                       
+         MVI   EZMODE,EZINVL       SKIP TO NEXT INVOICE                         
+         B     EXIT                                                             
+PRI38    DS   0H                                                                
+         MVI   EZERRCD,EZERRMUL    DUPLICATE INVOICE                            
+         BAS   RE,GETERRM                                                       
+         MVI   EZMODE,EZINVL       SKIP TO NEXT INVOICE                         
+         B     EXIT                                                             
+*                                                                               
+PRI40    DS    0H                                                               
+         MVC   SVID,KEY+9          SAVE INV/CON ID                              
+*                                                                               
+PRI44    DS    0H                                                               
+         CLI   KEY+10,MAXRECS-1    TEST SEQ NUMBER VALID                        
+         BNH   *+6                                                              
+         DC    H'0'                FOR NOW JUST DUMP                            
+*                                                                               
+         ZIC   RF,KEY+10           SEQ NO.                                      
+         MH    RF,=Y(DIRTABL)                                                   
+         LA    RF,DIRTAB(RF)                                                    
+         MVC   0(DIRTABL,RF),KEY   SAVE KEY,STATUS,DA                           
+*                                                                               
+         GOTO1 SEQ                 READ REST FOR THIS ID                        
+         CLC   KEY(9),KEYSAVE                                                   
+         BNE   PRI60                                                            
+         CLC   KEY+9(1),SVID       TEST SAME INV/CON                            
+         BE    PRI44               YES- TABLE                                   
+         B     PRI60               NO DONE                                      
+*                                                                               
+PRI50    DS    0H                  INV/CON ID NOT FOUND                         
+         ZIC   RF,SVIDHI           BUMP TO NEW ID NUMBER                        
+         LA    RF,1(RF)                                                         
+         STC   RF,SVID                                                          
+         CLI   SVID,0              THIS AN OVERFLOW INV (MORE THAN 255)         
+         BNE   PRI60                NO                                          
+         SPACE                                                                  
+* TOO MANY ID'S - ADD THESE SPOTS TO PREV INV                                   
+         SPACE                                                                  
+         CLI   SVPRDID,0           WAS A EQUAL PROD FOUND                       
+         BNE   *+8                  YES                                         
+         MVC   SVPRDID,EZIHLPRB                                                 
+         SPACE                                                                  
+* GET ALL FILM CODE TRANSLATION ELEMENTS AND SAVE IN BUFFER *                   
+         SPACE                                                                  
+         MVC   KEY,SVINVKEY                                                     
+         MVC   KEY+9(1),SVPRDID    USE SAME PROD ID                             
+         SPACE                                                                  
+         GOTO1 HIGH                                                             
+         CLC   KEY(13),KEYSAVE     VALID                                        
+         BE    *+6                                                              
+         DC    H'0'                NOW JUST DUMP                                
+         LA    R2,X                ELEM ADDRESS FOR ADDEL                       
+PRI52    DS   0H                                                                
+         CLI   KEY+10,MAXRECS-1    TEST SEQ NUMBER VALID                        
+         BNH   *+6                                                              
+         DC    H'0'                FOR NOW JUST DUMP                            
+*                                                                               
+         ZIC   RF,KEY+10           SEQ NO.                                      
+         MH    RF,=Y(DIRTABL)                                                   
+         LA    RF,DIRTAB(RF)                                                    
+         MVC   0(DIRTABL,RF),KEY   SAVE KEY,STATUS,DA                           
+         L     R3,ADBUY                                                         
+         ST    R3,AREC                                                          
+         GOTO1 GET                                                              
+         LA    R3,24(,R3)                                                       
+         SPACE                                                                  
+* SAVE ALL ELEMENTS FROM THIS INVOICE IN BUFFER *                               
+         SPACE                                                                  
+         MVC   SVB0,=X'B00300'  DUMMY ELEMENT                                   
+         SPACE                                                                  
+PRI54    DS   0H                                                                
+         CLI   0(R3),0                                                          
+         BE    PRI58                                                            
+         SPACE                                                                  
+         CLI   0(R3),X'B0'                                                      
+         BNE   *+14                                                             
+         SPACE                                                                  
+         MVC   SVB0,0(R3)                                                       
+         B     PRI56                                                            
+         SPACE                                                                  
+         SPACE                                                                  
+         CLI   0(R3),X'05'                                                      
+         BNE   *+10                                                             
+         SPACE                                                                  
+         MVC   EZIHCINV,IHDINV-IHDELEM(R3)                                      
+         SPACE                                                                  
+         MVC   X,0(R3)                                                          
+         BAS   RE,ADDEL                                                         
+PRI56    ZIC   R0,1(R3)                                                         
+         AR    R3,R0                                                            
+         B     PRI54                                                            
+         SPACE                                                                  
+PRI58    DS   0H                                                                
+         GOTO1 SEQ                 READ REST FOR THIS ID                        
+         CLC   KEY(9),KEYSAVE                                                   
+         BNE   EXIT                                                             
+         CLC   KEY+9(1),SVPRDID    TEST SAME INV/CON                            
+         BE    PRI52                YES- TABLE                                  
+         B     EXIT                                                             
+         SPACE 2                                                                
+* NOW ADD BASIC ELEMENTS *                                                      
+         SPACE                                                                  
+PRI60    DS    0H                                                               
+         LA    R2,X                BUILD IHDELEM                                
+         USING IHDELEM,R2                                                       
+         XC    X,X                                                              
+         MVI   IHDELEM,X'05'                                                    
+         MVI   IHDELEM+1,40                                                     
+         MVC   IHDID,SVID          SET INTERNAL SEQ NUMBER                      
+         MVC   IHDINV,EZIHINV      INV NO.                                      
+         CLI   EZCONOPT,C'Y'       TEST TO DO CONTRACT                          
+         BNE   PRI70                                                            
+         MVC   IHDCON(10),EZIHRORD     CONTRACT/ORDER                           
+*                                                                               
+         CLI   IHDCON,C' '              USE REP FIRST                           
+         BH    *+10                                                             
+         MVC   IHDCON(10),EZIHSORD     ELSE USE STATION                         
+*                                                                               
+         OC    IHDCON,SPACES           FORCE BIN ZEROS TO SPACES                
+*                                                                               
+PRI70    DS    0H                                                               
+         MVC   IHDPRD,EZIHLPRB     PRODUCT (FF = VARIOUS)                       
+         CLI   EZESTOPT,C'Y'       TEST TO DO ESTIMATE                          
+         BNE   *+10                                                             
+         MVC   IHDEST,EZIHBEST     ESTIMATE                                     
+         MVC   IHDRDT,EZBTBRDT     RECEIVED DATE                                
+         MVC   IHDIDT,EZIHBIDT     INVOICE DATE                                 
+         SPACE                                                                  
+         MVC   IHDSRCE,EZSRCE      PUT SOURCE IN ELEMENT                        
+         SPACE                                                                  
+         BAS   RE,ADDEL                                                         
+         DROP  R2                                                               
+*                                  SET ACTIVITY ELEM                            
+         LA    R2,X                                                             
+         XC    X,X                                                              
+         USING ACTVD,R2                                                         
+         MVI   ACTVEL,X'F1'                                                     
+         MVI   ACTVLEN,20                                                       
+         MVC   ACTVADDT,TODAYB     DATE                                         
+         MVC   ACTVADID,RCORIGID   USER ID                                      
+*                                                                               
+         BAS   RE,ADDEL                                                         
+         DROP  R2                                                               
+*                                                                               
+*                                                                               
+         B     EXIT                                                             
+         EJECT                                                                  
+*        PROCESS ANNOUNCEMENT                                                   
+         SPACE 2                                                                
+PRANN    DS    0H                                                               
+         OC    EZIHLADB,EZIHLADB   TEST HAVE VALID ADVERTISER                   
+         BZ    PRAX                                                             
+         CLI   EZSPRUN,C'N'        SKIP IF DID NOT RUN                          
+         BE    PRAX                                                             
+         CLI   EZSPBSLN,0          SPOT LENGTH = ZERO                           
+         BE    PRAERR               BYPASS INVOICE                              
+         XC    X,X                                                              
+         LA    R2,X                                                             
+         USING INVELEM,R2                                                       
+         MVI   INVELEM,X'B1'                                                    
+         MVI   INVELEM+1,17                                                     
+         MVC   INVDAT,EZSPCDT      DATE                                         
+         SR    RF,RF                                                            
+         ICM   RF,3,EZSPBTIM       TIME OF DAY                                  
+         CH    RF,=H'0600'         IF BEFORE 6AM                                
+         BNL   *+8                                                              
+         AH    RF,=H'2400'         ADD 2400                                     
+         STCM  RF,3,INVTIM                                                      
+         MVC   INVLEN,EZSPBSLN     SPOT LENGTH                                  
+         SPACE                                                                  
+         ICM   R0,15,EZSPBRAT      GET COST                                     
+         ICM   RE,15,EZSPBDR       AND DEBIT                                    
+         ICM   RF,15,EZSPBCR           CREDIT                                   
+         AR    R0,RE                                                            
+         AR    R0,RF                                                            
+         BZ    PRA2                IF NET ZERO, COST IS ZERO                    
+         SPACE                                                                  
+         MVC   INVCOST,EZSPBRAT+1  RATE                                         
+         MVC   INVCOSTX,EZSPBRAT                                                
+         SPACE                                                                  
+PRA2     MVC   INVPRD,EZSPLPB1     PRODUCT 1                                    
+         MVC   INVPRD2,EZSPLPB2    PRODUCT 2                                    
+         CLI   INVPRD2,0           IF HAVE 2ND PRD                              
+         BH    PRA4                SKIP ESTIMATE CHECK                          
+         CLI   EZESTOPT,C'Y'       ESTIMATE OPTION                              
+         BNE   PRA4                                                             
+         CLI   EZIHBEST,0          TEST HAVE EST                                
+         BE    PRA4                NO                                           
+         MVC   INVPRD2,EZIHBEST    YES- SET IT                                  
+         OI    INVSTAT,X'40'       SET STATUS                                   
+*                                                                               
+PRA4     DS    0H                                                               
+         CLI   EZSPCML1,C' '       TEST HAVE CMML 1                             
+         BNH   PRA6                                                             
+         LA    R3,EZSPCML1         LOOK IN CMML TABLE                           
+         LA    R4,EZSPLCM1                                                      
+         BAS   RE,SETCML                                                        
+         MVC   INVFILM,BYTE        SET INTERNAL ID                              
+*                                                                               
+PRA6     DS    0H                                                               
+         CLI   EZSPCML2,C' '       TEST HAVE CMML 2                             
+         BNH   PRA8                                                             
+         LA    R3,EZSPCML2         LOOK IN CMML TABLE                           
+         LA    R4,EZSPLCM2                                                      
+         BAS   RE,SETCML                                                        
+         MVC   INVFILM2,BYTE       SET INTERNAL ID                              
+*                                                                               
+PRA8     DS    0H                                                               
+         CLI   EZMGOPT,C'Y'        TEST TO USE MAKEGOOD STATUS                  
+         BNE   PRA9                                                             
+         CLI   EZSPDMD1,C' '       TEST SPOT IS A MAKEGOOD                      
+         BNH   PRA9                                                             
+         OI    INVSTAT,X'04'       SET STATUS BIT                               
+*                                                                               
+PRA9     DS    0H                                                               
+         BAS   RE,ADDEL                                                         
+         BE    PRAX                                                             
+         MVI   EZMODE,EZINVL       IF BUFFER FULL, DONE WITH INV                
+*                                                                               
+PRAX     DS    0H                                                               
+         B     EXIT                                                             
+         SPACE                                                                  
+PRAERR   MVI   EZERRCD,EZERRSPL    SET ERROR SPOT LEN = ZERO                    
+         BAS   RE,GETERRM                                                       
+         MVI   EZMODE,EZINVL       SET TO SKIP TO NEXT INV                      
+         B     EXIT                                                             
+         DROP  R2                                                               
+         EJECT                                                                  
+*        LAST FOR INVOICE                                                       
+         SPACE 2                                                                
+LINV     DS    0H                                                               
+         OC    EZIHLADB,EZIHLADB   TEST HAVE VALID ADVERTISER                   
+         BZ    LINVX                                                            
+         SPACE                                                                  
+         LA    RF,BUFFER+2                                                      
+         ST    RF,ANXTOUT                                                       
+         LA    R4,DIRTAB                                                        
+         MVI   NXTSEQ,0                                                         
+         MVC   AREC,ADBUY                                                       
+*                                                                               
+LINV40   DS    0H                                                               
+         CLI   0(R4),0             END OF LIST                                  
+         BE    LINV60                                                           
+         MVC   KEY(18),0(R4)       SET KEY, DA, ETC                             
+         MVC   NXTSEQ,10(R4)       SAVE HIGHEST SEQ NO                          
+         GOTO1 GET                                                              
+         BAS   RE,BUFFOUT                                                       
+         CLI   EZTEST,C'Y'         TEST TO SUPPRESS MARKING                     
+         BE    LINV80               YES                                         
+         GOTO1 PUT                                                              
+         TM    KEY+13,X'80'        IF KEY IS DELETED                            
+         BZ    LINV80                                                           
+         NI    KEY+13,X'7F'        UNDELETE                                     
+         GOTO1 WRITE                                                            
+         B     LINV80                                                           
+*                                                                               
+LINV60   DS    0H                                                               
+         BAS   RE,BUFFOUT                                                       
+         L     R2,AREC                                                          
+         CLC   13(2,R2),=H'27'                                                  
+         BNH   LINV90              DONT ADD NULL REC                            
+         CLI   EZTEST,C'Y'         TEST TO SUPPRESS MARKING                     
+         BE    LINV80               YES                                         
+*                                                                               
+         GOTO1 ADD                                                              
+*                                                                               
+LINV80   DS    0H                                                               
+         TM    EZTRACE,X'10'       TEST TO DUMP RECORDS                         
+         BZ    *+8                                                              
+         BAS   RE,DMPREC                                                        
+*                                                                               
+         LA    R4,DIRTABL(R4)       NEXT REC                                    
+         B     LINV40                                                           
+*                                                                               
+LINV90   DS    0H                  MARK INVOICE AS CONVERTED                    
+         CLI   EZTEST,C'Y'         TEST TO SUPPRESS MARKING                     
+         BE    LINV96                                                           
+*                               SET CONVERSION DATA IN INVOICE HEADER           
+         LA    R3,SAVINVH+7        SAVED INVOICE HEADER                         
+*                                  SKIP RECLEN(4),RECCODE(2),DELIM(1)           
+         OI    0(R3),EZIHCVQ                                                    
+         NI    0(R3),X'FF'-EZIHRCVQ                                             
+         SPACE                                                                  
+         CLI   SVID,0              THIS A COMBINED INVOICE                      
+         BNE   *+8                  NO                                          
+         OI    0(R3),EZIHCCMB      MARK IT TO STOP RECONVERT                    
+         SPACE                                                                  
+         GOTO1 DATCON,DMCB,(0,TODAY),(1,1(R3)) TODAY PWOS                       
+         MVC   4(2,R3),EZIHLADB    CLIENT                                       
+         MVC   6(1,R3),EZIHLPRB    PRODUCT                                      
+         OI    11(R3),X'80'        STOP TRAILING BLANK DELETION                 
+*                                                                               
+*                               NOTE- THE RDBLOCK IS NEEDED TO ENSURE           
+*                                     WE WRITE BACK THE LATEST VERSION          
+*                                     OF THE BLOCK                              
+*                                                                               
+         MVC   DMCB+16(4),=A(SAVWKBUF)                                          
+*                                                                               
+         CLI   EZWRITE,C'Y'        TEST IF WRITE ALLOWED                        
+         BNE   LINV96                                                           
+*                                                                               
+* NOW RESET TO HEADER (31) RECORD OF CURRRENT INVOICE *                         
+*                                                                               
+         L     RF,EZWKRREC                                                      
+         XC    0(12,RF),0(RF)                                                   
+         MVC   2(2,RF),EZHDRSEQ                                                 
+         MVC   4(4,RF),=C'REC '                                                 
+*                                                                               
+         GOTO1 DATAMGR,DMCB,(0,=C'RANDOM'),EZWKRFIL,EZWKRIND,EZWKRREC, C        
+               EZWKRBUF                                                         
+         CLI   8(R1),0                                                          
+         BE    *+6                                                              
+         DC    H'0'                                                             
+*                                                                               
+         LA    RE,SAVINVH                                                       
+         L     RF,EZWKRREC         SAVE INVOICE HEADER RECORD                   
+*                                                                               
+         CLC   4(2,RF),=C'31'      MUST BE INVOICE HEADER RECORD                
+         BE    *+6                                                              
+         DC    H'0'                INVOICE HEADER RECORDS DIFFERENT             
+*                                                                               
+         CLC   0(7,RE),0(RF)       MUST BE SAME LENGTH AND RECORD               
+         BE    *+6                                                              
+         DC    H'0'                INVOICE HEADER RECORDS DIFFERENT             
+         LH    R1,0(RE)                                                         
+         MOVE  ((RF),(R1)),(RE)                                                 
+*                                                                               
+         GOTO1 DATAMGR,DMCB,=C'WRITE',EZWKRFIL,EZWKRIND,EZWKRREC,      C        
+               EZWKRBUF                                                         
+         CLI   8(R1),0                                                          
+         BE    *+6                                                              
+         DC    H'0'                                                             
+*                                                                               
+* NOW RESET BACK TO CURRENT RECORD *                                            
+*                                                                               
+         L     RF,EZWKRREC                                                      
+         XC    0(12,RF),0(RF)                                                   
+         LH    R1,EZRECSEQ                                                      
+         LA    R1,1(,R1)                                                        
+         ST    R1,0(RF)                                                         
+*        MVC   2(2,RF),EZRECSEQ                                                 
+         MVC   4(4,RF),=C'REC '                                                 
+*                                                                               
+         GOTO1 DATAMGR,DMCB,(0,=C'RANDOM'),EZWKRFIL,EZWKRIND,EZWKRREC, C        
+               EZWKRBUF                                                         
+*                                                                               
+LINV96   DS    0H                                                               
+         MVC   BUFFER(4),=X'00020000'   INITIALIZE BUFFER LENGTH                
+         LA    RE,DIRTAB                CLEAR KEY TABLE                         
+         LA    RF,DIRTABL*MAXRECS                                               
+         XCEF                                                                   
+*                                                                               
+LINVX    DS    0H                                                               
+         XIT1                                                                   
+         EJECT                                                                  
+*                                  BUILD RECORDS FROM BUFFER                    
+         SPACE 2                                                                
+BUFFOUT  NTR1                                                                   
+         SPACE                                                                  
+         L     R2,ADBUY                                                         
+         ST    R2,AREC                                                          
+         L     R5,ANXTOUT                                                       
+         SPACE                                                                  
+         XC    0(256,R2),0(R2)                                                  
+         CLI   0(R4),0             IF HAVE KEY                                  
+         BE    *+14                                                             
+         MVC   0(13,R2),0(R4)      USE IT                                       
+         B     BO2                                                              
+*                                                                               
+         MVC   0(13,R2),SVINVKEY   SET KEY                                      
+         MVC   9(1,R2),SVID        INV/CON ID                                   
+         SPACE                                                                  
+         MVC   10(1,R2),NXTSEQ     SEQ NO                                       
+         SPACE                                                                  
+         CLI   SVID,0              IF ZERO                                      
+         BNE   BO2                                                              
+         MVC   9(1,R2),SVPRDID                                                  
+         CLI   SVPRDID,0            IF ZERO                                     
+         BNE   BO2                                                              
+         DC    H'0'                                                             
+*                                                                               
+BO2      DS    0H                                                               
+         CLI   SVID,0              THIS A COMBINED INVOICE                      
+         BNE   BO4                                                              
+         SPACE                                                                  
+         MVC   24(3,R2),SVB0       SAVED ELEM                                   
+         B     BO5                                                              
+         SPACE                                                                  
+BO4      MVC   24(3,R2),=X'B00300'  DUMMY ELEMENT                               
+         SPACE                                                                  
+* IF BDS, AND ZERO DOLLARS, SET ON RESPONSE BIT                                 
+         SPACE                                                                  
+         CLC   =C'BVS',EZSRCE                                                   
+         BE    BO4C                                                             
+         SPACE                                                                  
+         CLC   =C'BDS',EZSRCE                                                   
+         BNE   BO5                                                              
+         SPACE                                                                  
+BO4C     OC    EZITBDUE,EZITBDUE   AND ZERO DOLLARS                             
+         BNZ   BO5                                                              
+         OI    26(R2),ICTLMCT      SET ON MCT FLAG                              
+         SPACE                                                                  
+BO5      MVC   13(2,R2),=H'27'     LENGTH                                       
+         LA    R3,27(R2)                                                        
+*                                                                               
+BO6      DS    0H                                                               
+         CLI   0(R5),0                                                          
+         BE    BUFFOX              END OF BUFFER                                
+         MVC   HALF,13(R2)                                                      
+         LH    R1,HALF                                                          
+         ZIC   R0,1(R5)                                                         
+         AR    R1,R0                                                            
+         CH    R1,MAXRECSZ         MAX REC SIZE - ALLOW FOR INV GEN EL          
+         BH    BUFFOX              FULL RECORD                                  
+*                                                                               
+         GOTO1 RECUP,DMCB,(C'S',(R2)),(R5),(R3)                                 
+*                                                                               
+         ZIC   R0,1(R3)                                                         
+         AR    R3,R0                                                            
+*                                                                               
+         ZIC   R0,1(R5)                                                         
+         AR    R5,R0                                                            
+         ST    R5,ANXTOUT                                                       
+         B     BO6                                                              
+*                                                                               
+BUFFOX   DS    0H                                                               
+         IC    R1,NXTSEQ           BUMP SEQUENCE NUMBER                         
+         LA    R1,1(R1)                                                         
+         STC   R1,NXTSEQ                                                        
+*                                                                               
+         XIT1                                                                   
+         EJECT                                                                  
+*        SETCML - FIND/SET CMML ELEMENTS IN BUFFER                              
+*                                                                               
+SETCML   NTR1                                                                   
+         MVI   BYTE,0                                                           
+         LA    R2,BUFFER+2                                                      
+*                                                                               
+SETCM2   DS    0H                                                               
+         CLI   0(R2),0             END                                          
+         BE    SETCM8                                                           
+         CLI   0(R2),X'04'         CMML ELEM                                    
+         BE    SETCM5                                                           
+         BH    SETCM8              END OF 04 ELEMS                              
+*                                                                               
+SETCM4   DS    0H                                                               
+         SR    R0,R0                                                            
+         IC    R0,1(R2)                                                         
+         AR    R2,R0                                                            
+         B     SETCM2                                                           
+*                                                                               
+SETCM5   DS    0H                                                               
+         USING INVFLMEL,R2                                                      
+         MVC   BYTE,INVFID         SAVE HIGHEST ID NUMBER                       
+         CLC   INVFCD,0(R3)        TEST RIGHT CMML                              
+         BNE   SETCM4                                                           
+         B     SETCMX              RETURN WITH ID IN BYTE                       
+         DROP  R2                                                               
+*                                                                               
+SETCM8   DS    0H                                                               
+         MVC   X2,X                SAVE CURRENT ELEM                            
+         XC    X,X                                                              
+         LA    R5,X                                                             
+         USING INVFLMEL,R5                                                      
+         MVI   INVFLMEL,X'04'                                                   
+         MVI   INVFLMEL+1,13                                                    
+         ZIC   RF,BYTE             BUMP FILM ID NUMBER                          
+         LA    RF,1(RF)                                                         
+         STC   RF,BYTE                                                          
+         MVC   INVFID,BYTE         INTERNAL ID                                  
+         MVC   INVFCD,0(R3)        CODE                                         
+         MVC   INVFSQ,1(R4)        CMML SEQ +1(2)                               
+         DROP  R5                                                               
+*                                                                               
+         BAS   RE,ADDEL                                                         
+         MVC   X,X2                RESTORE ELEMENT                              
+*                                                                               
+SETCMX   DS    0H                                                               
+         XIT1                                                                   
+         EJECT                                                                  
+*        COMSUBS - CODE AND DATA ADDRESSABLE FROM ALL CSECTS                    
+         SPACE 2                                                                
+COMSUBS  DS    0H                                                               
+*                                                                               
+         SPACE 2                                                                
+*        ELEMENT INSERTION                                                      
+*                                                                               
+ADDEL    NTR1                                                                   
+         SR    R0,R0                                                            
+         LA    R4,BUFFER                                                        
+         LA    R2,BUFFER+2                                                      
+*                                                                               
+AE2      CLI   0(R2),0                                                          
+         BE    AE4                                                              
+         CLI   0(R2),X'F0'         SKIP SPECIAL ELEMS                           
+         BNL   AE3                                                              
+         CLC   X(1),0(R2)                                                       
+         BL    AE4                                                              
+         BH    AE3                                                              
+         CLC   X+2(11),2(R2)                                                    
+         BNH   AE4                                                              
+*                                                                               
+AE3      IC    R0,1(R2)                                                         
+         AR    R2,R0                                                            
+         B     AE2                                                              
+*                                                                               
+AE4      DS    0H                                                               
+         GOTO1 RECUP,DMCB,(X'FF',BUFFER),X,(R2)                                 
+*                                                                               
+         CLC   BUFFER(2),=Y(BUFFL)                                              
+         BH    AEOVF                                                            
+         CR    RE,RE               SET CC = IF OK                               
+*                                                                               
+AEEXT    XIT1                                                                   
+*                                                                               
+AEOVF    MVI   EZERRCD,EZERROVF    OVERFLOW ERROR                               
+         BAS   RE,GETERRM                                                       
+         LTR   RE,RE               SET CC NOT =                                 
+         B     AEEXT                                                            
+*                                                                               
+         EJECT                                                                  
+*        DMPREC - HEX DUMP OF RECORDS                                           
+         SPACE 2                                                                
+DMPREC   NTR1                                                                   
+         SPACE 1                                                                
+         L     R5,AREC                                                          
+         SR    R2,R2                                                            
+         ICM   R2,3,13(R5)         REC LENGTH                                   
+         LA    R3,0(R5,R2)         EOR                                          
+*                                                                               
+DMPREC2  DS    0H                                                               
+         LR    R4,R3                                                            
+         SR    R4,R5                                                            
+         BNP   DMPRECX                                                          
+         CH    R4,=H'32'                                                        
+         BNH   *+8                                                              
+         LA    R4,32                                                            
+         XC    WORK,WORK                                                        
+         GOTO1 HEXOUT,DMCB,(R5),WORK,(R4),=C'N'                                 
+*                                                                               
+         MVC   P+01(8),WORK+00                                                  
+         MVC   P+10(8),WORK+08                                                  
+         MVC   P+19(8),WORK+16                                                  
+         MVC   P+28(8),WORK+24                                                  
+         MVC   P+37(8),WORK+32                                                  
+         MVC   P+46(8),WORK+40                                                  
+         MVC   P+55(8),WORK+48                                                  
+         MVC   P+64(8),WORK+56                                                  
+*                                                                               
+         MVC   WORK(32),0(R5)                                                   
+         TR    WORK(32),TRTAB                                                   
+         BCTR  R4,R0                                                            
+         EX    R4,*+8                                                           
+         B     *+10                                                             
+         MVC   P+75(0),WORK                                                     
+         LA    R4,1(R4)                                                         
+         GOTO1 REPORT                                                           
+         LA    R5,0(R5,R4)                                                      
+         B     DMPREC2                                                          
+*                                                                               
+DMPRECX  DS    0H                                                               
+         XIT1                                                                   
+         SPACE 3                                                                
+TRTAB    DC    X'4B4B4B4B4B4B4B4B4B4B4B4B4B4B4B4B'     00-0F                    
+         DC    X'4B4B4B4B4B4B4B4B4B4B4B4B4B4B4B4B'     10-1F                    
+         DC    X'4B4B4B4B4B4B4B4B4B4B4B4B4B4B4B4B'     20-2F                    
+         DC    X'4B4B4B4B4B4B4B4B4B4B4B4B4B4B4B4B'     30-3F                    
+         DC    X'404B4B4B4B4B4B4B4B4B4B4B4B4B4B4B'     40-4F                    
+         DC    X'4B4B4B4B4B4B4B4B4B4B4B5B5C5D4B4B'     50-5F                    
+         DC    X'60614B4B4B4B4B4B4B4B4B6B6C6D4B6F'     60-6F                    
+         DC    X'4B4B4B4B4B4B4B4B4B4B4B7B4B7D7E4B'     70-7F                    
+         DC    X'4B4B4B4B4B4B4B4B4B4B4B4B4B4B4B4B'     80-8F                    
+         DC    X'4B4B4B4B4B4B4B4B4B4B4B4B4B4B4B4B'     90-9F                    
+         DC    X'4B4B4B4B4B4B4B4B4B4B4B4B4B4B4B4B'     A0-AF                    
+         DC    X'4B4B4B4B4B4B4B4B4B4B4B4B4B4B4B4B'     B0-BF                    
+         DC    X'4BC1C2C3C4C5C6C7C8C94B4B4B4B4B4B'     C0-CF                    
+         DC    X'4BD1D2D3D4D5D6D7D8D94B4B4B4B4B4B'     D0-DF                    
+         DC    X'4B4BE2E3E4E5E6E7E8E94B4B4B4B4B4B'     E0-EF                    
+         DC    X'F0F1F2F3F4F5F6F7F8F94B4B4B4B4B4B'     F0-FF                    
+         EJECT                                                                  
+* CHECK STATION FOR VALIDITY - 1ST 4 MUST NOT BE - (MINUS) *                    
+*       UNLESS ALL NUMERIC                                 *                    
+         SPACE                                                                  
+         DS    0H                                                               
+CKSTA    NTR1                                                                   
+         LA    R0,4                                                             
+         LA    R1,EZBTSTN                                                       
+         CLI   EZBTSTN,C'Z'                                                     
+         BH    CKSTA20                                                          
+CKSTA10  CLI   0(R1),C'-'          MINUS NOT ALLOWED ANYWHERE                   
+         BE    CKSTA40              ERROR                                       
+         LA    R1,1(,R1)                                                        
+         BCT   R0,CKSTA10                                                       
+         B     CKSTA30             GO CHECK MEDIA                               
+         SPACE                                                                  
+CKSTA20  CLI   0(R1),C'0'                                                       
+         BL    CKSTA24                                                          
+         CLI   0(R1),C'9'                                                       
+         BH    CKSTA40             ERROR                                        
+         LA    R1,1(,R1)                                                        
+         BCT   R0,CKSTA20                                                       
+         B     CKSTA30             GO CK MEDIA                                  
+         SPACE                                                                  
+CKSTA24  CLI   0(R1),C' '          TRAILING BLANKS OK                           
+         BNE   CKSTA40              ERROR                                       
+         LA    R1,1(,R1)                                                        
+         BCT   R0,CKSTA24                                                       
+         SPACE                                                                  
+* CHECK VAKLID MEDIA - AM/FM(RADIO), T/L(TV), C/S/N (NETWORK) *                 
+         SPACE                                                                  
+CKSTA30  LA    R0,9                                                             
+         LA    R1,=C'AFRTLXCSN'                                                 
+CKSTA34  CLC   EZBTSTN+5(1),0(R1)                                               
+         BE    CKSTAX                                                           
+         LA    R1,1(,R1)                                                        
+         BCT   R0,CKSTA34                                                       
+CKSTA40  MVI   EZERRCD,EZERRSTA                                                 
+         BAS   RE,GETERRM                                                       
+         MVI   EZMODE,EZINVL       SET TO SKIP TO NEXT INV                      
+         SPACE                                                                  
+CKSTAX   B     EXIT                                                             
+         EJECT                                                                  
+*        GETERRM - GET ERROR MESSAGE AND LEVEL                                  
+         SPACE 2                                                                
+GETERRM  NTR1                                                                   
+         L     R3,=A(ERRTAB)                                                    
+         MVC   EZERRMSG,SPACES                                                  
+         MVI   EZERRLEV,0                                                       
+*                                                                               
+GERM2    DS    0H                                                               
+         CLI   0(R3),X'FF'         EOL                                          
+         BE    GERMX                                                            
+*                                                                               
+         CLC   EZERRCD,0(R3)                                                    
+         BE    GERM4                                                            
+         LA    R3,ERRTABL(R3)                                                   
+         B     GERM2                                                            
+*                                                                               
+GERM4    DS    0H                                                               
+         MVC   EZERRLEV,1(R3)                                                   
+         MVC   EZERRMSG,2(R3)                                                   
+         OC    EZERRLVR,1(R3)      'OR' UP ERROR - RECORD                       
+         OC    EZERRLVI,1(R3)                    - INVOICE                      
+         OC    EZERRLVB,1(R3)                    - BATCH                        
+*                                                                               
+GERMX    DS    0H                                                               
+         XIT1                                                                   
+         SPACE 2                                                                
+SAVBUF   DS    0H                  SAVE WRKR BUFFER                             
+         L     RF,EZWKRBUF                                                      
+         L     R1,=A(SAVWKBUF)                                                  
+*                                                                               
+         LA    R0,16               16 X 256 BYTES = 4096                        
+         MVC   0(256,R1),0(RF)                                                  
+         LA    R1,256(R1)                                                       
+         LA    RF,256(RF)                                                       
+         BCT   R0,*-14                                                          
+         BR    RE                                                               
+         EJECT                                                                  
+         SPACE 2                                                                
+*                                  ERROR TABLE                                  
+*                                  CODE(1),LEVEL(1),MESSAGE(40)                 
+*                                                                               
+ERRTAB   DS    0C                                                               
+         DC    AL1(EZERRDUP)       DUPLICATE INVOICE                            
+         DC    AL1(0)              LEVEL                                        
+         DC    CL40'INVOICE ALREADY ON FILE'                                    
+*                                                                               
+         DC    AL1(EZERROVF)       OVERFLOW                                     
+         DC    AL1(0)              LEVEL                                        
+         DC    CL40'TOO MANY SPOTS IN INVOICE'                                  
+*                                                                               
+         DC    AL1(EZERRANF)                                                    
+         DC    AL1(0)              LEVEL                                        
+         DC    CL40'CLIENT NOT ON FILE'                                         
+*                                                                               
+         DC    AL1(EZERRPNF)                                                    
+         DC    AL1(0)              LEVEL                                        
+         DC    CL40'PRODUCT NOT ON FILE'                                        
+*                                                                               
+         DC    AL1(EZERRSPL)                                                    
+         DC    AL1(0)              LEVEL                                        
+         DC    CL40'SPOT DETAIL SPOT LENGTH ZERO'                               
+*                                                                               
+         DC    AL1(EZERRMUL)                                                    
+         DC    AL1(0)              LEVEL                                        
+         DC    CL40'COMBINED INVOICES, NO RECONVERT'                            
+*                                                                               
+         DC    X'FFFF'                                                          
+*                                                                               
+MAXRECSZ DC    H'1900'                                                          
+ERRTABL  EQU   42                                                               
+         SPACE 2                                                                
+         LTORG                                                                  
+*                                                                               
+         EJECT                                                                  
+*                                                                               
+SAVWORK  DS    A                                                                
+SVID     DS    XL1                                                              
+SVIDHI   DS    XL1                                                              
+SVPRDID  DS    XL1                                                              
+MULTISW  DS    CL1                                                              
+LASTADV  DC    XL2'00'                                                          
+SVINVKEY DS    XL13                                                             
+SVB0     DS    XL3                                                              
+*                                                                               
+         DS    0D                                                               
+DIRTAB   DS    XL(DIRTABL*MAXRECS)         TABLE OF CURRENT KEYS                
+MAXRECS  EQU   10                                                               
+DIRTABL  EQU   18                                                               
+         SPACE 3                                                                
+         DS    0D                                                               
+SAVINVH  DS    XL500               SAVE AREA FOR INVOICE HEADER                 
+*                                                                               
+         DS    0D                                                               
+         DC    CL8'*BUFFER*'                                                    
+BUFFER   DS    XL32760             SAME BUFFER SIZE AS ON-LINE                  
+BUFFL    EQU   32760                                                            
+         DC    CL8'*ENDBUF*'                                                    
+*                                                                               
+         DS    0D                                                               
+SAVWKBUF DS    14336X              SAVE AREA FOR WRKR BUFF                      
+*                                                                               
+EZADDD   DSECT                                                                  
+ERR      DS    XL1                                                              
+         DS    0D                                                               
+X        DS    XL256                                                            
+X2       DS    XL256                                                            
+*                                                                               
+ANXTOUT  DS    A                                                                
+NXTSEQ   DS    XL1                                                              
+EZADDDL  EQU   *-EZADDD                                                         
+         EJECT                                                                  
+       ++INCLUDE SPGENINV                                                       
+         PRINT OFF                                                              
+       ++INCLUDE EZBLOCK                                                        
+       ++INCLUDE DDACTIVD                                                       
+       ++INCLUDE SPGENCLT                                                       
+       ++INCLUDE SPREPWORKD                                                     
+       ++INCLUDE SPGENEZ                                                        
+       ++INCLUDE DMWRKRD                                                        
+         PRINT ON                                                               
+*                                                                               
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'058EZADDINV  05/01/02'                                      
+         END                                                                    

@@ -1,0 +1,540 @@
+*          DATA SET DMDANDX    AT LEVEL 018 AS OF 10/24/17                      
+*PROCESS USING(WARN(15))                                                        
+*CATALP DMDANDX                                                                 
+         TITLE 'DMDANDX - DMRDHI/DMRSEQ - D/A INDEXED FILES'                    
+***********************************************************************         
+* R1 POINTS TO PARAM LIST (DTF ADDRESS SUPPLIED)                      *         
+* R2 POINTS TO USER DMCB                                              *         
+*                                                                     *         
+* THIS 31 BIT VERSION OF THE PROGRAM ASSUMES THAT THE CALLER          *         
+* SETS THE BIT 0 IN RF IF ALL PARAMETERS ARE 31 BITS                  *         
+* ELSE USER PARAMS ARE ASSUMED TO BE 24 BIT ADDRESSES                 *         
+***********************************************************************         
+         SPACE 1                                                                
+DMDANDX  CSECT                                                                  
+         PRINT NOGEN                                                            
+         NMOD1 WORKX-WORKD,DMDANDX,CLEAR=YES                                    
+         USING WORKD,RC            RC=A(W/S)                                    
+         MVC   LOWBITS,=X'7FFFFFFF'                                             
+         LTR   RF,RF                                                            
+         BM    *+8                                                              
+         MVI   LOWBITS,0                                                        
+*                                                                               
+         LA    RE,DANDX02                                                       
+         O     RE,=X'80000000'                                                  
+         BSM   0,RE                                                             
+*                                                                               
+DANDX02  LR    R3,R1                                                            
+         USING PARAMS,R3           R3=A(DMOD000 PLIST)                          
+         USING DMCB,R2             R2=A(USER DMCB)                              
+         L     RA,PARAM4                                                        
+         N     RA,LOWBITS                                                       
+         USING DTFPHD,RA           RA=A(DTF)                                    
+         TM    DIND,X'03'          TEST IF D/A INDEXED DTF                      
+         BNO   ERR1                                                             
+         ICM   R1,15,=V(SSB)       SKIP ALLOCATION IF ONLINE                    
+         BZ    DANDX04                                                          
+         OC    0(2,R1),0(R1)       OFFLINE SSB?                                 
+         BNZ   DANDX08             YES                                          
+*                                                                               
+DANDX04  SR    R0,R0               ALLOCATE BUFFER IF NEEDED                    
+         ICM   R0,3,DBLKSZ                                                      
+         BNZ   *+6                                                              
+         DC    H'0'                DTF IS INVALID                               
+         OC    DBLK,DBLK                                                        
+         BNZ   DANDX06             (ASSUME IF DBLK SET DNDX IS TOO)             
+         GETMAIN R,LV=(0)          GET BUFFER AREA                              
+         ST    R1,DBLK                                                          
+         XC    0(6,R1),0(R1)       CLEAR START OF BLOCK                         
+         OC    DNDX,DNDX           CHECK IOAREA2                                
+         BNZ   DANDX06                                                          
+         LH    R0,DBLKSZ                                                        
+         AHI   R0,L'DNDXDA         ADD SPARE FOR NATIVE INDEX D/A               
+         GETMAIN R,LV=(0)          GET BUFFER AREA                              
+         ST    R1,DNDX                                                          
+*                                                                               
+DANDX06  TM    DMCBW1,X'10'        TEST FULL TRACK READ REQUESTED               
+         BZ    DANDX08                                                          
+         OC    ATRKBUFF,ATRKBUFF   TEST ALLOCATED YET                           
+         BNZ   DANDX08                                                          
+         L     R0,=F'52000'                                                     
+         GETMAIN R,LV=(0)          GET FULL TRACK READ BUFFER                   
+         ST    R1,ATRKBUFF                                                      
+         LTR   RF,RF                                                            
+         BZ    DANDX08                                                          
+         DC    H'0'                NEED MORE STORAGE                            
+*                                                                               
+DANDX08  L     RE,DNDX                                                          
+         AH    RE,DBLKSZ                                                        
+         MVC   LNDXDA,0(RE)        EXTRACT LAST NATIVE INDEX BLOCK D/A          
+*                                                                               
+         L     RE,PARAM5                                                        
+         N     RE,LOWBITS                                                       
+         MVC   PNDXDA,0(RE)        SAVE D/A OF INDEX RECORD                     
+         L     RE,PARAM2                                                        
+         N     RE,LOWBITS                                                       
+         MVC   PNDXKEY,0(RE)       SAVE KEY FOR READ HIGH                       
+*                                  INITIALIZE BUFFER AREA                       
+         BC    0,DANDX12                                                        
+         OI    *-3,X'F0'           NO-OP INITIALIZE NEXT TIME                   
+         ICM   RF,15,=V(DMDABUFF)                                               
+         BZ    DANDX12                                                          
+         GOTO1 ,DMCB2,(C'I',PARAMS),(20,500)                                    
+         BASSM RE,RF               CALL DABUFF IN 24-BIT MODE                   
+         LA    RE,DANDX10                                                       
+         O     RE,=X'80000000'     GET BACK TO 31-BIT MODE                      
+         BSM   0,RE                                                             
+*                                                                               
+DANDX10  MVC   ABUFF,4(R1)         SAVE A(BUFFER)                               
+*                                  GO TO ACTION ROUTINES                        
+DANDX12  L     RE,DMCBW1                                                        
+         N     RE,LOWBITS                                                       
+         CLC   0(4,RE),=C'DMRS'                                                 
+         BE    DMRSEQ                                                           
+         CLC   0(4,RE),=C'DMRD'                                                 
+         BE    DMRDHI                                                           
+         B     ERR2                                                             
+         EJECT                                                                  
+***********************************************************************         
+* DMRDHI - D/A INDEXED FILE                                           *         
+*                                                                     *         
+* D/A OF INDEX RECORD MUST BE PASSED IN DMCBW3 & KEY OF REQUIRED      *         
+* RECORD PASSED AT THE FRONT OF USER SUPPLIED I/O AREA (DMCBW4)       *         
+***********************************************************************         
+         SPACE 1                                                                
+DMRDHI   XC    DBLKPTR,DBLKPTR     CLEAR BLOCK & INDEX POINTERS                 
+         XC    DNDXPTR,DNDXPTR                                                  
+         MVI   DBLKNUM,0           RESET RECORD NUMBER                          
+         LA    R0,2                R0=INDEX READ LOOP COUNT                     
+         L     RE,DNDX                                                          
+         CLC   PNDXDA,0(RE)        TEST SAME USER INDEX BLOCK D/A               
+         BNE   DMHI2               NO - FORCE INDEX READ                        
+         CLC   DNDXDA,PNDXDA       TEST SAME DTF INDEX BLOCK D/A                
+         BE    DMHI4                                                            
+*                                                                               
+DMHI2    MVC   NDXDA,PNDXDA        SET D/A OF INDEX RECORD                      
+         BRAS  R9,READNDX          READ INDEX RECORD                            
+*                                                                               
+DMHI4    MVC   LNDXDA,PNDXDA       SAVE CURRENT INDEX BLOCK D/A                 
+         L     RE,DNDX                                                          
+         LH    RF,DKEYLNL                                                       
+         BCTR  RF,0                                                             
+         EX    RF,*+8                                                           
+         B     *+10                                                             
+         CLC   PNDXKEY(0),10(RE)   TEST IF MAJOR KEYS CONSISTENT                
+         BE    DMHI5               YES                                          
+         BCT   R0,DMHI2            NO - READ INDEX RECORD AGAIN                 
+*                                                                               
+* IF WE FALL INTO THIS CODE, THEN THE PASSED MAJOR KEY DOESN'T MATCH            
+* THE MAJOR KEY IN THE INDEX BLOCK. NORMALLY, WE WANT THIS TO CAUSE             
+* A DELIBERATE ABEND. BUT IF WE'RE CALLED BY DELDXMOD WHEN DUMPING A            
+* DEMOFILE, WE WANT CONTROL RETURNED SO THAT WE CAN CONTINUE WITH THE           
+* FILE DUMP. SO DELDXMOD SETS THE X'01' BIT ON IN THE HOB OF P6 TO TELL         
+* THIS MODULE TO AVOID AN ABEND IN THIS CASE. THAT'S ONLY TIME THIS             
+* PARAMETER BIT IS EVER SET ON. EVERYTHING ELSE ABENDS IF WE FALL INTO          
+* THIS CODE.                                                                    
+*                                                                               
+         TM    PARAM6,X'01'        CALLER WANTS TO CONTINUE?                    
+         BO    DMHI5               YES                                          
+         DC    H'0'                PASSED KEY DOESN'T MATCH INDEX KEY           
+*                                                                               
+DMHI5    DS    0H                                                               
+         LA    RE,10(RE)                                                        
+         AH    RE,DKEYLNL          RE=A(FIRST MINOR KEY IN INDEX)               
+         LA    R1,PNDXKEY+1(RF)    R1=A(PASSED MINOR KEY)                       
+         LH    RF,DKEYLNR                                                       
+         BCTR  RF,0                RF=L'MINOR KEY-1                             
+*                                                                               
+DMHI6    CLC   0(2,RE),EFFS        TEST IF END OF INDEX                         
+         BE    DMHI8                                                            
+         EX    RF,*+8                                                           
+         B     *+10                                                             
+         CLC   0(0,RE),0(R1)       COMPARE INDEX KEY WITH PASSED KEY            
+         BNL   DMHI10                                                           
+         LA    RE,5(RE,RF)         BUMP TO NEXT INDEX KEY                       
+         B     DMHI6                                                            
+*                                                                               
+DMHI8    L     RE,DNDX                                                          
+         OC    6(4,RE),6(RE)       TEST IF INDEX LINK PRESENT                   
+         BZ    DMEOF                                                            
+         MVC   NDXDA,6(RE)         SET D/A OF LINK                              
+         BRAS  R9,READNDX          READ NEXT INDEX RECORD                       
+         LA    R0,1                                                             
+         B     DMHI4                                                            
+*                                                                               
+DMHI10   ST    RE,DNDXPTR          SET A(CURRENT INDEX ENTRY)                   
+         AH    RE,DKEYLNR                                                       
+         MVC   BLKDA,0(RE)         SET D/A OF DATA BLOCK                        
+         L     RE,DBLK             RE=A(DATA BLOCK)                             
+         CLC   DBLKDA,BLKDA        TEST IF DATA BLOCK IN CORE                   
+         BNE   *+14                NO - READ IT                                 
+         CLC   BLKDA(3),0(RE)      TEST D/A IN DATA BLOCK AGREES                
+         BE    DMHI12              YES - DATA BLOCK IS IN CORE                  
+         BRAS  R9,READATA          READ DATA BLOCK                              
+*                                                                               
+DMHI12   LH    R7,DKEYLNL                                                       
+         AH    R7,DKEYLNR                                                       
+         BCTR  R7,0                R7=TOTAL L'KEY-1                             
+*                                  LOCATE RECORD IN DATA BLOCK                  
+DMHI14   BRAS  R9,NEXTREC          GET NEXT RECORD                              
+         BE    DMEOF                                                            
+         L     RE,DBLKPTR                                                       
+         EX    R7,*+8                                                           
+         B     *+10                                                             
+         CLC   2(0,RE),PNDXKEY     COMPARE RECORD KEY WITH PASSED KEY           
+         BL    DMHI14                                                           
+         BRAS  R9,MOVEREC          RETURN RECORD TO USER                        
+         B     DMEXIT                                                           
+         EJECT                                                                  
+***********************************************************************         
+* DMRSEQ - D/A INDEXED FILE                                           *         
+*                                                                     *         
+* D/A OF INDEX RECORD NEED ONLY BE PASSED ON INITIAL READ SEQUENTIAL. *         
+* ALL RECORDS FOR A CONTROL INTERVAL WILL BE PASSED IF NOT PRECEDED   *         
+* WITH A READ HIGH                                                    *         
+*                   *** BUT *** DEIS SAYS IN OCT/2017:                *         
+* !!!!!!!!! THAT BEHAVIOR IS NOT EMULATED UNDER VSAM !!!!!!!!!!!!!!!! *         
+***********************************************************************         
+         SPACE 1                                                                
+DMRSEQ   OC    DBLKPTR,DBLKPTR     TEST IF FIRST TIME                           
+         BZ    DMSEQ1              YES (DEIS OCT/2017: WAS "BZ DMSEQ2")         
+         CLC   PNDXDA,LNDXDA       TEST FOR CHANGE OF C/I                       
+         BE    DMSEQ10                                                          
+         XC    DNDXPTR,DNDXPTR     YES - CLEAR INDEX & BLOCK POINTERS           
+         XC    DBLKPTR,DBLKPTR                                                  
+*                                                                               
+DMSEQ1   DS    0H                                                               
+*                                                                               
+***********************************************************************         
+* IF WE REACH THIS CODE, THEN THE CALLER IS TAKING ADVANTAGE OF THE             
+* DANDX FEATURE IN WHICH *ALL* RECORDS FOR A GIVEN MAJOR KEY ARE                
+* RETURNED IF A READ SEQUENTIAL IS *NOT* PRECEDED BY A READ HIGH.               
+*                                                                               
+* THIS FEATURE IS NOT CURRENTLY EMULATED UNDER VSAM. THEREFORE, WE              
+* TRAP ALL SUCH CALLS, TO HELP US IDENTIFY ANY APPLICATIONS THAT ARE            
+* USING THIS FEATURE. WE HOPE TO CHANGE THOSE APPLICATIONS TO AVOID             
+* HAVING TO SUPPORT THIS FEATURE UNDER VSAM.                                    
+***********************************************************************         
+*                                                                               
+         BC    0,DMSEQ2            ONLY FAIL ON THIS SCENARIO ONCE              
+         MVI   *-3,X'F0'           *** SELF-MODIFYING CODE ***                  
+*                                                                               
+         LLC   RE,DTFXNUM          RE=FILE NUMBER                               
+         MHI   RE,DMFLLEN          INDEX INTO FILTAB                            
+         A     RE,=V(FILTABL)      RE=A(TABLE ENTRY)                            
+         USING FILTABD,RE                                                       
+*                                                                               
+* ENABLE THESE CHECKS APPROPRIATELY. WE HAVE TO BE PREPARED FOR DUMPS.          
+*                                                                               
+*&&DO                                                                           
+         CLI   DMFLPAIR,X'2F'      DEMDIRA?                                     
+         BE    ERR3                YES: TRAP IT                                 
+*&&                                                                             
+         CLI   DMFLPAIR,X'2D'      DEMDIRN?                                     
+         BE    ERR3                YES: TRAP IT                                 
+         CLI   DMFLPAIR,X'30'      DEMDIRR?                                     
+         BE    ERR3                YES: TRAP IT                                 
+*&&DO                                                                           
+         CLI   DMFLPAIR,X'38'      NTIDIR?                                      
+         BE    ERR3                YES: TRAP IT                                 
+         CLI   DMFLPAIR,X'2C'      PAVDIR?                                      
+         BE    ERR3                YES: TRAP IT                                 
+*&&                                                                             
+         DROP  RE                                                               
+*                                                                               
+DMSEQ2   OC    DNDXPTR,DNDXPTR                                                  
+         BNZ   DMSEQ6                                                           
+         CLC   DNDXDA,PNDXDA       TEST INDEX BLOCK IN CORE                     
+         BE    DMSEQ4                                                           
+         MVC   NDXDA,PNDXDA        SET D/A OF INDEX RECORD                      
+         BRAS  R9,READNDX          READ INDEX RECORD                            
+*                                                                               
+DMSEQ4   MVC   LNDXDA,PNDXDA       SAVE CURRENT INDEX BLOCK D/A                 
+         L     RE,DNDX             SET INDEX PTR TO FIRST MINOR KEY             
+         LA    RE,10(RE)                                                        
+         AH    RE,DKEYLNL                                                       
+         B     DMSEQ8                                                           
+*                                                                               
+DMSEQ6   L     RE,DNDXPTR          SET INDEX PTR TO NEXT MINOR KEY              
+         AH    RE,DKEYLNR                                                       
+         LA    RE,4(RE)                                                         
+*                                                                               
+DMSEQ8   ST    RE,DNDXPTR          SET A(CURRENT INDEX ENTRY)                   
+         CLC   0(2,RE),EFFS        TEST FOR END OF INDEX                        
+         BE    DMSEQ12                                                          
+         AH    RE,DKEYLNR                                                       
+         MVC   BLKDA,0(RE)         SET D/A OF DATA BLOCK                        
+         L     RE,DBLK             RE=A(DATA BLOCK)                             
+         CLC   DBLKDA,BLKDA        TEST DATA BLOCK IN CORE                      
+         BNE   *+14                NO - READ IT                                 
+         CLC   BLKDA(3),0(RE)      TEST D/A IN DATA BLOCK AGREES                
+         BE    DMSEQ10             YES - DATA BLOCK IS IN CORE                  
+         BRAS  R9,READATA          READ DATA BLOCK                              
+*                                                                               
+DMSEQ10  BRAS  R9,NEXTREC          GET NEXT RECORD                              
+         BE    DMSEQ2              END OF BLOCK                                 
+         BRAS  R9,MOVEREC          RETURN RECORD TO USER                        
+         B     DMEXIT                                                           
+*                                                                               
+DMSEQ12  L     RE,DNDX                                                          
+         OC    6(4,RE),6(RE)       TEST IF INDEX LINK PRESENT                   
+         BZ    DMEOF                                                            
+         MVC   NDXDA,6(RE)         SET D/A IF LINK                              
+         BRAS  R9,READNDX          READ NEXT INDEX RECORD                       
+         B     DMSEQ4                                                           
+         EJECT                                                                  
+***********************************************************************         
+* READ INDEX RECORD INTO IOAREA2 (DNDX)                               *         
+***********************************************************************         
+         SPACE 1                                                                
+READNDX  XC    DNDXPTR,DNDXPTR                                                  
+         XC    DBLKPTR,DBLKPTR                                                  
+         MVC   P2,DNDX             SET A(IOAREA) FROM DTF                       
+         LA    RE,NDXDA                                                         
+         ST    RE,P5               SET A(DA)                                    
+         BRAS  RE,GOREAD                                                        
+         BNZ   DMERRS                                                           
+*                                                                               
+         L     RE,DNDX             TEST IF AN INDEX RECORD                      
+         CLC   NDXDA,0(RE)                                                      
+         BNE   ERR4                                                             
+         MVC   DNDXDA,NDXDA        SET D/A OF INDEX BLOCK IN DTF                
+         MVI   DBLKNUM,0                                                        
+         BR    R9                                                               
+         SPACE 2                                                                
+***********************************************************************         
+* READ DATA BLOCK INTO IOAREA1 (DBLK)                                 *         
+***********************************************************************         
+         SPACE 1                                                                
+READATA  XC    DBLKPTR,DBLKPTR                                                  
+         MVC   P2,DBLK             SET A(IOAREA) FROM DTF                       
+         LA    RE,BLKDA                                                         
+         ST    RE,P5               SET A(DA)                                    
+         BRAS  RE,GOREAD                                                        
+         BNZ   DMERRS                                                           
+*                                                                               
+         L     RE,DBLK             TEST IF A DATA BLOCK                         
+         CLC   BLKDA(3),0(RE)                                                   
+         BNE   ERR5                                                             
+         CLI   3(RE),0                                                          
+         BE    ERR5                                                             
+         OC    4(2,RE),4(RE)                                                    
+         BZ    ERR5                                                             
+         MVC   DBLKDA,BLKDA        SET D/A OF DATA BLOCK IN DTF                 
+         MVI   DBLKNUM,0                                                        
+         BR    R9                                                               
+         EJECT                                                                  
+***********************************************************************         
+* READ A BLOCK OF DATA                                                *         
+***********************************************************************         
+         SPACE 1                                                                
+GOREAD   NTR1  ,                                                                
+         MVC   P4,PARAM4           SET FILE NUMBER/ADDRESS                      
+         ICM   RF,15,=V(DMDABUFF)                                               
+         BZ    GOREAD10                                                         
+         SPACE 1                                                                
+* THIS PATH FOR BUFFERED READS - ALWAYS VIA DMOD000/24-BIT MODE                 
+         SPACE 1                                                                
+         MVC   P1,=V(READ)         SET DMOD000 READ COMMAND                     
+         TM    DMCBW1,X'10'        TEST FULL TRACK READ REQ                     
+         BZ    *+16                                                             
+         MVC   P1,=V(READTRK)                                                   
+         MVC   P6,ATRKBUFF                                                      
+*                                                                               
+         GOTO1 ,DMCB2,(C'R',P1),ABUFF,V(DMOD000)                                
+         BASSM RE,RF               BRANCH IN 24-BIT MODE                        
+*                                                                               
+         LA    RE,GOREAD02                                                      
+         O     RE,=X'80000000'     RETURN TO 31-BIT ADDRESSING                  
+         BSM   0,RE                                                             
+*                                                                               
+GOREAD02 CLI   8(R1),0             TEST FOR ERRORS                              
+         B     GOREADX                                                          
+         EJECT                                                                  
+***********************************************************************         
+* 31-BIT MODE WILL CALL DADDS DIRECTLY                                *         
+* BUT FIRST MUST RESOLVE DTF ADDRESS VIA DMOD000                      *         
+***********************************************************************         
+         SPACE 1                                                                
+GOREAD10 LA    R0,DMEXT                                                         
+         ST    R0,P1                                                            
+         MVC   P4,PARAM4           SET FILE NUMBER                              
+         LA    R1,P1                                                            
+         L     RF,=V(DMOD000)      LOAD 24-BIT ADDRESS                          
+         BASSM RE,RF               BRANCH IN 24-BIT MODE                        
+         LA    RE,GOREAD12                                                      
+         O     RE,=X'80000000'     RETURN TO 31-BIT ADDRESSING                  
+         BSM   0,RE                                                             
+*                                                                               
+GOREAD12 LA    R0,RDID             GET DADDS ROUTINE NUMBER                     
+         ST    R0,P1                                                            
+         TM    DMCBW1,X'10'        TEST FULL TRACK READ REQUEST                 
+         BZ    GOREAD14                                                         
+         LA    R0,RDTRK                                                         
+         ST    R0,P1                                                            
+         MVC   P6,ATRKBUFF                                                      
+*                                                                               
+GOREAD14 MVI   P4,0                P4 MUST BE A VALID 31-BIT ADDRESS            
+*                                                                               
+         LA    R1,P1                                                            
+         L     RF,=V(DADDS)                                                     
+         O     RF,=X'80000000'     INDICATE 31-BIT CALLER                       
+         BASSM RE,RF                                                            
+*                                                                               
+         LA    RE,GOREAD16                                                      
+         O     RE,=X'80000000'     INSURE 31-BIT MODE ON RETURN                 
+         BSM   0,RE                                                             
+*                                                                               
+GOREAD16 OC    P3(2),P3            TEST FOR ERRORS                              
+*                                                                               
+GOREADX  XIT1  ,                                                                
+         EJECT                                                                  
+***********************************************************************         
+* GET ADDRESS OF NEXT RECORD IN A DATA BLOCK                          *         
+*                                                                     *         
+* EXIT WITH CC=EQ IF END OF BLOCK                                     *         
+***********************************************************************         
+         SPACE 1                                                                
+NEXTREC  SR    RF,RF                                                            
+         IC    RF,DBLKNUM          BUMP RECORD NUMBER                           
+         AHI   RF,1                                                             
+         STC   RF,DBLKNUM                                                       
+         XC    DBLKPTR,DBLKPTR                                                  
+         L     R5,DBLK                                                          
+         CLC   DBLKNUM,3(R5)       TEST IF HIREC EXCEEDED                       
+         BH    NEXTRECX                                                         
+         LH    R6,4(R5)                                                         
+         LA    R5,6(R5)            R5=A(FIRST DATA RECORD IN BLOCK)             
+         SHI   R6,6                R6=TOTAL L'DATA                              
+         B     NEXTREC4                                                         
+*                                                                               
+NEXTREC2 MVC   DUB(2),0(R5)        BUMP TO NEXT RECORD IN BLOCK                 
+         AH    R5,DUB                                                           
+         SH    R6,DUB                                                           
+         BNP   NEXTRECX                                                         
+*                                                                               
+NEXTREC4 BCT   RF,NEXTREC2                                                      
+         ST    R5,DBLKPTR          SET A(RECORD) IN DTF                         
+*                                                                               
+NEXTRECX OC    DBLKPTR,DBLKPTR     SET CC=EQ IF END OF BLOCK                    
+         BR    R9                                                               
+         SPACE 2                                                                
+***********************************************************************         
+* MOVE DATA RECORD FROM DATA BLOCK TO CALLERS I/O AREA AND SET RECORD *         
+* LENGTH IN PARAMETER LIST                                            *         
+***********************************************************************         
+         SPACE 1                                                                
+MOVEREC  L     RE,DBLKPTR          GET RECORD ADDRESS                           
+         LH    RF,0(RE)            GET LENGTH                                   
+         SHI   RF,2                SET 'FROM' LENGTH                            
+         STH   RF,DMCBW6+2         AND RETURN IT TO CALLER                      
+         LA    RE,2(RE)            SET 'FROM' ADDRESS                           
+*                                                                               
+         L     R0,PARAM2           SET 'TO' ADDRESS                             
+         N     R0,LOWBITS                                                       
+         LR    R1,RF               SET 'TO' LENGTH = FROM LENGTH                
+*                                                                               
+         MVCL  R0,RE                                                            
+         JNO   *+6                                                              
+         DC    H'0'                DIE ON DESTRUCTIVE MOVE                      
+*                                                                               
+         L     RF,PARAM2                                                        
+         N     RF,LOWBITS                                                       
+         AH    RF,DMCBW6+2                                                      
+         XC    0(2,RF),0(RF)       SET ZEROES AT END OF RECORD                  
+         BR    R9                                                               
+         EJECT                                                                  
+***********************************************************************         
+* EXITS FROM PROGRAM                                                  *         
+***********************************************************************         
+         SPACE 1                                                                
+DMEOF    OI    DMCBW3,X'80'                                                     
+         LH    RE,DKEYLNL                                                       
+         AH    RE,DKEYLNR                                                       
+         SHI   RE,2                RE=KEY LENGTH-2                              
+         L     RF,PARAM2           RF=A(IOAREA)                                 
+         N     RF,LOWBITS                                                       
+         MVI   0(RF),X'FF'         SET USER KEY IN IOAREA TO FF'S               
+         EX    RE,*+8                                                           
+         B     DMERRS                                                           
+         MVC   1(0,RF),0(RF)                                                    
+*                                                                               
+DMERRS   XC    DBLKPTR,DBLKPTR                                                  
+         XC    DNDXPTR,DNDXPTR                                                  
+         XC    LNDXDA,LNDXDA       *** NO-OP THIS IF LOOPS OCCUR ***            
+*                                   (THIS IS AN OLD COMMENT, FROM               
+*                                    BEAKY'S JUN/06 BUG FIX TO SUPPORT          
+*                                    INDEX BLOCK CHAINING. IF THERE             
+*                                    ARE LOOPS NOW, WE'D BETTER ASSUME          
+*                                    IT'S A NEW BUG! -- DEIS, JUL/2013)         
+*                                                                               
+DMEXIT   L     RE,DNDX             SAVE NATIVE INDEX BLOCK D/A                  
+         AH    RE,DBLKSZ                                                        
+         MVC   0(L'LNDXDA,RE),LNDXDA                                            
+*                                                                               
+         LA    RE,DMEXITX                                                       
+         N     RE,=X'7FFFFFFF'                                                  
+         BSM   0,RE                                                             
+*                                                                               
+DMEXITX  XMOD1 1                                                                
+         SPACE 1                                                                
+* LITERALS ETC.                                                                 
+         SPACE 1                                                                
+         LTORG                                                                  
+         SPACE 1                                                                
+ATRKBUFF DC    A(0)                GETMAIN'D FULL TRK READ BUFF ADDR            
+ABUFF    DC    A(0)                A(I/O BUFFER FROM DMDABUFF)                  
+EFFS     DC    X'FFFF'                                                          
+ERR1     DC    H'0',C'INVALID DTF TYPE'                                         
+ERR2     DC    H'0',C'INVALID ACTION CALL '                                     
+ERR3     DC    H'0',C'TRAP: FILE DMRSEQ WITH NO PREVIOUS DMRDHI '               
+ERR4     DC    H'0',C'INVALID INDEX BLOCK HEADER'                               
+ERR5     DC    H'0',C'INVALID DATA BLOCK HEADER'                                
+         EJECT                                                                  
+*                                  DSECT TO COVER WORKING STORAGE               
+WORKD    DSECT                                                                  
+DUB      DS    D                                                                
+LOWBITS  DS    XL4                                                              
+PNDXDA   DS    XL4                                                              
+PNDXKEY  DS    CL64                                                             
+NDXDA    DS    XL4                                                              
+BLKDA    DS    XL4                                                              
+*                                  PARMS TO CALL DMOD000                        
+P1       DS    F                                                                
+P2       DS    F                                                                
+P3       DS    F                                                                
+P4       DS    F                                                                
+P5       DS    F                                                                
+P6       DS    F                                                                
+DMCB2    DS    6F                  PARMS TO CALL DMDABUFF                       
+*                                                                               
+LNDXDA   DS    XL4                 PRIME INDEX BLOCK D/A - CURRENT              
+WORKX    EQU   *                                                                
+*                                  DSECT TO COVER DMOD000 PARM LIST             
+PARAMS   DSECT                                                                  
+PARAM1   DS    F                                                                
+PARAM2   DS    F                                                                
+PARAM3   DS    F                                                                
+PARAM4   DS    F                                                                
+PARAM5   DS    F                                                                
+PARAM6   DS    F                                                                
+*                                  DSECT TO COVER USER DMCB                     
+DMCB     DSECT                                                                  
+DMCBW1   DS    F                                                                
+DMCBW2   DS    F                                                                
+DMCBW3   DS    F                                                                
+DMCBW4   DS    F                                                                
+DMCBW5   DS    F                                                                
+DMCBW6   DS    F                                                                
+         EJECT                                                                  
+* ++INCLUDE DMDTFPH                                                             
+* ++INCLUDE DMGREQUS                                                            
+* ++INCLUDE DMFILTABD                                                           
+         PRINT OFF                                                              
+       ++INCLUDE DMDTFPH                                                        
+       ++INCLUDE DMGREQUS                                                       
+       ++INCLUDE DMFILTABD                                                      
+         PRINT ON                                                               
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'018DMDANDX   10/24/17'                                      
+         END                                                                    

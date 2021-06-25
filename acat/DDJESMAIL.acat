@@ -1,0 +1,686 @@
+*          DATA SET DDJESMAIL  AT LEVEL 035 AS OF 05/31/16                      
+***********************************************************************         
+* This is linked into FACPAK and interfaces with SMTP via attached              
+* task so that it can run concurrently with FACPAK and not                      
+* serialize within FACPAK.                                                      
+* Attached task is FAJESMAIL.                                                   
+*======================================================================         
+* AHYD 14NOV14 - added email exception for test systems (internal only)         
+*======================================================================         
+***********************************************************************         
+*CATALP JESMAIL                                                                 
+         TITLE 'JESMAIL - INTERFACE TO JES3 FOR SMTP'                           
+         PRINT NOGEN                                                            
+JESMAIL  CSECT                                                                  
+         PRINT NOGEN                                                            
+         NMODL WORKL,JESMAIL*,CLEAR=YES                                         
+         USING WORKD,RC                                                         
+         ST    RD,SAVERD                                                        
+         LR    RA,R1                                                            
+         USING SMTPD,RA            RA=A(SMTP LOCAL CONTROL BLOCK)               
+         BRAS  RE,INIT                                                          
+         GOTO1 APROTOFF            DISABLE CALLER'S STORAGE PROTECTION          
+*                                                                               
+         MVI   TSTSYS,NO                                                        
+         L     RE,ASSB                                                          
+         TM    SSBSYSFL-SSBD(RE),SSBSYTST      IS THIS A TEST FACPAK?           
+         BNO   BUILD                                                            
+         MVI   TSTSYS,YES                      YES - SET THE FLAGS              
+         MVI   CANSEND,YES                                                      
+*                                                                               
+BUILD    BRAS  RE,BLDEMAIL         BUILD EMAIL IN BUFFER                        
+         BNE   XMOD                                                             
+*                                                                               
+         L     RF,AUTLTASK                                                      
+         TM    TAGCOPT-UTLD(RF),TAGCUAT UAT AGENCY?                             
+         BO    LOGWTO             YES, LOG EMAIL, BUT DON'T SEND IT OUT         
+*                                                                               
+         CLI   TSTSYS,YES         IS THIS A TEST FACPAK?                        
+         BNE   MAIL               NO - SEND THE EMAIL                           
+         CLI   CANSEND,YES        YES - ALL EMAIL ADR OK TO GO?                 
+         BE    MAIL                     YES - SEND                              
+*                                                                               
+LOGWTO   BRAS  RE,WTOSMTP               NO  - LOG EMAIL VIA WTO                 
+         B     XMOD                                                             
+*                                                                               
+MAIL     BRAS  RE,PUTSMTP                                                       
+         GOTO1 APROTON             RESTORE CALLER'S STORAGE PROTECTION          
+         B     EXITOK                                                           
+         EJECT                                                                  
+***********************************************************************         
+* LOG EMAIL CONTENT (PARTIALLY) VIA WTO                               *         
+***********************************************************************         
+WTOSMTP  NTR1  ,                                                                
+         WTO   '*** SMTP EMAIL SKIPPED *** CONTENT BELOW ***'                   
+         LA    R2,MYMAIL+10        PASS CL10'*SMTPMAIL*'                        
+         LA    R3,15               PRINT OUT FIRST 15 LINES                     
+WTOS10   CLC   0(2,R2),=XL2'FFFF'                                               
+         BE    WTOSX                                                            
+         CLC   0(2,R2),=XL2'0000'                                               
+         BE    WTOSX                                                            
+         WTO   TEXT=(R2)                                                        
+         SR    RE,RE                                                            
+         ICM   RE,3,0(R2)                                                       
+         LA    R2,2(RE,R2)                                                      
+         BCT   R3,WTOS10                                                        
+WTOSX    WTO   '*** SMTP EMAIL SKIPPED *********************'                   
+         B     EXITOK                                                           
+         EJECT                                                                  
+***********************************************************************         
+* POST SMTP SCHEDULER WITH REQUEST FROM FACPAK TASK                   *         
+***********************************************************************         
+PUTSMTP  NTR1  ,                                                                
+         BRAS  RE,GETATC           GET FREE JESMAIL ATC                         
+         BE    PSMTP02                                                          
+*                                                                               
+         MVC   DUB(4),=XL4'FF000002'                                            
+         GOTO1 VGETTXT,DUB         OUTPUT A NOT AVAILABLE ERROR MESSAGE         
+         DC    H'0',C'$ABEND'                                                   
+*                                                                               
+PSMTP02  ICM   R3,15,ATCENTRY      FILL IN REQUIRED RUN INFORMATION             
+         USING ATCD,R3                                                          
+         L     R8,ATCBTASK                                                      
+         USING TCBD,R8                                                          
+*                                                                               
+         LA    RF,MYMAIL                                                        
+         ST    RF,ATCOTHER         SAVE A(SMTPD DATA BLOCK)                     
+*                                                                               
+         TBIN  MILI                                                             
+         ST    R1,ATCPTIME         SET POST TIME                                
+         XC    SMTPECB,SMTPECB                                                  
+         LA    R1,SMTPECB                                                       
+         ST    R1,ATCARECB         SET RETURN ECB                               
+*                                                                               
+         L     R1,ATCPCNT                                                       
+         AHI   R1,1                                                             
+         ST    R1,ATCPCNT          SET POST COUNT                               
+*                                                                               
+         POST  ATCECB              WAKE UP THE FAJESMAIL SUBTASK                
+*                                                                               
+         LA    R1,SMTPECB                                                       
+         GOTO1 VADWAIT             WAIT FOR SMTP SCHEDULER TO COMPLETE          
+         B     EXITOK                                                           
+         DROP  R8                                                               
+         EJECT                                                                  
+***********************************************************************         
+* LOCATE A FREE SMTP SCHEDULER                                       *          
+**********************************************************************          
+GETATC   NTR1  ,                                                                
+         XC    COUNT,COUNT         IN CASE WE HAVE TO WAIT                      
+*                                                                               
+GATC02   L     RE,ASSB                                                          
+         L     R3,SSBAATC-SSBD(RE)                                              
+         LH    R4,0(R3)                                                         
+         L     R5,2(R3)                                                         
+         AHI   R3,6                                                             
+         USING ATCD,R3             R3=A(ATC)                                    
+*                                                                               
+GATC04   CLI   ATCTYPE,ATCTSMTP    TEST SMTP SUB TASK                           
+         BNE   GATC06                                                           
+         TM    ATCSTAT1,ATCSATCH   TEST TASK IS ATTACHED                        
+         BZ    GATC06                                                           
+         TM    ATCSTAT1,ATCSBUSY   TEST TASK IS BUSY                            
+         BNZ   GATC06                                                           
+         OC    ATCATCB,ATCATCB     TEST ALLOCATED TO ANOTHER TASK               
+         BNZ   GATC06                                                           
+         TM    ATCSTAT1,ATCSERRS   TEST TASK IS IN ERROR                        
+         BNZ   GATC06                                                           
+         B     GATC08                                                           
+*                                                                               
+GATC06   BXLE  R3,R4,GATC04                                                     
+*                                                                               
+         LH    RF,COUNT            INCREMENT FAILED TRY COUNT                   
+         AHI   RF,1                                                             
+         STH   RF,COUNT                                                         
+         CHI   RF,MAXCOUNT                                                      
+         BH    EXITL                                                            
+*                                                                               
+         ICM   R1,15,MVSWAIT       WAIT A BIT THEN TRY AGAIN                    
+         ICM   RF,15,VTKWAIT       TKWAIT IS THE TASK (NOT I/O) WAIT            
+         BZ    *+6                                                              
+         BASR  RE,RF                                                            
+         B     GATC02                                                           
+*                                                                               
+GATC08   MVC   ATCATCB,ATCBTASK    SET ENTRY IS OWNED BY ME                     
+         OI    ATCSTAT1,ATCSAACT   SET ENTRY IS ACTIVE                          
+         STCM  R3,15,ATCENTRY      SET A(ENTRY)                                 
+         B     EXITOK                                                           
+         DROP  R3                                                               
+         EJECT                                                                  
+***********************************************************************         
+* INITIALISATION                                                      *         
+***********************************************************************         
+INIT     NTR1  ,                                                                
+         L     RF,ASYSFAC          INTIALISE FACPAK ADDRESSES                   
+         L     RE,VSSB-SYSFACD(RF)                                              
+         ST    RE,ASSB                                                          
+         L     RE,VTCB-SYSFACD(RF)                                              
+         ST    RE,ATCB                                                          
+         L     RE,VUTL-SYSFACD(RF)                                              
+         ST    RE,AUTL                                                          
+         MVC   ALCM,VLCM-SYSFACD(RF)                                            
+         MVC   ASELIST,VSELIST-SYSFACD(RF)                                      
+*                                                                               
+         L     RE,ASSB             TASK BASED INFORMATION                       
+         L     RE,SSBTKADR-SSBD(RE)                                             
+         ST    RE,ATCBTASK                                                      
+         MVC   AUTLTASK,TCBUTL-TCBD(RE)                                         
+         B     EXITOK                                                           
+         EJECT                                                                  
+***********************************************************************         
+* BUILD EMAIL BUFFER TO OUTPUT                                        *         
+* OUTPUT BLOCK IS A SERIES OF CL80 FIELDS                             *         
+***********************************************************************         
+BLDEMAIL NTR1  ,                                                                
+         MVI   FLAGS,0                                                          
+         ICM   R2,15,SMTPOPTS                                                   
+         BZ    BEM100                                                           
+BEM20    CLI   0(R2),X'FF'                                                      
+         BE    BEM100                                                           
+         CLI   0(R2),X'00'                                                      
+         BE    BEM100                                                           
+         CLC   =CL10'*FROMLONG*',0(R2)                                          
+         BNE   BEM25                                                            
+         OI    FLAGS,LFROMQ                                                     
+         B     BEM28                                                            
+*                                                                               
+BEM25    CLC   =CL10'*REPLYTO**',0(R2)                                          
+         BNE   BEM26                                                            
+         OI    FLAGS,REPLYQ                                                     
+         B     BEM28                                                            
+*                                                                               
+BEM26    CLC   =CL10'*SENDER***',0(R2)                                          
+         BNE   BEM27                                                            
+         OI    FLAGS,SENDERQ                                                    
+         B     BEM28                                                            
+*                                                                               
+BEM27    CLC   =CL10'*HTML*****',0(R2)                                          
+         BNE   BEM28                                                            
+         OI    FLAGS,HTMLQ                                                      
+*                                                                               
+BEM28    AHI   R2,10                                                            
+         B     BEM20                                                            
+*                                                                               
+BEM100   DS    0H                                                               
+         LA    R2,MYMAIL           OUTPUT BLOCK TO PASS TO JESMAIL              
+         MVC   0(10,R2),=CL10'*SMTPMAIL*'                                       
+         AHI   R2,10                                                            
+*                                                                               
+         MVC   0(2,R2),=H'80'                                                   
+         AHI   R2,2                                                             
+         MVC   0(80,R2),SPACES                                                  
+         MVC   0(L'HELO,R2),HELO                                                
+         BRAS  RE,FILLSPC                                                       
+*                                                                               
+         TM    FLAGS,SENDERQ       Use sender's email for MailFrom              
+         BO    BEM110                                                           
+         TM    FLAGS,LFROMQ                                                     
+         BO    BEM110                                                           
+         MVC   0(2,R2),=H'80'                                                   
+         AHI   R2,2                                                             
+         MVC   0(L'MAILFROM,R2),MAILFROM                                        
+         MVC   L'MAILFROM(L'DEFEMAIL,R2),DEFEMAIL                               
+         ICM   RF,15,SMTPFROM                                                   
+         BZ    BEM109                                                           
+         MVC   L'MAILFROM(60,R2),0(RF)                                          
+*                                                                               
+         LA    R1,L'MAILFROM(,R2)                                               
+         CLI   0(R1),C'"'          CLEAR OUT "NAME"                             
+         BNE   BEM107                                                           
+BEM105   MVI   0(R1),C' '                                                       
+         AHI   R1,1                                                             
+         CLI   0(R1),C'"'                                                       
+         BNE   BEM105                                                           
+         MVI   0(R1),C' '                                                       
+*                                                                               
+BEM107   LA    R1,79(R2)                                                        
+         CLI   0(R1),C' '                                                       
+         BH    *+12                                                             
+         MVI   0(R1),C' '          CLEAN OUT ANY NULLS                          
+         BCT   R1,*-12                                                          
+*                                                                               
+         CLI   0(R1),C'>'                                                       
+         BE    BEM109                 ALREADY HAS <>                            
+         MVI   1(R1),C'>'             CLOSE CHEVRON                             
+         MVI   L'MAILFROM-1(R2),C'<'  OPEN CHEVRON                              
+BEM109   BRAS  RE,FILLSPC                                                       
+         B     BEM120                                                           
+*                                                                               
+BEM110   MVC   0(2,R2),=H'160'                                                  
+         AHI   R2,2                                                             
+         MVC   0(160,R2),SPACES     CLEAR DATA FIELD                            
+         MVC   0(L'MAILFROM,R2),MAILFROM                                        
+         MVC   L'MAILFROM(L'DEFEMAIL,R2),DEFEMAIL                               
+*                                                                               
+         TM    FLAGS,SENDERQ       Use sender's email for MailFrom              
+         BZ    BEM112                                                           
+         ICM   RF,15,SMTPSNDR                                                   
+         BZ    BEM112                                                           
+         MVC   L'MAILFROM(150,R2),0(RF)                                         
+         B     BEM113                                                           
+*                                                                               
+BEM112   TM    FLAGS,LFROMQ                                                     
+         BZ    BEM118                                                           
+         ICM   RF,15,SMTPFROM                                                   
+         BZ    BEM118                                                           
+         MVC   L'MAILFROM(150,R2),0(RF)                                         
+*                                                                               
+BEM113   LA    R1,L'MAILFROM(,R2)                                               
+         CLI   0(R1),C'"'          CLEAR OUT "NAME"                             
+         BNE   BEM116                                                           
+BEM114   MVI   0(R1),C' '                                                       
+         AHI   R1,1                                                             
+         CLI   0(R1),C'"'                                                       
+         BNE   BEM114                                                           
+         MVI   0(R1),C' '                                                       
+*                                                                               
+BEM116   LA    R1,159(R2)                                                       
+         CLI   0(R1),C' '                                                       
+         BH    *+12                                                             
+         MVI   0(R1),C' '          CLEAN OUT ANY NULLS                          
+         BCT   R1,*-12                                                          
+*                                                                               
+         CLI   0(R1),C'>'                                                       
+         BE    BEM118                 ALREADY HAS <>                            
+         MVI   1(R1),C'>'             CLOSE CHEVRON                             
+         MVI   L'MAILFROM-1(R2),C'<'  OPEN CHEVRON                              
+BEM118   AHI   R2,160                                                           
+         MVC   2(80,R2),SPACES     CLEAR NEXT DATA FIELD                        
+*                                                                               
+BEM120   ICM   RF,15,SMTPTO        ADD TO:                                      
+         BZ    *+8                                                              
+         BRAS  R7,BEMRCPT                                                       
+         ICM   RF,15,SMTPCC        ADD CC:                                      
+         BZ    *+8                                                              
+         BRAS  R7,BEMRCPT                                                       
+         ICM   RF,15,SMTPBCC       ADD BCC:                                     
+         BZ    *+8                                                              
+         BRAS  R7,BEMRCPT                                                       
+*                                                                               
+         MVC   0(2,R2),=H'80'                                                   
+         AHI   R2,2                                                             
+         MVC   0(L'DATA,R2),DATA   DATA FOLLOWS                                 
+         BRAS  RE,FILLSPC                                                       
+*                                                                               
+         MVC   0(2,R2),=H'80'                                                   
+         AHI   R2,2                                                             
+         MVC   0(L'DATE,R2),DATE   DATE: FOLLOWS                                
+         BRAS  RE,FILLSPC                                                       
+*                                                                               
+         MVC   0(2,R2),=H'80'                                                   
+         AHI   R2,2                                                             
+         MVC   0(L'TIME,R2),TIME   TIME: FOLLOWS                                
+         BRAS  RE,FILLSPC                                                       
+*                                                                               
+         TM    FLAGS,LFROMQ                                                     
+         BO    BEM130                                                           
+         MVC   0(2,R2),=H'80'                                                   
+         AHI   R2,2                                                             
+         MVC   0(L'FROM,R2),FROM   FROM                                         
+         MVC   L'FROM(L'DEFEMAIL,R2),DEFEMAIL                                   
+         ICM   RF,15,SMTPFROM                                                   
+         BZ    *+10                                                             
+         MVC   L'FROM(60,R2),0(RF)                                              
+         LHI   R1,80-1                                                          
+         BRAS  RE,FILLSPC2                                                      
+         B     BEM140                                                           
+*                                                                               
+BEM130   MVC   0(2,R2),=H'160'                                                  
+         AHI   R2,2                                                             
+         MVC   0(L'FROM,R2),FROM   FROM                                         
+         MVC   L'FROM(L'DEFEMAIL,R2),DEFEMAIL                                   
+         ICM   RF,15,SMTPFROM                                                   
+         BZ    *+10                                                             
+         MVC   L'FROM(150,R2),0(RF)                                             
+*                                                                               
+         LA    R1,159(R2)                                                       
+         CLI   0(R1),C' '                                                       
+         BH    *+12                                                             
+         MVI   0(R1),C' '          CLEAN OUT ANY NULLS                          
+         BCT   R1,*-12                                                          
+         AHI   R2,160                                                           
+         MVC   2(80,R2),SPACES     CLEAR NEXT DATA FIELD                        
+*                                                                               
+* BY THIS POINT YOU KNOW THE TO: CC: AND BCC: ARRAYS ARE OK                     
+* SO NO NEED TO BOUNDS CHECK AGAIN                                              
+*                                                                               
+BEM140   ICM   RF,15,SMTPTO        OUTPUT 'TO' INFO IN DATA                     
+BEM142   CLI   0(RF),X'FF'                                                      
+         BE    BEM150                                                           
+         MVC   0(2,R2),=H'80'                                                   
+         AHI   R2,2                                                             
+         MVC   0(L'TO,R2),TO       TO:                                          
+         MVC   L'TO(60,R2),0(RF)                                                
+         LHI   R1,80-1                                                          
+         BRAS  RE,FILLSPC2                                                      
+         AHI   RF,60                                                            
+         B     BEM142                                                           
+*                                                                               
+BEM150   ICM   RF,15,SMTPCC        OUTPUT OPTIONAL 'CC' INFO IN DATA            
+         BZ    BEM160                                                           
+*                                                                               
+BEM152   CLI   0(RF),X'FF'                                                      
+         BE    BEM160                                                           
+         MVC   0(2,R2),=H'80'                                                   
+         AHI   R2,2                                                             
+         MVC   0(L'CC,R2),CC       CC:                                          
+         MVC   L'CC(60,R2),0(RF)                                                
+         LHI   R1,80-1                                                          
+         BRAS  RE,FILLSPC2                                                      
+         AHI   RF,60                                                            
+         B     BEM152                                                           
+*                                                                               
+BEM160   ICM   RF,15,SMTPBCC       OUTPUT OPTIONAL 'BCC' INFO IN DATA           
+         BZ    BEM170                                                           
+*                                                                               
+*                                                                               
+BEM168   CLI   0(RF),X'FF'                                                      
+         BE    BEM170                                                           
+         MVC   0(2,R2),=H'80'                                                   
+         AHI   R2,2                                                             
+         MVC   0(L'BCC,R2),BCC     BCC:                                         
+         MVC   L'BCC(60,R2),0(RF)                                               
+         LHI   R1,80-1                                                          
+         BRAS  RE,FILLSPC2                                                      
+         AHI   RF,60                                                            
+         B     BEM168                                                           
+*                                                                               
+BEM170   TM    FLAGS,REPLYQ                                                     
+         BZ    BEM180                                                           
+         MVC   0(2,R2),=H'160'                                                  
+         AHI   R2,2                                                             
+         MVC   0(L'RPLY_TO,R2),RPLY_TO                                          
+         ICM   RF,15,SMTPRPLY                                                   
+         BZ    *+10                                                             
+         MVC   L'RPLY_TO(150,R2),0(RF)                                          
+*                                                                               
+         LA    R1,159(R2)                                                       
+         CLI   0(R1),C' '                                                       
+         BH    *+12                                                             
+         MVI   0(R1),C' '          CLEAN OUT ANY NULLS                          
+         BCT   R1,*-12                                                          
+*                                                                               
+         AHI   R2,160                                                           
+         MVC   2(80,R2),SPACES     CLEAR NEXT DATA FIELD                        
+*                                                                               
+BEM180   TM    FLAGS,SENDERQ                                                    
+         BZ    BEM190                                                           
+         MVC   0(2,R2),=H'160'                                                  
+         AHI   R2,2                                                             
+         MVC   0(L'SNDR,R2),SNDR                                                
+         ICM   RF,15,SMTPSNDR                                                   
+         BZ    *+10                                                             
+         MVC   L'SNDR(150,R2),0(RF)                                             
+*                                                                               
+         LA    R1,159(R2)                                                       
+         CLI   0(R1),C' '                                                       
+         BH    *+12                                                             
+         MVI   0(R1),C' '          CLEAN OUT ANY NULLS                          
+         BCT   R1,*-12                                                          
+*                                                                               
+         AHI   R2,160                                                           
+         MVC   2(80,R2),SPACES     CLEAR NEXT DATA FIELD                        
+*                                                                               
+BEM190   MVC   0(2,R2),=H'80'                                                   
+         AHI   R2,2                                                             
+         MVC   0(L'SUBJECT,R2),SUBJECT                                          
+         MVC   L'SUBJECT(L'NOSUB,R2),NOSUB                                      
+         ICM   RF,15,SMTPSUB                                                    
+         BZ    *+10                                                             
+         MVC   L'SUBJECT(70,R2),0(RF)                                           
+         LHI   R1,80-1                                                          
+         BRAS  RE,FILLSPC2                                                      
+*                                                                               
+         TM    FLAGS,HTMLQ                                                      
+         BZ    BEM300                                                           
+         MVC   0(2,R2),=H'80'                                                   
+         AHI   R2,2                                                             
+         MVC   0(80,R2),SPACES                                                  
+         MVC   0(L'CTYPHTML,R2),CTYPHTML  ATTACHMENT FROM HERE ON               
+         LA    R2,80(,R2)                                                       
+*                                                                               
+BEM300   MVC   0(2,R2),=H'80'                                                   
+         AHI   R2,2                                                             
+         BRAS  RE,FILLSPC          LEAVE A BLANK LINE                           
+*                                                                               
+         ICM   RF,15,SMTPDATA      BODY TEXT IS OPTIONAL                        
+         BZ    BEM390                                                           
+*                                                                               
+         ICM   R1,15,SMTPVRLN                                                   
+         BZ    BEM360                                                           
+         CLC   =CL10'*SMTPMAIL*',0(R1)                                          
+         BE    BEM370              VARIABLE LENGTH DATA                         
+*                                  FIXED LENGTH DATA                            
+BEM360   LHI   R0,100              STOP OVERFLOWS                               
+BEM362   CLI   0(RF),X'FF'         END OF BUFFER                                
+         BE    BEM390                                                           
+         MVC   0(2,R2),=H'80'                                                   
+         AHI   R2,2                                                             
+         MVC   0(80,R2),0(RF)                                                   
+         BRAS  RE,FILLSPC                                                       
+         AHI   RF,80                                                            
+         BCT   R0,BEM362                                                        
+         B     BEM380              TRUNCATE THE MESSAGE                         
+*                                                                               
+BEM370   EQU   *                                                                
+         CLC   0(2,RF),=X'FFFF'    END OF BUFFER                                
+         BE    BEM390                                                           
+*                                                                               
+         SR    R1,R1                                                            
+         ICM   R1,3,0(RF)                                                       
+         AHI   R1,2                LENGTH (INCLUDED 2 BYTES LENGTH)             
+*                                                                               
+         LAY   RE,MYMAILX          CHECK OVERFLOW                               
+         SR    RE,R1                                                            
+         CR    RE,R2                                                            
+         BL    BEM380              TRUNCATE THE MESSAGE                         
+*                                                                               
+         BCTR  R1,0                                                             
+         EX    R1,*+8                                                           
+         B     *+10                                                             
+         MVC   0(0,R2),0(RF)                                                    
+*                                                                               
+         LA    R2,1(R1,R2)                                                      
+         LA    RF,1(R1,RF)                                                      
+         B     BEM370                                                           
+*                                                                               
+BEM380   EQU   *                   MESSAGE IS TRUNCATED                         
+         MVC   0(2,R2),=AL2(L'TRUNCATE)                                         
+         MVC   2(L'TRUNCATE,R2),TRUNCATE                                        
+         AHI   R2,2+L'TRUNCATE                                                  
+*                                                                               
+BEM390   EQU   *                                                                
+         MVC   0(2,R2),=AL2(1)                                                  
+         MVI   2(R2),C'.'                                                       
+         AHI   R2,3                                                             
+*                                                                               
+         MVC   0(2,R2),=AL2(L'QUIT)                                             
+         MVC   2(L'QUIT,R2),QUIT                                                
+         AHI   R2,2+L'QUIT                                                      
+         MVI   0(R2),X'FF'                                                      
+         MVI   1(R2),X'FF'         FINISHED WITH X'FFFF'                        
+         B     EXITOK                                                           
+         EJECT                                                                  
+***********************************************************************         
+* OUTPUT 'RCPT TO' HEADERS - MAX 25 PER TYPE                          *         
+* BASICALLY EVERYTHING IN TO: CC: AND BCC: LISTS WITH "RCPT TO"       *         
+* PLACED IN FRONT OF IT AND CHEVRONS ADDED ROUND IT                   *         
+* NTRY:  R2    = A(FIRST LINE TO START OUTPUT ON)                     *         
+*        RF    = A(CL60 ARRAY FF TERMINATED)                          *         
+* EXIT:  R2    = A(NEXT FREE LINE)                                    *         
+***********************************************************************         
+BEMRCPT  LHI   R0,25               STOP STUPID OVERFLOWS                        
+*                                                                               
+RCPT02   CLI   0(RF),X'FF'         ADD RCPT TO FOR THIS TYPE                    
+         BER   R7                                                               
+*                                                                               
+         MVC   0(2,R2),=H'80'                                                   
+         AHI   R2,2                                                             
+*                                                                               
+         MVC   0(L'RCPTTO,R2),RCPTTO                                            
+         MVC   L'RCPTTO(60,R2),0(RF)                                            
+         LA    R1,79(R2)                                                        
+         CLI   0(R1),C' '                                                       
+         BH    *+12                                                             
+         MVI   0(R1),C' '          CLEAN OUT ANY NULLS                          
+         BCT   R1,*-12                                                          
+*                                  R1 -> LAST PRINTABLE CHAR                    
+         CLI   0(R1),C'>'                                                       
+         BE    RCPT08              ALREADY HAS <>                               
+         MVI   1(R1),C'>'          CLOSE CHEVRON                                
+         MVI   L'RCPTTO-1(R2),C'<' OPEN CHEVRON                                 
+*                                                                               
+RCPT08   DS    0H                                                               
+         CLI   TSTSYS,YES         IS THIS A TEST FACPAK?                        
+         BNE   RCPT30             NO - SKIP THE BELOW CHECK                     
+*                                                                               
+         MVC   TEMAIL,L'RCPTTO(R2)                                              
+         OC    TEMAIL,SPACES                                                    
+         LA    R1,L'TEMAIL-1      LENGTH OF EMAIL ADDR                          
+RCPT10   LA    RE,TEMAIL(R1)      Point to end                                  
+         CLI   0(RE),C'@'         Find @                                        
+         BE    RCPT12                                                           
+         BCT   R1,RCPT10                                                        
+         B     RCPT20             Something is wrong so skip                    
+*                                                                               
+RCPT12   CLC   =C'@MEDIAOCEAN.COM',0(RE)                                        
+         BE    RCPT30             Okay to send                                  
+*                                                                               
+RCPT20   MVI   CANSEND,NO                                                       
+*                                                                               
+RCPT30   AHI   R2,80               NEXT IN BUFFER                               
+         MVC   2(80,R2),SPACES                                                  
+         AHI   RF,60               NEXT LIST                                    
+         BCT   R0,RCPT02                                                        
+         DC    H'0'                TOO MANY PEOPLE IN THIS LIST                 
+*                                                                               
+TSTMLST  DS    0XL61               NOTE: AL1 = LEN(EMAIL ADR) - 1               
+*                           0123456789012345678901234567890123456789            
+         DC    AL1(35),CL60'STATIONTOOLKITSUPPORT@MEDIAOCEAN.COM'               
+         DC    AL1(32),CL60'STATIONTOOLKITELOG@MEDIAOCEAN.COM'                  
+*                                                                               
+         DC    AL1(29),CL60'PRISMAL2SUPPORT@MEDIAOCEAN.COM'                     
+         DC    AL1(35),CL60'PRISMAINVNOTIFICATION@MEDIAOCEAN.COM'               
+*                                                                               
+         DC    AL1(33),CL60'STATIONXPRESSSENDER@MEDIAOCEAN.COM'                 
+         DC    AL1(31),CL60'STATIONXPRESSELOG@MEDIAOCEAN.COM'                   
+*                                                                               
+         DC    AL1(22),CL60'BBUNDOCK@MEDIAOCEAN.COM'                            
+         DC    AL1(19),CL60'KWANG@MEDIAOCEAN.COM'                               
+         DC    AL1(29),CL60'BADEMAILADDRESS@MEDIAOCEAN.COM'                     
+*                                                                               
+         DC    AL1(19),CL60'YYUNG@MEDIAOCEAN.COM'                               
+         DC    AL1(19),CL60'AHYDE@MEDIAOCEAN.COM'                               
+         DC    AL1(23),CL60'AWILLIAMS@MEDIAOCEAN.COM'                           
+         DC    AL1(23),CL60'TZIHHAREV@MEDIAOCEAN.COM'                           
+*                                                                               
+         DC    X'FF'                                                            
+         EJECT                                                                  
+***********************************************************************         
+* USEFUL ROUTINES                                                     *         
+***********************************************************************         
+EXITL    CLI   *,255                                                            
+         B     EXIT                                                             
+*                                                                               
+EXITOK   CR    RB,RB                                                            
+         B     EXIT                                                             
+*                                                                               
+EXIT     XIT1  ,                                                                
+*                                                                               
+XMOD     DS    0H                                                               
+         GOTO1 APROTON             RESTORE CALLER'S STORAGE PROTECTION          
+         L     RD,SAVERD                                                        
+         B     EXIT                                                             
+*                                                                               
+FILLSPC2 DS    0H                                                               
+         AR    R1,R2                                                            
+         CLI   0(R1),C' '                                                       
+         BH    *+12                                                             
+         MVI   0(R1),C' '          CLEAN OUT ANY NULLS                          
+         BCT   R1,*-12                                                          
+*                                                                               
+FILLSPC  AHI   R2,80                                                            
+         MVC   2(80,R2),SPACES     ONLY NEED TO CLEAR DATA FIELD                
+         BR    RE                       NOT 2 BYTE LENGTH                       
+         EJECT                                                                  
+***********************************************************************         
+* LITERALS AND CONSTANTS                                              *         
+***********************************************************************         
+MAXCOUNT EQU   10                  MAX NUMBER OF TRIES TO GET SUBTASK           
+*                                                                               
+ASYSFAC  DC    V(SYSFAC)                                                        
+APROTON  DC    V(PROTON)                                                        
+APROTOFF DC    V(PROTOFF)                                                       
+VTKWAIT  DC    V(TKWAIT)                                                        
+VADWAIT  DC    V(ADWAIT)                                                        
+VGETTXT  DC    V(GETTXT)                                                        
+*                                                                               
+SPACES   DC    160C' '                                                          
+*                                                                               
+MVSWAIT  DC    AL4(38400)          1S IN TUS                                    
+*                                                                               
+HELO     DC    C'HELO DDNMVS'                                                   
+DATA     DC    C'DATA'                                                          
+MAILFROM DC    C'MAIL FROM:  '                                                  
+RCPTTO   DC    C'RCPT TO:  '                                                    
+DATE     DC    C'DATE: '                                                        
+TIME     DC    C'TIME: '                                                        
+FROM     DC    C'FROM:  '                                                       
+TO       DC    C'TO: '                                                          
+CC       DC    C'CC: '                                                          
+BCC      DC    C'BCC: '                                                         
+SNDR     DC    C'SENDER: '                                                      
+RPLY_TO  DC    C'REPLY-TO: '                                                    
+SUBJECT  DC    C'SUBJECT: '                                                     
+NOSUB    DC    C'No Subject'                                                    
+CTYPHTML DC    C'CONTENT-TYPE: TEXT/HTML'                                       
+CTYPPLN  DC    C'CONTENT-TYPE: TEXT/PLAIN'                                      
+QUIT     DC    C'QUIT'                                                          
+DEFEMAIL DC    C'<DoNotReply@mediaocean.com>'                                   
+TRUNCATE DC    C'*****Message is truncated*****'                                
+*                                                                               
+         LTORG                                                                  
+         EJECT                                                                  
+***********************************************************************         
+* WORKING STORAGE DSECT                                               *         
+***********************************************************************         
+YES      EQU   C'Y'                                                             
+NO       EQU   C'N'                                                             
+                                                                                
+WORKD    DSECT                                                                  
+DUB      DS    D                                                                
+SAVERD   DS    A                                                                
+*                                                                               
+ATCENTRY DS    A                                                                
+SMTPECB  DS    F                                                                
+*                                                                               
+ASSB     DS    A                                                                
+ATCB     DS    A                                                                
+ATCBTASK DS    A                                                                
+AUTL     DS    A                                                                
+AUTLTASK DS    A                                                                
+ALCM     DS    A                                                                
+ASELIST  DS    A                                                                
+*                                                                               
+COUNT    DS    H                                                                
+TSTSYS   DS    C                                                                
+CANSEND  DS    C                                                                
+*                                                                               
+FLAGS    DS    X                                                                
+LFROMQ   EQU   X'80'                                                            
+REPLYQ   EQU   X'40'                                                            
+SENDERQ  EQU   X'20'                                                            
+HTMLQ    EQU   X'10'                                                            
+*                                                                               
+TEMAIL   DS    CL80                                                             
+*                                                                               
+MYMAIL   DS    210CL80           About 16k                                      
+MYMAILX  EQU   *-200             LEAVE ROOM FOR "TRUNCATE.QUIT.X'FF'"           
+WORKL    EQU   *-WORKD                                                          
+* FADSECTS                                                                      
+       ++INCLUDE FADSECTS                                                       
+       ++INCLUDE FAJESMAILD                                                     
+         EJECT                                                                  
+**PAN#1  CSECT                                                                  
+**PAN#1  DC    CL21'035DDJESMAIL 05/31/16'                                      
+         END                                                                    

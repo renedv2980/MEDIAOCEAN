@@ -1,0 +1,801 @@
+         TITLE 'DCMBLOOKIN'                                                     
+                                                                                
+Source     MBLOOK                                                               
+Relo Name  MBLOOK                                                               
+Phase Name T00A9A                                                               
+                                                                                
+  This document is a guide to the internal structure and function of            
+the MediaBase MBLOOK module. The reader is assumed to be familiar with          
+DCMBLOOK and the basic program functionality and to have a copy of the          
+program and its dsects at hand. Some familiarity with DDMENU is also            
+necessary.                                                                      
+                                                                                
+  U.S. terms like cash discount, agency commission, etc. are used               
+throughout instead of their British or German counterparts. "Premium"           
+and "adjustment" are used interchangeably.                                      
+                                                                                
+   It doesn't, of course, answer every question or cover every detail,          
+but it should provide some clue about where in the program to look.             
+                                                                                
+  There are 5 sections:                                                         
+                                                                                
+    1) Terminology                                                              
+    2) Internal Tables                                                          
+    3) Routines                                                                 
+    4) Miscellaneous                                                            
+    5) Testing                                                                  
+                                                                                
+                                                                                
+1) TERMINOLOGY                                                                  
+   -----------                                                                  
+    Not all the terminology in MBLOOK is obvious. This may help.                
+                                                                                
+  "OR Group" - best explained by example. Suppose the search is for             
+               a 3 color rate and there is a rate on the file that is           
+               applicable for both 2C and 3C and so has both those              
+               qualifiers. When MBLOOK encounters the 2C qualifier it           
+               can't simply throw out the rate.  It sets a bit                  
+               indicating that it found a "miss" in the color                   
+               group. When it later runs into the 3C qualifier it sets          
+               a "hit" bit for the group, which allows it to be                 
+               accepted. If it never does find a hit in the group,              
+               the rate is rejected. Or groups are dealt with mostly in         
+               GETQX and QFILT.                                                 
+                                                                                
+   "Enabling" - This refers to the process by which a qualifier that            
+                is present for a premium but not for the basic space            
+                rate can act to make the rate acceptable. For example,          
+                if there is a basic page rate and a 4C premium the              
+                qualifiers are in effect merged making the page                 
+                rate ok for a 4C search. You usually want this to               
+                happen, but not always. Edition qualifiers in the               
+                premiums can, for example, sometimes lead to unwanted           
+                results if they are allowed to "enable". It is                  
+                controlled by a bit in the QXTAB.                               
+                                                                                
+   File vs Arg -In program comments about qualifiers and space                  
+                descriptions, "file" refers to things in the rate or            
+                mech card while "arg" refers to the search arguments.           
+                                                                                
+   "Critical" - An argument qualifier is said to be critical if its             
+                absence from the file qualifiers is sufficient grounds          
+                for reject the rate. For example, 4C is critical but            
+                BW isn't. Cover qualifiers are another example of               
+                non-critical. If we are looking for a particular                
+                cover position and we don't find it either a generic            
+                cover rate might be used or perhaps just the page               
+                rate. Of course, if the particular cover rate were              
+                found it would be used to the exclusion of the others.          
+                                                                                
+   "Synonym"    There may be several qualifier values that have the             
+                same meaning - vertical, upright, and long, for                 
+                instance all refer to the same way of orienting an              
+                advert on page. These are all translated into a                 
+                common term (vertical, say) before any comparison,              
+                so that an argument qualifier with one of the set               
+                will agree with a file qualifier with another.                  
+                Synonyms are to be found in the space attribute                 
+                qualifier value table in MBVAL3. The concept is not             
+                used much.                                                      
+                                                                                
+   Premiums -These are generally called "adjustments" throughout                
+             the program comments and labels. That is what we used              
+             to call them.                                                      
+                                                                                
+   Some of the label prefixes used in MBLOOK are:                               
+                                                                                
+      AG  -These fields are derived from the argument space and                 
+           qualifiers and are used to direct or simplify certain                
+           filtering - mostly in QFILT.                                         
+                                                                                
+      EL  -Various element or elem group values set in INSRAT from              
+           fields set in QFILT and SPCFILT and put in the key SRTAB             
+           and ARTAB via the routines TABSR and TABAR.                          
+                                                                                
+      FTUN - Total unit size values for file spaces. The result of              
+             multiplying the 2 dimension, e.g. 200mm x 4clm =                   
+             800 scm (standard column millimeter). Needed for                   
+             searching and for min/max comparisons.                             
+                                                                                
+      ATUN - Total unit size values for argument spaces.                        
+                                                                                
+      TUN  - Total unit size values in general.                                 
+                                                                                
+2) INTERNAL TABLES                                                              
+   ---------------                                                              
+                                                                                
+     QVTAB                                                                      
+     -----                                                                      
+                                                                                
+     This table is built in BQVTAB and accessed via BINSRCH. It is              
+     covered by QVTABD and has an entry for each argument qualifier.            
+     The maximum number of entries is currently 6, which is MAXQVS              
+     (=9) less the number of pre-assigned slots in SQQSTATS (=3). See           
+     SRTAB and ARTAB for more. QVTAB is keyed on the qualifier type             
+     and value and contains the "or" group of the qualifier and an              
+     index into SQQSTATS.  There are also two "control" fields that are         
+     not used. They are part of a scheme which was never fully                  
+     implemented whereby a qualifier like >1C might be used to describe         
+     a rate or whatever that was good for 2C, 3C, and 4C.                       
+                                                                                
+      QVTAB is used only in QFILT and, in a minor way, in SPCFILT.              
+                                                                                
+     SRTAB and ARTAB                                                            
+     ---------------                                                            
+                                                                                
+     SRTAB is the basic space rate table and ARTAB is the adjustment            
+     (premium) table. The addresses of the table are inASRTAB and AARTAB        
+     respectively.                                                              
+                                                                                
+     These two tables are central to the rate look up process.  They            
+     both use the same dsect - SQTABD. Basically they are tables of             
+     candidate rates and adjustments.                                           
+                                                                                
+     The entries are keyed on element group, link value, and element            
+     sequence number. This is enough to allow the original element              
+     to be found via MINIO. There are control bytes that are used               
+     for many purposes, among them helping to evaluate one entry                
+     vs. another.                                                               
+                                                                                
+     SQQSTATS is a field with one byte for each qualifier. The maximum          
+     is MAXQVS (currently 9). Bits are used to represent the match              
+     status of each qualifier. This information, which originally               
+     comes from QFILT, is used in INSRAT to "score" each entry. The             
+     first 3 bytes are reserved for date, day, and free-form text               
+     qualifiers and the rest are assigned by BQVTAB as it encounters            
+     new qualifiers. QVINDX in QVTAB is the index in SQQSTATS for the           
+     given qualifier.                                                           
+                                                                                
+    SEGTAB                                                                      
+    ------                                                                      
+    Segments are specialized qualifiers for broadcast. The "value"              
+    is 8 bytes consisting of day of week, start time, end time, and             
+    segment code (also called rate code). It is covered by the                  
+    dsect SGTABD. A table of relevant segments is built to prevent              
+    having to look them up all the time. This table is saved at the             
+    end of the DDMENU value table, so it is available when MBLOOK is            
+    called to process selections.                                               
+                                                                                
+    UMTAB                                                                       
+    -----                                                                       
+                                                                                
+    A small table of units of measure built by BLDTABS from MBVAL               
+    tables. It is used only in a routine called GETDEC to get the               
+    decimal point position for a given unit of measure. (Most are               
+    carried to 5 decimal places.)                                               
+                                                                                
+    QXTAB                                                                       
+    -----                                                                       
+                                                                                
+    Qualifier "extra" table, also built by BLDTABS from MBVAL tables,           
+    this time the space attribute table. Only attrributes that have             
+    special values like an "or group" or a synonym or whatever end up           
+    in the table. It is accessed by a routine called GETQX, which               
+    also adds its own spin to certain qualifiers.                               
+                                                                                
+    DSCTAB                                                                      
+    ------                                                                      
+                                                                                
+    Table of applicable discount level elements. Built by BLDDSCT, but          
+    only if discounts specifically called for (MBLDLEV) and the                 
+    discount/rebate %'s not provided by caller (MBLBREB1).                      
+                                                                                
+    Actual discount override amounts are not carried here, only levels          
+    and %'s. Overrides are kept on the file in normal basic space rate          
+    element groups which are associated (via QLYUSER in the qualifier           
+    header elements) with the discount definition elements. In INSRAT,          
+    after these override rates are processed, they are tied to a DSCTAB         
+    entry when their link value is set in DSCOVLNK.                             
+                                                                                
+3) ROUTINES                                                                     
+   --------                                                                     
+                                                                                
+    All the routines in MBLOOK, with the exception of a handfull                
+of small, more or less self-explanatory ones, are described here.               
+They are listed in the order in which they appear in the program.               
+                                                                                
+   TABSR                                                                        
+   -----                                                                        
+     Called by INSRAT to add an entry to the SRTAB. The values for              
+   the entry are set in INSRAT, QFILT, and SPCFILT. SRTAB contains              
+   a list of potentially applicable basic space rate elements.                  
+                                                                                
+   TABAR                                                                        
+   -----                                                                        
+     Like TABSR, but adds adjustment (premium) data to ARTAB.                   
+                                                                                
+   TXTTST                                                                       
+   ------                                                                       
+     Compares file and arg text (freefrom part of a space description,          
+     enclosed in single quotes) and sets QSTAT treating text as if it           
+     were a regular qualifier. Note that text has one of the                    
+     pre-assigned slots in QSTATS, currently the third. Called by               
+     INSRAT for both basic rate spaces and adjustment spaces.                   
+                                                                                
+   GETQX                                                                        
+   -----                                                                        
+     Called by BQSET and QFILT to get 'extra' information about                 
+     qualifier values - "or group", synonyms, etc. - from the                   
+     QXTAB.                                                                     
+                                                                                
+   GETTUN                                                                       
+   ------                                                                       
+     Called from a number of places to calculate the total size                 
+     for a space. On input R1 points to a standard 14 byte space                
+     space description. the output is set in the TUN... fields.                 
+     GETTUN uses CMBTAB to get the resultant unit of measure,                   
+     multiplies the 2 dimensions, figures out where the decimal                 
+     point should go, and sets the replication factor (see SPCFILT).            
+     The total size is needed for comparisons and for rate calculations.        
+                                                                                
+   MRATDEC                                                                      
+   -------                                                                      
+     Routine to shift the decimal point in a rate or space size.                
+     Called extensively. Decimal point positioning is a big deal                
+     in MBLOOK.                                                                 
+                                                                                
+   SRDSP                                                                        
+   -----                                                                        
+     A simple routine to format a space rate. Called by MENDSP when             
+     a menu is displayed.                                                       
+                                                                                
+   ARDSP                                                                        
+   -----                                                                        
+     Like SRDSP but for adjustments.                                            
+                                                                                
+   SEGCHK                                                                       
+   ------                                                                       
+     SEGCHK is given a a segment qualifier and validates it against             
+     AGDAY and AGTIME (argument day and time). If it passes SEGSW               
+     is set to P and SEGCODE to the segment code and the segment                
+     is added to SGTAB. This routine is called from BQGETRC and                 
+     QFILT.                                                                     
+                                                                                
+   QPEND                                                                        
+   -----                                                                        
+     This routine will append a qualifier suffix to a space description.        
+     If there are any qualifiers already present QPEND will add to              
+     them. It is only called to return a full space description with            
+     qualifiers in MBLASQO, an optional output address in MBLOOKD.              
+                                                                                
+   INSRAT                                                                       
+   ------                                                                       
+     INSRAT (insertion rate) is the core module for rate lookup and             
+     similar functions.                                                         
+                                                                                
+     Briefly, the essential flow of the lookups is as follows:                  
+                                                                                
+       After the appropriate supplier header and rate card or mech card         
+     header have been found, BQVTAB is called to build QVTAB. This is a         
+     table of the argument or search qualifier values.                          
+                                                                                
+       Then INSRAT runs through the basic rate element groups on the            
+     file using the routines QFILT and SPCFILT.  First the header               
+     element qualifiers are checked by QFILT, then the detail lines are         
+     checked, first by QFILT and then by SPCFILT. These routines                
+     examine the qualifiers and spaces in light of what they find QVTAB         
+     and what the argument space description is. QFILT might reject             
+     entire group outright or might provisionally accept it in which            
+     case it and QFILT can then accept or reject the individual detail          
+     lines based on their qualifiers.  Lines that pass are added to the         
+     SRTAB where lots of interesting information is kept. Essentially           
+     the same process then takes place for premium elements, with the           
+     results kept in ARTAB.                                                     
+                                                                                
+        Once the SRTAB and the ARTAB are build they are subject to              
+     further scrutiny by INSRAT starting at the tag IR290. Items that           
+     are demonstrably inferior are rejected. Some entries may be                
+     marked for auto-select if we are in menu mode. Most importantly            
+     entries in the ARTAB are used to "enable" entries in the SRTAB.            
+     The code here is rather involved, but it is reasonably well                
+     commented in MBLOOK itself. Note that the rules for inclusion              
+     or exclusion and for auto-select differ depending on whether we            
+     are in "extended menu mode" or not. (We are if TARIF=L in                  
+     the buy program.)                                                          
+                                                                                
+       After the SRTAB and ARTAB have been fiddled with we are ready            
+    (at IR600) to call RETRATE to so its calculations and to return             
+    the data to the caller. It handles one SRTAB entry per call.  For           
+    rates a lot of detailed calculation and min/max checking takes              
+    place, but for other lookups it is basically just a matter or               
+    returning simple tables with element groups, link values, etc.              
+                                                                                
+       In menu mode, the sequence is a little different. The display            
+     menu is built from SRTAB and ARTAB in the routine MENDSP. The              
+     selections are then processed in MENPROC which uses them to                
+     re-build SRTAB and ARTAB with the selected lines, which are                
+     then passed to RETRATE.                                                    
+                                                                                
+   IRBLDMV                                                                      
+   -------                                                                      
+      This routine is called by INSRAT to build the DDMENU value table.         
+   MBLOOK is called again later to display individual menu lines and            
+   then the process the selections.  For broadcast media IRBLDMV saves          
+   the segment table at the end of the menu value table.                        
+                                                                                
+   CHKEDAO                                                                      
+   -------                                                                      
+      INSRAT calls this module with both the SRTAB and the ARTAB. It            
+      deletes enties that are for "edition=all other" if there exists           
+      an otherwise identical entry with a specific edition.                     
+                                                                                
+   BQVTAB                                                                       
+   ------                                                                       
+     This major routine builds the QVTAB, a table of all the argument           
+   qualifier values. These can come from the argument space description         
+   (at MBLASPC), other qualifiers (at MBLAQUAL), the "fixed qualifiers"         
+   (at MBLAFQS), or be implied by things like the insertion date                
+   (MBLDATE).                                                                   
+                                                                                
+     It also sets a number of switches and values outside of the QVTAB          
+   which are used to simplify the logic needed for comparing the                
+   argument values with the file values. Tags for these controls                
+   generally begin with AG. AGCOLOR=Y for instance means that at                
+   least one color qualifier was found in the arguments, which                  
+   information is useful in QFILT.                                              
+                                                                                
+   BQSET                                                                        
+   -----                                                                        
+     A routine called by BQVTAB to actually add the individual                  
+   entries to the QVTAB and set the AG fields.                                  
+                                                                                
+   BQGETRC                                                                      
+   -------                                                                      
+     For broadcast rate look-ups this routine is called by BQVTAB               
+   if either a time of day or a daypart code is given. In the first             
+   case it looks on the file for a daypart qualifier that is itself             
+   qualified by a segment qualifier that is acceptable given the                
+   day and time. In the second case it looks for the given argument             
+   daypart and sees if it has an accpetable segment. Note that a                
+   daypart can have more than one segment qualifier. This routine               
+   calls SEGCHK to validate the segments.                                       
+                                                                                
+   QFILT                                                                        
+   -----                                                                        
+     QFILT is where the actual comparison of file and argument                  
+   qualifiers takes place. It is used to sift through both                      
+   element group level qualifiers and detail line qualifiers for                
+   both basic space rates and adjustements. Its givens are the                  
+   QVTAB and the AG fields set in BQVTAB and, if it is processing               
+   a detail line, various information that might be carried down                
+   from the element group level qualifiers- QSTATS, SEGIND, etc.                
+   It is the interplay of the file qualifiers with these givens                 
+   that is at the heart of MBLOOK.                                              
+                                                                                
+     QFILT deals with the qualifier suffix of a group header or                 
+   detail element. These may contain several individual qualifiers.             
+   The file qualifiers are processed one at a time. Certain types               
+   of qualifiers receive special treatment before or instead of                 
+   being checked against the QVTAB. Day of the week, for instance,              
+   isn't actually carried in the QVTAB and relies on bit masking.               
+   It can only be properly dealt with after all the qualifiers                  
+   have been scanned. Another example is Umrechnungsfaktor. If it               
+   is found as a file qualifier it causes a reject if section=eckfeld           
+   is not in the arguments (tested via one of the AG switches). If it           
+   is not rejected, a control bit is set indicating we have UF and              
+   the qualifier is then bypassed (not the same as causing a reject).           
+   Several other qualifiers are handled in similar ways.                        
+                                                                                
+     The "normal" thing for QFILT to do is check the qualifier against          
+   the QVTAB. If it is found, if we have, say, color=4C in both the             
+   file and the argument qualifiers, the qualifier is accepted - various        
+   "matched" bits are set on in QSTATS, and we go on to the next                
+   qualifier.                                                                   
+                                                                                
+     If a qualifier is in the QVTAB but not in the file qualifiers,             
+  the QSTAT slot for it never gets marked as "matched". Nothing happens         
+  here in QFILT, INSRAT deals with the situation later.                         
+                                                                                
+     If a file qualifier is not found in the QVTAB it generally causes          
+   a reject unless we are in extended menu mode. If for whatever reason         
+   it is not rejected we then look to see if the QVTAB has any other            
+   qualifiers of the same type. If not, the qualifier is accepted if we         
+   are in extended menu mode (except in the case of edition qualifers,          
+   which can only be used if they match the argument edition, unless it         
+   is edition="all other").  Even if there are other entries in QVTAB           
+   with the same qualifier type there are situations in which the file          
+   qualifier is accepted, for example, if the argument qualifier is             
+   "all" (QLYQVAL=x'FF') meaning that any value is acceptable but that          
+   at least one value of that type of qualifier must be present. This           
+   situation arises in the case of cover position qualifiers.                   
+   Edition="all other" also gets dealt with here.                               
+                                                                                
+     After all the file qualifiers have been processed a few final              
+   checks are made involving day of week, date, and "or  groups".               
+   These are done to prevent rejecting an element which has certain             
+   qualifiers that don't match the arguments, provided it has others            
+   that should cause it to be  accepted. For example, if we are                 
+   looking for Wednesday rates and we find a Tuedsay qualifier, we              
+   can't automatically reject it because we may later find a                    
+   Wednesday qualifier. We don't really know whether to accept or               
+   reject the element until we have looked at all the qualifiers.               
+   This is also the basic idea of "or groups" used with color                   
+   qualifiers and elsewhere.                                                    
+                                                                                
+     There is also some code here at the end dealing with finding               
+   segment data for a daypart if it wasn't found in the file                    
+   qualifiers.  It is reasonably well commented in MBLOOK itself.               
+                                                                                
+   SPCFILT                                                                      
+   -------                                                                      
+     Compares file space to argument space for both space rate and              
+   adjustment detail lines. Elements are either accepted or rejected.           
+   If accepted then various match status bits are set in the fields             
+   SPSTAT and SPCNTL and then included in the SRTAB or ARTAB entries.           
+                                                                                
+     First SPCFILT determines if the current element is the first of a          
+   set with the same space description. Such sets are used to hold              
+   multiple min/max lines for adjustments, particulary for eckfeld              
+   adverts. This repeat status is kept track of in the ARTAB.                   
+                                                                                
+     Basically the space comparison per se is not all that complicated.         
+   Spaces can match exactly or they can be different expressions that           
+   result in the same total units and type. Matches can be "perfect"            
+   or "derived". A typical derived match is when the file carries,              
+   say, a 1mm rate and we are trying to cost a 200mmx3clm space. The            
+   1mm rate is accepted and later, when the rate caluclation is done,           
+   the rate is multiplied out. There is special code to deal with               
+   DPS (double page spread) which can be expressed in several different         
+   ways. There is also special code to deal with spaces that are                
+   expressed as ranges. There may be one rate for spaces <1000mm and            
+   and another for spaces >=1000mm, for example.                                
+                                                                                
+   SUPHDR                                                                       
+   ------                                                                       
+     Builds the output (dsect=MBLHDRD) to be returned to the user for a         
+   header data type request (MBLHDRQ).                                          
+                                                                                
+   RCHPROC                                                                      
+   -------                                                                      
+     Builds the output (dsect=MBLRCHD) to be returned to the user for a         
+   rate card data type request (MBLRCHQ).                                       
+                                                                                
+   MEMBPROC                                                                     
+   --------                                                                     
+     In response to a membership list call (MBLMEMBQ) returns a list            
+   of the members of a group type supplier. It handles nested                   
+   groups. The list entries are covered by dsect MBLMEMD.                       
+                                                                                
+   TTLRPROC                                                                     
+   --------                                                                     
+      Builds a list of title rotation premiums that are based on                
+   the number of titles bought on group suppliers. It and MEMBPROC              
+   were written early on as part of an attempt to handle group/combo            
+   buys. It's possible that they are not actually used by anyone                
+   at present.                                                                  
+                                                                                
+   SETBAS                                                                       
+   ------                                                                       
+     Reads the appropriate supplier header MINIO set for the MBLDATE            
+   given. This routine is called only by SUPHDR which in turn is                
+   called only if the data type requested is supplier header                    
+   (MBLHDRQ). This implies that the caller is supposed to do a                  
+   MBLHDRQ call before doing some other kind, or at least to                    
+   have the right header MINIO set open.                                        
+                                                                                
+     SETBAS sets the media type value and mask in the callers                   
+   MBBLOCK based on the supplier media type.                                    
+                                                                                
+   SETRCD                                                                       
+   ------                                                                       
+                                                                                
+     Reads the appropriate rate card MINIO set for the MBLDATE given.           
+   It also goes through some rather convoluted code to determine the            
+   end date of the rate card and the start date of the next. The end            
+   date may be explicitly stated in the rate card. Otherwise it is              
+   set to 1 day before the start date of the next card, if any. Barring         
+   that it is set to one year after the start date.                             
+                                                                                
+   SETMCD                                                                       
+   ------                                                                       
+      Analogous to SETRCD but for mechanical data cards instead of              
+   rate cards. The one year rule does not apply for figuring the                
+   end date of the card.                                                        
+                                                                                
+   BLDTABS                                                                      
+   -------                                                                      
+      Builds a table of units of measure (UMTAB) and a table of                 
+   various extra values for space attribute qualifiers (QXTAB).                 
+   Both tables are created from mbval entries.                                  
+                                                                                
+   DSCOVR                                                                       
+   ------                                                                       
+     This routine is called from RETRATE to find the appropriate DSCTAB         
+   entry and through it any possible discount override rates. The link          
+   value of any discount override rate group is kept in DSCOVLNK.               
+                                                                                
+   BLDDSCT                                                                      
+   -------                                                                      
+      Builds the discount element table (DSCTAB). All discount data             
+   for the right type and level is tabled, without regard to qualifiers,        
+   which are put in the table and dealt with later. Only discount               
+   element groups (DLVELGQ) are tabled, not actual discount override            
+   rates, if any, which are kept in normal basic space rate element             
+   groups (BSRELGQ).                                                            
+                                                                                
+   MENDSP                                                                       
+   ------                                                                       
+      This long but relatively mechanical routine is called directly            
+   in response to DDMENU's display mode to display a single menu                
+   line. For rate menus it handles both basic rates and premiums                
+   and the sort of header lines that identify what is being listed              
+   and may also contain warnings about the rate card being expired              
+   or not being DDS checked. Non-rate menus are also dealt with                 
+   but the display is minimal, consisting only of the element group             
+   header qualifiers.                                                           
+                                                                                
+     MENDSP works with a single entry in DDMENU's value table, which            
+   was built in IRBLDMV from the SRTAB and the ARTAB.                           
+                                                                                
+   MENPROC                                                                      
+   -------                                                                      
+      Called in response to DDMENU's process menu mode, MENPROC                 
+    re-builds the SRTAB and ARTAB using just the menu items that have           
+    been selected. The tables then get passed to RETRATE which                  
+    does the same thing with them as if we weren't in menu mode.                
+                                                                                
+    There is some special code dealing with sets of min/max entries in          
+    the ARTAB that have identical space descriptions. These are used            
+    mostly for eckfeld adverts. For them to work right they must either         
+    all be selected or all unselected.                                          
+                                                                                
+   RETRATE                                                                      
+   -------                                                                      
+     RETRATE works with one entry of the SRTAB and the whole ARTAB.             
+   It performs some rather involved calculations and builds the                 
+   output dsects to be returned to the caller. These are MBLRATD                
+   which has the basic space rate info and various totals and                   
+   MBLADJD of which there is one for each adjustment.                           
+                                                                                
+     After some set up RETRATE reads the detail basic rate element              
+   using the element group, link value, and sequence number in the              
+   SRTAB entry. It then calls RQSET and SEGSET to set the output fixed          
+   qualifier values. If no argument space was given, that is, if the            
+   user asked to see all spaces, the space from the rate element is             
+   returned at MBLASPC. Then RETRATE gets the element group header              
+   qualifier element and passes it to RQSET. UFCHK is called to adjust          
+   the space based on the UMRECHNUNGSFAKTOR, if present and RRSETR to           
+   figure the unit rate and base rate (without adjustments).  Finally,          
+   DSCOVR is called to find any discount override rates.  Discounted            
+   rates are processed alongside the open rates.                                
+                                                                                
+     ARTAB entries are processed sequentially. As with the SRTAB,               
+   first the detail element is read from the file. Then space being             
+   considered is compared to any min/max sizes that may be present              
+   with the adjustment element. This is a bit tedious. It may involve           
+   "normalizing" the space descriptions to get the dimensions in the            
+   same order to facilitate comparison. For any space or min/max that           
+   involves columns, the column dimension is made the first one. Most           
+   of this stuff, including mmh's and multiple 2-dimensional min/max's          
+   ( >6clms x 100mm and <6clms x 200mm, e.g.) is part of the eckfeld            
+   business.                                                                    
+                                                                                
+   Three cases are possible:                                                    
+                                                                                
+   1) If the min/max is expressed simply in mmh's (one dimensional              
+      vertical millimeters without regard to number of columns) and             
+      the space is columns x mms the comparison is relatively                   
+      straightforward. The space mm's are simply compared to the                
+      min/max mmh's.                                                            
+                                                                                
+   2) If both the space and min/max are two-dimensional with the same           
+      unit types and the 1st dimension is columns a special routine             
+      called MM2DCHK is called to do the actual comparison. In these            
+      cases it is not always possible to determine if the space is              
+      ok just by considering each min/max in turn - it is only after            
+      looking at the whole set that one can tell. MM2DCHK set                   
+      various controls as it goes along and these are checked after             
+      all the ARTAB entries have been processed.                                
+                                                                                
+   3) If neither of the above two situations exists the min/max                 
+      comparisons are simply done based on the total units, which,              
+      of course, must be of the same unit type.                                 
+                                                                                
+      The actual rate value of each SRTAB entry is then calculated,             
+   placed in the output dsect and added to various adjustment totals            
+   (in fields prefixed by TJ) in a routine called ADJADD. Among other           
+   possibilities the adjustments can be unit rates, in which case the           
+   actual amount is based on the total number of units, or simple               
+   adjustment amounts, in which case they are just added to the totals,         
+   or %'s, in which case the actual amounts are calculated on the base          
+   rate. Note that separate totals are kept for rebatable costs.                
+                                                                                
+      As with the SRTAB processing, for each entry in the ARTAB the             
+   output fixed qualifier values are set by RQSET from the detail               
+   level qualifiers. Also the group header qualifier element is read            
+   and RQSET called to set its values in the fixed qualifiers.                  
+                                                                                
+      After each entry in the ARTAB has been processed the total                
+   cost is compared against whatever minimum charges may exist on               
+   the adjustment lines. Agency commission and cash discount are                
+   then calculated and finally the discounts or rebates are applied             
+   to the rebatable costs.                                                      
+                                                                                
+   ADJADD                                                                       
+   ------                                                                       
+     Totals the actual adjustment amounts calculated for each                   
+   ARTAB entry. Separate totals are kept for amounts that are                   
+   agency commissionable or cash discountable or both or neither                
+   so that these calculations can be properly applied at the end.               
+   The tags for the total fields all start with TJ.                             
+                                                                                
+   RRSETR                                                                       
+   ------                                                                       
+     Sets the basic rate, without adjustments, in BRATE and the unit            
+   rate, if present, in URATE. If there is a unit rate then the basic           
+   rate is calculated by multiplying the number of units (ATUNSZE)              
+   by the unit rate. If there is no unit rate then the basic rate               
+   is set to the file rate factored up or down if the argument                  
+   space number of units is greater than or less than the file space            
+   number of units (FTUNSZE).                                                   
+                                                                                
+   SEGSET                                                                       
+   ------                                                                       
+      For broadcast segment qualifiers this routine finds the                   
+   appropriate entry in the SGTAB, which was built in SEGCHK,                   
+   and sets the data in the output fixed qualifier dsect.                       
+   All other fixed qualifier outputs are simple one or two byte                 
+   values but for segments it is the full 10-byte SGTAB entry.                  
+                                                                                
+   UFCHK                                                                        
+   -----                                                                        
+     Called from RETRATE while it is handling its SRTAB entry, it               
+   scans the ARTAB for an UMRECHNUNGSFAKTOR adjustment. If it finds             
+   one it applies the factor to the argument space number of units,             
+   actually setting a new value in ATUNSZE. All subsequent rate                 
+   calculations are done based on this adjusted size.                           
+                                                                                
+   RRELGRP                                                                      
+   -------                                                                      
+     For generic element group calls (MBLELGRQ) this routine builds             
+   the simple dsect (MBLELDTD) to return the data to the caller.  It            
+   basically consists just of the link values and addresses of                  
+   elements - things the caller can use to get easily at the "real"             
+   data.                                                                        
+                                                                                
+   MM2DCHK                                                                      
+   -------                                                                      
+     A very specialized routine which handles 2-dimensional min/max's           
+   on adjustments.                                                              
+                                                                                
+   RQSET                                                                        
+   -----                                                                        
+     A lengthy but basically mechanical routine. It is given a                  
+   qualifier string and for those qualifiers that are in the set of             
+   "fixed qualifiers" it sets the output value in the fixed qualifier           
+   table. It is called with both header and detail line qualifiers              
+   for the SRTAB entry and the ARTAB entries. For the ARTAB entries             
+   (adjustments) an index byte is set with each fixed qualifier                 
+   pointing to the entry in the adjustment output table (MBLADJD)               
+   where the qualifier was found.                                               
+                                                                                
+   RRSBPR                                                                       
+   ------                                                                       
+     Builds the very simple return dsect (MBLSBD) for size and bleed            
+  data. It basically consists just of link values, element sequence             
+  numbers and addresses of elements - things the caller can use to              
+  get easily at the "real" data.                                                
+                                                                                
+4) MISCELLANEOUS                                                                
+   -------------                                                                
+                                                                                
+   To avoid base register problems the program is divided into a                
+number of sections introduced by nmod1's. There are a number of data            
+areas and small routines that are required by more than one of these            
+sections. Program-wide addressability of these areas and routines is            
+guaranteed by grouping them in an address space called COMROUTS which           
+is covered by R7. Note that if the program abends in one of the                 
+comrouts routines the displacement from RB of the abend address will            
+be negative if the calling routine is higher. This can be a little              
+confusing.                                                                      
+                                                                                
+5) TESTING MBLOOK                                                               
+   --------------                                                               
+                                                                                
+    There is an on-line testing module for MBLOOK and other MediaBase           
+things that can be very useful.  It is MBLFM2B and is invoked via               
+"SUPPLIER" in the record field and "TEST" in the SELECT field.  Action          
+must be "CHANGE". The program is available on DDS terminals only.               
+                                                                                
+   Screen fields are as follows:                                                
+                                                                                
+  1) DATA TYPE. Input the actual MBLOOKD data type (MBLDTYP). There             
+     are other possible inputs but they are not for MBLOOK testing.             
+                                                                                
+  2) DATE. Defaults to today. All lookups require a date to control             
+     at least the supplier header and rate/mech card reads.                     
+                                                                                
+  3) DAY. Allows you to specify a day of week other than                        
+     that of date given. But for the generic element lookup (MBLELGRQ)          
+     input here the sub-record code as a 2-digit number.                        
+                                                                                
+  4) TIME. For broadcast media rate lookups enter a time.                       
+     The program calls mbval to get the appropriate segment                     
+     qualifier and set the start and end times in MBLRTIME.                     
+     But for the generic element lookup enter the element group                 
+     code as a 2-digit number.                                                  
+                                                                                
+  5) SPACE DESCRIPTION. For rate, bleed, and size lookups enter                 
+     a space description. This description may include qualifiers.              
+     The field can be left blank in which case all spaces are                   
+     returned.                                                                  
+                                                                                
+  6) QUALIFIERS. You can enter qualifiers here as well, in addition to          
+     or instead of on the space line. This may be more convenient.              
+     You can also enter qualifiers in the "fixed qualifier" mode.               
+     Type in FQ= followed by the entire MBLFQD in hex through the               
+     qualifier(s) you are interested in. A bit tedious but useful               
+     for some kinds of testing.                                                 
+                                                                                
+  7) OPTIONS.                                                                   
+                                                                                
+       NEXT - do the next return in first/next mode (the default mode).         
+                                                                                
+       DIS - type of discount structure, e.g. inches, times, etc.               
+             For rate lookups involving discounts.                              
+                                                                                
+       LEV - discount level. Required with DISCOUNT.                            
+                                                                                
+       CD  - allows the cash discount percent to be specified. Value            
+             set in MBLCD. Enter n.nnnnn% as nnnnnn. No default                 
+             to the cash discount fields on the rate card header.               
+                                                                                
+       AC  - allows the agency commission percent to be specified.              
+             Value set in MBLCOMM. Enter nn.nnnnn% as nnnnnnn. Defaults         
+             to RCHACOM in the rate card header.                                
+                                                                                
+       REB1, REB2, REB3 - up to three rebate percents can be specified.         
+             VAlues are set in MBLREB1,2,3. Enter nn.nnnnn% as nnnnnnn.         
+                                                                                
+       MENU - causes MBLOOK to be called in menu mode. When this                
+              option is encountered in the options fields MBLOOK                
+              is actually called at that time. So, other options                
+              should be stated first. Menu mode in MBLFM2B doesn't              
+              really use DDMENU, it only simulates it. Also, it                 
+              will only show 1 screens worth of rate or adjustment              
+              lines. MENU causes a menu display on the screen. See              
+              option S for how to select.                                       
+                                                                                
+       AUTO - sets on auto-select of appropriate menu lines. Auto-              
+              selected lines have an S right after the line number.             
+                                                                                
+       EXT - sets on extended menu mode.                                        
+                                                                                
+       EAM - an abbreviation for extended, auto-select, menu. Like MENU         
+             it actually does the MBLOOK call.                                  
+                                                                                
+       S   - Select. Allows you to select display menu lines. You must          
+             select exactly one basic space rate and may select any             
+             number of adjustments. The selections are passed to                
+             RETRATE which does all its usual calculations, checks              
+             against min/max's and builds the return dsects.                    
+                                                                                
+             S=2 selects line 2. S=25 selects lines 2 and 5. S=3A               
+             selects lines 3 and 10. And so on. S= must be at the               
+             end of the options line.                                           
+                                                                                
+  The displayed output for a rate lookup needs a little explanation.            
+                                                                                
+   - the "fixed qualifier" dsect is displayed in hex right below the            
+     options line.                                                              
+                                                                                
+   - the returned space and qualifiers are on the next line and the             
+     discount level and percent appear at the right.                            
+                                                                                
+   - The next line starts with 5 2-digit numbers which are:                     
+       1) "this entry" number in the SRTAB.                                     
+       2) the total number of SRTAB entries.                                    
+       3) link value for the element group                                      
+       4) sequence number of the detail element                                 
+       5) number of adjustments applied.                                        
+                                                                                
+       the unit rate and the basic rate (without adjustments) follow.           
+                                                                                
+   - On the next line  OGR means open gross, OAC means open rate                
+     agency commission, DGR means discounted gross, etc.                        
+                                                                                
+   - Adjustments appear after that in pairs of lines with the first             
+     showing the adjustment description and the next showing the                
+     amount as stated on the file, the actual calculated amount, and            
+     the status of various discount switches.                                   
+                                                                                
